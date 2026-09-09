@@ -30,10 +30,40 @@ class Agent:
     skill: str | None = None
 
     def arguments(self) -> list[str]:
-        args = ["--model", self.model, "--thinking", self.thinking, "--no-extensions"]
+        # Extensions stay on: providers such as `cursor` are installed as extension packages.
+        args = ["--model", self.model, "--thinking", self.thinking]
         if self.tools:
             return [*args, "--tools", ",".join(self.tools)]
         return [*args, "--no-tools", "--no-context-files", "--no-skills"]
+
+
+def skill_name(path: Path) -> str:
+    """The frontmatter `name`, or the parent directory name as Pi falls back to."""
+    lines = path.read_text(errors="replace").splitlines()
+    if lines and lines[0].strip() == "---":
+        for line in lines[1:]:
+            if line.strip() == "---":
+                break
+            key, _, value = line.partition(":")
+            if key.strip() == "name" and value.strip():
+                return value.strip().strip("'\"")
+    return path.parent.name
+
+
+def installed_skills(cwd: Path) -> set[str]:
+    """Names of the skills Pi discovers for a session in `cwd`, so `/skill:name` will expand.
+
+    Covers `SKILL.md` directories in the user and project skill locations, not single-file
+    skills or skills added by settings or packages.
+    """
+    home = Path.home()
+    roots = (
+        home / ".pi" / "agent" / "skills",
+        home / ".agents" / "skills",
+        cwd / ".pi" / "skills",
+        cwd / ".agents" / "skills",
+    )
+    return {skill_name(path) for root in roots for path in root.rglob("SKILL.md")}
 
 
 def assistant_text(message: dict) -> str:

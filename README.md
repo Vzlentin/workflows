@@ -67,7 +67,9 @@ implement and fix can edit and run commands. Before each review the workflow run
 verification commands, snapshots the tree, and asks a fixed tool-free evaluator. The campaign
 completes only when the checks, the evaluator, and the learned review all pass on an unchanged
 tree. Stage models, tools, skills, control text, and the evaluator are code; the signature
-docstrings are the learned instructions.
+docstrings are the learned instructions. Stage skills are your installed Pi skills (`ponytail`
+for plan and fix, `thermo-nuclear-code-quality-review` for review); the run fails before the
+first stage when one is missing.
 
 ## Write a workflow
 

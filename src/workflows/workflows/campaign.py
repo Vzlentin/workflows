@@ -18,7 +18,7 @@ from dspy.utils.exceptions import AdapterParseError
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from workflows import workspace
-from workflows.pi import Agent, Pi, PiLM
+from workflows.pi import Agent, Pi, PiLM, installed_skills
 
 INPUTS = ("goal", "repository", "base", "acceptance")
 NEXT = {"plan": "implement", "implement": "review", "review": "fix", "fix": "review"}
@@ -334,6 +334,10 @@ class Workflow(dspy.Module):
         commit = workspace.resolve_commit(root, base)
         worktree = directory / "worktree"
         workspace.add_worktree(root, commit, worktree)
+        # Pi passes an unknown `/skill:name` through silently, so check before the first stage.
+        missing = {a.skill for a in self.agents.values() if a.skill} - installed_skills(worktree)
+        if missing:
+            raise RuntimeError(f"Pi skills not installed: {', '.join(sorted(missing))}")
         state = State(
             goal=goal,
             repository=str(root),
