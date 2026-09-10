@@ -40,6 +40,7 @@ def pi(tmp_path, monkeypatch):
     script.write_text(f'#!/bin/sh\nexec {sys.executable} {FAKE_PI} "$@"\n')
     script.chmod(0o755)
     monkeypatch.setenv("FAKE_PI_LOG", str(tmp_path / "calls.json"))
+    monkeypatch.delenv("HERDR_ENV", raising=False)
     return script
 
 
@@ -132,12 +133,15 @@ def test_saved_program_restores_learned_instructions(tmp_path):
     assert loaded.plan.signature.instructions == campaign.PlanStage.instructions
 
 
-def test_cli_run_reports_result(repository, pi, tmp_path, capsys):
+def test_cli_run_reports_result(repository, pi, tmp_path, capsys, monkeypatch):
     goal = tmp_path / "goal.md"
     goal.write_text("Finish source.txt\n")
+    # Inside Herdr the CLI would open panes; --headless keeps `pi --mode json`.
+    monkeypatch.setenv("HERDR_ENV", "1")
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p1")
     code = main(
-        ["run:campaign", "--pi", str(pi), "--repo", str(repository), "--goal", str(goal),
-         "--run-dir", str(tmp_path / "run")]
+        ["campaign", "run", "--headless", "--pi", str(pi), "--repo", str(repository),
+         "--goal", str(goal), "--run-dir", str(tmp_path / "run")]
     )  # fmt: skip
     assert code == 0
     output = json.loads(capsys.readouterr().out)

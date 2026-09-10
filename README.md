@@ -17,8 +17,8 @@ uv run workflows list
 ## Run a workflow
 
 ```sh
-uv run workflows run:campaign --repo /absolute/path/to/repository --goal 'Implement the change'
-uv run workflows run:campaign --repo /absolute/path/to/repository --goal ./goal.md --base main \
+uv run workflows campaign run --repo /absolute/path/to/repository --goal 'Implement the change'
+uv run workflows campaign run --repo /absolute/path/to/repository --goal ./goal.md --base main \
   --criterion 'The change works' --command 'npm test'
 ```
 
@@ -29,8 +29,8 @@ Pi session under `sessions/` (transcript, prompts, `pi.log`), and check logs, th
 `evidence.json` under `verification/`. Remove finished worktrees with `git worktree remove` or
 `git worktree prune` in the source repository.
 
-`--herdr` runs every stage as a visible `pi` agent in a new Herdr pane beside the current one
-(requires `HERDR_ENV=1`). Otherwise stages run headlessly with `pi --mode json`.
+Inside Herdr (`HERDR_ENV=1`) every stage runs as a visible `pi` agent in a new pane beside the
+current one. Elsewhere, or with `--headless`, stages run with `pi --mode json`.
 
 `--program file.json` loads instructions saved by `optimize`. The exit code is 0 only when the
 workflow completed.
@@ -38,7 +38,7 @@ workflow completed.
 ## Optimize a workflow with GEPA
 
 ```sh
-uv run workflows optimize:campaign --cases cases.json --out campaign.json --max-metric-calls 6
+uv run workflows campaign optimize --cases cases.json --out campaign.json --max-metric-calls 6
 ```
 
 `cases.json` is a list of objects with the workflow's input fields and an optional `split`
@@ -79,7 +79,7 @@ exposes:
 - `Workflow(dspy.Module)` whose `forward(**inputs)` returns a `dspy.Prediction` with `status`;
 - `INPUTS`, the input field names of a case;
 - `metric(gold, pred, ...)` returning a `dspy.Prediction(score=..., feedback=...)` for GEPA;
-- `arguments(parser)` and `inputs(args)` for the `run:<name>` command.
+- `arguments(parser)` and `inputs(args)` for the `<name> run` command.
 
 Use `workflows.pi.PiLM(pi, Agent(model, thinking, tools, skill), label)` as the LM inside
 `dspy.context`. Set `lm.repair = True` to ask the open session once more for its JSON.

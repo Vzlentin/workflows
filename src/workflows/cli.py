@@ -15,13 +15,15 @@ from workflows.workflows.campaign import run_directory
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="workflows", description=__doc__)
-    commands = root.add_subparsers(dest="action", required=True)
+    commands = root.add_subparsers(dest="workflow", required=True)
     commands.add_parser("list", help="List workflows")
     for name, module in REGISTRY.items():
-        run = commands.add_parser(f"run:{name}", help=f"Run the {name} workflow")
+        workflow = commands.add_parser(name, help=module.__doc__.strip().splitlines()[0])
+        actions = workflow.add_subparsers(dest="action", required=True)
+        run = actions.add_parser("run", help=f"Run the {name} workflow")
         common(run)
         module.arguments(run)
-        optimize = commands.add_parser(f"optimize:{name}", help=f"Optimize {name} with GEPA")
+        optimize = actions.add_parser("optimize", help=f"Optimize {name} with GEPA")
         common(optimize)
         optimize.add_argument("--cases", required=True, help="JSON list of cases (input fields)")
         optimize.add_argument("--out", required=True, help="Where to save the optimized program")
@@ -37,9 +39,9 @@ def common(command: argparse.ArgumentParser) -> None:
     command.add_argument("--pi", default="pi", help="Pi executable")
     command.add_argument("--rounds", type=int, default=3, help="Maximum review rounds")
     command.add_argument(
-        "--herdr",
+        "--headless",
         action="store_true",
-        help="Run stage sessions as visible Pi agents in Herdr panes beside this one",
+        help="Run stages with `pi --mode json` even inside Herdr (default: visible Herdr panes)",
     )
 
 
@@ -51,11 +53,9 @@ def build(module, args) -> dspy.Module:
 
 
 def herdr_pane(args) -> str | None:
-    if not args.herdr:
+    if args.headless or os.environ.get("HERDR_ENV") != "1":
         return None
-    if os.environ.get("HERDR_ENV") != "1" or not os.environ.get("HERDR_PANE_ID"):
-        raise SystemExit("--herdr requires running inside Herdr (HERDR_ENV=1, HERDR_PANE_ID)")
-    return os.environ["HERDR_PANE_ID"]
+    return os.environ.get("HERDR_PANE_ID") or None
 
 
 def run(module, args) -> int:
@@ -102,13 +102,12 @@ def optimize(module, args) -> int:
 
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
-    if args.action == "list":
+    if args.workflow == "list":
         for name, module in REGISTRY.items():
             print(f"{name}: {module.__doc__.strip().splitlines()[0]}")
         return 0
-    action, name = args.action.split(":")
-    module = REGISTRY[name]
-    return run(module, args) if action == "run" else optimize(module, args)
+    module = REGISTRY[args.workflow]
+    return run(module, args) if args.action == "run" else optimize(module, args)
 
 
 if __name__ == "__main__":
