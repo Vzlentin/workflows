@@ -45,8 +45,10 @@ def common(command: argparse.ArgumentParser) -> None:
     )
 
 
-def build(module, args) -> dspy.Module:
-    program = module.Workflow(rounds=args.rounds, command=args.pi, herdr=herdr_pane(args))
+def build(module, args, keep_worktree=True) -> dspy.Module:
+    program = module.Workflow(
+        rounds=args.rounds, command=args.pi, herdr=herdr_pane(args), keep_worktree=keep_worktree
+    )
     if args.program:
         program.load(args.program)
     return program
@@ -68,15 +70,18 @@ def run(module, args) -> int:
 
 
 def optimize(module, args) -> int:
-    program = build(module, args)
-    run_dir = Path(args.run_dir) if args.run_dir else run_directory()
-    run_dir.mkdir(parents=True, exist_ok=True)
-    print(f"run directory: {run_dir}", file=sys.stderr)
+    # Only the scores matter here; each case's run directory keeps its logs and evidence.
+    program = build(module, args, keep_worktree=False)
     cases = json.loads(Path(args.cases).read_text())
     examples = {"train": [], "val": []}
     for case in cases:
         split = case.pop("split", "train")
+        if split not in examples:
+            raise ValueError(f"Unknown split {split!r} in {args.cases}; use train or val")
         examples[split].append(dspy.Example(**case).with_inputs(*module.INPUTS))
+    run_dir = Path(args.run_dir) if args.run_dir else run_directory()
+    run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"run directory: {run_dir}", file=sys.stderr)
     reflection = PiLM(
         Pi(run_dir / "reflection", run_dir, args.pi),
         Agent(args.reflection_model, args.reflection_thinking),

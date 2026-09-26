@@ -27,7 +27,7 @@ Each run works in a detached Git worktree under `$XDG_STATE_HOME/workflows/runs/
 (default `~/.local/state/workflows`). The run directory also keeps `state.json`, one folder per
 Pi session under `sessions/` (transcript, prompts, `pi.log`), and check logs, the diff, and
 `evidence.json` under `verification/`. Remove finished worktrees with `git worktree remove` or
-`git worktree prune` in the source repository.
+`git worktree prune` in the source repository; `optimize` removes each case's worktree itself.
 
 Inside Herdr (`HERDR_ENV=1`) every stage runs as a visible `pi` agent in a new pane beside the
 current one. Elsewhere, or with `--headless`, stages run with `pi --mode json`.
@@ -64,9 +64,11 @@ through a tool-free Pi session. The result is saved with `dspy.Module.save`.
 `src/workflows/workflows/campaign.py`: plan -> implement -> review -> (fix -> review)* until the
 review passes, at most `--rounds` reviews. Plan and review sessions get read-only tools;
 implement and fix can edit and run commands. Before each review the workflow runs the recorded
-verification commands, snapshots the tree, and asks a fixed tool-free evaluator. The campaign
-completes only when the checks, the evaluator, and the learned review all pass on an unchanged
-tree. Stage models, tools, skills, control text, and the evaluator are code; the signature
+verification commands, snapshots the tree, and asks a fixed tool-free evaluator. Prompts carry
+only the last 2000 characters of a check log; the full log stays under `verification/`. The
+evaluator receives the diff inline, so verification fails when it exceeds 200,000 characters.
+The campaign completes only when the checks, the evaluator, and the learned review all pass on
+an unchanged tree. Stage models, tools, skills, control text, and the evaluator are code; the signature
 docstrings are the learned instructions. Stage skills are your installed Pi skills (`ponytail`
 for plan and fix, `thermo-nuclear-code-quality-review` for review); the run fails before the
 first stage when one is missing.
@@ -90,4 +92,5 @@ Use `workflows.pi.PiLM(pi, Agent(model, thinking, tools, skill), label)` as the 
 uv run ruff format --check src tests && uv run ruff check src tests && uv run pytest
 ```
 
-Tests use a fake `pi` executable and temporary repositories; nothing calls a real model.
+Tests use fake `pi` and `herdr` executables and temporary repositories; nothing calls a real
+model.

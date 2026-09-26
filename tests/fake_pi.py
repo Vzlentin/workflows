@@ -28,6 +28,8 @@ def main() -> None:
     kind = directory.name.rsplit("-", 1)[0]
     calls.append({"kind": kind, "args": args, "prompt": prompt, "cwd": os.getcwd()})
     log.write_text(json.dumps(calls))
+    if kind == os.environ.get("FAKE_PI_FAIL"):
+        sys.exit("pi failed")
     reviews = sum(1 for call in calls if call["kind"] == "review")
     if kind == "plan" and "--session" not in args:
         text = "I forgot the JSON."
@@ -41,13 +43,14 @@ def main() -> None:
     else:
         text = json.dumps({"review": REVIEW})
     session_id = args[args.index("--session") + 1] if "--session" in args else uuid.uuid4().hex
-    (directory / f"{session_id}.jsonl").touch()
-    print(json.dumps({"type": "session", "version": 3, "id": session_id}))
     message = {
         "role": "assistant",
         "content": [{"type": "text", "text": text}],
         "stopReason": "stop",
     }
+    with (directory / f"{session_id}.jsonl").open("a") as transcript:
+        transcript.write(json.dumps({"type": "message", "message": message}) + "\n")
+    print(json.dumps({"type": "session", "version": 3, "id": session_id}))
     print(json.dumps({"type": "message_end", "message": message}))
 
 

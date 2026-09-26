@@ -10,6 +10,7 @@ import json
 import os
 import time
 import uuid
+from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -22,6 +23,8 @@ from workflows.pi import Agent, Pi, PiLM, installed_skills
 
 INPUTS = ("goal", "repository", "base", "acceptance")
 NEXT = {"plan": "implement", "implement": "review", "review": "fix", "fix": "review"}
+LOG_TAIL = 2000  # characters of check output inlined into prompts and GEPA feedback
+DIFF_LIMIT = 200_000  # characters of diff the tool-free evaluator receives inline
 READ_ONLY = ("read", "grep", "find", "ls")
 EDIT = (*READ_ONLY, "bash", "edit", "write")
 AGENTS = {
@@ -118,7 +121,9 @@ class Evaluate(dspy.Signature):
     plan: str = dspy.InputField()
     criteria: list[str] = dspy.InputField()
     diff: str = dspy.InputField()
-    checks: list[dict] = dspy.InputField(desc="Commands with exit codes and complete output")
+    checks: list[dict] = dspy.InputField(
+        desc="Commands with exit codes and the end of their output"
+    )
     review: Review = dspy.OutputField()
 
 
@@ -179,6 +184,14 @@ def brief(state: State) -> str:
     return "\n\n".join(sections)
 
 
+def tail(path: str) -> str:
+    """The end of a check log, where failures and summaries land; the file keeps the rest."""
+    text = Path(path).read_text(errors="replace")
+    if len(text) <= LOG_TAIL:
+        return text
+    return f"[{len(text) - LOG_TAIL} earlier characters omitted]\n{text[-LOG_TAIL:]}"
+
+
 def evidence_brief(evidence: dict) -> list[str]:
     sections = [
         f"## Latest verification\nError: {evidence['error'] or 'None.'}\n"
@@ -189,7 +202,7 @@ def evidence_brief(evidence: dict) -> list[str]:
             f"- `{check['command']}`: exit code {check['exit_code']}, output {check['output']}"
         ]
         if check["exit_code"] != 0:
-            lines.append(Path(check["output"]).read_text().rstrip())
+            lines.append(tail(check["output"]).rstrip())
         sections.append("\n".join(lines))
     for title, review in (
         ("Workflow review", evidence["workflow_review"]),
@@ -235,18 +248,21 @@ def verify(state: State, directory: Path, pi: Pi, evaluator: Agent) -> dict:
         Path(evidence["diff"]).write_text(after.diff)
         if any(check["exit_code"] != 0 for check in evidence["checks"]):
             raise RuntimeError("Required checks failed")
+        if len(after.diff) > DIFF_LIMIT:
+            raise RuntimeError(
+                f"The diff is {len(after.diff)} characters, over the evaluator's limit of "
+                f"{DIFF_LIMIT}; remove generated or unrelated files from the change"
+            )
         # The evaluator never sees the learned review's prompts, demonstrations, or verdict.
         lm = PiLM(pi, evaluator, "evaluate")
-        with dspy.context(lm=lm, adapter=dspy.JSONAdapter(use_native_function_calling=False)):
+        adapter = dspy.JSONAdapter(use_native_function_calling=False)
+        with closing(lm), dspy.context(lm=lm, adapter=adapter):
             verdict = dspy.Predict(Evaluate)(
                 goal=state.goal,
                 plan=state.plan or "",
                 criteria=state.acceptance["criteria"],
                 diff=after.diff,
-                checks=[
-                    {**check, "output": Path(check["output"]).read_text()}
-                    for check in evidence["checks"]
-                ],
+                checks=[{**check, "output": tail(check["output"])} for check in evidence["checks"]],
             )
         evidence["review"] = verdict.review.model_dump()
     except Exception as error:  # noqa: BLE001 - every failure becomes review evidence
@@ -306,7 +322,15 @@ def run_directory() -> Path:
 class Workflow(dspy.Module):
     """The campaign as one DSPy module with four learned predictors."""
 
-    def __init__(self, agents=AGENTS, evaluator=EVALUATOR, rounds=3, command="pi", herdr=None):
+    def __init__(
+        self,
+        agents=AGENTS,
+        evaluator=EVALUATOR,
+        rounds=3,
+        command="pi",
+        herdr=None,
+        keep_worktree=True,
+    ):
         super().__init__()
         self.plan = dspy.Predict(PlanStage)
         self.implement = dspy.Predict(ImplementStage)
@@ -317,6 +341,7 @@ class Workflow(dspy.Module):
         self.rounds = rounds
         self.command = command
         self.herdr = herdr
+        self.keep_worktree = keep_worktree
 
     def forward(
         self,
@@ -334,24 +359,38 @@ class Workflow(dspy.Module):
         commit = workspace.resolve_commit(root, base)
         worktree = directory / "worktree"
         workspace.add_worktree(root, commit, worktree)
+        try:
+            state = State(
+                goal=goal,
+                repository=str(root),
+                base_commit=commit,
+                worktree=str(worktree),
+                constraints=list(constraints),
+                authority=dict(authority or LOCAL_AUTHORITY),
+                acceptance=Acceptance(**acceptance).model_dump() if acceptance else None,
+            )
+            return self.run(state, directory)
+        finally:
+            if not self.keep_worktree:
+                workspace.remove_worktree(root, worktree)
+
+    def run(self, state: State, directory: Path) -> dspy.Prediction:
+        worktree = Path(state.worktree)
         # Pi passes an unknown `/skill:name` through silently, so check before the first stage.
         missing = {a.skill for a in self.agents.values() if a.skill} - installed_skills(worktree)
         if missing:
             raise RuntimeError(f"Pi skills not installed: {', '.join(sorted(missing))}")
-        state = State(
-            goal=goal,
-            repository=str(root),
-            base_commit=commit,
-            worktree=str(worktree),
-            constraints=list(constraints),
-            authority=dict(authority or LOCAL_AUTHORITY),
-            acceptance=Acceptance(**acceptance).model_dump() if acceptance else None,
-        )
         pi = Pi(directory / "sessions", worktree, self.command, self.herdr)
         self.save_state(state, directory)
         while state.status == "active":
-            self.step(state, pi, directory)
-            self.save_state(state, directory)
+            try:
+                self.step(state, pi, directory)
+            except Exception as error:
+                state.status = "failed"
+                state.result = f"{state.stage} stage raised: {error}"
+                raise
+            finally:
+                self.save_state(state, directory)
         return dspy.Prediction(
             status=state.status,
             result=state.result,
@@ -372,14 +411,14 @@ class Workflow(dspy.Module):
         if not state.authority["edit"]:
             agent = Agent(agent.model, agent.thinking, READ_ONLY, agent.skill)
         lm = PiLM(pi, agent, stage, control_text(stage))
-        with dspy.context(lm=lm, adapter=dspy.JSONAdapter(use_native_function_calling=False)):
+        adapter = dspy.JSONAdapter(use_native_function_calling=False)
+        with closing(lm), dspy.context(lm=lm, adapter=adapter):
             try:
                 prediction = predictor(brief=brief(state))
             except (AdapterParseError, ValidationError):
                 # One repair turn in the same session keeps the stage's context and isolation.
                 lm.repair = True
                 prediction = predictor(brief=brief(state))
-        lm.close()
         if stage == "plan":
             record_plan(state, prediction.plan)
         elif stage == "review":
@@ -403,7 +442,7 @@ def metric(gold, pred, trace=None, pred_name=None, pred_trace=None, program_trac
     checks = evidence.get("checks", [])
     if not evidence or evidence.get("error") or any(c["exit_code"] != 0 for c in checks):
         failures = [
-            f"`{c['command']}` exited {c['exit_code']}:\n{Path(c['output']).read_text()[-2000:]}"
+            f"`{c['command']}` exited {c['exit_code']}:\n{tail(c['output'])}"
             for c in checks
             if c["exit_code"] != 0
         ]
@@ -437,7 +476,8 @@ def arguments(parser) -> None:
 
 def inputs(args) -> dict:
     goal = args.goal
-    if goal.startswith(("/", "./", "../")) or Path(goal).is_file():
+    # Unlike Path.is_file, os.path.isfile returns False for text too long to be a file name.
+    if goal.startswith(("/", "./", "../")) or os.path.isfile(goal):
         goal = Path(goal).read_text()
     acceptance = None
     if args.command or args.criterion:
