@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -148,6 +149,16 @@ def test_ship_commits_shipped_items_and_stops_at_the_first_that_does_not_ship(
     review = calls()[8]["prompt"]
     assert str(run_dir / "sessions" / "round-2-fix.patch") in review
     assert "Fix review 1." in review
+
+
+def test_ship_rejects_an_empty_item_before_the_run_starts(repository, pi, items, tmp_path):
+    empty = tmp_path / "empty.md"
+    empty.write_text("\n  \n")
+    with pytest.raises(ValueError, match=re.escape(str(empty))):
+        ship.ship(str(repository), "main", [items[0], empty], tmp_path / "run", command=str(pi))
+
+    assert git(repository, "branch", "--list", "ship/*") == ""
+    assert not Path(os.environ["FAKE_PI_LOG"]).exists()
 
 
 def test_ship_in_herdr_runs_each_session_in_one_pane_and_closes_it(

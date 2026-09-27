@@ -132,6 +132,16 @@ def message(item: str, rounds: int, verdict: Verdict | None = None) -> str:
     return "\n\n".join([*paragraphs, "\n".join(trailers)])
 
 
+def read_items(paths: list[Path]) -> list[str]:
+    """The text of each work item, in order; raises ValueError naming an item with no non-empty
+    line."""
+    texts = [path.read_text() for path in paths]
+    for path, text in zip(paths, texts, strict=True):
+        if not text.strip():
+            raise ValueError(f"work item {path} has no non-empty line")
+    return texts
+
+
 def run_directory() -> Path:
     home = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state"
     stamp = time.strftime("%Y%m%dT%H%M%S")
@@ -148,7 +158,7 @@ def ship(
     herdr: str | None = None,
 ) -> bool:
     """Ship the items in order onto `ship/<run>`; stop at the first one that does not ship."""
-    texts = [item.read_text() for item in items]
+    texts = read_items(items)
     root = workspace.repository_root(repository)
     commit = workspace.resolve_commit(root, base)
     worktree = directory / "worktree"

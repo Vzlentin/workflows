@@ -31,7 +31,8 @@ Items ship in argument order onto `ship/<run>`, a new branch in a worktree under
 `$XDG_STATE_HOME/workflows/runs/<run>/worktree` (default `~/.local/state/workflows`). The run
 directory also keeps one folder per Pi session under `sessions/` (prompts, transcript, `pi.log`)
 and each round's patches. Inside Herdr (`HERDR_ENV=1`) every session is a visible `pi` agent in a
-new pane; elsewhere, or with `--headless`, sessions run with `pi --mode json`.
+new pane; elsewhere, or with `--headless`, sessions run with `pi --mode json`. Each item needs a
+non-empty line, and every item is checked before the run starts.
 
 After each implement session the engine commits everything as `round <n>`. A shipped item is
 squashed into one commit, then a fixed judge reviews it in its own worktree:
