@@ -12,7 +12,8 @@ become a ruff setting or a test, make it one and delete it from this file.
 - **Git is the only state.** Nothing the engine writes decides what a later run does. Commits,
   trailers and branches are the record. A run resumes with `--base <commit from the stop line>`
   and the stopped item and the ones after it, on a new branch; `ship/<run>` and its worktree stay
-  until you delete them.
+  until you delete them. GEPA's state in an optimize run directory is the one thing a later run
+  reads, to resume.
 - **Check inputs at the edge.** Validate CLI arguments and work items before a worktree or
   session exists, and git, Pi and Herdr output where it is read. Code inside trusts its inputs: no
   re-checks, and no defaults that hide a missing value.

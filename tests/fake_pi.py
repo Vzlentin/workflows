@@ -1,6 +1,10 @@
 """A stand-in `pi --mode json`: answers plain text by session label and turn, logs its calls.
 
-Implement turns write `source.txt`. Only the second review session says SHIP.
+Turns are counted per session folder. Implement turns write `source.txt`. Only the second review
+session under a sessions folder says SHIP. A reflect session proposes `PLAN` as new instructions;
+with `FAKE_PI_REFLECT_FAIL=1` it exits 1 and prints `reflection failed`, but no messages. The
+judge passes every question when an earlier session under its sessions folder was sent `PLAN`,
+else fails question 3; with `FAKE_PI_JUDGE_FAIL=1` its reply misses answers 6 to 8.
 """
 
 import json
@@ -10,35 +14,53 @@ import uuid
 from pathlib import Path
 
 JUDGE = ["1 PASS", "2 PASS", "- **3 FAIL** `source.txt:1` not needed", "4 PASS", "5 PASS"]
+PLAN = "Plan this change in three bullets."
 
 
-def reply(label: str, count: int, turn: int) -> str:
+def session_directory(args: list[str]) -> Path:
+    return Path(args[args.index("--session-dir") + 1])
+
+
+def judge(directory: Path, calls: list[dict]) -> str:
+    if os.environ.get("FAKE_PI_JUDGE_FAIL") == "1":
+        return "\n".join(["Checked.", *JUDGE])
+    rollout = [call for call in calls if session_directory(call["args"]).parent == directory.parent]
+    if any(PLAN in call["prompt"] for call in rollout):
+        return "\n".join(["Checked.", *(f"{n} PASS" for n in range(1, 9))])
+    return "\n".join(["Checked.", *JUDGE, "6 PASS", "7 PASS", "8 PASS"])
+
+
+def reply(directory: Path, calls: list[dict]) -> str:
+    label, count = directory.name.rsplit("-", 1)
+    turn = sum(session_directory(call["args"]) == directory for call in calls)
     if label == "implement":
         Path("source.txt").write_text(f"implement {count}\n")
         return "Wrote source.txt."
     if label == "judge":
-        return "\n".join(["Checked.", *JUDGE, "6 PASS", "7 PASS", "8 PASS"])
+        return judge(directory, calls)
+    if label == "reflect":
+        return f"New instructions:\n```\n{PLAN}\n```"
     if turn == 1:
         return f"{label} {count} notes"
     if turn == 2:
-        return "Keep it.\n**SHIP**" if (label, count) == ("review", 2) else "Change it.\n`FIX`."
+        return "Keep it.\n**SHIP**" if (label, count) == ("review", "2") else "Change it.\n`FIX`."
     return f"# Handoff\nFix {label} {count}."
 
 
 def main() -> None:
     args = sys.argv[1:]
     prompt = sys.stdin.read()
-    directory = Path(args[args.index("--session-dir") + 1])
+    directory = session_directory(args)
     log = Path(os.environ["FAKE_PI_LOG"])
     calls = json.loads(log.read_text()) if log.exists() else []
     calls.append({"session": directory.name, "args": args, "prompt": prompt, "cwd": os.getcwd()})
     log.write_text(json.dumps(calls))
-    label, count = directory.name.rsplit("-", 1)
-    turn = sum(call["session"] == directory.name for call in calls)
+    if directory.name.startswith("reflect-") and os.environ.get("FAKE_PI_REFLECT_FAIL") == "1":
+        sys.exit("reflection failed")
     session_id = args[args.index("--session") + 1] if "--session" in args else uuid.uuid4().hex
     message = {
         "role": "assistant",
-        "content": [{"type": "text", "text": reply(label, int(count), turn)}],
+        "content": [{"type": "text", "text": reply(directory, calls)}],
         "stopReason": "stop",
     }
     with (directory / f"{session_id}.jsonl").open("a") as transcript:

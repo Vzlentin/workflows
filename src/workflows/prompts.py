@@ -21,6 +21,14 @@ def load(name: str) -> str:
     return text.strip().removesuffix("$@").strip()
 
 
+def save(name: str, instructions: str) -> None:
+    """Rewrite the body of `prompts/<name>.md`, keeping its frontmatter and the last `$@`, so that
+    `load(name)` returns `instructions` stripped."""
+    path = DIRECTORY / f"{name}.md"
+    frontmatter, separator, _ = path.read_text().partition("\n---\n")
+    path.write_text(f"{frontmatter}{separator}{instructions.strip()}\n\n$@\n")
+
+
 def render(body: str, inputs: dict[str, str]) -> str:
     values = {name: value.strip() for name, value in inputs.items()}
     return "\n\n".join([body, *(f"## {name}\n{value}" for name, value in values.items() if value)])

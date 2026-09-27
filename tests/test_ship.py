@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -191,3 +192,57 @@ def test_ship_in_herdr_runs_each_session_in_one_pane_and_closes_it(
     assert [prompts.count(name) for name in names] == [3, 1, 3, 1, 2, 1]
     assert len(splits) == len(closes) == 6
     assert [call[call.index("--pane") + 1] for call in starts[1:]] == [call[2] for call in closes]
+
+
+def test_optimize_writes_back_the_templates_gepa_changed_and_stops_on_a_failed_rollout_or_reflection(
+    repository, pi, items, tmp_path, monkeypatch
+):
+    # With PYTHONPATH on the copy, `prompts.DIRECTORY` is the copy's `prompts/`.
+    copy = tmp_path / "copy"
+    shutil.copytree(DIRECTORY.parent / "src", copy / "src")
+    shutil.copytree(DIRECTORY, copy / "prompts")
+    monkeypatch.setenv("PYTHONPATH", str(copy / "src"))
+
+    def templates() -> dict[str, bytes]:
+        return {path.name: path.read_bytes() for path in (copy / "prompts").glob("*.md")}
+
+    def optimize(run: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-m", "workflows.cli", "optimize", "--headless", "--pi", str(pi),
+             "--repo", str(repository), "--rounds", "1", "--budget", "4",
+             "--run-dir", str(tmp_path / run), str(items[0])],
+            capture_output=True, text=True, check=False,
+        )  # fmt: skip
+
+    before = templates()
+    monkeypatch.setenv("FAKE_PI_JUDGE_FAIL", "1")
+    failed = optimize("failed")
+    assert failed.returncode == 1
+    assert f"rollout of {items[0]} failed: judge reply has no answer" in failed.stderr
+    assert templates() == before
+    assert len(git(repository, "worktree", "list").splitlines()) == 1
+
+    monkeypatch.delenv("FAKE_PI_JUDGE_FAIL")
+    monkeypatch.setenv("FAKE_PI_REFLECT_FAIL", "1")
+    unreflected = optimize("unreflected")
+    assert unreflected.returncode == 1
+    assert "reflection failed: pi exited with 1: reflection failed" in unreflected.stderr
+    assert templates() == before
+    assert len(git(repository, "worktree", "list").splitlines()) == 1
+
+    monkeypatch.delenv("FAKE_PI_REFLECT_FAIL")
+    head, sep, body = before["review.md"].partition(b"\n---\n")
+    review = head + sep + b"Be brief.\n\n" + body
+    (copy / "prompts" / "review.md").write_bytes(review)
+    earlier = len(calls())
+    optimized = optimize("unreflected")
+    assert optimized.returncode == 0, optimized.stderr
+    assert re.findall(r"changed prompts/\S+", optimized.stdout) == ["changed prompts/plan.md"]
+    frontmatter = before["plan.md"].partition(b"\n---\n")[0] + b"\n---\n"
+    plan = frontmatter + b"Plan this change in three bullets.\n\n$@\n"
+    assert templates() == before | {"plan.md": plan, "review.md": review}
+    assert len(git(repository, "worktree", "list").splitlines()) == 1
+    reflections = [call for call in calls()[earlier:] if call["session"].startswith("reflect-")]
+    assert [call["cwd"] for call in reflections] == [str(repository)]
+    assert "3 FAIL source.txt:1 not needed" in reflections[0]["prompt"]
+    assert "Did not ship: the review still said FIX after 1 rounds." in reflections[0]["prompt"]
