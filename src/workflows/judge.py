@@ -9,7 +9,7 @@ from workflows import workspace
 from workflows.pi import READ_ONLY, Agent, Pi
 from workflows.prompts import load, render
 
-JUDGE = Agent("cursor/claude-opus-5-5", "high", (*READ_ONLY, "bash"))
+JUDGE = Agent("openai-codex/gpt-6-astra", "xhigh", (*READ_ONLY, "bash"))
 ANSWER = re.compile(r"([1-8])[.):]?\s+(PASS|FAIL)\b")
 
 

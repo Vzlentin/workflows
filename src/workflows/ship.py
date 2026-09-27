@@ -18,7 +18,7 @@ from workflows.judge import Verdict, judge
 from workflows.pi import READ_ONLY, Agent, Pi, SessionLM
 from workflows.workspace import git
 
-PLANNER = Agent("cursor/claude-opus-5-5", "high", READ_ONLY)
+PLANNER = Agent("openai-codex/gpt-6-astra", "xhigh", READ_ONLY)
 IMPLEMENTER = Agent("cursor/claude-opus-5-5", "xhigh", (*READ_ONLY, "bash", "edit", "write"))
 
 
