@@ -18,8 +18,8 @@ from workflows.judge import Verdict, judge
 from workflows.pi import READ_ONLY, Agent, Pi, SessionLM
 from workflows.workspace import git
 
-PLANNER = Agent("cursor/claude-fable-5-1", "high", READ_ONLY)
-IMPLEMENTER = Agent("openai-codex/gpt-5.6-sol", "xhigh", (*READ_ONLY, "bash", "edit", "write"))
+PLANNER = Agent("cursor/claude-opus-5-5", "high", READ_ONLY)
+IMPLEMENTER = Agent("cursor/claude-opus-5-5", "xhigh", (*READ_ONLY, "bash", "edit", "write"))
 
 
 class Turn(dspy.Signature):
