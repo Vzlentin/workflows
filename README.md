@@ -58,9 +58,10 @@ items. Label an item by merging its commit into main or not.
 
 The six Pi prompt templates in `prompts/` are the engine's prompts: `plan`, `challenge`,
 `handoff`, `implement` and `review` are the instructions of its DSPy predictors, and `judge` is
-the fixed rubric. Edit them directly. The engine puts its inputs, as `## <name>` sections, where a
-template says `$@`, and asks `challenge` for its final SHIP or FIX line itself, so no edit to the
-template can drop it. Each predictor call also records the earlier turns of its session as a
+the fixed rubric. Edit them directly, but keep `$@` as the last line: Pi puts a command's
+arguments there, and the engine drops it and appends its inputs as `## <name>` sections. The
+engine also asks `challenge` for its final SHIP or FIX line itself, so no edit to the template can
+drop it. Each predictor call also records the earlier turns of its session as a
 `history` input, which Pi already holds and is not sent again; a future GEPA pass sees what every
 turn saw.
 

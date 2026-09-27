@@ -39,8 +39,6 @@ bugs, knowledge, and verification concentrate in one place rather than spreading
 
 You are deciding whether to merge one change. You did not write it.
 
-$@
-
 The worktree is at head. Read `git diff base head`, then the modules and callers it touches.
 Run the checks listed in AGENTS.md. Rules: AGENTS.md, CONTEXT.md, docs/adr/ if present.
 Judge only what this change did. Shallowness that already existed at base is not a finding.
@@ -58,3 +56,5 @@ A question fails only with evidence: file, line, and the rule it breaks. No evid
 8. Rules: no AGENTS.md rule is broken, new names use CONTEXT.md terms, no ADR is relitigated.
 
 End with one line per question: `<n> PASS` or `<n> FAIL <file>:<line> <reason>`.
+
+$@

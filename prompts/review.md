@@ -4,9 +4,7 @@ argument-hint: "[scope]"
 ---
 Perform a deep code quality audit of this change.
 
-$@
-
-Report reproduced correctness bugs first. The plan above is what this round implemented. After
+Report reproduced correctness bugs first. The plan is what this round implemented. After
 round 1, the decisions in that plan are settled: only unfinished fixes or regressions since the
 previous round can block.
 
@@ -73,3 +71,5 @@ Do not approve merely because behavior seems correct. Treat these as presumptive
 - feature checks are scattered across shared code
 - an unnecessary abstraction, wrapper, or cast-heavy contract makes the design more indirect
 - an existing helper is duplicated, or logic sits in the wrong layer
+
+$@

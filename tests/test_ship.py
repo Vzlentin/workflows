@@ -11,7 +11,7 @@ from workflows import ship
 from workflows.cli import main
 from workflows.judge import verdict
 from workflows.pi import Pi
-from workflows.prompts import Template, render
+from workflows.prompts import DIRECTORY, Template, load, render
 
 FAKE_PI = Path(__file__).with_name("fake_pi.py")
 FAKE_HERDR = Path(__file__).with_name("fake_herdr.py")
@@ -60,14 +60,15 @@ def calls():
     return json.loads(Path(os.environ["FAKE_PI_LOG"]).read_text())
 
 
-def test_template_places_inputs_and_parses_the_verdict_line():
-    assert render("Do it.\n$@\nNow.", {"item": "x", "plan": ""}) == "Do it.\n## item\nx\nNow."
-    assert render("Do it.", {"item": "x"}) == "Do it.\n\n## item\nx"
-    signature = ship.Challenge.with_instructions("Challenge.\n$@")
+def test_template_appends_inputs_and_parses_the_verdict_line():
+    for path in DIRECTORY.glob("*.md"):
+        assert path.read_text().rstrip().endswith("$@") and "$@" not in load(path.stem)
+    assert render("Do it.", {"item": "x", "plan": ""}) == "Do it.\n\n## item\nx"
+    signature = ship.Challenge.with_instructions("Challenge.")
     history = dspy.History(messages=[{"item": "x", "text": "plan notes"}])
     [message] = Template().format(signature, [], {"history": history})
     assert message["content"] == (
-        "Challenge.\n\n\nEnd with one line: SHIP if nothing needs to change, FIX otherwise."
+        "Challenge.\n\nEnd with one line: SHIP if nothing needs to change, FIX otherwise."
     )
     assert Template().parse(signature, "Keep it.\n**SHIP**.")["verdict"] == "SHIP"
     assert Template().parse(signature, "Keep it all.") == {"text": "Keep it all."}

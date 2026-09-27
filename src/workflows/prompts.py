@@ -1,7 +1,8 @@
 """The Pi prompt templates in `prompts/`, and the DSPy adapter that sends them as written.
 
-Each template is the instructions of one predictor. Its inputs replace `$@`, the place Pi fills
-with arguments when the template runs by hand. The reply is the output, as plain text.
+Each template is the instructions of one predictor, then a last line `$@`, where Pi puts the
+arguments when the template runs by hand. The engine drops that line and sends the inputs after
+the instructions. The reply is the output, as plain text.
 """
 
 from pathlib import Path
@@ -13,19 +14,16 @@ DIRECTORY = Path(__file__).parents[2] / "prompts"
 
 
 def load(name: str) -> str:
-    """The body of `prompts/<name>.md` without its frontmatter."""
+    """The instructions of `prompts/<name>.md`: its body without frontmatter or the last `$@`."""
     text = (DIRECTORY / f"{name}.md").read_text()
     if text.startswith("---\n"):
         text = text.partition("\n---\n")[2]
-    return text.strip()
+    return text.strip().removesuffix("$@").strip()
 
 
 def render(body: str, inputs: dict[str, str]) -> str:
     values = {name: value.strip() for name, value in inputs.items()}
-    sections = "\n\n".join(f"## {name}\n{value}" for name, value in values.items() if value)
-    if "$@" in body:
-        return body.replace("$@", sections)
-    return "\n\n".join(part for part in (body, sections) if part)
+    return "\n\n".join([body, *(f"## {name}\n{value}" for name, value in values.items() if value)])
 
 
 class Template(dspy.Adapter):

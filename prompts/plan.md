@@ -4,8 +4,6 @@ argument-hint: "<work item>"
 ---
 Plan this change.
 
-$@
-
 ## Investigate
 
 Read repository instructions and trace the real execution path before planning.
@@ -31,3 +29,5 @@ Give one short, plain-language brief:
 
 Keep it to one screen when practical. Use requirement IDs only when they prevent
 real ambiguity.
+
+$@
