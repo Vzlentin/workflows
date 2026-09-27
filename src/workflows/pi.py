@@ -6,6 +6,7 @@ visible `pi` agent in a new pane. The final assistant message of a turn is the r
 
 import json
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,9 +112,15 @@ class Session:
         return last_assistant(messages)
 
     def herdr(self, *args: str) -> dict:
-        result = subprocess.run(
-            ["herdr", *args], capture_output=True, text=True, cwd=self.pi.cwd, check=False
-        )
+        # `agent start` answers agent_pane_busy whenever a new pane's shell has a startup command,
+        # such as one from `.zshrc` or its prompt, in the foreground.
+        for _ in range(60):
+            result = subprocess.run(
+                ["herdr", *args], capture_output=True, text=True, cwd=self.pi.cwd, check=False
+            )
+            if result.returncode == 0 or "agent_pane_busy" not in result.stdout + result.stderr:
+                break
+            time.sleep(1)
         if result.returncode != 0:
             raise RuntimeError(f"herdr {' '.join(args[:2])} failed: {result.stdout}{result.stderr}")
         return json.loads(result.stdout.strip().splitlines()[-1])

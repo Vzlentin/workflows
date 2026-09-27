@@ -170,8 +170,11 @@ def test_ship_in_herdr_runs_each_session_in_one_pane_and_closes_it(
     closes = [call for call in herdr_calls if call[:2] == ["pane", "close"]]
     assert all(call[call.index("--pane") + 1] == "w1:p1" for call in splits)
     sessions = [Path(call[call.index("--session-dir") + 1]).name for call in starts]
-    assert sessions == ["plan-1", "implement-1", "review-1", "implement-2", "review-2", "judge-1"]
-    names = [call[2] for call in starts]
+    assert sessions == [
+        "plan-1", "plan-1", "implement-1", "review-1", "implement-2", "review-2", "judge-1",
+    ]  # fmt: skip
+    assert starts[0] == starts[1]
+    names = [call[2] for call in starts[1:]]
     assert [prompts.count(name) for name in names] == [3, 1, 3, 1, 2, 1]
     assert len(splits) == len(closes) == 6
-    assert [call[call.index("--pane") + 1] for call in starts] == [call[2] for call in closes]
+    assert [call[call.index("--pane") + 1] for call in starts[1:]] == [call[2] for call in closes]
