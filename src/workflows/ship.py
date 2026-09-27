@@ -1,7 +1,7 @@
-"""The ship engine: each work item is planned, then implemented and reviewed for a few rounds.
+"""The ship engine: a work item is planned, then implemented and reviewed for a few rounds.
 
 Every box is one fresh Pi session; its turns are the predictors below, whose instructions are the
-templates in `prompts/`. Git is the only state: one squashed commit per shipped item.
+templates in `prompts/`. Git is the only state: a shipped item is one squashed commit.
 """
 
 import os
@@ -110,10 +110,10 @@ class Ship(dspy.Module):
                 session(self.review, item=item, plan=plan, change="\n".join(change))
                 if session(self.challenge).verdict == "SHIP":
                     head = workspace.squash(pi.cwd, start, message(item, n))
-                    return dspy.Prediction(status="shipped", rounds=n, start=start, head=head)
+                    return dspy.Prediction(status="shipped", rounds=n, head=head)
                 plan = session(self.handoff).text
         head = git(pi.cwd, "rev-parse", "HEAD")
-        return dspy.Prediction(status="stopped", rounds=self.rounds, start=start, head=head)
+        return dspy.Prediction(status="stopped", rounds=self.rounds, head=head)
 
 
 def patch(pi: Pi, name: str, base: str) -> str:
@@ -132,14 +132,12 @@ def message(item: str, rounds: int, verdict: Verdict | None = None) -> str:
     return "\n\n".join([*paragraphs, "\n".join(trailers)])
 
 
-def read_items(paths: list[Path]) -> list[str]:
-    """The text of each work item, in order; raises ValueError naming an item with no non-empty
-    line."""
-    texts = [path.read_text() for path in paths]
-    for path, text in zip(paths, texts, strict=True):
-        if not text.strip():
-            raise ValueError(f"work item {path} has no non-empty line")
-    return texts
+def read_item(path: Path) -> str:
+    """The text of the work item at `path`; raises ValueError when it has no non-empty line."""
+    text = path.read_text()
+    if not text.strip():
+        raise ValueError(f"work item {path} has no non-empty line")
+    return text
 
 
 def run_directory() -> Path:
@@ -151,34 +149,31 @@ def run_directory() -> Path:
 def ship(
     repository: str,
     base: str,
-    items: list[Path],
+    item: Path,
     directory: Path,
     rounds: int = 3,
     command: str = "pi",
     herdr: str | None = None,
 ) -> bool:
-    """Ship the items in order onto `ship/<run>`; stop at the first one that does not ship."""
-    texts = read_items(items)
+    """Whether the item shipped onto `ship/<run>`; a stopped item keeps its round commits."""
+    text = read_item(item)
     root = workspace.repository_root(repository)
     commit = workspace.resolve_commit(root, base)
     worktree = directory / "worktree"
     workspace.add_worktree(root, commit, worktree, branch=f"ship/{directory.name}")
-    pi = Pi(directory / "sessions", worktree, command, herdr)
+    result = Ship(rounds)(pi=Pi(directory / "sessions", worktree, command, herdr), item=text)
+    if result.status == "stopped":
+        print(f"stopped {item} after {rounds} rounds: {worktree}")
+        return False
     judge_pi = Pi(directory / "sessions", directory / "judge", command, herdr)
-    program = Ship(rounds)
-    for item, text in zip(items, texts, strict=True):
-        result = program(pi=pi, item=text)
-        if result.status == "stopped":
-            print(f"stopped at {item} after {rounds} rounds from {result.start}: {worktree}")
-            return False
-        try:
-            verdict = judge(judge_pi, root, text, result.start, result.head)
-        except Exception as error:  # noqa: BLE001 - the commit stands without a score
-            print(f"judge failed on {item}: {error}", file=sys.stderr)
-            score = "failed"
-        else:
-            git(worktree, "commit", "--amend", "-m", message(text, result.rounds, verdict))
-            score = f"{verdict.score:.2f}"
-        sha = git(worktree, "rev-parse", "--short", "HEAD")
-        print(f"shipped {item} in {result.rounds} rounds, judge {score}, {sha}")
+    try:
+        verdict = judge(judge_pi, root, text, commit, result.head)
+    except Exception as error:  # noqa: BLE001 - the commit stands without a score
+        print(f"judge failed on {item}: {error}", file=sys.stderr)
+        score = "failed"
+    else:
+        git(worktree, "commit", "--amend", "-m", message(text, result.rounds, verdict))
+        score = f"{verdict.score:.2f}"
+    sha = git(worktree, "rev-parse", "--short", "HEAD")
+    print(f"shipped {item} in {result.rounds} rounds, judge {score}, {sha}")
     return True

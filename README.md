@@ -1,7 +1,7 @@
 # workflows
 
-`workflows ship` ships a queue of markdown work items onto a new branch through
-[Pi](https://github.com/earendil-works/pi-mono). Each item runs this loop, one fresh Pi session
+`workflows ship` ships one markdown work item onto a new branch through
+[Pi](https://github.com/earendil-works/pi-mono). The item runs this loop, one fresh Pi session
 per box:
 
 ```text
@@ -11,7 +11,7 @@ review session:     review  ->  challenge (SHIP or FIX)  ->  handoff (on FIX, ba
 ```
 
 Plan and review sessions are read-only; implement sessions can edit and run commands. Git is the
-only state: there is no queue file, log, or saved program. `workflows optimize` improves the
+only state: there is no state file, log, or saved program. `workflows optimize` improves the
 prompts of that loop with GEPA.
 
 ## Setup
@@ -25,15 +25,15 @@ uv sync
 ## Ship
 
 ```sh
-uv run workflows ship --repo /absolute/path/to/repository --base main one.md two.md
+uv run workflows ship --repo /absolute/path/to/repository --base main item.md
 ```
 
-Items ship in argument order onto `ship/<run>`, a new branch in a worktree under
+The item ships onto `ship/<run>`, a new branch in a worktree under
 `$XDG_STATE_HOME/workflows/runs/<run>/worktree` (default `~/.local/state/workflows`). The run
 directory also keeps one folder per Pi session under `sessions/` (prompts, transcript, `pi.log`)
 and each round's patches. Inside Herdr (`HERDR_ENV=1`) every session is a visible `pi` agent in a
-new pane; elsewhere, or with `--headless`, sessions run with `pi --mode json`. Each item needs a
-non-empty line, and every item is checked before the run starts.
+new pane; elsewhere, or with `--headless`, sessions run with `pi --mode json`. The item needs a
+non-empty line, checked before the run starts.
 
 After each implement session the engine commits everything as `round <n>`. A shipped item is
 squashed into one commit, then a fixed judge reviews it in its own worktree:
@@ -53,10 +53,9 @@ The judge scores 0 when completeness or correctness fails, otherwise the fractio
 quality questions that pass. If the judge errors, or its reply misses an answer, the commit keeps
 no `Judge` trailer.
 
-An item that does not ship within `--rounds` stops the queue: its round commits and the worktree
-stay, and the exit code is 1. To resume, run again with `--base <commit from the stop line>` and
-the stopped item and the ones after it. That makes a new branch; `ship/<run>` and its worktree
-stay until you delete them. Label an item by merging its commit into main or not.
+An item that does not ship within `--rounds` keeps its round commits and the worktree, and the
+exit code is 1. Every run makes a new branch; `ship/<run>` and its worktree stay until you delete
+them. Label an item by merging its commit into main or not.
 
 ## Optimize
 

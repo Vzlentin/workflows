@@ -51,11 +51,10 @@ def pi(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def items(tmp_path):
-    paths = [tmp_path / "one.md", tmp_path / "two.md"]
-    paths[0].write_text("# Item one\n\nWrite source.txt.\n")
-    paths[1].write_text("# Item two\n\nRewrite source.txt.\n")
-    return paths
+def item(tmp_path):
+    path = tmp_path / "one.md"
+    path.write_text("# Item one\n\nWrite source.txt.\n")
+    return path
 
 
 def calls():
@@ -105,39 +104,34 @@ def test_each_turn_is_traced_with_the_earlier_turns_of_its_session(repository, p
     assert histories[6][1]["verdict"] == "FIX"
 
 
-def test_ship_commits_shipped_items_and_stops_at_the_first_that_does_not_ship(
-    repository, pi, items, tmp_path, capsys, monkeypatch
+def test_ship_commits_a_shipped_item_and_keeps_the_rounds_of_one_that_does_not_ship(
+    repository, pi, item, tmp_path, capsys, monkeypatch
 ):
     # Inside Herdr the CLI would open panes; --headless keeps `pi --mode json`.
     monkeypatch.setenv("HERDR_ENV", "1")
     monkeypatch.setenv("HERDR_PANE_ID", "w1:p1")
-    run_dir = tmp_path / "run"
-    code = main(
-        ["ship", "--headless", "--pi", str(pi), "--repo", str(repository), "--rounds", "2",
-         "--run-dir", str(run_dir), *map(str, items)]
-    )  # fmt: skip
 
-    assert code == 1
-    worktree = run_dir / "worktree"
-    subjects = git(repository, "log", "--format=%s", "main..ship/run").splitlines()
-    assert subjects == ["round 2", "round 1", "Item one"]
-    item = git(repository, "rev-parse", "ship/run~2")
-    body = git(repository, "log", "-1", "--format=%B", item)
+    def run(name: str, rounds: int) -> int:
+        return main(
+            ["ship", "--headless", "--pi", str(pi), "--repo", str(repository), "--rounds",
+             str(rounds), "--run-dir", str(tmp_path / name), str(item)]
+        )  # fmt: skip
+
+    assert run("run", 2) == 0
+    run_dir = tmp_path / "run"
+    assert git(repository, "log", "--format=%s", "main..ship/run") == "Item one"
+    body = git(repository, "log", "-1", "--format=%B", "ship/run")
     assert "3 FAIL source.txt:1 not needed" in body
-    trailers = git(repository, "log", "-1", "--format=%(trailers:only)", item)
+    trailers = git(repository, "log", "-1", "--format=%(trailers:only)", "ship/run")
     assert trailers.splitlines() == ["Rounds: 2", "Judge: 0.83"]
-    assert git(repository, "show", f"{item}:source.txt") == "implement 2"
-    assert (worktree / "source.txt").read_text() == "implement 4\n"
-    out = capsys.readouterr().out.splitlines()
-    assert out[0].startswith(f"shipped {items[0]} in 2 rounds, judge 0.83, ")
-    assert out[1] == f"stopped at {items[1]} after 2 rounds from {item}: {worktree}"
+    assert git(repository, "show", "ship/run:source.txt") == "implement 2"
+    sha = git(repository, "rev-parse", "--short", "ship/run")
+    assert capsys.readouterr().out == f"shipped {item} in 2 rounds, judge 0.83, {sha}\n"
 
     sessions = [call["session"] for call in calls()]
     assert sessions == [
         "plan-1", "plan-1", "plan-1", "implement-1", "review-1", "review-1", "review-1",
         "implement-2", "review-2", "review-2", "judge-1",
-        "plan-2", "plan-2", "plan-2", "implement-3", "review-3", "review-3", "review-3",
-        "implement-4", "review-4", "review-4", "review-4",
     ]  # fmt: skip
     for index, call in enumerate(calls()):
         resumed = index > 0 and sessions[index - 1] == call["session"]
@@ -151,19 +145,25 @@ def test_ship_commits_shipped_items_and_stops_at_the_first_that_does_not_ship(
     assert str(run_dir / "sessions" / "round-2-fix.patch") in review
     assert "Fix review 1." in review
 
+    assert run("stopped", 1) == 1
+    worktree = tmp_path / "stopped" / "worktree"
+    assert git(repository, "log", "--format=%s", "main..ship/stopped") == "round 1"
+    assert (worktree / "source.txt").read_text() == "implement 1\n"
+    assert capsys.readouterr().out == f"stopped {item} after 1 rounds: {worktree}\n"
 
-def test_ship_rejects_an_empty_item_before_the_run_starts(repository, pi, items, tmp_path):
+
+def test_ship_rejects_an_empty_item_before_the_run_starts(repository, pi, tmp_path):
     empty = tmp_path / "empty.md"
     empty.write_text("\n  \n")
     with pytest.raises(ValueError, match=re.escape(str(empty))):
-        ship.ship(str(repository), "main", [items[0], empty], tmp_path / "run", command=str(pi))
+        ship.ship(str(repository), "main", empty, tmp_path / "run", command=str(pi))
 
     assert git(repository, "branch", "--list", "ship/*") == ""
     assert not Path(os.environ["FAKE_PI_LOG"]).exists()
 
 
 def test_ship_in_herdr_runs_each_session_in_one_pane_and_closes_it(
-    repository, pi, items, tmp_path, monkeypatch
+    repository, pi, item, tmp_path, monkeypatch
 ):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -173,7 +173,7 @@ def test_ship_in_herdr_runs_each_session_in_one_pane_and_closes_it(
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_HERDR_STATE", str(tmp_path / "herdr.json"))
     shipped = ship.ship(
-        str(repository), "main", items[:1], tmp_path / "run", command=str(pi), herdr="w1:p1"
+        str(repository), "main", item, tmp_path / "run", command=str(pi), herdr="w1:p1"
     )
 
     assert shipped
@@ -195,7 +195,7 @@ def test_ship_in_herdr_runs_each_session_in_one_pane_and_closes_it(
 
 
 def test_optimize_writes_back_the_templates_gepa_changed_and_stops_on_a_failed_rollout_or_reflection(
-    repository, pi, items, tmp_path, monkeypatch
+    repository, pi, item, tmp_path, monkeypatch
 ):
     # With PYTHONPATH on the copy, `prompts.DIRECTORY` is the copy's `prompts/`.
     copy = tmp_path / "copy"
@@ -210,7 +210,7 @@ def test_optimize_writes_back_the_templates_gepa_changed_and_stops_on_a_failed_r
         return subprocess.run(
             [sys.executable, "-m", "workflows.cli", "optimize", "--headless", "--pi", str(pi),
              "--repo", str(repository), "--rounds", "1", "--budget", "4",
-             "--run-dir", str(tmp_path / run), str(items[0])],
+             "--run-dir", str(tmp_path / run), str(item)],
             capture_output=True, text=True, check=False,
         )  # fmt: skip
 
@@ -218,7 +218,7 @@ def test_optimize_writes_back_the_templates_gepa_changed_and_stops_on_a_failed_r
     monkeypatch.setenv("FAKE_PI_JUDGE_FAIL", "1")
     failed = optimize("failed")
     assert failed.returncode == 1
-    assert f"rollout of {items[0]} failed: judge reply has no answer" in failed.stderr
+    assert f"rollout of {item} failed: judge reply has no answer" in failed.stderr
     assert templates() == before
     assert len(git(repository, "worktree", "list").splitlines()) == 1
 

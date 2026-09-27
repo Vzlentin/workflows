@@ -37,7 +37,7 @@ class Rollout(ship.Ship):
                 pi = Pi(folder / "sessions", folder / "worktree", self.command, self.herdr)
                 judge_pi = Pi(folder / "sessions", folder / "judge", self.command, self.herdr)
                 result = super().forward(pi, item)
-                verdict = judge(judge_pi, self.root, item, result.start, result.head)
+                verdict = judge(judge_pi, self.root, item, self.base, result.head)
             finally:
                 workspace.remove_worktree(self.root, folder / "worktree")
         except Exception as error:
@@ -68,13 +68,12 @@ def optimize(
 ) -> None:
     """Run GEPA over the items for about `budget` rollouts, and write each template it changed
     back to `prompts/`. A run resumes from GEPA's state in `run/gepa`."""
-    texts = ship.read_items(items)
+    examples = [
+        dspy.Example(item=ship.read_item(path), path=str(path)).with_inputs("item", "path")
+        for path in items
+    ]
     root = workspace.repository_root(repository)
     commit = workspace.resolve_commit(root, base)
-    examples = [
-        dspy.Example(item=text, path=str(path)).with_inputs("item", "path")
-        for path, text in zip(items, texts, strict=True)
-    ]
     reflections = Pi(run / "sessions", root, command, herdr)
 
     def reflect(prompt: str) -> list[str]:

@@ -1,4 +1,4 @@
-"""`workflows ship` ships markdown work items, in order, onto a new branch through Pi.
+"""`workflows ship` ships one markdown work item onto a new branch through Pi.
 `workflows optimize` improves the ship prompts in `prompts/` with GEPA, scoring rollouts of work
 items with the judge."""
 
@@ -20,7 +20,7 @@ def positive(value: str) -> int:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="workflows", description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
-    shipping = commands.add_parser("ship", help="Ship work items, in order, onto a new branch")
+    shipping = commands.add_parser("ship", help="Ship a work item onto a new branch")
     optimizing = commands.add_parser("optimize", help="Improve the ship prompts with GEPA")
     for command in (shipping, optimizing):
         command.add_argument("--repo", required=True, help="Absolute repository path")
@@ -33,7 +33,8 @@ def parser() -> argparse.ArgumentParser:
             help="Run sessions with `pi --mode json` even inside Herdr (default: visible panes)",
         )
         command.add_argument("--run-dir", help="Run directory (default under $XDG_STATE_HOME)")
-        command.add_argument("items", nargs="+", metavar="ITEM", help="Markdown work item file")
+    shipping.add_argument("item", type=Path, help="Markdown work item file")
+    optimizing.add_argument("items", type=Path, nargs="+", help="Markdown work item files")
     optimizing.add_argument(
         "--budget", type=positive, required=True, help="Rollouts GEPA may spend (its metric calls)"
     )
@@ -48,14 +49,13 @@ def herdr_pane(args) -> str | None:
 
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
-    directory = Path(args.run_dir) if args.run_dir else run_directory()
-    print(f"run directory: {directory}", file=sys.stderr)
-    items = [Path(item) for item in args.items]
+    run = Path(args.run_dir) if args.run_dir else run_directory()
+    print(f"run directory: {run}", file=sys.stderr)
     herdr = herdr_pane(args)
     if args.command == "optimize":
-        optimize(args.repo, args.base, items, directory, args.budget, args.rounds, args.pi, herdr)
+        optimize(args.repo, args.base, args.items, run, args.budget, args.rounds, args.pi, herdr)
         return 0
-    shipped = ship(args.repo, args.base, items, directory, args.rounds, args.pi, herdr)
+    shipped = ship(args.repo, args.base, args.item, run, args.rounds, args.pi, herdr)
     return 0 if shipped else 1
 
 
