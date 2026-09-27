@@ -4,12 +4,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import dspy
 import pytest
 
 from workflows import ship
 from workflows.cli import main
 from workflows.judge import verdict
-from workflows.prompts import VERDICT, Template, render
+from workflows.pi import Pi
+from workflows.prompts import Template, render
 
 FAKE_PI = Path(__file__).with_name("fake_pi.py")
 FAKE_HERDR = Path(__file__).with_name("fake_herdr.py")
@@ -62,10 +64,13 @@ def test_template_places_inputs_and_parses_the_verdict_line():
     assert render("Do it.\n$@\nNow.", {"item": "x", "plan": ""}) == "Do it.\n## item\nx\nNow."
     assert render("Do it.", {"item": "x"}) == "Do it.\n\n## item\nx"
     signature = ship.Challenge.with_instructions("Challenge.\n$@")
-    [message] = Template().format(signature, [], {})
-    assert message["content"].endswith(VERDICT)
+    history = dspy.History(messages=[{"item": "x", "text": "plan notes"}])
+    [message] = Template().format(signature, [], {"history": history})
+    assert message["content"] == (
+        "Challenge.\n\n\nEnd with one line: SHIP if nothing needs to change, FIX otherwise."
+    )
     assert Template().parse(signature, "Keep it.\n**SHIP**.")["verdict"] == "SHIP"
-    assert Template().parse(signature, "Keep it all.") == {"text": "Keep it all.", "verdict": "FIX"}
+    assert Template().parse(signature, "Keep it all.") == {"text": "Keep it all."}
 
 
 def test_judge_scores_gates_and_quality_questions():
@@ -76,6 +81,23 @@ def test_judge_scores_gates_and_quality_questions():
     quality = verdict("\n".join([*passing[:4], "- **5 FAIL** `a.py:1` one adapter", *passing[5:7]]))
     assert quality.score == 4 / 6
     assert quality.findings == ["5 FAIL a.py:1 one adapter", "8 FAIL no verdict"]
+
+
+def test_each_turn_is_traced_with_the_earlier_turns_of_its_session(repository, pi, tmp_path):
+    program = ship.Ship(rounds=1)
+    with dspy.context(trace=[]):
+        result = program(pi=Pi(tmp_path / "sessions", repository, str(pi)), item="# Item\n")
+        trace = dspy.settings.trace
+
+    assert result.status == "stopped" and result.head == git(repository, "rev-parse", "HEAD")
+    names = {id(predictor): name for name, predictor in program.named_predictors()}
+    assert [names[id(predictor)] for predictor, _, _ in trace] == [
+        "plan", "challenge", "handoff", "implement", "review", "challenge", "handoff",
+    ]  # fmt: skip
+    histories = [inputs["history"].messages for _, inputs, _ in trace]
+    assert [len(history) for history in histories] == [0, 1, 2, 0, 0, 1, 2]
+    assert histories[5][0]["text"] == "review 1 notes"
+    assert histories[6][1]["verdict"] == "FIX"
 
 
 def test_ship_commits_shipped_items_and_stops_at_the_first_that_does_not_ship(

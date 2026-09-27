@@ -28,5 +28,12 @@ def add_worktree(repository: Path, commit: str, path: Path, branch: str | None =
     git(repository, "worktree", "add", *head, str(path), commit)
 
 
+def squash(worktree: Path, start: str, message: str) -> str:
+    """Replace the commits since `start` with one commit, and return it."""
+    git(worktree, "reset", "--soft", start)
+    git(worktree, "commit", "--allow-empty", "-m", message)
+    return git(worktree, "rev-parse", "HEAD")
+
+
 def remove_worktree(repository: Path, path: Path) -> None:
     git(repository, "worktree", "remove", "--force", str(path))

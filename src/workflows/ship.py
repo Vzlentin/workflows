@@ -8,7 +8,6 @@ import os
 import sys
 import time
 import uuid
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -23,26 +22,32 @@ PLANNER = Agent("cursor/claude-fable-5-1", "high", READ_ONLY)
 IMPLEMENTER = Agent("openai-codex/gpt-5.6-sol", "xhigh", (*READ_ONLY, "bash", "edit", "write"))
 
 
-class Plan(dspy.Signature):
+class Turn(dspy.Signature):
+    history: dspy.History = dspy.InputField()
+
+
+class Plan(Turn):
     item: str = dspy.InputField()
     text: str = dspy.OutputField()
 
 
-class Challenge(dspy.Signature):
+class Challenge(Turn):
     text: str = dspy.OutputField()
-    verdict: Literal["SHIP", "FIX"] = dspy.OutputField()
+    verdict: Literal["SHIP", "FIX"] = dspy.OutputField(
+        desc="SHIP if nothing needs to change, FIX otherwise"
+    )
 
 
-class Handoff(dspy.Signature):
+class Handoff(Turn):
     text: str = dspy.OutputField()
 
 
-class Implement(dspy.Signature):
+class Implement(Turn):
     plan: str = dspy.InputField()
     text: str = dspy.OutputField()
 
 
-class Review(dspy.Signature):
+class Review(Turn):
     item: str = dspy.InputField()
     plan: str = dspy.InputField()
     change: str = dspy.InputField()
@@ -53,15 +58,26 @@ def template(signature: type[dspy.Signature], name: str) -> dspy.Predict:
     return dspy.Predict(signature.with_instructions(prompts.load(name)))
 
 
-@contextmanager
-def session(pi: Pi, label: str, agent: Agent):
-    """Predictors called inside are turns of one Pi session, closed on every path."""
-    opened = pi.open(agent, label)
-    try:
-        with dspy.context(lm=SessionLM(opened), adapter=prompts.Template()):
-            yield
-    finally:
-        opened.close()
+class Conversation:
+    """One Pi session, closed on exit. Each predictor call is its next turn, and gets the turns
+    before it as `history`, so a trace records everything the turn saw."""
+
+    def __init__(self, pi: Pi, agent: Agent, label: str):
+        self.session = pi.open(agent, label)
+        self.lm = SessionLM(self.session)
+        self.turns: list[dict] = []
+
+    def __enter__(self) -> "Conversation":
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.session.close()
+
+    def __call__(self, predictor: dspy.Predict, **inputs: str) -> dspy.Prediction:
+        with dspy.context(lm=self.lm, adapter=prompts.Template()):
+            prediction = predictor(history=dspy.History(messages=list(self.turns)), **inputs)
+        self.turns.append({**inputs, **prediction.toDict()})
+        return prediction
 
 
 class Ship(dspy.Module):
@@ -75,26 +91,29 @@ class Ship(dspy.Module):
         self.rounds = rounds
 
     def forward(self, pi: Pi, item: str) -> dspy.Prediction:
+        """Commits each round in `pi.cwd`; a shipped item is squashed into one commit, `head`."""
         start = git(pi.cwd, "rev-parse", "HEAD")
-        with session(pi, "plan", PLANNER):
-            self.plan(item=item)
-            self.challenge()
-            plan = self.handoff().text
+        with Conversation(pi, PLANNER, "plan") as session:
+            session(self.plan, item=item)
+            session(self.challenge)
+            plan = session(self.handoff).text
         for n in range(1, self.rounds + 1):
             before = git(pi.cwd, "rev-parse", "HEAD")
-            with session(pi, "implement", IMPLEMENTER):
-                self.implement(plan=plan)
+            with Conversation(pi, IMPLEMENTER, "implement") as session:
+                session(self.implement, plan=plan)
             git(pi.cwd, "add", "-A")
             git(pi.cwd, "commit", "--allow-empty", "-m", f"round {n}")
             change = [patch(pi, f"round-{n}.patch", start)]
             if n > 1:
                 change.append(patch(pi, f"round-{n}-fix.patch", before))
-            with session(pi, "review", PLANNER):
-                self.review(item=item, plan=plan, change="\n".join(change))
-                if self.challenge().verdict == "SHIP":
-                    return dspy.Prediction(status="shipped", rounds=n, start=start)
-                plan = self.handoff().text
-        return dspy.Prediction(status="stopped", rounds=self.rounds, start=start)
+            with Conversation(pi, PLANNER, "review") as session:
+                session(self.review, item=item, plan=plan, change="\n".join(change))
+                if session(self.challenge).verdict == "SHIP":
+                    head = workspace.squash(pi.cwd, start, message(item, n))
+                    return dspy.Prediction(status="shipped", rounds=n, start=start, head=head)
+                plan = session(self.handoff).text
+        head = git(pi.cwd, "rev-parse", "HEAD")
+        return dspy.Prediction(status="stopped", rounds=self.rounds, start=start, head=head)
 
 
 def patch(pi: Pi, name: str, base: str) -> str:
@@ -142,11 +161,8 @@ def ship(
         if result.status == "stopped":
             print(f"stopped at {item} after {rounds} rounds: {worktree}")
             return False
-        git(worktree, "reset", "--soft", result.start)
-        git(worktree, "commit", "--allow-empty", "-m", message(text, result.rounds))
-        head = git(worktree, "rev-parse", "HEAD")
         try:
-            verdict = judge(judge_pi, root, text, result.start, head)
+            verdict = judge(judge_pi, root, text, result.start, result.head)
         except Exception as error:  # noqa: BLE001 - the commit stands without a score
             print(f"judge failed on {item}: {error}", file=sys.stderr)
             score = "failed"
