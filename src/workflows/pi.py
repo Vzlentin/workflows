@@ -1,8 +1,7 @@
-"""Pi as a DSPy language model.
+"""Pi sessions, and one open session as a DSPy language model.
 
-Every LM call is one turn of a Pi session. A fresh session runs headlessly as `pi --mode json`
-with the prompt on stdin, or, inside Herdr, as a visible `pi` agent in a new pane. The final
-assistant message of the turn is the LM response.
+A session runs headlessly as `pi --mode json` with each prompt on stdin, or, inside Herdr, as a
+visible `pi` agent in a new pane. The final assistant message of a turn is the reply.
 """
 
 import json
@@ -14,56 +13,20 @@ from pathlib import Path
 import dspy
 from dspy.core.types import LMOutput, LMRequest, LMResponse, LMTextPart
 
-REPAIR_PROMPT = (
-    "Your previous reply did not contain the required JSON object. "
-    "Reply with only that JSON object, following the field structure from the instructions."
-)
+READ_ONLY = ("read", "grep", "find", "ls")
 
 
 @dataclass(frozen=True)
 class Agent:
-    """How Pi starts for one kind of session. Without tools it is a plain model call."""
+    """How Pi starts for one kind of session."""
 
     model: str
-    thinking: str = "medium"
-    tools: tuple[str, ...] = ()
-    skill: str | None = None
+    thinking: str
+    tools: tuple[str, ...]
 
     def arguments(self) -> list[str]:
         # Extensions stay on: providers such as `cursor` are installed as extension packages.
-        args = ["--model", self.model, "--thinking", self.thinking]
-        if self.tools:
-            return [*args, "--tools", ",".join(self.tools)]
-        return [*args, "--no-tools", "--no-context-files", "--no-skills"]
-
-
-def skill_name(path: Path) -> str:
-    """The frontmatter `name`, or the parent directory name as Pi falls back to."""
-    lines = path.read_text(errors="replace").splitlines()
-    if lines and lines[0].strip() == "---":
-        for line in lines[1:]:
-            if line.strip() == "---":
-                break
-            key, _, value = line.partition(":")
-            if key.strip() == "name" and value.strip():
-                return value.strip().strip("'\"")
-    return path.parent.name
-
-
-def installed_skills(cwd: Path) -> set[str]:
-    """Names of the skills Pi discovers for a session in `cwd`, so `/skill:name` will expand.
-
-    Covers `SKILL.md` directories in the user and project skill locations, not single-file
-    skills or skills added by settings or packages.
-    """
-    home = Path.home()
-    roots = (
-        home / ".pi" / "agent" / "skills",
-        home / ".agents" / "skills",
-        cwd / ".pi" / "skills",
-        cwd / ".agents" / "skills",
-    )
-    return {skill_name(path) for root in roots for path in root.rglob("SKILL.md")}
+        return ["--model", self.model, "--thinking", self.thinking, "--tools", ",".join(self.tools)]
 
 
 def assistant_text(message: dict) -> str:
@@ -177,54 +140,19 @@ class Session:
             self.pane = self.name = None
 
 
-def flatten(request: LMRequest) -> str:
-    """Pi keeps its own system prompt, so DSPy's system text and demos lead the user prompt."""
-    messages = []
-    for message in request.messages:
-        if any(not isinstance(part, LMTextPart) for part in message.parts):
-            raise ValueError("Pi sessions accept text inputs only")
-        messages.append((message.role, "".join(part.text for part in message.parts)))
-    *context, (role, prompt) = messages
-    if role != "user":
-        raise ValueError("A Pi prompt must end with a user message")
-    preamble = [
-        content if role == "system" else f"Example {role} message:\n{content}"
-        for role, content in context
-    ]
-    return "\n\n".join([*preamble, prompt])
-
-
-class PiLM(dspy.BaseLM):
-    """Each call opens a fresh Pi session, unless `repair` asks the open session for its JSON."""
+class SessionLM(dspy.BaseLM):
+    """Each request's single user message is the next prompt of one open Pi session."""
 
     forward_contract = "typed_lm"
 
-    def __init__(self, pi: Pi, agent: Agent, label: str, preamble: str = ""):
-        super().__init__(model=f"pi/{agent.model}", cache=False, num_retries=0)
-        self.pi = pi
-        self.agent = agent
-        self.label = label
-        self.preamble = preamble
-        self.session: Session | None = None
-        self.repair = False
+    def __init__(self, session: Session):
+        super().__init__(model=f"pi/{session.agent.model}", cache=False, num_retries=0)
+        self.session = session
 
     def forward(self, request: LMRequest) -> LMResponse:
-        if self.repair and self.session:
-            prompt = REPAIR_PROMPT
-        else:
-            if self.session:
-                self.session.close()
-            self.session = self.pi.open(self.agent, self.label)
-            prompt = "\n\n".join(part for part in (self.preamble, flatten(request)) if part)
-            # Pi expands a leading `/skill:name` into the user's installed skill body.
-            if self.agent.skill:
-                prompt = f"/skill:{self.agent.skill} {prompt}"
-        text = self.session.prompt(prompt)
+        (message,) = request.messages
+        text = self.session.prompt("".join(part.text for part in message.parts))
         return LMResponse(
             model=self.model,
             outputs=[LMOutput(parts=[LMTextPart(text=text)], finish_reason="stop")],
         )
-
-    def close(self) -> None:
-        if self.session:
-            self.session.close()

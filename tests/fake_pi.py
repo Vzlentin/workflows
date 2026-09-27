@@ -1,4 +1,7 @@
-"""A stand-in `pi --mode json`: answers by stage, does the implement work, logs its calls."""
+"""A stand-in `pi --mode json`: answers plain text by session label and turn, logs its calls.
+
+Implement turns write `source.txt`. Only the second review session says SHIP.
+"""
 
 import json
 import os
@@ -6,17 +9,20 @@ import sys
 import uuid
 from pathlib import Path
 
-REVIEW = {"completeness": True, "correctness": True, "maintainability": True, "findings": "ok"}
-REJECT = {**REVIEW, "correctness": False, "findings": "Fix the edge case."}
-PLAN = {
-    "plan": {
-        "plan": "Write finished into source.txt",
-        "criteria": ["source.txt says finished"],
-        "commands": ['test "$(cat source.txt)" = finished'],
-        "blocker": "",
-    }
-}
-REPORT = {"report": {"summary": "Did the work", "notes": ["note"], "blocker": ""}}
+JUDGE = ["1 PASS", "2 PASS", "- **3 FAIL** `source.txt:1` not needed", "4 PASS", "5 PASS"]
+
+
+def reply(label: str, count: int, turn: int) -> str:
+    if label == "implement":
+        Path("source.txt").write_text(f"implement {count}\n")
+        return "Wrote source.txt."
+    if label == "judge":
+        return "\n".join(["Checked.", *JUDGE, "6 PASS", "7 PASS", "8 PASS"])
+    if turn == 1:
+        return f"{label} {count} notes"
+    if turn == 2:
+        return "Keep it.\n**SHIP**" if (label, count) == ("review", 2) else "Change it.\n`FIX`."
+    return f"# Handoff\nFix {label} {count}."
 
 
 def main() -> None:
@@ -25,27 +31,14 @@ def main() -> None:
     directory = Path(args[args.index("--session-dir") + 1])
     log = Path(os.environ["FAKE_PI_LOG"])
     calls = json.loads(log.read_text()) if log.exists() else []
-    kind = directory.name.rsplit("-", 1)[0]
-    calls.append({"kind": kind, "args": args, "prompt": prompt, "cwd": os.getcwd()})
+    calls.append({"session": directory.name, "args": args, "prompt": prompt, "cwd": os.getcwd()})
     log.write_text(json.dumps(calls))
-    if kind == os.environ.get("FAKE_PI_FAIL"):
-        sys.exit("pi failed")
-    reviews = sum(1 for call in calls if call["kind"] == "review")
-    if kind == "plan" and "--session" not in args:
-        text = "I forgot the JSON."
-    elif kind == "plan":
-        text = json.dumps(PLAN)
-    elif kind in ("implement", "fix"):
-        Path("source.txt").write_text("finished" if kind == "fix" else "draft")
-        text = json.dumps(REPORT)
-    elif kind == "review":
-        text = json.dumps({"review": REJECT if reviews == 1 else REVIEW})
-    else:
-        text = json.dumps({"review": REVIEW})
+    label, count = directory.name.rsplit("-", 1)
+    turn = sum(call["session"] == directory.name for call in calls)
     session_id = args[args.index("--session") + 1] if "--session" in args else uuid.uuid4().hex
     message = {
         "role": "assistant",
-        "content": [{"type": "text", "text": text}],
+        "content": [{"type": "text", "text": reply(label, int(count), turn)}],
         "stopReason": "stop",
     }
     with (directory / f"{session_id}.jsonl").open("a") as transcript:
