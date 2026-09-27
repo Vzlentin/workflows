@@ -10,7 +10,9 @@ become a ruff setting or a test, make it one and delete it from this file.
   Only output the engine parses, such as the SHIP or FIX field `desc`, is fixed in code, so GEPA
   can rewrite a template without breaking the engine.
 - **Git is the only state.** Nothing the engine writes decides what a later run does. Commits,
-  trailers and branches are the record, and a run resumes with `--base ship/<run>`.
+  trailers and branches are the record. A run resumes with `--base <commit from the stop line>`
+  and the stopped item and the ones after it, on a new branch; `ship/<run>` and its worktree stay
+  until you delete them.
 - **Check inputs at the edge.** Validate CLI arguments and work items before a worktree or
   session exists, and git, Pi and Herdr output where it is read. Code inside trusts its inputs: no
   re-checks, and no defaults that hide a missing value.

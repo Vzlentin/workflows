@@ -51,8 +51,9 @@ The judge scores 0 when completeness or correctness fails, otherwise the fractio
 quality questions that pass. If the judge errors, the commit keeps no `Judge` trailer.
 
 An item that does not ship within `--rounds` stops the queue: its round commits and the worktree
-stay, and the exit code is 1. To resume, run again with `--base ship/<run>` and the remaining
-items. Label an item by merging its commit into main or not.
+stay, and the exit code is 1. To resume, run again with `--base <commit from the stop line>` and
+the stopped item and the ones after it. That makes a new branch; `ship/<run>` and its worktree
+stay until you delete them. Label an item by merging its commit into main or not.
 
 ## Prompts
 

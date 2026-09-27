@@ -126,7 +126,7 @@ def test_ship_commits_shipped_items_and_stops_at_the_first_that_does_not_ship(
     assert (worktree / "source.txt").read_text() == "implement 4\n"
     out = capsys.readouterr().out.splitlines()
     assert out[0].startswith(f"shipped {items[0]} in 2 rounds, judge 0.83, ")
-    assert out[1] == f"stopped at {items[1]} after 2 rounds: {worktree}"
+    assert out[1] == f"stopped at {items[1]} after 2 rounds from {item}: {worktree}"
 
     sessions = [call["session"] for call in calls()]
     assert sessions == [

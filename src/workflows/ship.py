@@ -159,7 +159,7 @@ def ship(
     for item, text in zip(items, texts, strict=True):
         result = program(pi=pi, item=text)
         if result.status == "stopped":
-            print(f"stopped at {item} after {rounds} rounds: {worktree}")
+            print(f"stopped at {item} after {rounds} rounds from {result.start}: {worktree}")
             return False
         try:
             verdict = judge(judge_pi, root, text, result.start, result.head)
