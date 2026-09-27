@@ -79,9 +79,11 @@ def test_judge_scores_gates_and_quality_questions():
     assert verdict("\n".join(passing)).score == 1.0
     gate = verdict("\n".join(["1 PASS", "2 FAIL a.py:3 breaks", *passing[2:]]))
     assert gate.score == 0.0 and gate.findings == ["2 FAIL a.py:3 breaks"]
-    quality = verdict("\n".join([*passing[:4], "- **5 FAIL** `a.py:1` one adapter", *passing[5:7]]))
-    assert quality.score == 4 / 6
-    assert quality.findings == ["5 FAIL a.py:1 one adapter", "8 FAIL no verdict"]
+    quality = verdict("\n".join([*passing[:4], "- **5 FAIL** `a.py:1` one adapter", *passing[5:]]))
+    assert quality.score == 5 / 6
+    assert quality.findings == ["5 FAIL a.py:1 one adapter"]
+    with pytest.raises(RuntimeError):
+        verdict("\n".join(passing[:7]))
 
 
 def test_each_turn_is_traced_with_the_earlier_turns_of_its_session(repository, pi, tmp_path):

@@ -33,12 +33,17 @@ def judge(pi: Pi, repository: Path, item: str, base: str, head: str) -> Verdict:
 
 
 def verdict(reply: str) -> Verdict:
-    """Zero when question 1 or 2 fails, else the passing fraction of questions 3 to 8."""
-    answers = {n: ("FAIL", f"{n} FAIL no verdict") for n in range(1, 9)}
+    """Zero when question 1 or 2 fails, else the passing fraction of questions 3 to 8.
+
+    Raises `RuntimeError` when the reply has no answer to one of questions 1 to 8.
+    """
+    answers = {}
     for line in reply.splitlines():
         line = line.replace("*", "").replace("`", "").strip().lstrip("-+> ").strip()
         if match := ANSWER.match(line):
             answers[int(match[1])] = (match[2], line)
+    if missing := set(range(1, 9)) - answers.keys():
+        raise RuntimeError(f"judge reply has no answer to {sorted(missing)}:\n{reply}")
     passed = {n for n, (answer, _) in answers.items() if answer == "PASS"}
     score = len(passed & set(range(3, 9))) / 6 if {1, 2} <= passed else 0.0
-    return Verdict(score, [line for answer, line in answers.values() if answer == "FAIL"])
+    return Verdict(score, [answers[n][1] for n in range(1, 9) if answers[n][0] == "FAIL"])

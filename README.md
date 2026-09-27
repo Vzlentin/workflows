@@ -48,7 +48,8 @@ Judge: 0.83
 ```
 
 The judge scores 0 when completeness or correctness fails, otherwise the fraction of its six
-quality questions that pass. If the judge errors, the commit keeps no `Judge` trailer.
+quality questions that pass. If the judge errors, or its reply misses an answer, the commit keeps
+no `Judge` trailer.
 
 An item that does not ship within `--rounds` stops the queue: its round commits and the worktree
 stay, and the exit code is 1. To resume, run again with `--base <commit from the stop line>` and
