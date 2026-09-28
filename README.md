@@ -11,8 +11,9 @@ review session:     review  ->  challenge (SHIP or FIX)  ->  handoff (on FIX, ba
 ```
 
 Plan and review sessions are read-only; implement sessions can edit and run commands. Git is the
-only state: there is no state file, log, or saved program. `workflows optimize` improves the
-prompts of that loop with GEPA.
+only state: there is no state file, log, or saved program. `workflows campaign` splits a goal
+into work items, then ships and merges them in order. `workflows optimize` improves the prompts
+of that loop with GEPA.
 
 ## Setup
 
@@ -59,7 +60,32 @@ no `Judge` trailer.
 
 An item that does not ship within `--rounds` keeps its round commits and the worktree, and the
 exit code is 1. Every run makes a new branch; `ship/<run>` and its worktree stay until you delete
-them. Label an item by merging its commit into main or not.
+them. For `ship`, label an item by merging its commit into main or not; `campaign` merges its
+items itself.
+
+## Campaign
+
+```sh
+uv run workflows campaign --repo /absolute/path/to/repository --base main goal.md
+```
+
+The goal is a markdown file, checked like a work item before the run starts. `--base` must be a
+branch with a commit, checked out in the repository, and `--run-dir` must not exist yet. A
+read-only `split` session, in a detached worktree at `--base` under `split/` in the run directory,
+splits the goal into the ordered work items still needed; the run directory keeps them as
+`items/<n>.md`. Each work item then ships from `--base`
+as with `ship`, with its own run directory `<run>-<n>` inside the campaign's and the branch
+`ship/<run>-<n>`. When the judge scores it above 0, the campaign merges it into `--base` in the
+repository checkout with `git merge --ff-only`, removes its worktree and branch, and prints
+`merged <item> into <base>`.
+
+The campaign stops with exit code 1 at the first work item that does not ship, that the judge
+scores 0 or fails to score (`not merged <item>: judge <score>: <worktree>`), or that git cannot
+fast-forward, for example over a local change to a file the item changes. That work item keeps
+its branch and worktree; the checkout is never reset, and nothing is pushed. To resume, run again
+with a new run directory (the default): the split starts from the updated base. When nothing is
+left, the command prints `nothing left of <goal>` and exits 0. `--rounds`, `--pi` and
+`--headless` work as for `ship`.
 
 ## Optimize
 
@@ -96,18 +122,19 @@ it did not change stay byte-identical. Review the result with `git diff prompts/
 
 ## Prompts
 
-The six Pi prompt templates in `prompts/` are the engine's prompts: `plan`, `challenge`,
-`handoff`, `implement` and `review` are the instructions of its DSPy predictors, and `judge` is
-the fixed rubric. Edit them directly, but keep `$@` as the last line: Pi puts a command's
-arguments there, and the engine drops it and appends its inputs as `## <name>` sections. The
-engine also asks `challenge` for its final SHIP or FIX line itself, so no edit to the template can
-drop it. Each predictor call also records the earlier turns of its session as a
-`history` input, which Pi already holds and is not sent again, so `workflows optimize` sees what
-every turn saw.
+The seven Pi prompt templates in `prompts/` are the engine's prompts: `plan`, `challenge`,
+`handoff`, `implement` and `review` are the instructions of its DSPy predictors, `split` is the
+instructions of the campaign's split predictor, which `workflows optimize` does not change, and
+`judge` is the fixed rubric. Edit them directly, but keep `$@` as the last line: Pi puts a
+command's arguments there, and the engine drops it and appends its inputs as `## <name>` sections.
+The engine also asks `challenge` for its final SHIP or FIX line, and `split` for its final fenced
+`json` array of work items, itself, so no edit to a template can drop them. Each predictor call
+also records the earlier turns of its session as a `history` input, which Pi already holds and is
+not sent again, so `workflows optimize` sees what every turn saw.
 
 `pi install /home/vzl/Dev/workflows` makes them commands in interactive Pi, where `$@` takes the
 arguments: `/plan`, `/challenge what's the move here`, `/handoff`, `/implement`, `/review`,
-`/judge`.
+`/split`, `/judge`.
 
 ## Development
 

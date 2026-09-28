@@ -1,10 +1,12 @@
 """A stand-in `pi --mode json`: answers plain text by session label and turn, logs its calls.
 
-Turns are counted per session folder. Implement turns write `source.txt`. Only the second review
-session under a sessions folder says SHIP. A reflect session proposes `PLAN` as new instructions;
-with `FAKE_PI_REFLECT_FAIL=1` it exits 1 and prints `reflection failed`, but no messages. The
-judge passes every question when an earlier session under its sessions folder was sent `PLAN`,
-else fails question 3; with `FAKE_PI_JUDGE_FAIL=1` its reply misses answers 6 to 8.
+Turns are counted per session folder. Implement turns append a line to `source.txt`, so each
+shipped item changes it. Only the second review session under a sessions folder says SHIP. A split
+session answers `ITEMS` in a fenced json block, or `[]` with `FAKE_PI_SPLIT_EMPTY=1`. A reflect
+session proposes `PLAN` as new instructions; with `FAKE_PI_REFLECT_FAIL=1` it exits 1 and prints
+`reflection failed`, but no messages. The judge passes every question when an earlier session
+under its sessions folder was sent `PLAN`, else fails question 3; with `FAKE_PI_JUDGE_FAIL=1` its
+reply misses answers 6 to 8, and with `FAKE_PI_JUDGE_ZERO=1` it fails question 1.
 """
 
 import json
@@ -15,6 +17,7 @@ from pathlib import Path
 
 JUDGE = ["1 PASS", "2 PASS", "- **3 FAIL** `source.txt:1` not needed", "4 PASS", "5 PASS"]
 PLAN = "Plan this change in three bullets."
+ITEMS = ["# Item one\n\nWrite source.txt.", "# Item two\n\nExtend source.txt."]
 
 
 def session_directory(args: list[str]) -> Path:
@@ -24,6 +27,8 @@ def session_directory(args: list[str]) -> Path:
 def judge(directory: Path, calls: list[dict]) -> str:
     if os.environ.get("FAKE_PI_JUDGE_FAIL") == "1":
         return "\n".join(["Checked.", *JUDGE])
+    if os.environ.get("FAKE_PI_JUDGE_ZERO") == "1":
+        return "\n".join(["Checked.", "1 FAIL incomplete", *(f"{n} PASS" for n in range(2, 9))])
     rollout = [call for call in calls if session_directory(call["args"]).parent == directory.parent]
     if any(PLAN in call["prompt"] for call in rollout):
         return "\n".join(["Checked.", *(f"{n} PASS" for n in range(1, 9))])
@@ -34,10 +39,14 @@ def reply(directory: Path, calls: list[dict]) -> str:
     label, count = directory.name.rsplit("-", 1)
     turn = sum(session_directory(call["args"]) == directory for call in calls)
     if label == "implement":
-        Path("source.txt").write_text(f"implement {count}\n")
+        with Path("source.txt").open("a") as source:
+            source.write(f"implement {count}\n")
         return "Wrote source.txt."
     if label == "judge":
         return judge(directory, calls)
+    if label == "split":
+        items = [] if os.environ.get("FAKE_PI_SPLIT_EMPTY") == "1" else ITEMS
+        return f"Work items:\n```json\n{json.dumps(items)}\n```"
     if label == "reflect":
         return f"New instructions:\n```\n{PLAN}\n```"
     if turn == 1:

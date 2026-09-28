@@ -9,7 +9,7 @@ from pathlib import Path
 import dspy
 import pytest
 
-from workflows import ship
+from workflows import campaign, ship
 from workflows.cli import main
 from workflows.judge import verdict
 from workflows.pi import Pi
@@ -74,6 +74,29 @@ def test_template_appends_inputs_and_parses_the_verdict_line():
     assert Template().parse(signature, "Keep it.\n**SHIP**.")["verdict"] == "SHIP"
     assert Template().parse(signature, "Keep it all.") == {"text": "Keep it all."}
 
+    split = campaign.Split.with_instructions("Split.")
+    [message] = Template().format(split, [], {"history": history, "goal": "Reach it."})
+    assert message["content"] == (
+        "Split.\n\n## goal\nReach it.\n\nEnd with a ```json fenced block with a JSON array of the"
+        " work items as markdown strings, or [] when no work is left."
+    )
+    reply = (
+        'Old:\n```json\n["# Old"]\n```\nNew:\n```json\n["# One\\n```sh\\nx\\n```", "# Two"]\n```\n'
+    )
+    assert Template().parse(split, reply) == {"work_items": ["# One\n```sh\nx\n```", "# Two"]}
+    assert Template().parse(split, "Nothing left.\n```json\n[]\n```") == {"work_items": []}
+    for invalid in (
+        "No block.",
+        '```json\n["# One"\n```',
+        '```json\n{"items": ["# One"]}\n```',
+        '```json\n["# One", 2]\n```',
+        '```json\n["# One", " \\n"]\n```',
+        '```json\n["# One"]\n```\n```json\n["# Two",]\n```',
+        '```json\n[]\n```\n```json\n["# One"]',
+    ):
+        with pytest.raises(RuntimeError, match=re.escape(invalid)):
+            Template().parse(split, invalid)
+
 
 def test_judge_scores_gates_and_quality_questions():
     passing = [f"{n} PASS" for n in range(1, 9)]
@@ -124,7 +147,7 @@ def test_ship_commits_a_shipped_item_and_keeps_the_rounds_of_one_that_does_not_s
     assert "3 FAIL source.txt:1 not needed" in body
     trailers = git(repository, "log", "-1", "--format=%(trailers:only)", "ship/run")
     assert trailers.splitlines() == ["Rounds: 2", "Judge: 0.83"]
-    assert git(repository, "show", "ship/run:source.txt") == "implement 2"
+    assert git(repository, "show", "ship/run:source.txt") == "implement 1\nimplement 2"
     sha = git(repository, "rev-parse", "--short", "ship/run")
     assert capsys.readouterr().out == f"shipped Item one in 2 rounds, judge 0.83, {sha}\n"
 
@@ -160,6 +183,121 @@ def test_ship_rejects_an_empty_item_before_the_run_starts(repository, pi, tmp_pa
 
     assert git(repository, "branch", "--list", "ship/*") == ""
     assert not Path(os.environ["FAKE_PI_LOG"]).exists()
+
+
+def run_campaign(pi: Path, repository: Path, run_dir: Path, goal: Path, *options: str) -> int:
+    return main(
+        ["campaign", "--pi", str(pi), "--repo", str(repository), "--run-dir", str(run_dir),
+         *options, str(goal)]
+    )  # fmt: skip
+
+
+def kept(repository: Path, run_dir: Path, head: str) -> tuple[Path, str]:
+    worktree = run_dir / f"{run_dir.name}-1" / "worktree"
+    assert worktree.is_dir() and git(repository, "rev-parse", "refs/heads/main") == head
+    assert not (run_dir / "items" / "2.md").exists()
+    return worktree, git(repository, "rev-parse", "--short", f"ship/{run_dir.name}-1")
+
+
+def test_campaign_merges_each_split_item_into_the_base_and_stops_at_the_first_it_cannot_merge(
+    repository, pi, tmp_path, capsys, monkeypatch
+):
+    goal = tmp_path / "goal.md"
+    goal.write_text("\n  \n")
+    with pytest.raises(ValueError, match=re.escape(str(goal))):
+        run_campaign(pi, repository, tmp_path / "empty-goal", goal)
+    goal.write_text("# Goal\n\nWrite two items.\n")
+    git(repository, "branch", "topic")
+    with pytest.raises(ValueError, match="--base topic is not a branch with a commit"):
+        run_campaign(pi, repository, tmp_path / "wrong-branch", goal, "--base", "topic")
+    git(repository, "symbolic-ref", "HEAD", "refs/heads/unborn")
+    with pytest.raises(ValueError, match="--base unborn is not a branch with a commit"):
+        run_campaign(pi, repository, tmp_path / "unborn", goal, "--base", "unborn")
+    git(repository, "symbolic-ref", "HEAD", "refs/heads/main")
+    assert not Path(os.environ["FAKE_PI_LOG"]).exists()
+    assert len(git(repository, "worktree", "list").splitlines()) == 1
+
+    decoy = git(repository, "commit-tree", "HEAD^{tree}", "-m", "decoy")
+    tags = ("main", "ship/run-1", "ship/run-2")
+    for tag in tags:
+        git(repository, "tag", tag, decoy)
+    run_dir = tmp_path / "run"
+    assert run_campaign(pi, repository, run_dir, goal) == 0
+    assert git(repository, "log", "--format=%s", "refs/heads/main") == "Item two\nItem one\ninit"
+    assert [git(repository, "rev-parse", f"refs/tags/{tag}") for tag in tags] == [decoy] * 3
+    for commit in ("refs/heads/main~1", "refs/heads/main"):
+        trailers = git(repository, "log", "-1", "--format=%(trailers:only)", commit)
+        assert trailers.splitlines() == ["Rounds: 2", "Judge: 0.83"]
+        assert git(repository, "show", "--format=", "--numstat", commit) == "2\t0\tsource.txt"
+    assert (repository / "source.txt").read_text() == "implement 1\nimplement 2\n" * 2
+    assert (run_dir / "items" / "1.md").read_text() == "# Item one\n\nWrite source.txt.\n"
+    assert (run_dir / "items" / "2.md").read_text() == "# Item two\n\nExtend source.txt.\n"
+    shipped = [
+        "plan-1", "plan-1", "plan-1", "implement-1", "review-1", "review-1", "review-1",
+        "implement-2", "review-2", "review-2", "judge-1",
+    ]  # fmt: skip
+    assert [call["session"] for call in calls()] == ["split-1", *shipped, *shipped]
+    assert calls()[0]["cwd"] == str(run_dir / "split")
+    assert "## goal\n# Goal\n\nWrite two items." in calls()[0]["prompt"]
+    assert calls()[0]["prompt"].endswith("or [] when no work is left.")
+    assert "## item\n# Item one\n\nWrite source.txt." in calls()[1]["prompt"]
+    assert "## item\n# Item two\n\nExtend source.txt." in calls()[12]["prompt"]
+    assert list((run_dir / "sessions" / "split-1").glob("*.jsonl"))
+    assert not (run_dir / "split").exists()
+    assert git(repository, "branch", "--list", "ship/*") == ""
+    assert len(git(repository, "worktree", "list").splitlines()) == 1
+    one, two = (
+        git(repository, "rev-parse", "--short", commit)
+        for commit in ("refs/heads/main~1", "refs/heads/main")
+    )
+    assert capsys.readouterr().out == (
+        f"shipped Item one in 2 rounds, judge 0.83, {one}\nmerged Item one into main\n"
+        f"shipped Item two in 2 rounds, judge 0.83, {two}\nmerged Item two into main\n"
+    )
+
+    head = git(repository, "rev-parse", "refs/heads/main")
+    monkeypatch.setenv("FAKE_PI_JUDGE_ZERO", "1")
+    assert run_campaign(pi, repository, tmp_path / "zero", goal) == 1
+    worktree, sha = kept(repository, tmp_path / "zero", head)
+    assert capsys.readouterr().out == (
+        f"shipped Item one in 2 rounds, judge 0.00, {sha}\n"
+        f"not merged Item one: judge 0.00: {worktree}\n"
+    )
+    monkeypatch.delenv("FAKE_PI_JUDGE_ZERO")
+    earlier = len(calls())
+    with pytest.raises(ValueError, match="run directory .*zero already exists"):
+        run_campaign(pi, repository, tmp_path / "zero", goal)
+    assert len(calls()) == earlier
+    monkeypatch.setenv("FAKE_PI_JUDGE_FAIL", "1")
+    assert run_campaign(pi, repository, tmp_path / "unjudged", goal) == 1
+    worktree, sha = kept(repository, tmp_path / "unjudged", head)
+    assert capsys.readouterr().out == (
+        f"shipped Item one in 2 rounds, judge failed, {sha}\n"
+        f"not merged Item one: judge failed: {worktree}\n"
+    )
+    monkeypatch.delenv("FAKE_PI_JUDGE_FAIL")
+    assert run_campaign(pi, repository, tmp_path / "stopped", goal, "--rounds", "1") == 1
+    worktree, _ = kept(repository, tmp_path / "stopped", head)
+    assert git(repository, "log", "--format=%s", "refs/heads/main..ship/stopped-1") == "round 1"
+    assert capsys.readouterr().out == f"stopped Item one after 1 rounds: {worktree}\n"
+
+    (repository / "source.txt").write_text("local edit\n")
+    assert run_campaign(pi, repository, tmp_path / "conflict", goal) == 1
+    worktree, sha = kept(repository, tmp_path / "conflict", head)
+    out, err = capsys.readouterr()
+    assert out == (
+        f"shipped Item one in 2 rounds, judge 0.83, {sha}\nnot merged Item one: {worktree}\n"
+    )
+    assert "merge failed on Item one: git merge failed:" in err
+    assert "would be overwritten by merge" in err
+    assert (repository / "source.txt").read_text() == "local edit\n"
+
+    monkeypatch.setenv("FAKE_PI_SPLIT_EMPTY", "1")
+    assert run_campaign(pi, repository, tmp_path / "empty", goal) == 0
+    assert capsys.readouterr().out == "nothing left of Goal\n"
+    assert calls()[-1]["cwd"] == str(tmp_path / "empty" / "split")
+    assert not (tmp_path / "empty" / "split").exists()
+    assert not (tmp_path / "empty" / "items").exists()
 
 
 def test_ship_in_herdr_runs_each_session_in_one_pane_and_closes_it(
