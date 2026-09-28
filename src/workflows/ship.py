@@ -122,9 +122,13 @@ def patch(pi: Pi, name: str, base: str) -> str:
     return str(path)
 
 
+def subject(item: str) -> str:
+    """The first non-empty line of `item`, without leading #."""
+    return next(line for line in item.splitlines() if line.strip()).lstrip("#").strip()
+
+
 def message(item: str, rounds: int, verdict: Verdict | None = None) -> str:
-    subject = next(line for line in item.splitlines() if line.strip()).lstrip("#").strip()
-    paragraphs = [subject, item.strip()]
+    paragraphs = [subject(item), item.strip()]
     trailers = [f"Rounds: {rounds}"]
     if verdict:
         paragraphs += ["\n".join(verdict.findings)] if verdict.findings else []
@@ -157,23 +161,24 @@ def ship(
 ) -> bool:
     """Whether the item shipped onto `ship/<run>`; a stopped item keeps its round commits."""
     text = read_item(item)
+    name = subject(text)
     root = workspace.repository_root(repository)
     commit = workspace.resolve_commit(root, base)
     worktree = directory / "worktree"
     workspace.add_worktree(root, commit, worktree, branch=f"ship/{directory.name}")
     result = Ship(rounds)(pi=Pi(directory / "sessions", worktree, command, herdr), item=text)
     if result.status == "stopped":
-        print(f"stopped {item} after {rounds} rounds: {worktree}")
+        print(f"stopped {name} after {rounds} rounds: {worktree}")
         return False
     judge_pi = Pi(directory / "sessions", directory / "judge", command, herdr)
     try:
         verdict = judge(judge_pi, root, text, commit, result.head)
     except Exception as error:  # noqa: BLE001 - the commit stands without a score
-        print(f"judge failed on {item}: {error}", file=sys.stderr)
+        print(f"judge failed on {name}: {error}", file=sys.stderr)
         score = "failed"
     else:
         git(worktree, "commit", "--amend", "-m", message(text, result.rounds, verdict))
         score = f"{verdict.score:.2f}"
     sha = git(worktree, "rev-parse", "--short", "HEAD")
-    print(f"shipped {item} in {result.rounds} rounds, judge {score}, {sha}")
+    print(f"shipped {name} in {result.rounds} rounds, judge {score}, {sha}")
     return True

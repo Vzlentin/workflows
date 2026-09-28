@@ -26,7 +26,11 @@ uv sync
 
 ```sh
 uv run workflows ship --repo /absolute/path/to/repository --base main item.md
+echo 'Fix the README typo' | uv run workflows ship --repo /absolute/path/to/repository /dev/stdin
 ```
+
+The item is a markdown work item file; to ship text without a file, pipe it to `/dev/stdin`. The
+output names the item by its subject.
 
 The item ships onto `ship/<run>`, a new branch in a worktree under
 `$XDG_STATE_HOME/workflows/runs/<run>/worktree` (default `~/.local/state/workflows`). The run

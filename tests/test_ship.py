@@ -126,7 +126,7 @@ def test_ship_commits_a_shipped_item_and_keeps_the_rounds_of_one_that_does_not_s
     assert trailers.splitlines() == ["Rounds: 2", "Judge: 0.83"]
     assert git(repository, "show", "ship/run:source.txt") == "implement 2"
     sha = git(repository, "rev-parse", "--short", "ship/run")
-    assert capsys.readouterr().out == f"shipped {item} in 2 rounds, judge 0.83, {sha}\n"
+    assert capsys.readouterr().out == f"shipped Item one in 2 rounds, judge 0.83, {sha}\n"
 
     sessions = [call["session"] for call in calls()]
     assert sessions == [
@@ -149,7 +149,7 @@ def test_ship_commits_a_shipped_item_and_keeps_the_rounds_of_one_that_does_not_s
     worktree = tmp_path / "stopped" / "worktree"
     assert git(repository, "log", "--format=%s", "main..ship/stopped") == "round 1"
     assert (worktree / "source.txt").read_text() == "implement 1\n"
-    assert capsys.readouterr().out == f"stopped {item} after 1 rounds: {worktree}\n"
+    assert capsys.readouterr().out == f"stopped Item one after 1 rounds: {worktree}\n"
 
 
 def test_ship_rejects_an_empty_item_before_the_run_starts(repository, pi, tmp_path):
