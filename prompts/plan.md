@@ -6,10 +6,7 @@ Plan this change.
 
 ## Investigate
 
-Read repository instructions and trace the real execution path before planning.
-For bugs, prefer a real user-path reproduction, then an existing integration
-signal, then an owning-layer test. If none is available, label the diagnosis as
-a hypothesis. For features, define one observable acceptance signal.
+Read repository instructions and trace the real execution path before planning. For bugs, prefer a real user-path reproduction, then an existing integration signal, then an owning-layer test. If none is available, label the diagnosis as a hypothesis. For features, define one observable acceptance signal.
 
 Separate facts from assumptions. Investigation cannot expand the request.
 
@@ -27,7 +24,6 @@ Give one short, plain-language brief:
 
 **Proof:** fail-before/pass-after signal and repository checks.
 
-Keep it to one screen when practical. Use requirement IDs only when they prevent
-real ambiguity.
+Keep it to one screen when practical. Use requirement IDs only when they prevent real ambiguity.
 
 $@
