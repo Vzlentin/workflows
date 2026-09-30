@@ -44,7 +44,7 @@ class Rollout(ship.Ship):
             # DSPy's evaluator would score an Exception as 0; SystemExit ends the run instead.
             raise SystemExit(f"rollout of {path} failed: {error}") from error
         if result.status == "shipped":
-            outcome = f"Shipped in {result.rounds} rounds."
+            outcome = f"The review said SHIP in round {result.rounds}."
         else:
             outcome = f"Did not ship: the review still said FIX after {result.rounds} rounds."
         return dspy.Prediction(

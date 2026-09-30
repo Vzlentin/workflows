@@ -344,10 +344,10 @@ def test_optimize_writes_back_the_templates_gepa_changed_and_stops_on_a_failed_r
     def templates() -> dict[str, bytes]:
         return {path.name: path.read_bytes() for path in (copy / "prompts").glob("*.md")}
 
-    def optimize(run: str) -> subprocess.CompletedProcess:
+    def optimize(run: str, rounds: str = "1") -> subprocess.CompletedProcess:
         return subprocess.run(
             [sys.executable, "-m", "workflows.cli", "optimize", "--headless", "--pi", str(pi),
-             "--repo", str(repository), "--rounds", "1", "--budget", "4",
+             "--repo", str(repository), "--rounds", rounds, "--budget", "4",
              "--run-dir", str(tmp_path / run), str(item)],
             capture_output=True, text=True, check=False,
         )  # fmt: skip
@@ -365,6 +365,8 @@ def test_optimize_writes_back_the_templates_gepa_changed_and_stops_on_a_failed_r
     unreflected = optimize("unreflected")
     assert unreflected.returncode == 1
     assert "reflection failed: pi exited with 1: reflection failed" in unreflected.stderr
+    reflections = [call for call in calls() if call["session"].startswith("reflect-")]
+    assert "Did not ship: the review still said FIX after 1 rounds." in reflections[-1]["prompt"]
     assert templates() == before
     assert len(git(repository, "worktree", "list").splitlines()) == 1
 
@@ -373,7 +375,7 @@ def test_optimize_writes_back_the_templates_gepa_changed_and_stops_on_a_failed_r
     review = head + sep + b"Be brief.\n\n" + body
     (copy / "prompts" / "review.md").write_bytes(review)
     earlier = len(calls())
-    optimized = optimize("unreflected")
+    optimized = optimize("unreflected", rounds="2")
     assert optimized.returncode == 0, optimized.stderr
     assert re.findall(r"changed prompts/\S+", optimized.stdout) == ["changed prompts/plan.md"]
     frontmatter = before["plan.md"].partition(b"\n---\n")[0] + b"\n---\n"
@@ -383,4 +385,4 @@ def test_optimize_writes_back_the_templates_gepa_changed_and_stops_on_a_failed_r
     reflections = [call for call in calls()[earlier:] if call["session"].startswith("reflect-")]
     assert [call["cwd"] for call in reflections] == [str(repository)]
     assert "3 FAIL source.txt:1 not needed" in reflections[0]["prompt"]
-    assert "Did not ship: the review still said FIX after 1 rounds." in reflections[0]["prompt"]
+    assert "The review said SHIP in round 2." in reflections[0]["prompt"]
