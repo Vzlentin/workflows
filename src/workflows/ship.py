@@ -19,7 +19,7 @@ from workflows.pi import READ_ONLY, Agent, Pi, SessionLM
 from workflows.workspace import git
 
 PLANNER = Agent("openai-codex/gpt-6-astra", "xhigh", READ_ONLY)
-IMPLEMENTER = Agent("cursor/claude-opus-5-5", "xhigh", (*READ_ONLY, "bash", "edit", "write"))
+IMPLEMENTER = Agent("openai-codex/gpt-6.1-sol", "xhigh", (*READ_ONLY, "bash", "edit", "write"))
 
 
 class Turn(dspy.Signature):

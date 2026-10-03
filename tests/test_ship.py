@@ -160,6 +160,8 @@ def test_ship_commits_a_shipped_item_and_keeps_the_rounds_of_one_that_does_not_s
         resumed = index > 0 and sessions[index - 1] == call["session"]
         assert ("--session" in call["args"]) == resumed
         assert "JSON" not in call["prompt"]
+        if call["session"].startswith("implement-"):
+            assert call["args"][call["args"].index("--model") + 1] == "openai-codex/gpt-6.1-sol"
     assert calls()[10]["cwd"] == str(run_dir / "judge")
     assert not (run_dir / "judge").exists()
     assert "Item one" in calls()[0]["prompt"] and calls()[2]["prompt"].startswith("Write a handoff")
