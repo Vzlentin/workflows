@@ -51,6 +51,7 @@ class Review(Turn):
     item: str = dspy.InputField()
     plan: str = dspy.InputField()
     change: str = dspy.InputField()
+    reply: str = dspy.InputField()
     text: str = dspy.OutputField()
 
 
@@ -91,7 +92,8 @@ class Ship(dspy.Module):
         self.rounds = rounds
 
     def forward(self, pi: Pi, item: str) -> dspy.Prediction:
-        """Commits each round in `pi.cwd`; a shipped item is squashed into one commit, `head`."""
+        """Commits changed rounds in `pi.cwd`; an empty round blocks with the implementer's reply.
+        A shipped item is squashed into one commit, `head`."""
         start = git(pi.cwd, "rev-parse", "HEAD")
         with Conversation(pi, PLANNER, "plan") as session:
             session(self.plan, item=item)
@@ -100,14 +102,18 @@ class Ship(dspy.Module):
         for n in range(1, self.rounds + 1):
             before = git(pi.cwd, "rev-parse", "HEAD")
             with Conversation(pi, IMPLEMENTER, "implement") as session:
-                session(self.implement, plan=plan)
+                reply = session(self.implement, plan=plan).text
             git(pi.cwd, "add", "-A")
-            git(pi.cwd, "commit", "--allow-empty", "-m", f"round {n}")
+            if not git(pi.cwd, "diff", "--cached", "--name-only"):
+                return dspy.Prediction(
+                    status="blocked", rounds=n, head=git(pi.cwd, "rev-parse", "HEAD"), reply=reply
+                )
+            git(pi.cwd, "commit", "-m", f"round {n}")
             change = [patch(pi, f"round-{n}.patch", start)]
             if n > 1:
                 change.append(patch(pi, f"round-{n}-fix.patch", before))
             with Conversation(pi, PLANNER, "review") as session:
-                session(self.review, item=item, plan=plan, change="\n".join(change))
+                session(self.review, item=item, plan=plan, change="\n".join(change), reply=reply)
                 if session(self.challenge).verdict == "SHIP":
                     head = workspace.squash(pi.cwd, start, message(item, n))
                     return dspy.Prediction(status="shipped", rounds=n, head=head)
@@ -159,7 +165,7 @@ def ship(
     command: str = "pi",
     herdr: str | None = None,
 ) -> bool:
-    """Whether the item shipped onto `ship/<run>`; a stopped item keeps its round commits."""
+    """Whether the item shipped onto `ship/<run>`; stopped or blocked items keep round commits."""
     text = read_item(item)
     name = subject(text)
     root = workspace.repository_root(repository)
@@ -167,8 +173,10 @@ def ship(
     worktree = directory / "worktree"
     workspace.add_worktree(root, commit, worktree, branch=f"ship/{directory.name}")
     result = Ship(rounds)(pi=Pi(directory / "sessions", worktree, command, herdr), item=text)
-    if result.status == "stopped":
-        print(f"stopped {name} after {rounds} rounds: {worktree}")
+    if result.status in ("stopped", "blocked"):
+        print(f"{result.status} {name} after {result.rounds} rounds: {worktree}")
+        if result.status == "blocked":
+            print(result.reply)
         return False
     judge_pi = Pi(directory / "sessions", directory / "judge", command, herdr)
     try:

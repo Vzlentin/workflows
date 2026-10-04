@@ -1,9 +1,10 @@
 """A stand-in `pi --mode json`: answers plain text by session label and turn, logs its calls.
 
-Turns are counted per session folder. Implement turns append a line to `source.txt`, so each
-shipped item changes it. Only the second review session under a sessions folder says SHIP. A split
-session answers `ITEMS` in a fenced json block, or `[]` with `FAKE_PI_SPLIT_EMPTY=1`. A reflect
-session proposes `PLAN` as new instructions; with `FAKE_PI_REFLECT_FAIL=1` it exits 1 and prints
+Turns are counted per session folder. Implement turns append a line to `source.txt`, unless their
+round matches `FAKE_PI_BLOCK_ROUND`, when they reply without editing. Only the second review
+session under a sessions folder says SHIP. A split session answers `ITEMS` in a fenced json block,
+or `[]` with `FAKE_PI_SPLIT_EMPTY=1`. A reflect session proposes `PLAN` as new instructions; with
+`FAKE_PI_REFLECT_FAIL=1` it exits 1 and prints
 `reflection failed`, but no messages. The judge passes every question when an earlier session
 under its sessions folder was sent `PLAN`, else fails question 3; with `FAKE_PI_JUDGE_FAIL=1` its
 reply misses answers 6 to 8, and with `FAKE_PI_JUDGE_ZERO=1` it fails question 1.
@@ -39,6 +40,8 @@ def reply(directory: Path, calls: list[dict]) -> str:
     label, count = directory.name.rsplit("-", 1)
     turn = sum(session_directory(call["args"]) == directory for call in calls)
     if label == "implement":
+        if os.environ.get("FAKE_PI_BLOCK_ROUND") == count:
+            return "Cannot proceed without the missing requirements."
         with Path("source.txt").open("a") as source:
             source.write(f"implement {count}\n")
         return "Wrote source.txt."

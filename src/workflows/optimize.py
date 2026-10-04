@@ -1,7 +1,8 @@
-"""The optimize engine: GEPA rewrites the ship prompts, and the judge scores each rollout.
+"""The optimize engine: GEPA rewrites the ship prompts using rollout scores.
 
 A rollout ships one work item from the base commit in its own detached worktree under
-`<run>/rollouts/`, then judges it. The templates GEPA changed are written back to `prompts/`.
+`<run>/rollouts/`. Blocked rollouts score 0; the judge scores the others. The templates GEPA
+changed are written back to `prompts/`.
 """
 
 import tempfile
@@ -27,16 +28,24 @@ class Rollout(ship.Ship):
         self.herdr = herdr
 
     def forward(self, item: str, path: str) -> dspy.Prediction:
-        """The judge's score of `item` shipped or stopped from `base`, with its findings and rounds
-        as feedback. The rollout's worktree is removed; any error ends the run as SystemExit."""
+        """The judge's score and findings for `item`, or score 0 and the reply when blocked.
+        The rollout's worktree is removed; any error ends the run as SystemExit."""
         try:
             (self.run / "rollouts").mkdir(parents=True, exist_ok=True)
             folder = Path(tempfile.mkdtemp(dir=self.run / "rollouts"))
             workspace.add_worktree(self.root, self.base, folder / "worktree")
             try:
                 pi = Pi(folder / "sessions", folder / "worktree", self.command, self.herdr)
-                judge_pi = Pi(folder / "sessions", folder / "judge", self.command, self.herdr)
                 result = super().forward(pi, item)
+                if result.status == "blocked":
+                    return dspy.Prediction(
+                        score=0,
+                        feedback=(
+                            f"Did not ship: blocked in round {result.rounds} with no staged changes.\n"
+                            f"{result.reply}"
+                        ),
+                    )
+                judge_pi = Pi(folder / "sessions", folder / "judge", self.command, self.herdr)
                 verdict = judge(judge_pi, self.root, item, self.base, result.head)
             finally:
                 workspace.remove_worktree(self.root, folder / "worktree")

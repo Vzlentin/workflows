@@ -40,8 +40,13 @@ and each round's patches. Inside Herdr (`HERDR_ENV=1`) every session is a visibl
 new pane; elsewhere, or with `--headless`, sessions run with `pi --mode json`. The item needs a
 non-empty line, checked before the run starts.
 
-After each implement session the engine commits everything as `round <n>`. A shipped item is
-squashed into one commit, then a fixed judge reviews it in its own worktree:
+After each implement session the engine stages everything. If the staged diff is empty, the run
+is blocked. The command prints `blocked <item> after <n> rounds: <worktree>`, then the implementer's
+reply, and exits 1. That attempt counts as a round, but makes no round commit or patch and opens
+no review or judge session.
+
+Otherwise the engine commits everything as `round <n>`. A shipped item is squashed into one
+commit, then a fixed judge reviews it in its own worktree:
 
 ```text
 Item subject (first non-empty line of the item, without leading #)
@@ -58,10 +63,10 @@ The judge scores 0 when completeness or correctness fails, otherwise the fractio
 quality questions that pass. If the judge errors, or its reply misses an answer, the commit keeps
 no `Judge` trailer.
 
-An item that does not ship within `--rounds` keeps its round commits and the worktree, and the
-exit code is 1. Every run makes a new branch; `ship/<run>` and its worktree stay until you delete
-them. For `ship`, label an item by merging its commit into main or not; `campaign` merges its
-items itself.
+A blocked item or one that does not ship within `--rounds` keeps its earlier round commits and
+the worktree, and the exit code is 1. Every run makes a new branch; `ship/<run>` and its worktree
+stay until you delete them. For `ship`, label an item by merging its commit into main or not;
+`campaign` merges its items itself.
 
 ## Campaign
 
@@ -79,12 +84,12 @@ as with `ship`, with its own run directory `<run>-<n>` inside the campaign's and
 repository checkout with `git merge --ff-only`, removes its worktree and branch, and prints
 `merged <item> into <base>`.
 
-The campaign stops with exit code 1 at the first work item that does not ship, that the judge
-scores 0 or fails to score (`not merged <item>: judge <score>: <worktree>`), or that git cannot
-fast-forward, for example over a local change to a file the item changes. That work item keeps
-its branch and worktree; the checkout is never reset, and nothing is pushed. To resume, run again
-with a new run directory (the default): the split starts from the updated base. When nothing is
-left, the command prints `nothing left of <goal>` and exits 0. `--rounds`, `--pi` and
+The campaign stops with exit code 1 at the first work item that is blocked or does not ship, that
+the judge scores 0 or fails to score (`not merged <item>: judge <score>: <worktree>`), or that git
+cannot fast-forward, for example over a local change to a file the item changes. That work item
+keeps its branch and worktree; the checkout is never reset, and nothing is pushed. To resume, run
+again with a new run directory (the default): the split starts from the updated base. When nothing
+is left, the command prints `nothing left of <goal>` and exits 0. `--rounds`, `--pi` and
 `--headless` work as for `ship`.
 
 ## Optimize
@@ -96,12 +101,13 @@ uv run workflows optimize --repo /absolute/path/to/repository --base main --budg
 [GEPA](https://github.com/gepa-ai/gepa) rewrites the `plan`, `challenge`, `handoff`,
 `implement` and `review` templates to raise the judge's score on the work items. A rollout ships
 one item from `--base` in a fresh detached worktree under `rollouts/` in the run directory, for
-at most `--rounds` rounds, and the judge scores it whether it shipped or stopped. Its findings,
-and whether it shipped, are the feedback. After each rollout the worktree is removed and its
-commits are on no branch. From the traces and feedback of a few rollouts, a read-only `reflect`
-session in the repository proposes new instructions for one template at a time. `--rounds`,
-`--pi`, `--headless` and `--run-dir` work as for `ship`, and every item is checked before the
-run starts.
+at most `--rounds` rounds. The judge scores shipped and round-limit-stopped rollouts; its findings
+and whether it shipped are the feedback. A blocked rollout instead scores 0 without judging,
+with the blocked explanation and implementer's reply as feedback. It is a valid outcome, not an
+execution error. After each rollout the worktree is removed and its commits are on no branch.
+From the traces and feedback of a few rollouts, a read-only `reflect` session in the repository
+proposes new instructions for one template at a time. `--rounds`, `--pi`, `--headless` and
+`--run-dir` work as for `ship`, and every item is checked before the run starts.
 
 `--budget` counts rollouts. The baseline, today's templates, costs one rollout per item. Each
 iteration then rolls out a minibatch of three items (repeating items when there are fewer) with
@@ -130,7 +136,8 @@ command's arguments there, and the engine drops it and appends its inputs as `##
 The engine also asks `challenge` for its final SHIP or FIX line, and `split` for its final fenced
 `json` array of work items, itself, so no edit to a template can drop them. Each predictor call
 also records the earlier turns of its session as a `history` input, which Pi already holds and is
-not sent again, so `workflows optimize` sees what every turn saw.
+not sent again, so `workflows optimize` sees what every turn saw. The review also receives the
+implementer's reply as `reply`, alongside the patch paths in `change`.
 
 `pi install /home/vzl/Dev/workflows` makes them commands in interactive Pi, where `$@` takes the
 arguments: `/plan`, `/challenge what's the move here`, `/handoff`, `/implement`, `/review`,
