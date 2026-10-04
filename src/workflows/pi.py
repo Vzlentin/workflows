@@ -23,11 +23,14 @@ class Agent:
 
     model: str
     thinking: str
-    tools: tuple[str, ...]
+    tools: tuple[str, ...] | None
 
     def arguments(self) -> list[str]:
         # Extensions stay on: providers such as `cursor` are installed as extension packages.
-        return ["--model", self.model, "--thinking", self.thinking, "--tools", ",".join(self.tools)]
+        args = ["--model", self.model, "--thinking", self.thinking]
+        if self.tools is not None:
+            args += ["--tools", ",".join(self.tools)]
+        return args
 
 
 def assistant_text(message: dict) -> str:
