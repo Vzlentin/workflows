@@ -12,6 +12,7 @@ import pytest
 from workflows import campaign, ship
 from workflows.cli import main
 from workflows.judge import verdict
+from workflows.optimize import Rollout
 from workflows.pi import Pi
 from workflows.prompts import DIRECTORY, Template, load, render
 
@@ -124,6 +125,7 @@ def test_each_turn_is_traced_with_the_earlier_turns_of_its_session(repository, p
     histories = [inputs["history"].messages for _, inputs, _ in trace]
     assert [len(history) for history in histories] == [0, 1, 2, 0, 0, 1, 2]
     assert histories[5][0]["text"] == "review 1 notes"
+    assert histories[5][0]["reply"] == "Wrote source.txt."
     assert histories[6][1]["verdict"] == "FIX"
 
 
@@ -166,15 +168,61 @@ def test_ship_commits_a_shipped_item_and_keeps_the_rounds_of_one_that_does_not_s
     assert not (run_dir / "judge").exists()
     assert "Item one" in calls()[0]["prompt"] and calls()[2]["prompt"].startswith("Write a handoff")
     assert "Fix plan 1." in calls()[3]["prompt"]
+    assert calls()[4]["prompt"].endswith("\n\n## reply\nWrote source.txt.")
     review = calls()[8]["prompt"]
     assert str(run_dir / "sessions" / "round-2-fix.patch") in review
     assert "Fix review 1." in review
+    assert review.endswith("\n\n## reply\nWrote source.txt.")
 
     assert run("stopped", 1) == 1
     worktree = tmp_path / "stopped" / "worktree"
     assert git(repository, "log", "--format=%s", "main..ship/stopped") == "round 1"
     assert (worktree / "source.txt").read_text() == "implement 1\n"
     assert capsys.readouterr().out == f"stopped Item one after 1 rounds: {worktree}\n"
+
+
+@pytest.mark.parametrize("blocked_round", [1, 2])
+def test_ship_blocks_on_an_empty_round_without_reviewing_or_judging(
+    repository, pi, item, tmp_path, capsys, monkeypatch, blocked_round
+):
+    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", str(blocked_round))
+    base = git(repository, "rev-parse", "HEAD")
+    run_dir = tmp_path / "blocked"
+    assert main(
+        ["ship", "--headless", "--pi", str(pi), "--repo", str(repository),
+         "--run-dir", str(run_dir), str(item)]
+    ) == 1  # fmt: skip
+
+    worktree = run_dir / "worktree"
+    out, err = capsys.readouterr()
+    assert out == (
+        f"blocked Item one after {blocked_round} rounds: {worktree}\n"
+        "Cannot proceed without the missing requirements.\n"
+    )
+    assert err == f"run directory: {run_dir}\n"
+    assert worktree.is_dir()
+    assert git(repository, "rev-parse", "refs/heads/main") == base
+    assert git(repository, "rev-parse", "refs/heads/ship/blocked") == git(
+        worktree, "rev-parse", "HEAD"
+    )
+    assert git(worktree, "rev-parse", f"HEAD~{blocked_round - 1}") == base
+    assert git(worktree, "log", "--format=%s", "main..HEAD") == (
+        "round 1" if blocked_round == 2 else ""
+    )
+    assert git(worktree, "status", "--porcelain") == ""
+    if blocked_round == 2:
+        assert (worktree / "source.txt").read_text() == "implement 1\n"
+        assert git(worktree, "log", "-1", "--format=%(trailers:only)") == ""
+    else:
+        assert not (worktree / "source.txt").exists()
+    sessions = ["plan-1", "plan-1", "plan-1", "implement-1"]
+    if blocked_round == 2:
+        sessions += ["review-1", "review-1", "review-1", "implement-2"]
+    assert [call["session"] for call in calls()] == sessions
+    assert sorted(path.name for path in (run_dir / "sessions").glob("*.patch")) == (
+        ["round-1.patch"] if blocked_round == 2 else []
+    )
+    assert not (run_dir / "judge").exists()
 
 
 def test_ship_rejects_an_empty_item_before_the_run_starts(repository, pi, tmp_path):
@@ -283,6 +331,22 @@ def test_campaign_merges_each_split_item_into_the_base_and_stops_at_the_first_it
     assert git(repository, "log", "--format=%s", "refs/heads/main..ship/stopped-1") == "round 1"
     assert capsys.readouterr().out == f"stopped Item one after 1 rounds: {worktree}\n"
 
+    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", "2")
+    earlier = len(calls())
+    assert run_campaign(pi, repository, tmp_path / "blocked", goal) == 1
+    worktree, _ = kept(repository, tmp_path / "blocked", head)
+    assert git(repository, "log", "--format=%s", "refs/heads/main..ship/blocked-1") == "round 1"
+    assert capsys.readouterr().out == (
+        f"blocked Item one after 2 rounds: {worktree}\n"
+        "Cannot proceed without the missing requirements.\n"
+    )
+    assert [call["session"] for call in calls()[earlier:]] == [
+        "split-1", "plan-1", "plan-1", "plan-1", "implement-1",
+        "review-1", "review-1", "review-1", "implement-2",
+    ]  # fmt: skip
+    assert not (tmp_path / "blocked" / "blocked-2").exists()
+    monkeypatch.delenv("FAKE_PI_BLOCK_ROUND")
+
     (repository / "source.txt").write_text("local edit\n")
     assert run_campaign(pi, repository, tmp_path / "conflict", goal) == 1
     worktree, sha = kept(repository, tmp_path / "conflict", head)
@@ -334,9 +398,34 @@ def test_ship_in_herdr_runs_each_session_in_one_pane_and_closes_it(
     assert [call[call.index("--pane") + 1] for call in starts[1:]] == [call[2] for call in closes]
 
 
-def test_optimize_writes_back_the_templates_gepa_changed_and_stops_on_a_failed_rollout_or_reflection(
+def test_optimize_scores_rollouts_updates_templates_and_stops_on_errors(
     repository, pi, item, tmp_path, monkeypatch
 ):
+    base = git(repository, "rev-parse", "HEAD")
+    earlier = 0
+    for blocked_round in (1, 2):
+        monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", str(blocked_round))
+        run_dir = tmp_path / f"blocked-{blocked_round}"
+        result = Rollout(repository, base, run_dir, str(pi), None, 3)(
+            item=item.read_text(), path=str(item)
+        )
+        assert result.score == 0
+        assert result.feedback == (
+            f"Did not ship: blocked in round {blocked_round} with no staged changes.\n"
+            "Cannot proceed without the missing requirements."
+        )
+        sessions = ["plan-1", "plan-1", "plan-1", "implement-1"]
+        if blocked_round == 2:
+            sessions += ["review-1", "review-1", "review-1", "implement-2"]
+        assert [call["session"] for call in calls()[earlier:]] == sessions
+        [folder] = (run_dir / "rollouts").iterdir()
+        assert not (folder / "worktree").exists()
+        assert not (folder / "judge").exists()
+        assert len(git(repository, "worktree", "list").splitlines()) == 1
+        assert git(repository, "rev-parse", "HEAD") == base
+        earlier = len(calls())
+    monkeypatch.delenv("FAKE_PI_BLOCK_ROUND")
+
     # With PYTHONPATH on the copy, `prompts.DIRECTORY` is the copy's `prompts/`.
     copy = tmp_path / "copy"
     shutil.copytree(DIRECTORY.parent / "src", copy / "src")
