@@ -163,7 +163,14 @@ def test_ship_commits_a_shipped_item_and_keeps_the_rounds_of_one_that_does_not_s
         assert ("--session" in call["args"]) == resumed
         assert "JSON" not in call["prompt"]
         if call["session"].startswith("implement-"):
+            assert "--tools" not in call["args"]
             assert call["args"][call["args"].index("--model") + 1] == "openai-codex/gpt-6.1-sol"
+        else:
+            assert call["args"][call["args"].index("--tools") + 1] == (
+                "read,grep,find,ls,bash"
+                if call["session"].startswith("judge-")
+                else "read,grep,find,ls"
+            )
     assert calls()[10]["cwd"] == str(run_dir / "judge")
     assert not (run_dir / "judge").exists()
     assert "Item one" in calls()[0]["prompt"] and calls()[2]["prompt"].startswith("Write a handoff")
@@ -287,6 +294,7 @@ def test_campaign_merges_each_split_item_into_the_base_and_stops_at_the_first_it
         "implement-2", "review-2", "review-2", "judge-1",
     ]  # fmt: skip
     assert [call["session"] for call in calls()] == ["split-1", *shipped, *shipped]
+    assert calls()[0]["args"][calls()[0]["args"].index("--tools") + 1] == "read,grep,find,ls"
     assert calls()[0]["cwd"] == str(run_dir / "split")
     assert "## goal\n# Goal\n\nWrite two items." in calls()[0]["prompt"]
     assert calls()[0]["prompt"].endswith("or [] when no work is left.")
@@ -391,6 +399,13 @@ def test_ship_in_herdr_runs_each_session_in_one_pane_and_closes_it(
     assert sessions == [
         "plan-1", "plan-1", "implement-1", "review-1", "implement-2", "review-2", "judge-1",
     ]  # fmt: skip
+    for session, call in zip(sessions, starts, strict=True):
+        if session.startswith("implement-"):
+            assert "--tools" not in call
+        else:
+            assert call[call.index("--tools") + 1] == (
+                "read,grep,find,ls,bash" if session.startswith("judge-") else "read,grep,find,ls"
+            )
     assert starts[0] == starts[1]
     names = [call[2] for call in starts[1:]]
     assert [prompts.count(name) for name in names] == [3, 1, 3, 1, 2, 1]
@@ -475,5 +490,7 @@ def test_optimize_scores_rollouts_updates_templates_and_stops_on_errors(
     assert len(git(repository, "worktree", "list").splitlines()) == 1
     reflections = [call for call in calls()[earlier:] if call["session"].startswith("reflect-")]
     assert [call["cwd"] for call in reflections] == [str(repository)]
+    for call in reflections:
+        assert call["args"][call["args"].index("--tools") + 1] == "read,grep,find,ls"
     assert "3 FAIL source.txt:1 not needed" in reflections[0]["prompt"]
     assert "The review said SHIP in round 2." in reflections[0]["prompt"]

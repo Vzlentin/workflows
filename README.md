@@ -10,10 +10,16 @@ implement session:  implement the handoff                      <- round n (at mo
 review session:     review  ->  challenge (SHIP or FIX)  ->  handoff (on FIX, back to implement)
 ```
 
-Plan and review sessions are read-only; implement sessions can edit and run commands. Git is the
-only state: there is no state file, log, or saved program. `workflows campaign` splits a goal
-into work items, then ships and merges them in order. `workflows optimize` improves the prompts
-of that loop with GEPA.
+Git is the only state: there is no state file, log, or saved program. `workflows campaign` splits
+a goal into work items, then ships and merges them in order. `workflows optimize` improves the
+prompts of that loop with GEPA.
+
+Tool selection is the same in headless and Herdr sessions:
+
+- Implement sessions omit `--tools` and use Pi's normal tool selection from its defaults,
+  settings and extensions.
+- Plan, review, split and reflect sessions use `--tools read,grep,find,ls`.
+- Judge sessions use `--tools read,grep,find,ls,bash`.
 
 ## Setup
 
