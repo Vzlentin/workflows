@@ -165,8 +165,8 @@ def ship(
     rounds: int = 3,
     command: str = "pi",
     herdr: str | None = None,
-) -> bool:
-    """Whether the item shipped onto `ship/<run>`; stopped or blocked items keep round commits."""
+) -> dspy.Prediction:
+    """The item's status, rounds and final head on `ship/<run>`; blocked items include the reply."""
     text = read_item(item)
     name = subject(text)
     root = workspace.repository_root(repository)
@@ -178,7 +178,7 @@ def ship(
         print(f"{result.status} {name} after {result.rounds} rounds: {worktree}")
         if result.status == "blocked":
             print(result.reply)
-        return False
+        return result
     judge_pi = Pi(directory / "sessions", directory / "judge", command, herdr)
     try:
         verdict = judge(judge_pi, root, text, commit, result.head)
@@ -188,6 +188,7 @@ def ship(
     else:
         git(worktree, "commit", "--amend", "-m", message(text, result.rounds, verdict))
         score = f"{verdict.score:.2f}"
+    result.head = git(worktree, "rev-parse", "HEAD")
     sha = git(worktree, "rev-parse", "--short", "HEAD")
     print(f"shipped {name} in {result.rounds} rounds, judge {score}, {sha}")
-    return True
+    return result

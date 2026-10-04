@@ -11,8 +11,8 @@ review session:     review  ->  challenge (SHIP or FIX)  ->  handoff (on FIX, ba
 ```
 
 Git is the only state: there is no state file, log, or saved program. `workflows campaign` splits
-a goal into work items, then ships and merges them in order. `workflows optimize` improves the
-prompts of that loop with GEPA.
+a goal into work items, then ships them in order onto one campaign branch and opens one pull
+request into the base. `workflows optimize` improves the prompts of that loop with GEPA.
 
 Tool selection is the same in headless and Herdr sessions:
 
@@ -73,7 +73,7 @@ no `Judge` trailer.
 A blocked item or one that does not ship within `--rounds` keeps its earlier round commits and
 the worktree, and the exit code is 1. Every run makes a new branch; `ship/<run>` and its worktree
 stay until you delete them. For `ship`, label an item by merging its commit into main or not;
-`campaign` merges its items itself.
+`campaign` collects accepted items in one pull request instead.
 
 ## Campaign
 
@@ -81,23 +81,36 @@ stay until you delete them. For `ship`, label an item by merging its commit into
 uv run workflows campaign --repo /absolute/path/to/repository --base main goal.md
 ```
 
-The goal is a markdown file, checked like a work item before the run starts. `--base` must be a
-branch with a commit, checked out in the repository, and `--run-dir` must not exist yet. A
-read-only `split` session, in a detached worktree at `--base` under `split/` in the run directory,
+The goal is a markdown file, checked like a work item before the run starts. `--base` must name
+an exact local branch with a commit, but need not be checked out. `--run-dir` must not exist yet.
+The campaign creates `campaign/<run>` at the base without switching the checkout. A read-only
+`split` session, in a detached worktree at that commit under `split/` in the run directory,
 splits the goal into the ordered work items still needed; the run directory keeps them as
-`items/<n>.md`. Each work item then ships from `--base`
-as with `ship`, with its own run directory `<run>-<n>` inside the campaign's and the branch
-`ship/<run>-<n>`. When the judge scores it above 0, the campaign merges it into `--base` in the
-repository checkout with `git merge --ff-only`, removes its worktree and branch, and prints
-`merged <item> into <base>`.
+`items/<n>.md`. Each work item then ships from the campaign tip as with `ship`, with its own run
+directory `<run>-<n>` inside the campaign's and the branch `ship/<run>-<n>`. When the judge scores
+it above 0, the campaign fast-forwards its own branch, removes the item's worktree and branch,
+and prints `accepted <item> into campaign/<run>`. The base branch, checkout and index stay
+unchanged, including local edits and staged changes.
 
 The campaign stops with exit code 1 at the first work item that is blocked or does not ship, that
-the judge scores 0 or fails to score (`not merged <item>: judge <score>: <worktree>`), or that git
-cannot fast-forward, for example over a local change to a file the item changes. That work item
-keeps its branch and worktree; the checkout is never reset, and nothing is pushed. To resume, run
-again with a new run directory (the default): the split starts from the updated base. When nothing
-is left, the command prints `nothing left of <goal>` and exits 0. `--rounds`, `--pi` and
-`--headless` work as for `ship`.
+the judge scores 0 or fails to score (`not accepted <item>: judge <score>: <worktree>`), or on a
+runtime or OS error during item execution, branch advancement or cleanup. Errors report the item
+subject and failure output. Remaining item branches and worktrees are kept. An item stays
+accepted if cleanup fails after advancement.
+
+If any work was accepted, the campaign pushes `campaign/<run>` to `origin`, then uses `gh pr
+create` to open one pull request into `--base` and prints its URL. The title is the goal subject;
+the body includes the goal and accepted work item subjects. After an early stop, the pull request
+is a draft whose body also names the stopped item and reason. A draft still exits 1. A push or PR
+creation failure reports the command output, keeps the campaign branch, and exits 1 without
+retrying. A failed push does not call `gh`. The command assumes `origin` and GitHub authentication
+already exist; it does not configure them.
+
+With no accepted work, nothing is pushed and `gh` is not called. When the split finds nothing
+left, the command prints `nothing left of <goal>` and exits 0. A new campaign splits from its
+specified base, not from an earlier campaign branch unless you use that branch as `--base`.
+`--rounds`, `--pi` and `--headless` work as for `ship`. `--gh` selects the GitHub CLI executable
+(default `gh`) and applies only to campaigns.
 
 ## Optimize
 

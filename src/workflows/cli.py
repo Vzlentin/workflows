@@ -1,6 +1,6 @@
 """`workflows ship` ships one markdown work item onto a new branch through Pi.
-`workflows campaign` splits a markdown goal into work items, and ships and merges each into the
-base branch in order.
+`workflows campaign` splits a markdown goal into work items, and ships them in order onto a
+campaign branch with one pull request into the base.
 `workflows optimize` improves the ship prompts in `prompts/` with GEPA, scoring rollouts of work
 items with the judge."""
 
@@ -25,7 +25,7 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
     shipping = commands.add_parser("ship", help="Ship a work item onto a new branch")
     campaigning = commands.add_parser(
-        "campaign", help="Split a goal into work items, and ship and merge each into the base"
+        "campaign", help="Split a goal into work items, and deliver them in one pull request"
     )
     optimizing = commands.add_parser("optimize", help="Improve the ship prompts with GEPA")
     for command in (shipping, campaigning, optimizing):
@@ -41,6 +41,7 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--run-dir", help="Run directory (default under $XDG_STATE_HOME)")
     shipping.add_argument("item", type=Path, help="Markdown work item file")
     campaigning.add_argument("goal", type=Path, help="Markdown goal file")
+    campaigning.add_argument("--gh", default="gh", help="GitHub CLI executable")
     optimizing.add_argument("items", type=Path, nargs="+", help="Markdown work item files")
     optimizing.add_argument(
         "--budget", type=positive, required=True, help="Rollouts GEPA may spend (its metric calls)"
@@ -63,10 +64,12 @@ def main(argv=None) -> int:
         optimize(args.repo, args.base, args.items, run, args.budget, args.rounds, args.pi, herdr)
         return 0
     if args.command == "campaign":
-        merged = campaign(args.repo, args.base, args.goal, run, args.rounds, args.pi, herdr)
-        return 0 if merged else 1
-    shipped = ship(args.repo, args.base, args.item, run, args.rounds, args.pi, herdr)
-    return 0 if shipped else 1
+        delivered = campaign(
+            args.repo, args.base, args.goal, run, args.rounds, args.pi, herdr, args.gh
+        )
+        return 0 if delivered else 1
+    result = ship(args.repo, args.base, args.item, run, args.rounds, args.pi, herdr)
+    return 0 if result.status == "shipped" else 1
 
 
 if __name__ == "__main__":
