@@ -188,6 +188,41 @@ def test_ship_commits_a_shipped_item_and_keeps_the_rounds_of_one_that_does_not_s
     assert capsys.readouterr().out == f"stopped Item one after 1 rounds: {worktree}\n"
 
 
+def test_ship_reviews_and_squashes_implementer_commits(
+    repository, pi, item, tmp_path, capsys, monkeypatch
+):
+    monkeypatch.setenv("FAKE_PI_SELF_COMMIT", "1")
+    run_dir = tmp_path / "run"
+    assert main(
+        ["ship", "--headless", "--pi", str(pi), "--repo", str(repository),
+         "--rounds", "2", "--run-dir", str(run_dir), str(item)]
+    ) == 0  # fmt: skip
+
+    worktree = run_dir / "worktree"
+    assert git(repository, "log", "--format=%s", "main..ship/run") == "Item one"
+    assert (worktree / "source.txt").read_text() == "implement 1\nimplement 2\n"
+    assert git(worktree, "status", "--porcelain") == ""
+    assert git(worktree, "log", "-1", "--format=%(trailers:only)").splitlines() == [
+        "Rounds: 2", "Judge: 0.83",
+    ]  # fmt: skip
+    sha = git(worktree, "rev-parse", "--short", "HEAD")
+    out, err = capsys.readouterr()
+    assert out == f"shipped Item one in 2 rounds, judge 0.83, {sha}\n"
+    assert err == f"run directory: {run_dir}\n"
+    assert [call["session"] for call in calls()] == [
+        "plan-1", "plan-1", "plan-1", "implement-1", "review-1", "review-1", "review-1",
+        "implement-2", "review-2", "review-2", "judge-1",
+    ]  # fmt: skip
+
+    patches = run_dir / "sessions"
+    assert str(patches / "round-1.patch") in calls()[4]["prompt"]
+    assert str(patches / "round-2.patch") in calls()[8]["prompt"]
+    assert str(patches / "round-2-fix.patch") in calls()[8]["prompt"]
+    assert "+implement 1\n" in (patches / "round-1.patch").read_text()
+    assert "+implement 1\n+implement 2\n" in (patches / "round-2.patch").read_text()
+    assert "\n implement 1\n+implement 2\n" in (patches / "round-2-fix.patch").read_text()
+
+
 @pytest.mark.parametrize("blocked_round", [1, 2])
 def test_ship_blocks_on_an_empty_round_without_reviewing_or_judging(
     repository, pi, item, tmp_path, capsys, monkeypatch, blocked_round
@@ -426,7 +461,8 @@ def test_optimize_scores_rollouts_updates_templates_and_stops_on_errors(
         )
         assert result.score == 0
         assert result.feedback == (
-            f"Did not ship: blocked in round {blocked_round} with no staged changes.\n"
+            f"Did not ship: blocked in round {blocked_round} with "
+            "no changes from the round's starting commit.\n"
             "Cannot proceed without the missing requirements."
         )
         sessions = ["plan-1", "plan-1", "plan-1", "implement-1"]

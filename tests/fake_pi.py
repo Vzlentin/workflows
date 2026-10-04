@@ -1,8 +1,9 @@
 """A stand-in `pi --mode json`: answers plain text by session label and turn, logs its calls.
 
 Turns are counted per session folder. Implement turns append a line to `source.txt`, unless their
-round matches `FAKE_PI_BLOCK_ROUND`, when they reply without editing. Only the second review
-session under a sessions folder says SHIP. A split session answers `ITEMS` in a fenced json block,
+round matches `FAKE_PI_BLOCK_ROUND`, when they reply without editing. With `FAKE_PI_SELF_COMMIT=1`,
+they commit their changes. Only the second review session under a sessions folder says SHIP. A
+split session answers `ITEMS` in a fenced json block,
 or `[]` with `FAKE_PI_SPLIT_EMPTY=1`. A reflect session proposes `PLAN` as new instructions; with
 `FAKE_PI_REFLECT_FAIL=1` it exits 1 and prints
 `reflection failed`, but no messages. The judge passes every question when an earlier session
@@ -12,6 +13,7 @@ reply misses answers 6 to 8, and with `FAKE_PI_JUDGE_ZERO=1` it fails question 1
 
 import json
 import os
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -44,6 +46,9 @@ def reply(directory: Path, calls: list[dict]) -> str:
             return "Cannot proceed without the missing requirements."
         with Path("source.txt").open("a") as source:
             source.write(f"implement {count}\n")
+        if os.environ.get("FAKE_PI_SELF_COMMIT") == "1":
+            subprocess.run(["git", "add", "source.txt"], check=True)
+            subprocess.run(["git", "commit", "-qm", f"implement {count}"], check=True)
         return "Wrote source.txt."
     if label == "judge":
         return judge(directory, calls)

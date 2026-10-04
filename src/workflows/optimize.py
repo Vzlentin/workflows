@@ -41,7 +41,8 @@ class Rollout(ship.Ship):
                     return dspy.Prediction(
                         score=0,
                         feedback=(
-                            f"Did not ship: blocked in round {result.rounds} with no staged changes.\n"
+                            f"Did not ship: blocked in round {result.rounds} with "
+                            "no changes from the round's starting commit.\n"
                             f"{result.reply}"
                         ),
                     )

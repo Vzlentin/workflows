@@ -46,13 +46,14 @@ and each round's patches. Inside Herdr (`HERDR_ENV=1`) every session is a visibl
 new pane; elsewhere, or with `--headless`, sessions run with `pi --mode json`. The item needs a
 non-empty line, checked before the run starts.
 
-After each implement session the engine stages everything. If the staged diff is empty, the run
-is blocked. The command prints `blocked <item> after <n> rounds: <worktree>`, then the implementer's
-reply, and exits 1. That attempt counts as a round, but makes no round commit or patch and opens
-no review or judge session.
+After each implement session the engine stages everything. If the staged tree matches the
+round's starting commit, the run is blocked. The command prints
+`blocked <item> after <n> rounds: <worktree>`, then the implementer's reply, and exits 1. That
+attempt counts as a round, but makes no round commit or patch and opens no review or judge session.
 
-Otherwise the engine commits everything as `round <n>`. A shipped item is squashed into one
-commit, then a fixed judge reviews it in its own worktree:
+Otherwise the engine commits any staged changes relative to current `HEAD` as `round <n>`.
+Implementer commits are included in the round's patches and review. A shipped item is squashed
+into one commit, then a fixed judge reviews it in its own worktree:
 
 ```text
 Item subject (first non-empty line of the item, without leading #)

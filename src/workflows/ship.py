@@ -92,7 +92,7 @@ class Ship(dspy.Module):
         self.rounds = rounds
 
     def forward(self, pi: Pi, item: str) -> dspy.Prediction:
-        """Commits changed rounds in `pi.cwd`; an empty round blocks with the implementer's reply.
+        """Changed rounds in `pi.cwd` reach review; an unchanged round blocks with the reply.
         A shipped item is squashed into one commit, `head`."""
         start = git(pi.cwd, "rev-parse", "HEAD")
         with Conversation(pi, PLANNER, "plan") as session:
@@ -104,11 +104,12 @@ class Ship(dspy.Module):
             with Conversation(pi, IMPLEMENTER, "implement") as session:
                 reply = session(self.implement, plan=plan).text
             git(pi.cwd, "add", "-A")
-            if not git(pi.cwd, "diff", "--cached", "--name-only"):
+            if not git(pi.cwd, "diff", "--cached", "--name-only", before):
                 return dspy.Prediction(
                     status="blocked", rounds=n, head=git(pi.cwd, "rev-parse", "HEAD"), reply=reply
                 )
-            git(pi.cwd, "commit", "-m", f"round {n}")
+            if git(pi.cwd, "diff", "--cached", "--name-only"):
+                git(pi.cwd, "commit", "-m", f"round {n}")
             change = [patch(pi, f"round-{n}.patch", start)]
             if n > 1:
                 change.append(patch(pi, f"round-{n}-fix.patch", before))
