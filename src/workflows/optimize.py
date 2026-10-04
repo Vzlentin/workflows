@@ -42,7 +42,7 @@ class Rollout(ship.Ship):
                         score=0,
                         feedback=(
                             f"Did not ship: blocked in round {result.rounds} with "
-                            "no changes from the round's starting commit.\n"
+                            "no changes from the ship's starting commit.\n"
                             f"{result.reply}"
                         ),
                     )

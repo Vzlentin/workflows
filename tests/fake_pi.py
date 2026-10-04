@@ -9,6 +9,8 @@ or `[]` with `FAKE_PI_SPLIT_EMPTY=1`. A reflect session proposes `PLAN` as new i
 `reflection failed`, but no messages. The judge passes every question when an earlier session
 under its sessions folder was sent `PLAN`, else fails question 3; with `FAKE_PI_JUDGE_FAIL=1` its
 reply misses answers 6 to 8, and with `FAKE_PI_JUDGE_ZERO=1` it fails question 1.
+`FAKE_PI_REVIEW_FIX=1` keeps reviews at FIX. `FAKE_PI_CONTROL_ITEM` limits blocked rounds,
+judge failures and FIX reviews to the campaign item with that run-directory suffix.
 """
 
 import json
@@ -27,10 +29,17 @@ def session_directory(args: list[str]) -> Path:
     return Path(args[args.index("--session-dir") + 1])
 
 
+def control(directory: Path, name: str) -> str | None:
+    item = os.environ.get("FAKE_PI_CONTROL_ITEM")
+    if item and not directory.parent.parent.name.endswith(f"-{item}"):
+        return None
+    return os.environ.get(name)
+
+
 def judge(directory: Path, calls: list[dict]) -> str:
-    if os.environ.get("FAKE_PI_JUDGE_FAIL") == "1":
+    if control(directory, "FAKE_PI_JUDGE_FAIL") == "1":
         return "\n".join(["Checked.", *JUDGE])
-    if os.environ.get("FAKE_PI_JUDGE_ZERO") == "1":
+    if control(directory, "FAKE_PI_JUDGE_ZERO") == "1":
         return "\n".join(["Checked.", "1 FAIL incomplete", *(f"{n} PASS" for n in range(2, 9))])
     rollout = [call for call in calls if session_directory(call["args"]).parent == directory.parent]
     if any(PLAN in call["prompt"] for call in rollout):
@@ -42,7 +51,7 @@ def reply(directory: Path, calls: list[dict]) -> str:
     label, count = directory.name.rsplit("-", 1)
     turn = sum(session_directory(call["args"]) == directory for call in calls)
     if label == "implement":
-        if os.environ.get("FAKE_PI_BLOCK_ROUND") == count:
+        if control(directory, "FAKE_PI_BLOCK_ROUND") == count:
             return "Cannot proceed without the missing requirements."
         with Path("source.txt").open("a") as source:
             source.write(f"implement {count}\n")
@@ -60,7 +69,8 @@ def reply(directory: Path, calls: list[dict]) -> str:
     if turn == 1:
         return f"{label} {count} notes"
     if turn == 2:
-        return "Keep it.\n**SHIP**" if (label, count) == ("review", "2") else "Change it.\n`FIX`."
+        shipped = (label, count) == ("review", "2") and not control(directory, "FAKE_PI_REVIEW_FIX")
+        return "Keep it.\n**SHIP**" if shipped else "Change it.\n`FIX`."
     return f"# Handoff\nFix {label} {count}."
 
 

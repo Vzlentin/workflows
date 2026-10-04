@@ -18,6 +18,7 @@ from workflows.prompts import DIRECTORY, Template, load, render
 
 FAKE_PI = Path(__file__).with_name("fake_pi.py")
 FAKE_HERDR = Path(__file__).with_name("fake_herdr.py")
+FAKE_GH = Path(__file__).with_name("fake_gh.py")
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -52,6 +53,16 @@ def pi(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def gh(tmp_path, monkeypatch):
+    script = tmp_path / "gh"
+    script.write_text(f'#!/bin/sh\nexec {sys.executable} {FAKE_GH} "$@"\n')
+    script.chmod(0o755)
+    monkeypatch.setenv("FAKE_GH_LOG", str(tmp_path / "publications.json"))
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    return script
+
+
+@pytest.fixture
 def item(tmp_path):
     path = tmp_path / "one.md"
     path.write_text("# Item one\n\nWrite source.txt.\n")
@@ -60,6 +71,11 @@ def item(tmp_path):
 
 def calls():
     return json.loads(Path(os.environ["FAKE_PI_LOG"]).read_text())
+
+
+def publications():
+    path = Path(os.environ["FAKE_GH_LOG"])
+    return json.loads(path.read_text()) if path.exists() else []
 
 
 def test_template_appends_inputs_and_parses_the_verdict_line():
@@ -223,11 +239,55 @@ def test_ship_reviews_and_squashes_implementer_commits(
     assert "\n implement 1\n+implement 2\n" in (patches / "round-2-fix.patch").read_text()
 
 
-@pytest.mark.parametrize("blocked_round", [1, 2])
-def test_ship_blocks_on_an_empty_round_without_reviewing_or_judging(
-    repository, pi, item, tmp_path, capsys, monkeypatch, blocked_round
+@pytest.mark.parametrize("review_fix", [False, True])
+def test_ship_reviews_an_unchanged_round_after_earlier_changes(
+    repository, pi, item, tmp_path, capsys, monkeypatch, review_fix
 ):
-    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", str(blocked_round))
+    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", "2")
+    if review_fix:
+        monkeypatch.setenv("FAKE_PI_REVIEW_FIX", "1")
+    run_dir = tmp_path / "run"
+    assert main(
+        ["ship", "--headless", "--pi", str(pi), "--repo", str(repository),
+         "--rounds", "2", "--run-dir", str(run_dir), str(item)]
+    ) == (1 if review_fix else 0)  # fmt: skip
+
+    worktree = run_dir / "worktree"
+    assert (worktree / "source.txt").read_text() == "implement 1\n"
+    assert git(worktree, "status", "--porcelain") == ""
+    assert git(worktree, "log", "--format=%s", "main..HEAD") == (
+        "round 1" if review_fix else "Item one"
+    )
+    assert [call["session"] for call in calls()] == [
+        "plan-1", "plan-1", "plan-1", "implement-1", "review-1", "review-1", "review-1",
+        "implement-2", "review-2", "review-2", "review-2" if review_fix else "judge-1",
+    ]  # fmt: skip
+    patches = run_dir / "sessions"
+    review = calls()[8]["prompt"]
+    assert str(patches / "round-2.patch") in review
+    assert str(patches / "round-2-fix.patch") in review
+    assert review.endswith("\n\n## reply\nCannot proceed without the missing requirements.")
+    assert (patches / "round-2.patch").read_text() == (patches / "round-1.patch").read_text()
+    assert "+implement 1\n" in (patches / "round-2.patch").read_text()
+    assert (patches / "round-2-fix.patch").read_text() == "\n"
+    out, err = capsys.readouterr()
+    assert err == f"run directory: {run_dir}\n"
+    if review_fix:
+        assert out == f"stopped Item one after 2 rounds: {worktree}\n"
+        assert git(worktree, "log", "-1", "--format=%(trailers:only)") == ""
+    else:
+        assert git(worktree, "log", "-1", "--format=%(trailers:only)").splitlines() == [
+            "Rounds: 2", "Judge: 0.83",
+        ]  # fmt: skip
+        sha = git(worktree, "rev-parse", "--short", "HEAD")
+        assert out == f"shipped Item one in 2 rounds, judge 0.83, {sha}\n"
+        assert calls()[10]["cwd"] == str(run_dir / "judge")
+
+
+def test_ship_blocks_without_changes_from_the_starting_commit_without_reviewing_or_judging(
+    repository, pi, item, tmp_path, capsys, monkeypatch
+):
+    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", "1")
     base = git(repository, "rev-parse", "HEAD")
     run_dir = tmp_path / "blocked"
     assert main(
@@ -238,7 +298,7 @@ def test_ship_blocks_on_an_empty_round_without_reviewing_or_judging(
     worktree = run_dir / "worktree"
     out, err = capsys.readouterr()
     assert out == (
-        f"blocked Item one after {blocked_round} rounds: {worktree}\n"
+        f"blocked Item one after 1 rounds: {worktree}\n"
         "Cannot proceed without the missing requirements.\n"
     )
     assert err == f"run directory: {run_dir}\n"
@@ -247,23 +307,14 @@ def test_ship_blocks_on_an_empty_round_without_reviewing_or_judging(
     assert git(repository, "rev-parse", "refs/heads/ship/blocked") == git(
         worktree, "rev-parse", "HEAD"
     )
-    assert git(worktree, "rev-parse", f"HEAD~{blocked_round - 1}") == base
-    assert git(worktree, "log", "--format=%s", "main..HEAD") == (
-        "round 1" if blocked_round == 2 else ""
-    )
+    assert git(worktree, "rev-parse", "HEAD") == base
+    assert git(worktree, "log", "--format=%s", "main..HEAD") == ""
     assert git(worktree, "status", "--porcelain") == ""
-    if blocked_round == 2:
-        assert (worktree / "source.txt").read_text() == "implement 1\n"
-        assert git(worktree, "log", "-1", "--format=%(trailers:only)") == ""
-    else:
-        assert not (worktree / "source.txt").exists()
-    sessions = ["plan-1", "plan-1", "plan-1", "implement-1"]
-    if blocked_round == 2:
-        sessions += ["review-1", "review-1", "review-1", "implement-2"]
-    assert [call["session"] for call in calls()] == sessions
-    assert sorted(path.name for path in (run_dir / "sessions").glob("*.patch")) == (
-        ["round-1.patch"] if blocked_round == 2 else []
-    )
+    assert not (worktree / "source.txt").exists()
+    assert [call["session"] for call in calls()] == [
+        "plan-1", "plan-1", "plan-1", "implement-1",
+    ]  # fmt: skip
+    assert list((run_dir / "sessions").glob("*.patch")) == []
     assert not (run_dir / "judge").exists()
 
 
@@ -287,41 +338,79 @@ def run_campaign(pi: Path, repository: Path, run_dir: Path, goal: Path, *options
 def kept(repository: Path, run_dir: Path, head: str) -> tuple[Path, str]:
     worktree = run_dir / f"{run_dir.name}-1" / "worktree"
     assert worktree.is_dir() and git(repository, "rev-parse", "refs/heads/main") == head
+    assert git(repository, "rev-parse", f"refs/heads/campaign/{run_dir.name}") == head
     assert not (run_dir / "items" / "2.md").exists()
     return worktree, git(repository, "rev-parse", "--short", f"ship/{run_dir.name}-1")
 
 
-def test_campaign_merges_each_split_item_into_the_base_and_stops_at_the_first_it_cannot_merge(
-    repository, pi, tmp_path, capsys, monkeypatch
+def test_campaign_publishes_accepted_items_in_one_pr_and_a_draft_after_a_stop(
+    repository, pi, gh, tmp_path, capsys, monkeypatch
 ):
     goal = tmp_path / "goal.md"
     goal.write_text("\n  \n")
     with pytest.raises(ValueError, match=re.escape(str(goal))):
         run_campaign(pi, repository, tmp_path / "empty-goal", goal)
     goal.write_text("# Goal\n\nWrite two items.\n")
-    git(repository, "branch", "topic")
-    with pytest.raises(ValueError, match="--base topic is not a branch with a commit"):
-        run_campaign(pi, repository, tmp_path / "wrong-branch", goal, "--base", "topic")
+    topic = git(repository, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "topic base")
+    git(repository, "branch", "topic", topic)
     git(repository, "symbolic-ref", "HEAD", "refs/heads/unborn")
-    with pytest.raises(ValueError, match="--base unborn is not a branch with a commit"):
-        run_campaign(pi, repository, tmp_path / "unborn", goal, "--base", "unborn")
+    for base in ("unborn", "main*", "main^{commit}"):
+        with pytest.raises(
+            ValueError, match=re.escape(f"--base {base} is not a branch with a commit")
+        ):
+            run_campaign(pi, repository, tmp_path / "invalid", goal, "--base", base)
     git(repository, "symbolic-ref", "HEAD", "refs/heads/main")
     assert not Path(os.environ["FAKE_PI_LOG"]).exists()
     assert len(git(repository, "worktree", "list").splitlines()) == 1
 
+    head = git(repository, "rev-parse", "refs/heads/main")
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    git(origin, "init", "--bare", "-q")
+    git(repository, "remote", "add", "origin", str(origin))
+    git(repository, "push", "origin", "refs/heads/main:refs/heads/main")
+    push_log = tmp_path / "pushes"
+    monkeypatch.setenv("FAKE_GIT_PUSH_LOG", str(push_log))
+    hook = origin / "hooks" / "pre-receive"
+    hook.write_text(
+        f"#!{sys.executable}\n"
+        "import os\nimport sys\nfrom pathlib import Path\n"
+        "with Path(os.environ['FAKE_GIT_PUSH_LOG']).open('a') as log:\n"
+        "    log.write(sys.stdin.read())\n"
+        "if os.environ.get('FAKE_GIT_PUSH_FAIL') == '1':\n"
+        "    sys.exit('origin rejected campaign')\n"
+    )
+    hook.chmod(0o755)
     decoy = git(repository, "commit-tree", "HEAD^{tree}", "-m", "decoy")
-    tags = ("main", "ship/run-1", "ship/run-2")
+    tags = ("main", "topic", "campaign/run", "ship/run-1", "ship/run-2", "tag-only")
     for tag in tags:
         git(repository, "tag", tag, decoy)
+    with pytest.raises(ValueError, match="--base tag-only is not a branch with a commit"):
+        run_campaign(pi, repository, tmp_path / "tag-only", goal, "--base", "tag-only")
+
     run_dir = tmp_path / "run"
-    assert run_campaign(pi, repository, run_dir, goal) == 0
-    assert git(repository, "log", "--format=%s", "refs/heads/main") == "Item two\nItem one\ninit"
-    assert [git(repository, "rev-parse", f"refs/tags/{tag}") for tag in tags] == [decoy] * 3
-    for commit in ("refs/heads/main~1", "refs/heads/main"):
+    assert run_campaign(pi, repository, run_dir, goal, "--base", "topic", "--gh", str(gh)) == 0
+    campaign_ref = "refs/heads/campaign/run"
+    assert (
+        git(repository, "log", "--format=%s", campaign_ref)
+        == "Item two\nItem one\ntopic base\ninit"
+    )
+    assert git(repository, "rev-parse", "refs/heads/main") == head
+    assert git(repository, "rev-parse", "refs/heads/topic") == topic
+    assert git(repository, "symbolic-ref", "HEAD") == "refs/heads/main"
+    assert git(repository, "status", "--porcelain") == ""
+    assert [git(repository, "rev-parse", f"refs/tags/{tag}") for tag in tags] == [decoy] * len(tags)
+    for commit in (f"{campaign_ref}~1", campaign_ref):
         trailers = git(repository, "log", "-1", "--format=%(trailers:only)", commit)
         assert trailers.splitlines() == ["Rounds: 2", "Judge: 0.83"]
         assert git(repository, "show", "--format=", "--numstat", commit) == "2\t0\tsource.txt"
-    assert (repository / "source.txt").read_text() == "implement 1\nimplement 2\n" * 2
+    assert git(origin, "rev-parse", campaign_ref) == git(repository, "rev-parse", campaign_ref)
+    assert (
+        git(origin, "show", f"{campaign_ref}:source.txt")
+        == ("implement 1\nimplement 2\n" * 2).strip()
+    )
+    assert git(origin, "rev-parse", "refs/heads/main") == head
+    assert not (repository / "source.txt").exists()
     assert (run_dir / "items" / "1.md").read_text() == "# Item one\n\nWrite source.txt.\n"
     assert (run_dir / "items" / "2.md").read_text() == "# Item two\n\nExtend source.txt.\n"
     shipped = [
@@ -341,20 +430,29 @@ def test_campaign_merges_each_split_item_into_the_base_and_stops_at_the_first_it
     assert len(git(repository, "worktree", "list").splitlines()) == 1
     one, two = (
         git(repository, "rev-parse", "--short", commit)
-        for commit in ("refs/heads/main~1", "refs/heads/main")
+        for commit in (f"{campaign_ref}~1", campaign_ref)
     )
+    url = "https://example.test/pull/1"
     assert capsys.readouterr().out == (
-        f"shipped Item one in 2 rounds, judge 0.83, {one}\nmerged Item one into main\n"
-        f"shipped Item two in 2 rounds, judge 0.83, {two}\nmerged Item two into main\n"
+        f"shipped Item one in 2 rounds, judge 0.83, {one}\naccepted Item one into campaign/run\n"
+        f"shipped Item two in 2 rounds, judge 0.83, {two}\naccepted Item two into campaign/run\n"
+        f"{url}\n"
     )
+    body = "# Goal\n\nWrite two items.\n\nAccepted work items:\n- Item one\n- Item two"
+    assert publications() == [{
+        "args": ["pr", "create", "--base", "topic", "--head", "campaign/run",
+                 "--title", "Goal", "--body", body],
+        "cwd": str(repository),
+        "head": git(repository, "rev-parse", campaign_ref),
+    }]  # fmt: skip
+    assert len(push_log.read_text().splitlines()) == 1
 
-    head = git(repository, "rev-parse", "refs/heads/main")
     monkeypatch.setenv("FAKE_PI_JUDGE_ZERO", "1")
     assert run_campaign(pi, repository, tmp_path / "zero", goal) == 1
     worktree, sha = kept(repository, tmp_path / "zero", head)
     assert capsys.readouterr().out == (
         f"shipped Item one in 2 rounds, judge 0.00, {sha}\n"
-        f"not merged Item one: judge 0.00: {worktree}\n"
+        f"not accepted Item one: judge 0.00: {worktree}\n"
     )
     monkeypatch.delenv("FAKE_PI_JUDGE_ZERO")
     earlier = len(calls())
@@ -366,7 +464,7 @@ def test_campaign_merges_each_split_item_into_the_base_and_stops_at_the_first_it
     worktree, sha = kept(repository, tmp_path / "unjudged", head)
     assert capsys.readouterr().out == (
         f"shipped Item one in 2 rounds, judge failed, {sha}\n"
-        f"not merged Item one: judge failed: {worktree}\n"
+        f"not accepted Item one: judge failed: {worktree}\n"
     )
     monkeypatch.delenv("FAKE_PI_JUDGE_FAIL")
     assert run_campaign(pi, repository, tmp_path / "stopped", goal, "--rounds", "1") == 1
@@ -374,39 +472,205 @@ def test_campaign_merges_each_split_item_into_the_base_and_stops_at_the_first_it
     assert git(repository, "log", "--format=%s", "refs/heads/main..ship/stopped-1") == "round 1"
     assert capsys.readouterr().out == f"stopped Item one after 1 rounds: {worktree}\n"
 
-    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", "2")
+    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", "1")
     earlier = len(calls())
     assert run_campaign(pi, repository, tmp_path / "blocked", goal) == 1
     worktree, _ = kept(repository, tmp_path / "blocked", head)
-    assert git(repository, "log", "--format=%s", "refs/heads/main..ship/blocked-1") == "round 1"
+    assert git(repository, "log", "--format=%s", "refs/heads/main..ship/blocked-1") == ""
     assert capsys.readouterr().out == (
-        f"blocked Item one after 2 rounds: {worktree}\n"
+        f"blocked Item one after 1 rounds: {worktree}\n"
         "Cannot proceed without the missing requirements.\n"
     )
     assert [call["session"] for call in calls()[earlier:]] == [
         "split-1", "plan-1", "plan-1", "plan-1", "implement-1",
-        "review-1", "review-1", "review-1", "implement-2",
     ]  # fmt: skip
     assert not (tmp_path / "blocked" / "blocked-2").exists()
     monkeypatch.delenv("FAKE_PI_BLOCK_ROUND")
+    assert len(publications()) == len(push_log.read_text().splitlines()) == 1
 
+    (repository / "README.md").write_text("staged edit\n")
+    git(repository, "add", "README.md")
+    (repository / "README.md").write_text("unstaged edit\n")
     (repository / "source.txt").write_text("local edit\n")
-    assert run_campaign(pi, repository, tmp_path / "conflict", goal) == 1
-    worktree, sha = kept(repository, tmp_path / "conflict", head)
-    out, err = capsys.readouterr()
-    assert out == (
-        f"shipped Item one in 2 rounds, judge 0.83, {sha}\nnot merged Item one: {worktree}\n"
-    )
-    assert "merge failed on Item one: git merge failed:" in err
-    assert "would be overwritten by merge" in err
+    status = git(repository, "status", "--porcelain")
+    index = (repository / ".git" / "index").read_bytes()
+    assert run_campaign(pi, repository, tmp_path / "dirty", goal) == 0
+    assert (repository / ".git" / "index").read_bytes() == index
+    assert git(repository, "status", "--porcelain") == status
+    assert git(repository, "symbolic-ref", "HEAD") == "refs/heads/main"
+    assert git(repository, "rev-parse", "refs/heads/main") == head
+    assert (repository / "README.md").read_text() == "unstaged edit\n"
     assert (repository / "source.txt").read_text() == "local edit\n"
+    assert git(repository, "branch", "--list", "ship/dirty-*") == ""
+    assert git(origin, "rev-parse", "refs/heads/campaign/dirty") == git(
+        repository, "rev-parse", "refs/heads/campaign/dirty"
+    )
+    assert publications()[-1]["args"] == [
+        "pr", "create", "--base", "main", "--head", "campaign/dirty",
+        "--title", "Goal", "--body", body,
+    ]  # fmt: skip
+    assert capsys.readouterr().out.endswith(f"{url}\n")
 
+    monkeypatch.setenv("FAKE_PI_CONTROL_ITEM", "2")
+    for label, flag, value, reason in (
+        ("partial-blocked", "FAKE_PI_BLOCK_ROUND", "1",
+         "blocked after 1 rounds: Cannot proceed without the missing requirements."),
+        ("partial-stopped", "FAKE_PI_REVIEW_FIX", "1", "stopped after 2 rounds"),
+        ("partial-zero", "FAKE_PI_JUDGE_ZERO", "1", "judge 0.00"),
+        ("partial-unjudged", "FAKE_PI_JUDGE_FAIL", "1", "judge failed"),
+    ):  # fmt: skip
+        monkeypatch.setenv(flag, value)
+        run_dir = tmp_path / label
+        before = len(publications())
+        assert run_campaign(pi, repository, run_dir, goal, "--rounds", "2") == 1
+        monkeypatch.delenv(flag)
+        campaign_ref = f"refs/heads/campaign/{label}"
+        assert git(repository, "log", "--format=%s", campaign_ref) == "Item one\ninit"
+        assert git(origin, "rev-parse", campaign_ref) == git(repository, "rev-parse", campaign_ref)
+        assert git(origin, "show", f"{campaign_ref}:source.txt") == "implement 1\nimplement 2"
+        assert not (run_dir / f"{label}-1" / "worktree").exists()
+        assert git(repository, "branch", "--list", f"ship/{label}-1") == ""
+        worktree = run_dir / f"{label}-2" / "worktree"
+        assert worktree.is_dir()
+        assert git(repository, "rev-parse", f"refs/heads/ship/{label}-2") == git(
+            worktree, "rev-parse", "HEAD"
+        )
+        assert len(publications()) == before + 1
+        assert publications()[-1]["args"] == [
+            "pr", "create", "--base", "main", "--head", f"campaign/{label}",
+            "--title", "Goal", "--draft", "--body",
+            "# Goal\n\nWrite two items.\n\nAccepted work items:\n- Item one"
+            f"\n\nStopped at Item two: {reason}",
+        ]  # fmt: skip
+        assert capsys.readouterr().out.endswith(f"{url}\n")
+    monkeypatch.delenv("FAKE_PI_CONTROL_ITEM")
+
+    hook = repository / ".git" / "hooks" / "reference-transaction"
+    hook.write_text(
+        f"#!{sys.executable}\n"
+        "import subprocess\nimport sys\n"
+        "if sys.argv[1] == 'prepared':\n"
+        "    for line in sys.stdin:\n"
+        "        old, new, ref = line.split()\n"
+        "        if ref == 'refs/heads/campaign/advance':\n"
+        "            subject = subprocess.run(['git', 'log', '-1', '--format=%s', new],\n"
+        "                capture_output=True, text=True, check=True).stdout.strip()\n"
+        "            if subject == 'Item two':\n"
+        "                sys.exit('campaign ref rejected')\n"
+        "        if ref == 'refs/heads/ship/execute-2':\n"
+        "            sys.exit('item branch creation rejected')\n"
+        "        if ref == 'refs/heads/ship/cleanup-1' and new == '0' * len(new):\n"
+        "            sys.exit('item branch deletion rejected')\n"
+    )
+    hook.chmod(0o755)
+    assert run_campaign(pi, repository, tmp_path / "advance", goal) == 1
+    assert git(repository, "log", "--format=%s", "refs/heads/campaign/advance") == "Item one\ninit"
+    assert (tmp_path / "advance" / "advance-2" / "worktree").is_dir()
+    assert git(repository, "branch", "--list", "--format=%(refname)", "ship/advance-2") == (
+        "refs/heads/ship/advance-2"
+    )
+    assert "--draft" in publications()[-1]["args"]
+    assert "Stopped at Item two: git update-ref failed:" in publications()[-1]["args"][-1]
+    out, err = capsys.readouterr()
+    assert out.endswith(f"{url}\n")
+    assert "campaign failed on Item two:" in err and "campaign ref rejected" in err
+
+    for label, name, command, evidence in (
+        ("execute", "Item two", "worktree", "item branch creation rejected"),
+        ("cleanup", "Item one", "branch", "item branch deletion rejected"),
+    ):
+        run_dir = tmp_path / label
+        earlier = len(calls())
+        before = len(publications())
+        pushes = len(push_log.read_text().splitlines())
+        assert run_campaign(pi, repository, run_dir, goal) == 1
+        campaign_ref = f"refs/heads/campaign/{label}"
+        accepted_head = git(repository, "rev-parse", campaign_ref)
+        assert git(repository, "log", "--format=%s", campaign_ref) == "Item one\ninit"
+        assert git(origin, "rev-parse", campaign_ref) == accepted_head
+        assert git(origin, "show", f"{campaign_ref}:source.txt") == "implement 1\nimplement 2"
+        assert len(push_log.read_text().splitlines()) == pushes + 1
+        assert len(publications()) == before + 1
+        publication = publications()[-1]
+        assert publication["head"] == accepted_head
+        assert publication["args"][:-1] == [
+            "pr", "create", "--base", "main", "--head", f"campaign/{label}",
+            "--title", "Goal", "--draft", "--body",
+        ]  # fmt: skip
+        assert publication["args"][-1].startswith(
+            "# Goal\n\nWrite two items.\n\nAccepted work items:\n- Item one"
+            f"\n\nStopped at {name}: git {command} failed:"
+        )
+        assert evidence in publication["args"][-1]
+        assert [call["session"] for call in calls()[earlier:]] == ["split-1", *shipped]
+        assert not (run_dir / f"{label}-1" / "worktree").exists()
+        assert not (run_dir / f"{label}-2" / "worktree").exists()
+        assert (run_dir / "items" / "2.md").exists() == (label == "execute")
+        if label == "cleanup":
+            assert git(repository, "rev-parse", "refs/heads/ship/cleanup-1") == accepted_head
+        else:
+            assert git(repository, "branch", "--list", "ship/execute-*") == ""
+        assert git(repository, "rev-parse", "refs/heads/main") == head
+        assert git(origin, "rev-parse", "refs/heads/main") == head
+        assert git(repository, "symbolic-ref", "HEAD") == "refs/heads/main"
+        assert git(repository, "status", "--porcelain") == status
+        assert (repository / ".git" / "index").read_bytes() == index
+        assert (repository / "README.md").read_text() == "unstaged edit\n"
+        assert (repository / "source.txt").read_text() == "local edit\n"
+        out, err = capsys.readouterr()
+        assert out.endswith(f"{url}\n")
+        assert f"campaign failed on {name}: git {command} failed:" in err
+        assert evidence in err
+    hook.unlink()
+
+    before = len(publications())
+    monkeypatch.setenv("FAKE_GIT_PUSH_FAIL", "1")
+    assert run_campaign(pi, repository, tmp_path / "push-failed", goal) == 1
+    monkeypatch.delenv("FAKE_GIT_PUSH_FAIL")
+    assert len(publications()) == before
+    assert git(origin, "branch", "--list", "campaign/push-failed") == ""
+    assert git(repository, "log", "--format=%s", "refs/heads/campaign/push-failed") == (
+        "Item two\nItem one\ninit"
+    )
+    out, err = capsys.readouterr()
+    assert url not in out
+    assert "publication failed for campaign/push-failed: git push failed:" in err
+    assert "origin rejected campaign" in err
+
+    monkeypatch.setenv("FAKE_GH_FAIL", "1")
+    assert run_campaign(pi, repository, tmp_path / "pr-failed", goal) == 1
+    monkeypatch.delenv("FAKE_GH_FAIL")
+    assert len(publications()) == before + 1
+    assert git(origin, "rev-parse", "refs/heads/campaign/pr-failed") == git(
+        repository, "rev-parse", "refs/heads/campaign/pr-failed"
+    )
+    out, err = capsys.readouterr()
+    assert url not in out
+    assert "publication failed for campaign/pr-failed:" in err
+    assert "PR creation refused" in err and "GitHub unavailable" in err
+
+    missing = tmp_path / "missing-gh"
+    assert run_campaign(pi, repository, tmp_path / "no-gh", goal, "--gh", str(missing)) == 1
+    assert len(publications()) == before + 1
+    assert git(origin, "rev-parse", "refs/heads/campaign/no-gh") == git(
+        repository, "rev-parse", "refs/heads/campaign/no-gh"
+    )
+    out, err = capsys.readouterr()
+    assert url not in out
+    assert "publication failed for campaign/no-gh:" in err and str(missing) in err
+
+    before = len(publications()), push_log.read_text()
     monkeypatch.setenv("FAKE_PI_SPLIT_EMPTY", "1")
     assert run_campaign(pi, repository, tmp_path / "empty", goal) == 0
     assert capsys.readouterr().out == "nothing left of Goal\n"
     assert calls()[-1]["cwd"] == str(tmp_path / "empty" / "split")
     assert not (tmp_path / "empty" / "split").exists()
     assert not (tmp_path / "empty" / "items").exists()
+    assert (len(publications()), push_log.read_text()) == before
+    assert git(repository, "rev-parse", "refs/heads/main") == head
+    assert (repository / ".git" / "index").read_bytes() == index
+    assert (repository / "README.md").read_text() == "unstaged edit\n"
+    assert (repository / "source.txt").read_text() == "local edit\n"
 
 
 def test_ship_in_herdr_runs_each_session_in_one_pane_and_closes_it(
@@ -423,7 +687,8 @@ def test_ship_in_herdr_runs_each_session_in_one_pane_and_closes_it(
         str(repository), "main", item, tmp_path / "run", command=str(pi), herdr="w1:p1"
     )
 
-    assert shipped
+    assert shipped.status == "shipped"
+    assert shipped.head == git(repository, "rev-parse", "refs/heads/ship/run")
     herdr_calls = json.loads((tmp_path / "herdr.json").read_text())["calls"]
     splits = [call for call in herdr_calls if call[:2] == ["pane", "split"]]
     starts = [call for call in herdr_calls if call[:2] == ["agent", "start"]]
@@ -452,29 +717,25 @@ def test_optimize_scores_rollouts_updates_templates_and_stops_on_errors(
     repository, pi, item, tmp_path, monkeypatch
 ):
     base = git(repository, "rev-parse", "HEAD")
-    earlier = 0
-    for blocked_round in (1, 2):
-        monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", str(blocked_round))
-        run_dir = tmp_path / f"blocked-{blocked_round}"
-        result = Rollout(repository, base, run_dir, str(pi), None, 3)(
-            item=item.read_text(), path=str(item)
-        )
-        assert result.score == 0
-        assert result.feedback == (
-            f"Did not ship: blocked in round {blocked_round} with "
-            "no changes from the round's starting commit.\n"
-            "Cannot proceed without the missing requirements."
-        )
-        sessions = ["plan-1", "plan-1", "plan-1", "implement-1"]
-        if blocked_round == 2:
-            sessions += ["review-1", "review-1", "review-1", "implement-2"]
-        assert [call["session"] for call in calls()[earlier:]] == sessions
-        [folder] = (run_dir / "rollouts").iterdir()
-        assert not (folder / "worktree").exists()
-        assert not (folder / "judge").exists()
-        assert len(git(repository, "worktree", "list").splitlines()) == 1
-        assert git(repository, "rev-parse", "HEAD") == base
-        earlier = len(calls())
+    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", "1")
+    run_dir = tmp_path / "blocked"
+    result = Rollout(repository, base, run_dir, str(pi), None, 3)(
+        item=item.read_text(), path=str(item)
+    )
+    assert result.score == 0
+    assert result.feedback == (
+        "Did not ship: blocked in round 1 with "
+        "no changes from the ship's starting commit.\n"
+        "Cannot proceed without the missing requirements."
+    )
+    assert [call["session"] for call in calls()] == [
+        "plan-1", "plan-1", "plan-1", "implement-1",
+    ]  # fmt: skip
+    [folder] = (run_dir / "rollouts").iterdir()
+    assert not (folder / "worktree").exists()
+    assert not (folder / "judge").exists()
+    assert len(git(repository, "worktree", "list").splitlines()) == 1
+    assert git(repository, "rev-parse", "HEAD") == base
     monkeypatch.delenv("FAKE_PI_BLOCK_ROUND")
 
     # With PYTHONPATH on the copy, `prompts.DIRECTORY` is the copy's `prompts/`.

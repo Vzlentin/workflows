@@ -92,8 +92,8 @@ class Ship(dspy.Module):
         self.rounds = rounds
 
     def forward(self, pi: Pi, item: str) -> dspy.Prediction:
-        """Changed rounds in `pi.cwd` reach review; an unchanged round blocks with the reply.
-        A shipped item is squashed into one commit, `head`."""
+        """A staged tree in `pi.cwd` that matches the ship's starting commit blocks with the reply.
+        Otherwise rounds reach review; a shipped item is squashed into one commit, `head`."""
         start = git(pi.cwd, "rev-parse", "HEAD")
         with Conversation(pi, PLANNER, "plan") as session:
             session(self.plan, item=item)
@@ -104,7 +104,7 @@ class Ship(dspy.Module):
             with Conversation(pi, IMPLEMENTER, "implement") as session:
                 reply = session(self.implement, plan=plan).text
             git(pi.cwd, "add", "-A")
-            if not git(pi.cwd, "diff", "--cached", "--name-only", before):
+            if not git(pi.cwd, "diff", "--cached", "--name-only", start):
                 return dspy.Prediction(
                     status="blocked", rounds=n, head=git(pi.cwd, "rev-parse", "HEAD"), reply=reply
                 )
@@ -165,8 +165,8 @@ def ship(
     rounds: int = 3,
     command: str = "pi",
     herdr: str | None = None,
-) -> bool:
-    """Whether the item shipped onto `ship/<run>`; stopped or blocked items keep round commits."""
+) -> dspy.Prediction:
+    """The item's status, rounds and final head on `ship/<run>`; blocked items include the reply."""
     text = read_item(item)
     name = subject(text)
     root = workspace.repository_root(repository)
@@ -178,7 +178,7 @@ def ship(
         print(f"{result.status} {name} after {result.rounds} rounds: {worktree}")
         if result.status == "blocked":
             print(result.reply)
-        return False
+        return result
     judge_pi = Pi(directory / "sessions", directory / "judge", command, herdr)
     try:
         verdict = judge(judge_pi, root, text, commit, result.head)
@@ -188,6 +188,7 @@ def ship(
     else:
         git(worktree, "commit", "--amend", "-m", message(text, result.rounds, verdict))
         score = f"{verdict.score:.2f}"
+    result.head = git(worktree, "rev-parse", "HEAD")
     sha = git(worktree, "rev-parse", "--short", "HEAD")
     print(f"shipped {name} in {result.rounds} rounds, judge {score}, {sha}")
-    return True
+    return result
