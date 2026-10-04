@@ -47,11 +47,12 @@ new pane; elsewhere, or with `--headless`, sessions run with `pi --mode json`. T
 non-empty line, checked before the run starts.
 
 After each implement session the engine stages everything. If the staged tree matches the
-round's starting commit, the run is blocked. The command prints
+ship's starting commit, the run is blocked. The command prints
 `blocked <item> after <n> rounds: <worktree>`, then the implementer's reply, and exits 1. That
 attempt counts as a round, but makes no round commit or patch and opens no review or judge session.
 
 Otherwise the engine commits any staged changes relative to current `HEAD` as `round <n>`.
+A round with no new changes still reaches review if earlier changes remain, without a new commit.
 Implementer commits are included in the round's patches and review. A shipped item is squashed
 into one commit, then a fixed judge reviews it in its own worktree:
 

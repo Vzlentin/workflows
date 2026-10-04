@@ -239,11 +239,55 @@ def test_ship_reviews_and_squashes_implementer_commits(
     assert "\n implement 1\n+implement 2\n" in (patches / "round-2-fix.patch").read_text()
 
 
-@pytest.mark.parametrize("blocked_round", [1, 2])
-def test_ship_blocks_on_an_empty_round_without_reviewing_or_judging(
-    repository, pi, item, tmp_path, capsys, monkeypatch, blocked_round
+@pytest.mark.parametrize("review_fix", [False, True])
+def test_ship_reviews_an_unchanged_round_after_earlier_changes(
+    repository, pi, item, tmp_path, capsys, monkeypatch, review_fix
 ):
-    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", str(blocked_round))
+    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", "2")
+    if review_fix:
+        monkeypatch.setenv("FAKE_PI_REVIEW_FIX", "1")
+    run_dir = tmp_path / "run"
+    assert main(
+        ["ship", "--headless", "--pi", str(pi), "--repo", str(repository),
+         "--rounds", "2", "--run-dir", str(run_dir), str(item)]
+    ) == (1 if review_fix else 0)  # fmt: skip
+
+    worktree = run_dir / "worktree"
+    assert (worktree / "source.txt").read_text() == "implement 1\n"
+    assert git(worktree, "status", "--porcelain") == ""
+    assert git(worktree, "log", "--format=%s", "main..HEAD") == (
+        "round 1" if review_fix else "Item one"
+    )
+    assert [call["session"] for call in calls()] == [
+        "plan-1", "plan-1", "plan-1", "implement-1", "review-1", "review-1", "review-1",
+        "implement-2", "review-2", "review-2", "review-2" if review_fix else "judge-1",
+    ]  # fmt: skip
+    patches = run_dir / "sessions"
+    review = calls()[8]["prompt"]
+    assert str(patches / "round-2.patch") in review
+    assert str(patches / "round-2-fix.patch") in review
+    assert review.endswith("\n\n## reply\nCannot proceed without the missing requirements.")
+    assert (patches / "round-2.patch").read_text() == (patches / "round-1.patch").read_text()
+    assert "+implement 1\n" in (patches / "round-2.patch").read_text()
+    assert (patches / "round-2-fix.patch").read_text() == "\n"
+    out, err = capsys.readouterr()
+    assert err == f"run directory: {run_dir}\n"
+    if review_fix:
+        assert out == f"stopped Item one after 2 rounds: {worktree}\n"
+        assert git(worktree, "log", "-1", "--format=%(trailers:only)") == ""
+    else:
+        assert git(worktree, "log", "-1", "--format=%(trailers:only)").splitlines() == [
+            "Rounds: 2", "Judge: 0.83",
+        ]  # fmt: skip
+        sha = git(worktree, "rev-parse", "--short", "HEAD")
+        assert out == f"shipped Item one in 2 rounds, judge 0.83, {sha}\n"
+        assert calls()[10]["cwd"] == str(run_dir / "judge")
+
+
+def test_ship_blocks_without_changes_from_the_starting_commit_without_reviewing_or_judging(
+    repository, pi, item, tmp_path, capsys, monkeypatch
+):
+    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", "1")
     base = git(repository, "rev-parse", "HEAD")
     run_dir = tmp_path / "blocked"
     assert main(
@@ -254,7 +298,7 @@ def test_ship_blocks_on_an_empty_round_without_reviewing_or_judging(
     worktree = run_dir / "worktree"
     out, err = capsys.readouterr()
     assert out == (
-        f"blocked Item one after {blocked_round} rounds: {worktree}\n"
+        f"blocked Item one after 1 rounds: {worktree}\n"
         "Cannot proceed without the missing requirements.\n"
     )
     assert err == f"run directory: {run_dir}\n"
@@ -263,23 +307,14 @@ def test_ship_blocks_on_an_empty_round_without_reviewing_or_judging(
     assert git(repository, "rev-parse", "refs/heads/ship/blocked") == git(
         worktree, "rev-parse", "HEAD"
     )
-    assert git(worktree, "rev-parse", f"HEAD~{blocked_round - 1}") == base
-    assert git(worktree, "log", "--format=%s", "main..HEAD") == (
-        "round 1" if blocked_round == 2 else ""
-    )
+    assert git(worktree, "rev-parse", "HEAD") == base
+    assert git(worktree, "log", "--format=%s", "main..HEAD") == ""
     assert git(worktree, "status", "--porcelain") == ""
-    if blocked_round == 2:
-        assert (worktree / "source.txt").read_text() == "implement 1\n"
-        assert git(worktree, "log", "-1", "--format=%(trailers:only)") == ""
-    else:
-        assert not (worktree / "source.txt").exists()
-    sessions = ["plan-1", "plan-1", "plan-1", "implement-1"]
-    if blocked_round == 2:
-        sessions += ["review-1", "review-1", "review-1", "implement-2"]
-    assert [call["session"] for call in calls()] == sessions
-    assert sorted(path.name for path in (run_dir / "sessions").glob("*.patch")) == (
-        ["round-1.patch"] if blocked_round == 2 else []
-    )
+    assert not (worktree / "source.txt").exists()
+    assert [call["session"] for call in calls()] == [
+        "plan-1", "plan-1", "plan-1", "implement-1",
+    ]  # fmt: skip
+    assert list((run_dir / "sessions").glob("*.patch")) == []
     assert not (run_dir / "judge").exists()
 
 
@@ -437,18 +472,17 @@ def test_campaign_publishes_accepted_items_in_one_pr_and_a_draft_after_a_stop(
     assert git(repository, "log", "--format=%s", "refs/heads/main..ship/stopped-1") == "round 1"
     assert capsys.readouterr().out == f"stopped Item one after 1 rounds: {worktree}\n"
 
-    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", "2")
+    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", "1")
     earlier = len(calls())
     assert run_campaign(pi, repository, tmp_path / "blocked", goal) == 1
     worktree, _ = kept(repository, tmp_path / "blocked", head)
-    assert git(repository, "log", "--format=%s", "refs/heads/main..ship/blocked-1") == "round 1"
+    assert git(repository, "log", "--format=%s", "refs/heads/main..ship/blocked-1") == ""
     assert capsys.readouterr().out == (
-        f"blocked Item one after 2 rounds: {worktree}\n"
+        f"blocked Item one after 1 rounds: {worktree}\n"
         "Cannot proceed without the missing requirements.\n"
     )
     assert [call["session"] for call in calls()[earlier:]] == [
         "split-1", "plan-1", "plan-1", "plan-1", "implement-1",
-        "review-1", "review-1", "review-1", "implement-2",
     ]  # fmt: skip
     assert not (tmp_path / "blocked" / "blocked-2").exists()
     monkeypatch.delenv("FAKE_PI_BLOCK_ROUND")
@@ -479,8 +513,8 @@ def test_campaign_publishes_accepted_items_in_one_pr_and_a_draft_after_a_stop(
 
     monkeypatch.setenv("FAKE_PI_CONTROL_ITEM", "2")
     for label, flag, value, reason in (
-        ("partial-blocked", "FAKE_PI_BLOCK_ROUND", "2",
-         "blocked after 2 rounds: Cannot proceed without the missing requirements."),
+        ("partial-blocked", "FAKE_PI_BLOCK_ROUND", "1",
+         "blocked after 1 rounds: Cannot proceed without the missing requirements."),
         ("partial-stopped", "FAKE_PI_REVIEW_FIX", "1", "stopped after 2 rounds"),
         ("partial-zero", "FAKE_PI_JUDGE_ZERO", "1", "judge 0.00"),
         ("partial-unjudged", "FAKE_PI_JUDGE_FAIL", "1", "judge failed"),
@@ -683,29 +717,25 @@ def test_optimize_scores_rollouts_updates_templates_and_stops_on_errors(
     repository, pi, item, tmp_path, monkeypatch
 ):
     base = git(repository, "rev-parse", "HEAD")
-    earlier = 0
-    for blocked_round in (1, 2):
-        monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", str(blocked_round))
-        run_dir = tmp_path / f"blocked-{blocked_round}"
-        result = Rollout(repository, base, run_dir, str(pi), None, 3)(
-            item=item.read_text(), path=str(item)
-        )
-        assert result.score == 0
-        assert result.feedback == (
-            f"Did not ship: blocked in round {blocked_round} with "
-            "no changes from the round's starting commit.\n"
-            "Cannot proceed without the missing requirements."
-        )
-        sessions = ["plan-1", "plan-1", "plan-1", "implement-1"]
-        if blocked_round == 2:
-            sessions += ["review-1", "review-1", "review-1", "implement-2"]
-        assert [call["session"] for call in calls()[earlier:]] == sessions
-        [folder] = (run_dir / "rollouts").iterdir()
-        assert not (folder / "worktree").exists()
-        assert not (folder / "judge").exists()
-        assert len(git(repository, "worktree", "list").splitlines()) == 1
-        assert git(repository, "rev-parse", "HEAD") == base
-        earlier = len(calls())
+    monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", "1")
+    run_dir = tmp_path / "blocked"
+    result = Rollout(repository, base, run_dir, str(pi), None, 3)(
+        item=item.read_text(), path=str(item)
+    )
+    assert result.score == 0
+    assert result.feedback == (
+        "Did not ship: blocked in round 1 with "
+        "no changes from the ship's starting commit.\n"
+        "Cannot proceed without the missing requirements."
+    )
+    assert [call["session"] for call in calls()] == [
+        "plan-1", "plan-1", "plan-1", "implement-1",
+    ]  # fmt: skip
+    [folder] = (run_dir / "rollouts").iterdir()
+    assert not (folder / "worktree").exists()
+    assert not (folder / "judge").exists()
+    assert len(git(repository, "worktree", "list").splitlines()) == 1
+    assert git(repository, "rev-parse", "HEAD") == base
     monkeypatch.delenv("FAKE_PI_BLOCK_ROUND")
 
     # With PYTHONPATH on the copy, `prompts.DIRECTORY` is the copy's `prompts/`.
