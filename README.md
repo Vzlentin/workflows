@@ -23,17 +23,19 @@ Tool selection is the same in headless and Herdr sessions:
 
 ## Setup
 
-Requires Python 3.13, uv, Git, and `pi` on `PATH`.
+Requires Python 3.13, uv, Git, and `pi` on `PATH`. Install the `workflows` command from this
+checkout as an editable uv tool, so it always runs the checkout's code and `optimize` writes its
+prompts back here:
 
 ```sh
-uv sync
+uv tool install --editable .
 ```
 
 ## Ship
 
 ```sh
-uv run workflows ship --repo /absolute/path/to/repository --base main item.md
-echo 'Fix the README typo' | uv run workflows ship --repo /absolute/path/to/repository /dev/stdin
+workflows ship --repo /absolute/path/to/repository --base main item.md
+echo 'Fix the README typo' | workflows ship --repo /absolute/path/to/repository /dev/stdin
 ```
 
 The item is a markdown work item file; to ship text without a file, pipe it to `/dev/stdin`. The
@@ -79,7 +81,7 @@ stay until you delete them. For `ship`, label an item by merging its commit into
 ## Campaign
 
 ```sh
-uv run workflows campaign --repo /absolute/path/to/repository --base main goal.md
+workflows campaign --repo /absolute/path/to/repository --base main goal.md
 ```
 
 The goal is a markdown file, checked like a work item before the run starts. `--base` must name
@@ -116,7 +118,7 @@ specified base, not from an earlier campaign branch unless you use that branch a
 ## Optimize
 
 ```sh
-uv run workflows optimize --repo /absolute/path/to/repository --base main --budget 40 one.md two.md
+workflows optimize --repo /absolute/path/to/repository --base main --budget 40 one.md two.md
 ```
 
 [GEPA](https://github.com/gepa-ai/gepa) rewrites the `plan`, `challenge`, `handoff`,
