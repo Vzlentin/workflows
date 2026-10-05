@@ -417,7 +417,34 @@ def test_campaign_publishes_accepted_items_in_one_pr_and_a_draft_after_a_stop(
         "plan-1", "plan-1", "plan-1", "implement-1", "review-1", "review-1", "review-1",
         "implement-2", "review-2", "review-2", "judge-1",
     ]  # fmt: skip
-    assert [call["session"] for call in calls()] == ["split-1", *shipped, *shipped]
+    assert [call["session"] for call in calls()] == ["split-1", *shipped, *shipped, "pr-1"]
+    writer = calls()[-1]
+    accepted_head = git(repository, "rev-parse", campaign_ref)
+    assert writer["cwd"] == str(run_dir / "pr")
+    assert writer["head"] == writer["pushed_head"] == accepted_head
+    assert writer["detached"]
+    assert writer["args"][writer["args"].index("--mode") + 1] == "json"
+    assert writer["args"][writer["args"].index("--tools") + 1] == "read,grep,find,ls,bash"
+    assert writer["args"][writer["args"].index("--model") + 1] == "openai-codex/gpt-6-astra"
+    assert writer["args"][writer["args"].index("--thinking") + 1] == "xhigh"
+    assert "--session" not in writer["args"]
+    assert load("pr") in writer["prompt"]
+    assert "Load and follow the `writing-pr` skill." in writer["prompt"]
+    assert "inspect the aggregate diff" in writer["prompt"]
+    assert "explain the stopped work item and reason" in writer["prompt"]
+    assert "## goal\n# Goal\n\nWrite two items." in writer["prompt"]
+    assert "## base\nrefs/heads/topic" in writer["prompt"]
+    assert f"## head\n{accepted_head}" in writer["prompt"]
+    assert "## stop\nNo early stop." in writer["prompt"]
+    assert writer["prompt"].endswith(
+        "End with a ```json fenced block with a JSON array of exactly two non-blank strings: "
+        "[title, body], with a single-line title and a markdown body."
+    )
+    record = run_dir / "sessions" / "pr-1"
+    assert (record / "prompt-1.md").read_text() == writer["prompt"]
+    assert list(record.glob("*.jsonl"))
+    assert not (record / "prompt-2.md").exists()
+    assert not (run_dir / "pr").exists()
     assert calls()[0]["args"][calls()[0]["args"].index("--tools") + 1] == "read,grep,find,ls"
     assert calls()[0]["cwd"] == str(run_dir / "split")
     assert "## goal\n# Goal\n\nWrite two items." in calls()[0]["prompt"]
@@ -438,10 +465,12 @@ def test_campaign_publishes_accepted_items_in_one_pr_and_a_draft_after_a_stop(
         f"shipped Item two in 2 rounds, judge 0.83, {two}\naccepted Item two into campaign/run\n"
         f"{url}\n"
     )
-    body = "# Goal\n\nWrite two items.\n\nAccepted work items:\n- Item one\n- Item two"
+    title = "Write and extend source.txt"
+    body = "- Add source.txt.\n- Extend source.txt."
+    fallback = "# Goal\n\nWrite two items.\n\nAccepted work items:\n- Item one\n- Item two"
     assert publications() == [{
         "args": ["pr", "create", "--base", "topic", "--head", "campaign/run",
-                 "--title", "Goal", "--body", body],
+                 "--title", title, "--body", body],
         "cwd": str(repository),
         "head": git(repository, "rev-parse", campaign_ref),
     }]  # fmt: skip
@@ -507,7 +536,7 @@ def test_campaign_publishes_accepted_items_in_one_pr_and_a_draft_after_a_stop(
     )
     assert publications()[-1]["args"] == [
         "pr", "create", "--base", "main", "--head", "campaign/dirty",
-        "--title", "Goal", "--body", body,
+        "--title", title, "--body", body,
     ]  # fmt: skip
     assert capsys.readouterr().out.endswith(f"{url}\n")
 
@@ -538,10 +567,21 @@ def test_campaign_publishes_accepted_items_in_one_pr_and_a_draft_after_a_stop(
         assert len(publications()) == before + 1
         assert publications()[-1]["args"] == [
             "pr", "create", "--base", "main", "--head", f"campaign/{label}",
-            "--title", "Goal", "--draft", "--body",
-            "# Goal\n\nWrite two items.\n\nAccepted work items:\n- Item one"
-            f"\n\nStopped at Item two: {reason}",
+            "--title", title, "--draft", "--body",
+            f"{body}\n\nStopped at Item two: {reason}",
         ]  # fmt: skip
+        writer = calls()[-1]
+        accepted_head = git(repository, "rev-parse", campaign_ref)
+        assert writer["session"] == "pr-1"
+        assert writer["head"] == writer["pushed_head"] == accepted_head
+        assert writer["detached"]
+        assert "## base\nrefs/heads/main" in writer["prompt"]
+        assert f"## head\n{accepted_head}" in writer["prompt"]
+        assert f"## stop\nStopped at Item two: {reason}" in writer["prompt"]
+        assert not (run_dir / "pr").exists()
+        assert list((run_dir / "sessions" / "pr-1").glob("*.jsonl"))
+        if label != "partial-blocked":
+            assert writer["head"] != git(worktree, "rev-parse", "HEAD")
         assert capsys.readouterr().out.endswith(f"{url}\n")
     monkeypatch.delenv("FAKE_PI_CONTROL_ITEM")
 
@@ -595,14 +635,16 @@ def test_campaign_publishes_accepted_items_in_one_pr_and_a_draft_after_a_stop(
         assert publication["head"] == accepted_head
         assert publication["args"][:-1] == [
             "pr", "create", "--base", "main", "--head", f"campaign/{label}",
-            "--title", "Goal", "--draft", "--body",
+            "--title", title, "--draft", "--body",
         ]  # fmt: skip
         assert publication["args"][-1].startswith(
-            "# Goal\n\nWrite two items.\n\nAccepted work items:\n- Item one"
-            f"\n\nStopped at {name}: git {command} failed:"
+            f"{body}\n\nStopped at {name}: git {command} failed:"
         )
         assert evidence in publication["args"][-1]
-        assert [call["session"] for call in calls()[earlier:]] == ["split-1", *shipped]
+        assert [call["session"] for call in calls()[earlier:]] == ["split-1", *shipped, "pr-1"]
+        assert calls()[-1]["head"] == calls()[-1]["pushed_head"] == accepted_head
+        assert calls()[-1]["detached"]
+        assert not (run_dir / "pr").exists()
         assert not (run_dir / f"{label}-1" / "worktree").exists()
         assert not (run_dir / f"{label}-2" / "worktree").exists()
         assert (run_dir / "items" / "2.md").exists() == (label == "execute")
@@ -623,11 +665,110 @@ def test_campaign_publishes_accepted_items_in_one_pr_and_a_draft_after_a_stop(
         assert evidence in err
     hook.unlink()
 
+    for label, flag, value, evidence in (
+        ("writer-malformed", "FAKE_PI_PR_REPLY", "No PR text.", "No PR text."),
+        ("writer-short", "FAKE_PI_PR_REPLY", '```json\n["New title"]\n```', "['New title']"),
+        ("writer-long", "FAKE_PI_PR_REPLY", '```json\n["New title", "Body", "Extra"]\n```',
+         "['New title', 'Body', 'Extra']"),
+        ("writer-multiline", "FAKE_PI_PR_REPLY", '```json\n["New\\ntitle", "Body"]\n```',
+         "single-line title"),
+        ("writer-failed", "FAKE_PI_PR_FAIL", "1", "pi exited with 1: PR writer failed"),
+        ("draft-writer-failed", "FAKE_PI_PR_FAIL", "1", "pi exited with 1: PR writer failed"),
+    ):  # fmt: skip
+        draft = label == "draft-writer-failed"
+        if draft:
+            monkeypatch.setenv("FAKE_PI_CONTROL_ITEM", "2")
+            monkeypatch.setenv("FAKE_PI_BLOCK_ROUND", "1")
+        monkeypatch.setenv(flag, value)
+        run_dir = tmp_path / label
+        earlier = len(calls())
+        before = len(publications())
+        pushes = len(push_log.read_text().splitlines())
+        assert run_campaign(pi, repository, run_dir, goal, "--rounds", "2") == int(draft)
+        monkeypatch.delenv(flag)
+        if draft:
+            monkeypatch.delenv("FAKE_PI_CONTROL_ITEM")
+            monkeypatch.delenv("FAKE_PI_BLOCK_ROUND")
+        expected = fallback
+        args = [
+            "pr", "create", "--base", "main", "--head", f"campaign/{label}",
+            "--title", "Goal",
+        ]  # fmt: skip
+        if draft:
+            expected = (
+                "# Goal\n\nWrite two items.\n\nAccepted work items:\n- Item one"
+                "\n\nStopped at Item two: blocked after 1 rounds: "
+                "Cannot proceed without the missing requirements."
+            )
+            args.append("--draft")
+        assert publications()[-1]["args"] == [*args, "--body", expected]
+        assert len(publications()) == before + 1
+        assert len(push_log.read_text().splitlines()) == pushes + 1
+        assert [call["session"] for call in calls()[earlier:]].count("pr-1") == 1
+        writer = calls()[-1]
+        assert writer["head"] == writer["pushed_head"] == publications()[-1]["head"]
+        assert writer["detached"]
+        assert not (run_dir / "pr").exists()
+        record = run_dir / "sessions" / "pr-1"
+        assert (record / "prompt-1.md").read_text() == writer["prompt"]
+        assert (record / "pi.log").exists()
+        assert bool(list(record.glob("*.jsonl"))) == (flag == "FAKE_PI_PR_REPLY")
+        out, err = capsys.readouterr()
+        assert out.endswith(f"{url}\n")
+        assert f"PR text failed for campaign/{label}:" in err
+        assert evidence in err and "using goal text" in err
+        assert "publication failed" not in err
+
+    real_git = shutil.which("git")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    failing_git = bin_dir / "git"
+    failing_git.write_text(
+        f"#!{sys.executable}\n"
+        "import os\nimport sys\n"
+        "args = sys.argv[1:]\n"
+        "if args[:2] == ['worktree', 'add'] and args[-2].endswith('/writer-setup/pr'):\n"
+        "    sys.exit('PR worktree setup refused')\n"
+        "if args[:2] == ['worktree', 'remove'] and args[-1].endswith('/writer-cleanup/pr'):\n"
+        "    sys.exit('PR worktree cleanup refused')\n"
+        f"os.execv({real_git!r}, [{real_git!r}, *args])\n"
+    )
+    failing_git.chmod(0o755)
+    with monkeypatch.context() as environment:
+        environment.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+        for label, evidence in (
+            ("writer-setup", "PR worktree setup refused"),
+            ("writer-cleanup", "PR worktree cleanup refused"),
+        ):
+            run_dir = tmp_path / label
+            earlier = len(calls())
+            before = len(publications())
+            assert run_campaign(pi, repository, run_dir, goal) == 0
+            assert publications()[-1]["args"] == [
+                "pr", "create", "--base", "main", "--head", f"campaign/{label}",
+                "--title", "Goal", "--body", fallback,
+            ]  # fmt: skip
+            assert len(publications()) == before + 1
+            assert [call["session"] for call in calls()[earlier:]].count("pr-1") == (
+                0 if label == "writer-setup" else 1
+            )
+            assert (run_dir / "pr").exists() == (label == "writer-cleanup")
+            out, err = capsys.readouterr()
+            assert out.endswith(f"{url}\n")
+            assert f"PR text failed for campaign/{label}: git worktree failed:" in err
+            assert evidence in err and "using goal text" in err
+            assert "publication failed" not in err
+    git(repository, "worktree", "remove", "--force", str(tmp_path / "writer-cleanup" / "pr"))
+
     before = len(publications())
+    earlier = len(calls())
     monkeypatch.setenv("FAKE_GIT_PUSH_FAIL", "1")
     assert run_campaign(pi, repository, tmp_path / "push-failed", goal) == 1
     monkeypatch.delenv("FAKE_GIT_PUSH_FAIL")
     assert len(publications()) == before
+    assert [call["session"] for call in calls()[earlier:]] == ["split-1", *shipped, *shipped]
+    assert not (tmp_path / "push-failed" / "pr").exists()
+    assert not (tmp_path / "push-failed" / "sessions" / "pr-1").exists()
     assert git(origin, "branch", "--list", "campaign/push-failed") == ""
     assert git(repository, "log", "--format=%s", "refs/heads/campaign/push-failed") == (
         "Item two\nItem one\ninit"
@@ -658,6 +799,35 @@ def test_campaign_publishes_accepted_items_in_one_pr_and_a_draft_after_a_stop(
     out, err = capsys.readouterr()
     assert url not in out
     assert "publication failed for campaign/no-gh:" in err and str(missing) in err
+
+    herdr = tmp_path / "herdr"
+    herdr.write_text(f'#!/bin/sh\nexec {sys.executable} {FAKE_HERDR} "$@"\n')
+    herdr.chmod(0o755)
+    state = tmp_path / "campaign-herdr.json"
+    run_dir = tmp_path / "visible"
+    with monkeypatch.context() as environment:
+        environment.setenv("HERDR_ENV", "1")
+        environment.setenv("HERDR_PANE_ID", "w1:p1")
+        environment.setenv("FAKE_HERDR_STATE", str(state))
+        assert run_campaign(pi, repository, run_dir, goal) == 0
+    herdr_calls = json.loads(state.read_text())["calls"]
+    [start] = [
+        call for call in herdr_calls
+        if call[:2] == ["agent", "start"]
+        and call[call.index("--session-dir") + 1] == str(run_dir / "sessions" / "pr-1")
+    ]  # fmt: skip
+    assert start[start.index("--tools") + 1] == "read,grep,find,ls,bash"
+    assert herdr_calls[-1] == ["pane", "close", start[start.index("--pane") + 1]]
+    assert calls()[-1]["cwd"] == str(run_dir / "pr")
+    assert calls()[-1]["detached"]
+    assert "--mode" not in calls()[-1]["args"]
+    assert not (run_dir / "pr").exists()
+    assert list((run_dir / "sessions" / "pr-1").glob("*.jsonl"))
+    assert publications()[-1]["args"] == [
+        "pr", "create", "--base", "main", "--head", "campaign/visible",
+        "--title", title, "--body", body,
+    ]  # fmt: skip
+    assert capsys.readouterr().out.endswith(f"{url}\n")
 
     before = len(publications()), push_log.read_text()
     monkeypatch.setenv("FAKE_PI_SPLIT_EMPTY", "1")

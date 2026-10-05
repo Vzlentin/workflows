@@ -19,7 +19,7 @@ Tool selection is the same in headless and Herdr sessions:
 - Implement sessions omit `--tools` and use Pi's normal tool selection from its defaults,
   settings and extensions.
 - Plan, review, split and reflect sessions use `--tools read,grep,find,ls`.
-- Judge sessions use `--tools read,grep,find,ls,bash`.
+- Judge and campaign PR-writing sessions use `--tools read,grep,find,ls,bash`.
 
 ## Setup
 
@@ -101,13 +101,23 @@ runtime or OS error during item execution, branch advancement or cleanup. Errors
 subject and failure output. Remaining item branches and worktrees are kept. An item stays
 accepted if cleanup fails after advancement.
 
-If any work was accepted, the campaign pushes `campaign/<run>` to `origin`, then uses `gh pr
-create` to open one pull request into `--base` and prints its URL. The title is the goal subject;
-the body includes the goal and accepted work item subjects. After an early stop, the pull request
-is a draft whose body also names the stopped item and reason. A draft still exits 1. A push or PR
-creation failure reports the command output, keeps the campaign branch, and exits 1 without
-retrying. A failed push does not call `gh`. The command assumes `origin` and GitHub authentication
-already exist; it does not configure them.
+If any work was accepted, the campaign pushes `campaign/<run>` to `origin`, then opens one
+PR-writing session in a detached worktree at the final accepted commit under `pr/` in the run
+directory. The session loads and follows the `writing-pr` skill and inspects the aggregate diff
+from the exact base ref to that commit. It returns a title and body as a fenced JSON array
+`[title, body]`, both non-blank strings, with a single-line title. The worktree is removed after
+the session; its record stays under `sessions/pr-1/`. `--pi` and the session mode apply to this
+session too. Like `split`, its prompt is not changed by `workflows optimize`.
+
+The campaign then uses `gh pr create` to open one pull request into `--base` and prints its URL.
+After an early stop, the pull request is a draft, and the writer must explain the stopped item
+and reason. A draft still exits 1. If writer setup, execution, parsing or cleanup fails, the
+command reports the failure and uses the goal subject as title, with the goal, accepted work
+item subjects and any stop details as body. Text-generation success does not change draft
+selection or exit status. A push or PR creation failure reports the command output, keeps the
+campaign branch, and exits 1 without retrying. A failed push opens no writer session and does
+not call `gh`. The command assumes `origin` and GitHub authentication already exist; it does not
+configure them.
 
 With no accepted work, nothing is pushed and `gh` is not called. When the split finds nothing
 left, the command prints `nothing left of <goal>` and exits 0. A new campaign splits from its
@@ -151,20 +161,21 @@ it did not change stay byte-identical. Review the result with `git diff prompts/
 
 ## Prompts
 
-The seven Pi prompt templates in `prompts/` are the engine's prompts: `plan`, `challenge`,
-`handoff`, `implement` and `review` are the instructions of its DSPy predictors, `split` is the
-instructions of the campaign's split predictor, which `workflows optimize` does not change, and
-`judge` is the fixed rubric. Edit them directly, but keep `$@` as the last line: Pi puts a
-command's arguments there, and the engine drops it and appends its inputs as `## <name>` sections.
-The engine also asks `challenge` for its final SHIP or FIX line, and `split` for its final fenced
-`json` array of work items, itself, so no edit to a template can drop them. Each predictor call
-also records the earlier turns of its session as a `history` input, which Pi already holds and is
-not sent again, so `workflows optimize` sees what every turn saw. The review also receives the
+The eight Pi prompt templates in `prompts/` are the engine's prompts: `plan`, `challenge`,
+`handoff`, `implement` and `review` are the instructions of its DSPy predictors, `split` and `pr`
+are the campaign's split and PR-writing predictor instructions, which `workflows optimize`
+does not change, and `judge` is the fixed rubric. Edit them directly, but keep `$@` as the last
+line: Pi puts a command's arguments there, and the engine drops it and appends its inputs as
+`## <name>` sections. The engine also asks `challenge` for its final SHIP or FIX line, `split`
+for its final fenced `json` array of work items, and `pr` for its final fenced `json` array
+`[title, body]`, itself, so no edit to a template can drop them. Each predictor call also records
+the earlier turns of its session as a `history` input, which Pi already holds and is not sent
+again, so `workflows optimize` sees what every turn saw. The review also receives the
 implementer's reply as `reply`, alongside the patch paths in `change`.
 
 `pi install /home/vzl/Dev/workflows` makes them commands in interactive Pi, where `$@` takes the
 arguments: `/plan`, `/challenge what's the move here`, `/handoff`, `/implement`, `/review`,
-`/split`, `/judge`.
+`/split`, `/pr`, `/judge`.
 
 ## Development
 

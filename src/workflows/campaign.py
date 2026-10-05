@@ -1,7 +1,8 @@
 """The campaign engine: accepted work items form one branch and pull request into the base.
 
-One read-only session splits the goal at the base; the split is not part of `Ship`, so optimize
-leaves its template alone. The base branch, checkout and index stay untouched.
+One read-only session splits the goal at the base; another writes pull request text at the
+accepted tip. Neither is part of `Ship`, so optimize leaves their templates alone. The base
+branch, checkout and index stay untouched.
 """
 
 import subprocess
@@ -10,7 +11,7 @@ from pathlib import Path
 
 import dspy
 
-from workflows import ship, workspace
+from workflows import judge, ship, workspace
 from workflows.pi import Pi
 from workflows.workspace import git
 
@@ -30,6 +31,33 @@ def split(pi: Pi, repository: Path, commit: str, goal: str) -> list[str]:
     try:
         with ship.Conversation(pi, ship.PLANNER, "split") as session:
             return session(ship.template(Split, "split"), goal=goal).work_items
+    finally:
+        workspace.remove_worktree(repository, pi.cwd)
+
+
+class PullRequest(ship.Turn):
+    goal: str = dspy.InputField()
+    base: str = dspy.InputField()
+    head: str = dspy.InputField()
+    stop: str = dspy.InputField()
+    text: list[str] = dspy.OutputField(
+        desc="a ```json fenced block with a JSON array of exactly two non-blank strings: "
+        "[title, body], with a single-line title and a markdown body"
+    )
+
+
+def write_pr(pi: Pi, repository: Path, base: str, head: str, goal: str, stop: str) -> list[str]:
+    """A title and body from one session in a detached worktree at `head`, removed afterwards.
+    Raises RuntimeError with the output when it is not a pair with a single-line title."""
+    workspace.add_worktree(repository, head, pi.cwd)
+    try:
+        with ship.Conversation(pi, judge.JUDGE, "pr") as session:
+            text = session(
+                ship.template(PullRequest, "pr"), goal=goal, base=base, head=head, stop=stop
+            ).text
+        if len(text) != 2 or text[0].splitlines() != [text[0]]:
+            raise RuntimeError(f"PR reply must be [title, body] with a single-line title: {text!r}")
+        return text
     finally:
         workspace.remove_worktree(repository, pi.cwd)
 
@@ -102,15 +130,26 @@ def campaign(
         stop = (name, str(error))
     if not accepted:
         return False
+    title = ship.subject(text)
     body = f"{text.strip()}\n\nAccepted work items:\n" + "\n".join(f"- {name}" for name in accepted)
-    args = [gh, "pr", "create", "--base", base, "--head", branch, "--title", ship.subject(text)]
+    stopped = "No early stop."
     if stop:
         name, reason = stop
-        body += f"\n\nStopped at {name}: {reason}"
-        args.append("--draft")
-    args += ["--body", body]
+        stopped = f"Stopped at {name}: {reason}"
+        body += f"\n\n{stopped}"
     try:
         git(root, "push", "origin", f"{branch_ref}:{branch_ref}")
+        try:
+            title, body = write_pr(
+                Pi(directory / "sessions", directory / "pr", command, herdr),
+                root, base_ref, commit, text, stopped,
+            )  # fmt: skip
+        except Exception as error:  # noqa: BLE001 - publication can use the goal text
+            print(f"PR text failed for {branch}: {error}; using goal text", file=sys.stderr)
+        args = [gh, "pr", "create", "--base", base, "--head", branch, "--title", title]
+        if stop:
+            args.append("--draft")
+        args += ["--body", body]
         publication = subprocess.run(args, cwd=root, capture_output=True, text=True, check=False)
         if publication.returncode != 0:
             raise RuntimeError(f"{gh} pr create failed: {publication.stdout}{publication.stderr}")
