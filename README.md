@@ -1,176 +1,159 @@
 # workflows
 
-`workflows ship` ships one markdown work item onto a new branch through
-[Pi](https://github.com/earendil-works/pi-mono). The item runs this loop, one fresh Pi session
-per box:
+`workflows ship` ships one work item onto a new branch through [Pi](https://github.com/earendil-works/pi) sessions.
+The run is headless and resumable. [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) runs the
+sessions, model calls and tool calls, and stores the progress of the run.
+
+`src/lib/` is the library that runs workflows: run directories, the durable store, sessions, retries and resume.
+`src/workflows/` holds the workflows built on it. `ship` is the only workflow.
 
 ```text
 plan session:       plan  ->  challenge  ->  handoff
 implement session:  implement the handoff                      <- round n (at most --rounds)
 review session:     review  ->  challenge (SHIP or FIX)  ->  handoff (on FIX, back to implement)
+judge session:      fixed rubric, after SHIP
 ```
 
-Git is the only state: there is no state file, log, or saved program. `workflows campaign` splits
-a goal into work items, then ships them in order onto one campaign branch and opens one pull
-request into the base. `workflows optimize` improves the prompts of that loop with GEPA.
-
-Tool selection is the same in headless and Herdr sessions:
-
-- Implement sessions omit `--tools` and use Pi's normal tool selection from its defaults,
-  settings and extensions.
-- Plan, review, split and reflect sessions use `--tools read,grep,find,ls`.
-- Judge sessions use `--tools read,grep,find,ls,bash`.
+Each box is a new session.
 
 ## Setup
 
-Requires Python 3.13, uv, Git, and `pi` on `PATH`. Install the `workflows` command from this
-checkout as an editable uv tool, so it always runs the checkout's code and `optimize` writes its
-prompts back here:
+Requires Node.js 22.19 or later, Git, and Pi credentials for the `anthropic` provider (log in once with `pi`).
+GitHub repositories also need an authenticated `gh`.
 
 ```sh
-uv tool install --editable .
+npm ci
+npm run build
+node dist/cli.js ship plan.md
 ```
+
+`npm link` installs the `workflows` command from this checkout.
 
 ## Ship
 
 ```sh
-workflows ship --repo /absolute/path/to/repository --base main item.md
-echo 'Fix the README typo' | workflows ship --repo /absolute/path/to/repository /dev/stdin
+workflows ship plan.md
+workflows ship "Fix the README typo"
+echo "Fix the README typo" | workflows ship
+workflows ship --repo calibre plan.md
+workflows ship --repo owner/calibre --base develop plan.md
 ```
 
-The item is a markdown work item file; to ship text without a file, pipe it to `/dev/stdin`. The
-output names the item by its subject.
+The work item comes from one argument or from stdin:
 
-The item ships onto `ship/<run>`, a new branch in a worktree under
-`$XDG_STATE_HOME/workflows/runs/<run>/worktree` (default `~/.local/state/workflows`). The run
-directory also keeps one folder per Pi session under `sessions/` (prompts, transcript, `pi.log`)
-and each round's patches. Inside Herdr (`HERDR_ENV=1`) every session is a visible `pi` agent in a
-new pane; elsewhere, or with `--headless`, sessions run with `pi --mode json`. The item needs a
-non-empty line, checked before the run starts.
+- An argument that ends in `.md` is a work item file, relative to the current directory. A missing file is an error.
+- Any other argument is the work item text.
+- Without an argument, the work item is read from stdin.
 
-After each implement session the engine stages everything. If the staged tree matches the
-ship's starting commit, the run is blocked. The command prints
-`blocked <item> after <n> rounds: <worktree>`, then the implementer's reply, and exits 1. That
-attempt counts as a round, but makes no round commit or patch and opens no review or judge session.
+A work item without a non-empty line fails before the run starts. `--base` defaults to `main` and `--rounds`
+defaults to 3.
 
-Otherwise the engine commits any staged changes relative to current `HEAD` as `round <n>`.
-A round with no new changes still reaches review if earlier changes remain, without a new commit.
-Implementer commits are included in the round's patches and review. A shipped item is squashed
-into one commit, then a fixed judge reviews it in its own worktree:
+Without `--repo`, the run uses the Git repository that contains the current directory. With `--repo`, the value is
+first a path, relative to the current directory. If that path is the top level of a local Git repository, the run
+uses it and its local `--base` commit. Otherwise `gh repo clone <value>` clones the repository into the run
+directory, and the run starts from the cloned `origin/<base>`. A bare name such as `calibre` clones from the
+authenticated user, and `owner/calibre` names the owner.
+
+The command prints `run <run-id>`, then one progress line on stderr as each session starts: `plan`,
+`round <n>: implement`, `round <n>: review` and `judge`.
+
+The work item ships onto the branch `ship/<run-id>`, in a worktree in the run directory. The selected repository's
+checkout, index and local edits stay unchanged. Ship does not push and does not open a pull request.
+
+After each implement session, the run stages all changes in the worktree:
+
+- If the staged tree matches the start commit, the run is blocked. It prints
+  `blocked <subject> after <n> rounds: <worktree>` and the implementer's reply, and exits 1.
+- Otherwise new staged changes become the commit `round <n>`. Commits that the implementer made are kept. A round
+  without new changes still goes to review when earlier changes remain.
+
+The review session gets the work item, the handoff, the implementer's reply, and the paths of the round's patches in
+the run directory: `round-<n>.patch` from the start commit, and from round 2 `round-<n>-fix.patch` from the previous
+round. Its challenge ends with SHIP or FIX. On FIX, its handoff gives the next round's instructions. A run that is
+not shipped after `--rounds` rounds prints `stopped <subject> after <n> rounds: <worktree>` and exits 1.
+
+On SHIP, the judge session reviews the change in the worktree, and the run squashes the work into one commit:
 
 ```text
-Item subject (first non-empty line of the item, without leading #)
+Fix the README typo
 
-<item text>
+# Fix the README typo
 
-3 FAIL src/app.py:12 not needed by the work item
+The README says wrold.
+
+4 FAIL README.md:3 adds a line the work item does not need
 
 Rounds: 2
 Judge: 0.83
 ```
 
-The judge scores 0 when completeness or correctness fails, otherwise the fraction of its six
-quality questions that pass. If the judge errors, or its reply misses an answer, the commit keeps
-no `Judge` trailer.
+The subject is the first non-empty line of the work item without leading `#`. The body is the work item, then the
+judge's failed answers. The judge answers eight questions with PASS or FAIL. If question 1 (complete) or 2 (correct)
+fails, the score is 0. Otherwise the score is the fraction of questions 3 to 8 that pass. If the judge fails or its
+reply misses an answer, the commit has no `Judge` trailer. The command prints
+`shipped <subject> in <n> rounds, judge <score or failed>, <commit>` and exits 0.
 
-A blocked item or one that does not ship within `--rounds` keeps its earlier round commits and
-the worktree, and the exit code is 1. Every run makes a new branch; `ship/<run>` and its worktree
-stay until you delete them. For `ship`, label an item by merging its commit into main or not;
-`campaign` collects accepted items in one pull request instead.
+Blocked and stopped runs keep their branch, worktree and round commits. Delete them when you no longer need them.
 
-## Campaign
+## Sessions
 
-```sh
-workflows campaign --repo /absolute/path/to/repository --base main goal.md
-```
+| Session | Model | Thinking | Tools |
+| --- | --- | --- | --- |
+| plan, review | `anthropic/claude-opus-5-5` | `medium` | `read`, `grep`, `find`, `ls` |
+| implement | `anthropic/claude-opus-5-5` | `medium` | `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash` |
+| judge | `anthropic/claude-opus-5-5` | `medium` | `read`, `grep`, `find`, `ls`, `bash` |
 
-The goal is a markdown file, checked like a work item before the run starts. `--base` must name
-an exact local branch with a commit, but need not be checked out. `--run-dir` must not exist yet.
-The campaign creates `campaign/<run>` at the base without switching the checkout. A read-only
-`split` session, in a detached worktree at that commit under `split/` in the run directory,
-splits the goal into the ordered work items still needed; the run directory keeps them as
-`items/<n>.md`. Each work item then ships from the campaign tip as with `ship`, with its own run
-directory `<run>-<n>` inside the campaign's and the branch `ship/<run>-<n>`. When the judge scores
-it above 0, the campaign fast-forwards its own branch, removes the item's worktree and branch,
-and prints `accepted <item> into campaign/<run>`. The base branch, checkout and index stay
-unchanged, including local edits and staged changes.
+Sessions use Pi's provider credentials from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`). Their system prompt has the
+`AGENTS.md` instructions and skills that Pi loads for the worktree. Pi extension packages are not loaded.
 
-The campaign stops with exit code 1 at the first work item that is blocked or does not ship, that
-the judge scores 0 or fails to score (`not accepted <item>: judge <score>: <worktree>`), or on a
-runtime or OS error during item execution, branch advancement or cleanup. Errors report the item
-subject and failure output. Remaining item branches and worktrees are kept. An item stays
-accepted if cleanup fails after advancement.
-
-If any work was accepted, the campaign pushes `campaign/<run>` to `origin`, then uses `gh pr
-create` to open one pull request into `--base` and prints its URL. The title is the goal subject;
-the body includes the goal and accepted work item subjects. After an early stop, the pull request
-is a draft whose body also names the stopped item and reason. A draft still exits 1. A push or PR
-creation failure reports the command output, keeps the campaign branch, and exits 1 without
-retrying. A failed push does not call `gh`. The command assumes `origin` and GitHub authentication
-already exist; it does not configure them.
-
-With no accepted work, nothing is pushed and `gh` is not called. When the split finds nothing
-left, the command prints `nothing left of <goal>` and exits 0. A new campaign splits from its
-specified base, not from an earlier campaign branch unless you use that branch as `--base`.
-`--rounds`, `--pi` and `--headless` work as for `ship`. `--gh` selects the GitHub CLI executable
-(default `gh`) and applies only to campaigns.
-
-## Optimize
+## Resume
 
 ```sh
-workflows optimize --repo /absolute/path/to/repository --base main --budget 40 one.md two.md
+workflows ship resume <run-id>
+workflows resume <run-id>
 ```
 
-[GEPA](https://github.com/gepa-ai/gepa) rewrites the `plan`, `challenge`, `handoff`,
-`implement` and `review` templates to raise the judge's score on the work items. A rollout ships
-one item from `--base` in a fresh detached worktree under `rollouts/` in the run directory, for
-at most `--rounds` rounds. The judge scores shipped and round-limit-stopped rollouts; its findings
-and whether it shipped are the feedback. A blocked rollout instead scores 0 without judging,
-with the blocked explanation and implementer's reply as feedback. It is a valid outcome, not an
-execution error. After each rollout the worktree is removed and its commits are on no branch.
-From the traces and feedback of a few rollouts, a read-only `reflect` session in the repository
-proposes new instructions for one template at a time. `--rounds`, `--pi`, `--headless` and
-`--run-dir` work as for `ship`, and every item is checked before the run starts.
+Both forms continue the run. `workflows resume` finds the workflow that the run saved, and `workflows ship resume`
+refuses a run of another workflow.
 
-`--budget` counts rollouts. The baseline, today's templates, costs one rollout per item. Each
-iteration then rolls out a minibatch of three items (repeating items when there are fewer) with
-templates GEPA picks from its best so far, the same three with the proposal, and, when the
-proposal scores higher, every item once more. With five or more items, GEPA may also merge two
-improved candidates, which costs up to five rollouts, plus one per item when the merge scores
-better. GEPA checks the budget only before an iteration, so the last iteration can overshoot it:
-with one item, `--budget 4` runs one iteration and up to 8 rollouts.
+Ctrl+C stops the run and keeps it resumable: the command prints `interrupted; continue with: workflows ship resume
+<run-id>` and exits 130. A second Ctrl+C exits at once.
 
-A failed rollout, such as a Pi, git or judge error, stops the run with exit code 1 and names the
-item; `prompts/` stays untouched. Run again with the same `--run-dir` to resume from GEPA's state
-in its `gepa/` folder: a resumed run scores the baseline again (one rollout per item, not counted
-in the budget), then redoes the iteration that was in flight.
+Resume opens the run's store and continues the pending work. It uses the work item, repository, start commit,
+prompts, models and round limit that the run saved before it started. It does not read the work item file again,
+select or clone the repository again, or create another branch. Answered turns are not sent to the model again. A
+turn that was in progress is sent again.
 
-When the budget is spent, each template GEPA changed is rewritten in this checkout's `prompts/`,
-keeping its frontmatter and `$@`, and the command prints `changed prompts/<name>.md`. Templates
-it did not change stay byte-identical. Review the result with `git diff prompts/`.
+A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows ship resume
+<run-id>`, and exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. Resume
+runs the failed step again: a failed Git step runs again, and a failed turn is sent again in the same session.
+
+A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
+
+Model requests use Pi's retry, stream timeout and compaction settings from its `settings.json`.
+
+## Run directory
+
+Runs live in `$XDG_STATE_HOME/workflows/runs/<run-id>`, by default `~/.local/state/workflows/runs/<run-id>`:
+
+- `durable.sqlite`: the pi-durable store with the saved inputs, the sessions and the progress of the run
+- `worktree/`: the worktree on `ship/<run-id>`
+- `repository/`: the clone, for a GitHub repository only
+- `round-<n>.patch`, `round-<n>-fix.patch`: the patches each review got
 
 ## Prompts
 
-The seven Pi prompt templates in `prompts/` are the engine's prompts: `plan`, `challenge`,
-`handoff`, `implement` and `review` are the instructions of its DSPy predictors, `split` is the
-instructions of the campaign's split predictor, which `workflows optimize` does not change, and
-`judge` is the fixed rubric. Edit them directly, but keep `$@` as the last line: Pi puts a
-command's arguments there, and the engine drops it and appends its inputs as `## <name>` sections.
-The engine also asks `challenge` for its final SHIP or FIX line, and `split` for its final fenced
-`json` array of work items, itself, so no edit to a template can drop them. Each predictor call
-also records the earlier turns of its session as a `history` input, which Pi already holds and is
-not sent again, so `workflows optimize` sees what every turn saw. The review also receives the
-implementer's reply as `reply`, alongside the patch paths in `change`.
-
-`pi install /home/vzl/Dev/workflows` makes them commands in interactive Pi, where `$@` takes the
-arguments: `/plan`, `/challenge what's the move here`, `/handoff`, `/implement`, `/review`,
-`/split`, `/judge`.
+`prompts/` holds the Pi prompt templates `plan`, `challenge`, `handoff`, `implement`, `review` and `judge`. Edit the
+wording there. Keep the frontmatter and the last line `$@`: the run removes them, then adds its inputs as
+`## <name>` sections. The run adds the SHIP or FIX ending of the review challenge itself, so a template edit cannot
+remove it. The judge rubric is fixed: its eight numbered answers make the score. A run uses the templates as they were
+when it started.
 
 ## Development
 
 ```sh
-uv run ruff format --check src tests && uv run ruff check src tests && uv run pytest
+npm run check
 ```
 
-Tests use fake `pi` and `herdr` executables and temporary repositories; nothing calls a real
-model.
+This runs Biome, the TypeScript check and Vitest. The tests use a fake model provider, a fake `gh`, and temporary Git
+repositories. They do not call a real model or open Pi.

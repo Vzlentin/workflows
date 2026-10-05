@@ -1,0 +1,34 @@
+{
+	"name": "workflows",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Ship one work item onto a new branch through durable Pi sessions",
+	"type": "module",
+	"bin": {
+		"workflows": "dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"prompts"
+	],
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"check": "biome check . && tsc -p tsconfig.json && vitest --run",
+		"test": "vitest --run"
+	},
+	"dependencies": {
+		"@earendil-works/chord": "1.0.3",
+		"@earendil-works/pi-ai": "1.0.3",
+		"@earendil-works/pi-coding-agent": "1.0.3",
+		"@earendil-works/pi-durable": "1.0.3"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.15",
+		"@types/node": "26.6.4",
+		"typescript": "7.0.2",
+		"vitest": "5.0.3"
+	}
+}
