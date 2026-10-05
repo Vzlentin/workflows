@@ -1,14 +1,27 @@
-`README.md` is the user contract for `workflows ship`. When a change alters the CLI, the commit
-format, the run directory or the prompt contract, update the README in the same change.
+- Check: `npm run check` (Biome, TypeScript, Vitest). The judge session runs the checks listed here.
+- README.md is the behaviour spec: output lines, exit codes, run directory layout, commit message format. Update it in the same change as the behaviour.
+- `dist/` is ignored build output, and `bin` points to it. Run `npm run build` before you try the `workflows` command.
+- Dependency versions are pinned exactly. The four `@earendil-works/*` packages share one version; change them together.
+- Never verify with a real `workflows` run. It spends model calls, and inside a ship run it starts another run.
 
-- Read `CODING_STANDARDS.md` before you write or review code. Cite its rules by name.
-- The implement and judge prompts run the checks listed here:
-  `uv run ruff format --check src tests && uv run ruff check src tests && uv run pytest`.
-  `uv run ruff format src tests` fixes formatting.
-- Never verify with a real `pi`, `herdr` or `workflows ship`. They spend model calls and open
-  panes, and inside a ship run `workflows ship` starts another run. The tests are the proof: when
-  the engine needs a new Pi or Herdr behaviour, add it to `tests/fake_pi.py` or
-  `tests/fake_herdr.py`.
-- `prompts/*.md` are also interactive Pi commands. Keep their frontmatter, which the engine skips.
-- `judge.verdict` parses the numbered answers of `prompts/judge.md` (1 and 2 gate the score,
-  3 to 8 make it up). Change the questions and the parser together.
+## Library and workflows
+
+- `src/lib/` is the library: run directory, durable store, sessions, turns, retry, resume, Git repository selection and prompts. `src/workflows/` holds one file per workflow, built only on the library. `src/cli.ts` lists the installed workflows.
+- `src/lib/` never imports from `src/workflows/`. Biome enforces it.
+- A workflow declares its arguments, saved input, phases and report. Keep logic that only one workflow needs in its file.
+
+## Durable runs
+
+- Saved runs in `durable.sqlite` resume against the current code. When you change the shape of a workflow's input or checkpoints, or of `Stored` in `src/lib/workflow.ts`, bump the task `version` and add `migrate`.
+- A phase can rerun after an interruption or a failure. Keep Git steps safe to repeat, and keep each `say` request ID unique in its session: an answered request ID returns its saved answer, and a failed one is sent again under the next free ID.
+- A run saves its prompts and models before it starts. Prompt or model edits change only new runs.
+
+## Prompts
+
+- Keep the frontmatter and the last line `$@` in `prompts/*.md`. `instructions()` removes them.
+- The SHIP or FIX ending of the review challenge is in code (`ENDING`). Do not move it into a template.
+- `verdict()` parses the eight numbered PASS or FAIL answers in `prompts/judge.md`. Keep the numbering and the meaning of questions 1 and 2.
+
+## Tests
+
+- Tests must not call a real model, a real `gh`, or the user's Pi or Git configuration. Use `sandbox()` and the faux provider in `test/support.ts`.
