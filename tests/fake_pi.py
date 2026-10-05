@@ -11,8 +11,7 @@ under its sessions folder was sent `PLAN`, else fails question 3; with `FAKE_PI_
 reply misses answers 6 to 8, and with `FAKE_PI_JUDGE_ZERO=1` it fails question 1.
 `FAKE_PI_REVIEW_FIX=1` keeps reviews at FIX. `FAKE_PI_CONTROL_ITEM` limits blocked rounds,
 judge failures and FIX reviews to the campaign item with that run-directory suffix.
-A pr session answers `PR` and the stop details in fenced JSON, or `FAKE_PI_PR_REPLY` when set.
-`FAKE_PI_PR_FAIL=1` exits 1 with `PR writer failed` and no messages.
+A pr session answers `FAKE_PI_PR_REPLY` when set.
 """
 
 import json
@@ -25,7 +24,6 @@ from pathlib import Path
 JUDGE = ["1 PASS", "2 PASS", "- **3 FAIL** `source.txt:1` not needed", "4 PASS", "5 PASS"]
 PLAN = "Plan this change in three bullets."
 ITEMS = ["# Item one\n\nWrite source.txt.", "# Item two\n\nExtend source.txt."]
-PR = ["Write and extend source.txt", "- Add source.txt.\n- Extend source.txt."]
 
 
 def session_directory(args: list[str]) -> Path:
@@ -67,14 +65,8 @@ def reply(directory: Path, calls: list[dict]) -> str:
     if label == "split":
         items = [] if os.environ.get("FAKE_PI_SPLIT_EMPTY") == "1" else ITEMS
         return f"Work items:\n```json\n{json.dumps(items)}\n```"
-    if label == "pr":
-        if "FAKE_PI_PR_REPLY" in os.environ:
-            return os.environ["FAKE_PI_PR_REPLY"]
-        title, body = PR
-        stop = calls[-1]["prompt"].split("\n\n## stop\n", 1)[1].split("\n\nEnd with", 1)[0]
-        if stop != "No early stop.":
-            body += f"\n\n{stop}"
-        return f"PR text:\n```json\n{json.dumps([title, body])}\n```"
+    if label == "pr" and "FAKE_PI_PR_REPLY" in os.environ:
+        return os.environ["FAKE_PI_PR_REPLY"]
     if label == "reflect":
         return f"New instructions:\n```\n{PLAN}\n```"
     if turn == 1:
@@ -91,25 +83,8 @@ def main() -> None:
     directory = session_directory(args)
     log = Path(os.environ["FAKE_PI_LOG"])
     calls = json.loads(log.read_text()) if log.exists() else []
-    call = {"session": directory.name, "args": args, "prompt": prompt, "cwd": os.getcwd()}
-    if directory.name.startswith("pr-"):
-        call["head"] = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-        ).stdout.strip()
-        call["detached"] = (
-            subprocess.run(
-                ["git", "symbolic-ref", "-q", "HEAD"], capture_output=True, text=True, check=False
-            ).returncode
-            == 1
-        )
-        call["pushed_head"] = subprocess.run(
-            ["git", "ls-remote", "origin", f"refs/heads/campaign/{directory.parent.parent.name}"],
-            capture_output=True, text=True, check=True,
-        ).stdout.split()[0]  # fmt: skip
-    calls.append(call)
+    calls.append({"session": directory.name, "args": args, "prompt": prompt, "cwd": os.getcwd()})
     log.write_text(json.dumps(calls))
-    if directory.name.startswith("pr-") and os.environ.get("FAKE_PI_PR_FAIL") == "1":
-        sys.exit("PR writer failed")
     if directory.name.startswith("reflect-") and os.environ.get("FAKE_PI_REFLECT_FAIL") == "1":
         sys.exit("reflection failed")
     session_id = args[args.index("--session") + 1] if "--session" in args else uuid.uuid4().hex

@@ -40,26 +40,27 @@ class PullRequest(ship.Turn):
     base: str = dspy.InputField()
     head: str = dspy.InputField()
     stop: str = dspy.InputField()
-    text: list[str] = dspy.OutputField(
-        desc="a ```json fenced block with a JSON array of exactly two non-blank strings: "
-        "[title, body], with a single-line title and a markdown body"
-    )
+    text: str = dspy.OutputField()
 
 
-def write_pr(pi: Pi, repository: Path, base: str, head: str, goal: str, stop: str) -> list[str]:
-    """A title and body from one session in a detached worktree at `head`, removed afterwards.
-    Raises RuntimeError with the output when it is not a pair with a single-line title."""
+def write_pr(
+    pi: Pi, repository: Path, base: str, head: str, goal: str, stop: str
+) -> tuple[str, str]:
+    """The title and body of the reply of one session in a detached worktree at `head`, removed
+    afterwards. Raises RuntimeError with the reply when it has no body."""
     workspace.add_worktree(repository, head, pi.cwd)
     try:
         with ship.Conversation(pi, judge.JUDGE, "pr") as session:
-            text = session(
+            reply = session(
                 ship.template(PullRequest, "pr"), goal=goal, base=base, head=head, stop=stop
             ).text
-        if len(text) != 2 or text[0].splitlines() != [text[0]]:
-            raise RuntimeError(f"PR reply must be [title, body] with a single-line title: {text!r}")
-        return text
     finally:
         workspace.remove_worktree(repository, pi.cwd)
+    title, _, body = reply.strip().partition("\n")
+    title, body = title.lstrip("#").strip(), body.strip()
+    if not title or not body:
+        raise RuntimeError(f"PR reply has no body:\n{reply}")
+    return title, body
 
 
 def campaign(
@@ -132,7 +133,7 @@ def campaign(
         return False
     title = ship.subject(text)
     body = f"{text.strip()}\n\nAccepted work items:\n" + "\n".join(f"- {name}" for name in accepted)
-    stopped = "No early stop."
+    stopped = ""
     if stop:
         name, reason = stop
         stopped = f"Stopped at {name}: {reason}"
