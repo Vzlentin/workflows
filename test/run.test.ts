@@ -90,6 +90,21 @@ return "ok"`,
 		expect(await log()).toBe("a\na\nb\n");
 	});
 
+	it("replays pipeline calls whose order changes between runs", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const first = (n) => sh(n === 1 ? "./gate.sh w && echo 1a >> log && echo 1" : "echo 2a >> log && echo 2")
+const second = (n) => sh(n === "1" ? "./gate.sh g && echo 1b >> log && echo 1b" : "echo 2b >> log && touch w.open && echo 2b")
+return (await pipeline([1, 2], first, second)).join(" ")`,
+		);
+		const first = await stopped(["run", "x.js"], { gate: "g" });
+		expect(first.code).toBe(130);
+		expect(await log()).toBe("2a\n2b\n1a\n");
+		const resumed = await workflows(["run", "resume", first.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "1b 2b"]);
+		expect(await log()).toBe("2a\n2b\n1a\n1b\n");
+	});
+
 	it("runs a failed call again on resume, and no finished call", async () => {
 		await writeFile(
 			join(root, "x.js"),
