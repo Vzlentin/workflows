@@ -213,7 +213,8 @@ Each form continues the run. `workflows resume` finds the workflow that the run 
 or `workflows run resume` refuses a run of another workflow.
 
 Ctrl+C stops the run and keeps it resumable: the command prints `interrupted; continue with: workflows <workflow>
-resume <run-id>` and exits 130. A second Ctrl+C exits at once.
+resume <run-id>` and exits 130. Ctrl+C also stops a Git step that is running, and resume runs that step again. A
+second Ctrl+C exits at once.
 
 Resume opens the run's store and continues the pending work. For `run`, see [Saved inputs and
 resume](#saved-inputs-and-resume). For `ship`, it uses the work item, repository, start commit,
