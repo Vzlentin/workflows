@@ -126,8 +126,12 @@ cat fix.js | workflows run - --json
 - `-` reads the script from stdin.
 - An argument that ends in `.js` or contains `/` is a file, relative to the current directory. A missing file is an
   error.
-- Any other argument is a name in the package's `workflows/` folder. An unknown name fails with
-  `workflows: no workflow <name>` and exits 1.
+- Any other argument is a name in the `workflows/` folder of the package or of the project. An unknown name fails
+  with `workflows: no workflow <name>` and exits 1.
+
+The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
+directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
+project file adds to the package files, and replaces the package file of the same name in the same folder.
 
 `--arg <key>=<value>` gives the script `args.<key>` as a string, and can be repeated. A value without `=` or a key
 given twice is bad usage: the command prints its usage and exits 2.
@@ -152,7 +156,7 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | `session(profile)` | A new session of `profile` (default `default`). `.ask(prompt, { schema })` is one turn in it |
 | `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code |
 | `ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
-| `run(name, args)` | Runs the script `name` of the package's `workflows/` and returns its result |
+| `run(name, args)` | Runs the script `name` of `workflows/` in the package or the project and returns its result |
 | `tools.<name>(args)` | Any tool that sessions get, such as `tools.read({ path })` |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `parallel(thunks)` | Runs the functions at once and returns their results |
@@ -176,9 +180,9 @@ profile gets the same tools as the ship sessions. `agents/default.md` uses `curs
 
 ### Saved inputs and resume
 
-Before the run starts, it saves the script, every `workflows/*.js` of the package, the instructions of every prompt,
-every profile, the args and the current directory. Resume and `run()` use these saved inputs, so a later edit of a
-script, prompt or profile changes only new runs.
+Before the run starts, it saves the script, every `workflows/*.js` of the package and the project, the instructions
+of every prompt, every profile, the args and the current directory. Resume and `run()` use these saved inputs, so a
+later edit of a script, prompt or profile, in the package or in `.workflows/`, changes only new runs.
 
 Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
 again. A call is known by its tool, its arguments and its position among identical calls. A turn that was in progress
