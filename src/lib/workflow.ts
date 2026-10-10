@@ -96,7 +96,7 @@ export type Workflow<A, I, S extends Checkpoint, R> = {
 	readonly phases: Phases<I, S, R>;
 	/** Prints the result and returns the exit code. */
 	report(input: I, result: R, io: Io): number;
-	/** Extensions that the store installs for runs of this workflow. Sessions select them only by name. */
+	/** Extensions that the store installs for every run. Sessions select them only by name. */
 	extensions?(host: ExtensionHost): readonly Extension[];
 	/** Model providers that runs of this workflow use. */
 	readonly providers?: readonly Provider[];

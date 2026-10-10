@@ -28,7 +28,6 @@ import {
 	Harness,
 	type HarnessSettings,
 	type SettledTask,
-	type Storage,
 	type TaskId,
 	type TaskRecord,
 } from "@earendil-works/pi-durable";
@@ -66,6 +65,7 @@ export async function main(
 	]
 		.map((line, index) => `${index === 0 ? "usage: " : "       "}${line}`)
 		.join("\n");
+	for (const provider of workflows.flatMap((workflow) => workflow.providers ?? [])) terminal.addProvider(provider);
 	try {
 		const [command, ...args] = argv;
 		if (command === "resume") return await resume(args, terminal, workflows, undefined);
@@ -106,18 +106,16 @@ async function start(
 	const id = newRunId();
 	const directory = join(runsDirectory(), id);
 	await mkdir(directory, { recursive: true });
-	let storage: Storage | undefined;
 	let store: Store | undefined;
 	let task: TaskId<JsonValue>;
 	let input: JsonValue;
 	try {
 		input = await workflow.prepare(parsed, { id, directory, cwd: terminal.cwd });
-		storage = await openStorage(directory);
-		const opened = await openStore(storage, terminal, workflows, workflow);
+		const opened = await openStore(directory, terminal, workflows);
 		store = opened;
 		task = await opened.create(workflow, { input });
 	} catch (error) {
-		await (store?.close() ?? storage?.close(BACKGROUND_CONTEXT));
+		await store?.close();
 		await rm(directory, { recursive: true, force: true });
 		throw error;
 	}
@@ -138,10 +136,9 @@ async function resume(
 	await access(join(directory, "durable.sqlite")).catch(() => {
 		throw new Error(`no run ${id} in ${runsDirectory()}`);
 	});
-	const storage = await openStorage(directory);
-	let store: Store | undefined;
+	const store = await openStore(directory, terminal, workflows);
 	try {
-		const latest = await latestTask(storage, workflows);
+		const latest = await store.latest();
 		if (latest === undefined) throw new Error(`run ${id} has no workflow`);
 		const workflow = workflows.find((candidate) => taskKind(candidate) === latest.kind);
 		if (workflow === undefined) throw new Error(`run ${id} is a ${latest.kind} run, which this command cannot run`);
@@ -149,32 +146,13 @@ async function resume(
 			throw new UsageError(`run ${id} is a ${workflow.name} run; use workflows ${workflow.name} resume ${id}`);
 		}
 		terminal.stdout(`run ${id}`);
-		store = await openStore(storage, terminal, workflows, workflow);
 		const from = failedAt(latest);
 		const stored = latest.input as Stored;
 		const task = from === undefined ? latest.id : await store.create(workflow, { input: stored.input, from });
 		return await follow(store, workflow, task, stored.input, id, terminal);
 	} finally {
-		await (store?.close() ?? storage.close(BACKGROUND_CONTEXT));
+		await store.close();
 	}
-}
-
-const openStorage = (directory: string): Promise<Storage> => openNodeSqliteStorage(join(directory, "durable.sqlite"));
-
-/** The newest workflow task in `storage`, read before the harness opens. */
-async function latestTask(
-	storage: Storage,
-	workflows: readonly AnyWorkflow[],
-): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined> {
-	const kinds = new Set(workflows.map(taskKind));
-	let latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined;
-	let cursor: Cursor | undefined;
-	do {
-		const page = await storage.scanTasks({}, 256, cursor, BACKGROUND_CONTEXT);
-		for (const task of page.items) if (kinds.has(task.kind)) latest = task;
-		cursor = page.next;
-	} while (cursor !== undefined);
-	return latest;
 }
 
 /** The checkpoint of a failed phase, which a resume runs again. */
@@ -192,6 +170,8 @@ type Store = {
 	 */
 	readonly failed: AbortSignal;
 	create(workflow: AnyWorkflow, stored: Stored): Promise<TaskId<JsonValue>>;
+	/** The newest workflow task of the run. */
+	latest(): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined>;
 	close(): Promise<void>;
 };
 
@@ -251,15 +231,10 @@ async function loadEntries(cwd: string): Promise<Entry[]> {
 }
 
 /**
- * The run's durable store over `storage`, open with the session tools, the package tools and every workflow task
- * selected by default, and the extensions and providers of `workflow` installed.
+ * The run's durable store, open with the session tools, the package tools and every workflow task selected by default,
+ * and the extensions of every workflow installed. Sessions select those only by name.
  */
-async function openStore(
-	storage: Storage,
-	terminal: Terminal,
-	workflows: readonly AnyWorkflow[],
-	workflow: AnyWorkflow,
-): Promise<Store> {
+async function openStore(directory: string, terminal: Terminal, workflows: readonly AnyWorkflow[]): Promise<Store> {
 	const registry = createRegistry();
 	const entries = await loadEntries(terminal.cwd);
 	const tasks = workflows.map((workflow) => workflowTask(workflow, terminal.stderr));
@@ -271,13 +246,14 @@ async function openStore(
 	for (const extension of selected) registry.install(extension);
 	const failure = new AbortController();
 	const host = { log: terminal.stderr, fail: (message: string) => failure.abort(message) };
-	for (const extension of workflow.extensions?.(host) ?? []) registry.install(extension);
-	for (const provider of workflow.providers ?? []) terminal.addProvider(provider);
+	for (const extension of workflows.flatMap((workflow) => workflow.extensions?.(host) ?? [])) {
+		registry.install(extension);
+	}
 	const envs = new Map<string, NodeExecutionEnv>();
 	const warn = (error: unknown) =>
 		terminal.stderr(`warning: ${error instanceof Error ? error.message : String(error)}`);
 	const harness = await Harness.open(
-		storage,
+		await openNodeSqliteStorage(join(directory, "durable.sqlite")),
 		{
 			models: terminal.models,
 			registry,
@@ -312,6 +288,17 @@ async function openStore(
 				(tx) => tx.createTask(task, stored, { ownership: { kind: "conversation" } }),
 				BACKGROUND_CONTEXT,
 			);
+		},
+		latest: async () => {
+			const kinds = new Set(workflows.map(taskKind));
+			let latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined;
+			let cursor: Cursor | undefined;
+			do {
+				const page = await harness.commit((tx) => tx.scanTasks({}, 256, cursor), BACKGROUND_CONTEXT);
+				for (const task of page.items) if (kinds.has(task.kind)) latest = task;
+				cursor = page.next;
+			} while (cursor !== undefined);
+			return latest;
 		},
 		close: () => {
 			closed ??= close();

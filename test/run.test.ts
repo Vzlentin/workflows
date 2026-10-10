@@ -145,6 +145,22 @@ return seen`,
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "ok"]);
 	});
 
+	it("runs every failed call again in one resume", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const results = await Promise.allSettled([sh("test -f a"), ok("true"), sh("test -f b")])
+const failed = results.find((r) => r.status === "rejected")
+if (failed) throw failed.reason
+return "done"`,
+		);
+		const run = await workflows(["run", "x.js"], { cwd: root });
+		expect(run.code).toBe(1);
+		await writeFile(join(root, "a"), "");
+		await writeFile(join(root, "b"), "");
+		const resumed = await workflows(["run", "resume", run.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "done"]);
+	});
+
 	it("rejects bad scripts and arguments", async () => {
 		for (const [code, name] of [
 			["Date.now()", "Date.now"],

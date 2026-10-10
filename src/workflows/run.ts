@@ -6,15 +6,22 @@ import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { JsonObject } from "@earendil-works/pi-durable";
-import { type Bundle, loadBundle, openRunner, RUNNER, runnerProvider, scriptExtension } from "../lib/script.ts";
+import {
+	type Bundle,
+	loadBundle,
+	openRunner,
+	RUNNER,
+	type RunBundle,
+	runnerProvider,
+	scriptExtension,
+} from "../lib/script.ts";
 import { defineWorkflow, type Io, type SessionCheckpoint, type Step, UsageError } from "../lib/workflow.ts";
 
 type Args = {
 	readonly name: string;
 	readonly json: boolean;
-	readonly source: string;
 	readonly args: JsonObject;
-	readonly bundle: Bundle;
+	readonly bundle: RunBundle;
 };
 
 /** Everything a run needs, saved before execution starts. */
@@ -67,16 +74,14 @@ export const run = defineWorkflow<Args, RunInput, RunCheckpoint, unknown>({
 		const parsed = parseRun(args);
 		const bundle = await loadBundle();
 		const { name, source } = await readScript(parsed.script, bundle, io);
-		return { name, json: parsed.json, source, args: parsed.args, bundle };
+		return { name, json: parsed.json, args: parsed.args, bundle: { ...bundle, main: source } };
 	},
 	prepare: async (args, run) => ({ ...args, cwd: run.cwd }),
 	title: (input) => input.name,
 	initial: () => ({ phase: "run" }),
 	phases: {
 		run: async ({ input, session, finish }: Step<RunInput, RunCheckpoint, RunCheckpoint, unknown>) => {
-			const runner = await session(RUNNER, input.cwd, (tx, conversation) =>
-				openRunner(tx, conversation, { ...input.bundle, main: input.source }),
-			);
+			const runner = await session(RUNNER, input.cwd, (tx, conversation) => openRunner(tx, conversation, input.bundle));
 			if (runner === undefined) return;
 			await finish(JSON.parse(await runner.say("run", JSON.stringify({ args: input.args }))));
 		},
