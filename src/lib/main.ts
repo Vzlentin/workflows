@@ -65,7 +65,8 @@ export async function main(
 	]
 		.map((line, index) => `${index === 0 ? "usage: " : "       "}${line}`)
 		.join("\n");
-	for (const provider of workflows.flatMap((workflow) => workflow.providers ?? [])) terminal.addProvider(provider);
+	for (const provider of new Set(workflows.flatMap((workflow) => workflow.providers ?? [])))
+		terminal.addProvider(provider);
 	try {
 		const [command, ...args] = argv;
 		if (command === "resume") return await resume(args, terminal, workflows, undefined);
@@ -254,9 +255,11 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
 		log: terminal.stderr,
 		fail: (message: string) => failure.abort(message),
 	};
-	for (const extension of workflows.flatMap((workflow) => workflow.extensions?.(host) ?? [])) {
-		registry.install(extension);
-	}
+	// Workflows that share a runtime declare the same `extensions`, which runs once.
+	const runtimes = new Set(
+		workflows.flatMap((workflow) => (workflow.extensions === undefined ? [] : [workflow.extensions])),
+	);
+	for (const extension of [...runtimes].flatMap((extensions) => extensions(host))) registry.install(extension);
 	const envs = new Map<string, NodeExecutionEnv>();
 	const warn = (error: unknown) =>
 		terminal.stderr(`warning: ${error instanceof Error ? error.message : String(error)}`);

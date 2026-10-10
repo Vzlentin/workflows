@@ -6,8 +6,8 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ensureWorktree, selectRepository } from "../lib/git.ts";
-import { loadBundle, openRunner, RUNNER, type RunBundle, runnerProvider, scriptExtensions } from "../lib/script.ts";
-import { defineWorkflow, type Io, type SessionCheckpoint, type Step, UsageError } from "../lib/workflow.ts";
+import { loadBundle, type RunBundle, type ScriptCheckpoint, scriptPhase, scriptWorkflow } from "../lib/script.ts";
+import { defineWorkflow, type Io, UsageError } from "../lib/workflow.ts";
 
 type Args = {
 	readonly item: string;
@@ -40,8 +40,6 @@ export type ShipResult =
 	| { readonly status: "blocked"; readonly rounds: number; readonly reply: string }
 	| { readonly status: "stopped"; readonly rounds: number };
 
-type ShipCheckpoint = { readonly phase: "run" } & SessionCheckpoint;
-
 /** The first non-empty line of `item`, without leading #. */
 export function subject(item: string): string {
 	const line = item.split("\n").find((candidate) => candidate.trim() !== "") ?? "";
@@ -66,7 +64,8 @@ async function readItem(argument: string | undefined, io: Io): Promise<string> {
 	return text;
 }
 
-export const ship = defineWorkflow<Args, ShipInput, ShipCheckpoint, ShipResult>({
+export const ship = defineWorkflow<Args, ShipInput, ScriptCheckpoint, ShipResult>({
+	...scriptWorkflow,
 	name: "ship",
 	usage: "workflows ship [--repo <repository>] [--base <branch>] [--rounds <n>] [<item.md> | <text>]",
 	version: 3,
@@ -90,16 +89,12 @@ export const ship = defineWorkflow<Args, ShipInput, ShipCheckpoint, ShipResult>(
 		};
 	},
 	title: (input) => subject(input.item),
-	initial: () => ({ phase: "run" }),
 	phases: {
-		run: async ({ input, session, finish }: Step<ShipInput, ShipCheckpoint, ShipCheckpoint, ShipResult>) => {
+		run: async (step) => {
+			const { input } = step;
 			await ensureWorktree(input.repository, input.worktree, input.branch, input.start);
-			const runner = await session(RUNNER, input.worktree, (tx, conversation) =>
-				openRunner(tx, conversation, input.bundle),
-			);
-			if (runner === undefined) return;
 			const args = { item: input.item, rounds: input.rounds, start: input.start, subject: subject(input.item) };
-			await finish(JSON.parse(await runner.say("run", JSON.stringify({ args }))));
+			await scriptPhase(step, input.worktree, input.bundle, args);
 		},
 	},
 	report: (input, result, io) => {
@@ -120,8 +115,6 @@ export const ship = defineWorkflow<Args, ShipInput, ShipCheckpoint, ShipResult>(
 				return 1;
 		}
 	},
-	extensions: scriptExtensions,
-	providers: [runnerProvider()],
 });
 
 function parseShip(args: readonly string[]) {

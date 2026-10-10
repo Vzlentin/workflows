@@ -57,7 +57,7 @@ return [one, two, n, args.word].join(", ")`,
 		for (const stop of [{ nth: 2 }, { nth: 2 }, { gate: "a" }, { gate: "b" }]) {
 			const again = await stopped(resume, stop);
 			expect(again.code, JSON.stringify(stop)).toBe(130);
-			expect(again.stderr, JSON.stringify(stop)).not.toContain("start");
+			expect(again.stderr[0], JSON.stringify(stop)).toBe("start");
 			answered.push(...again.model.calls);
 		}
 		const last = await workflows(resume, { cwd: root });

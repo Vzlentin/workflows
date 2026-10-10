@@ -58,8 +58,8 @@ directory, and the run starts from the cloned `origin/<base>`. A bare name such 
 authenticated user, and `owner/calibre` names the owner.
 
 The command prints `run <run-id>`, then one progress line on stderr as each session starts: `plan`,
-`round <n>: implement`, `round <n>: review` and `judge`. A resume prints the line of a session only when that session
-has a turn that was not answered before.
+`round <n>: implement`, `round <n>: review` and `judge`. A resume prints the phase line of the first call that runs,
+such as a turn or a Git step, and the lines after it.
 
 The work item ships onto the branch `ship/<run-id>`, in a worktree in the run directory. The selected repository's
 checkout, index and local edits stay unchanged. Ship does not push and does not open a pull request.
@@ -134,8 +134,9 @@ cat fix.js | workflows run - --json
 - Any other argument is a name in the `workflows/` folder of the package or of the project. An unknown name fails
   with `workflows: no workflow <name>` and exits 1.
 
-`workflows/ship.js` stops with an error when it does not get the start commit from `workflows ship`. Thus
-`workflows run ship` and `run("ship")` fail and do not change the current checkout.
+`workflows/ship.js` stops with an error when it gets no `start` argument. Thus `workflows run ship` and `run("ship")`
+without `start` fail before they change anything. The script does not check where `start` comes from: with
+`--arg start=<commit>`, it runs in the current directory and can commit there.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
@@ -171,7 +172,7 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `parallel(thunks)` | Runs the functions at once and returns their results |
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
-| `phase(title)`, `log(text)` | Write one line on stderr before the script's next call runs |
+| `phase(title)`, `log(text)` | Write one line on stderr before the script's next call that runs |
 
 With `schema`, a JSON Schema, the session gets a `respond` tool for that turn. The model gives its answer as
 `respond({ answer })`, which ends the turn, and the call returns `answer`. An answer that does not match the schema
@@ -197,9 +198,9 @@ later edit of a script, prompt or profile, in the package or in `.workflows/`, c
 Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
 again. A call is known by its tool, its arguments and its position among identical calls. A turn that was in progress
 continues in its session. A command that was in progress runs again, so commands must be safe to repeat. Every call
-that failed runs again, also one that the script caught. `phase` and `log` lines are not saved. A call that returns a
-result saved before the resume drops the lines before it, so resume prints only the lines before calls that run. A
-`phase` whose title is the same as the last printed phase line does not print again.
+that failed runs again, also one that the script caught. `phase` and `log` lines are not saved. A resume prints the
+phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
+lines before it, and keeps the last `phase` line waiting for the next call that runs.
 
 ## Resume
 

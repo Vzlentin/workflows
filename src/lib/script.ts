@@ -46,7 +46,7 @@ import {
 import { type AgentChoice, sessionAgent } from "./agents.ts";
 import { failure, git, run } from "./git.ts";
 import { instructions, render } from "./prompts.ts";
-import { type ExtensionHost, sessionOf, textOf } from "./workflow.ts";
+import { type ExtensionHost, type SessionCheckpoint, type Step, sessionOf, textOf } from "./workflow.ts";
 
 /** An agent profile from `agents/<name>.md`. */
 export type Profile = {
@@ -325,30 +325,24 @@ function keyOf(name: string, args: JsonObject, counters: Map<string, number>): s
 type Line = { readonly text: string; readonly phase: boolean };
 
 /**
- * The progress lines of a script that wait for its next call, where they print, and the last phase line that printed.
- * `ran` holds the IDs of the `session`, `ask` and `sh` calls that ran in this process: a store that opens continues an
- * interrupted call by itself, so its result can be saved before the script gets to it.
+ * The lines of a script that wait for its next call that runs, in order, and where they print. At most one is a phase
+ * line: a new phase line replaces it.
  */
-type Progress = {
-	readonly lines: Line[];
-	readonly log: (line: string) => void;
-	readonly ran: ReadonlySet<string>;
-	printed?: string;
-};
+type Progress = { readonly lines: Line[]; readonly log: (line: string) => void };
 
-/** Prints `lines`, except a phase line whose title is the last phase line that printed. */
-function print(progress: Progress, lines: readonly Line[]): void {
-	for (const line of lines) {
-		if (line.phase && line.text === progress.printed) continue;
-		if (line.phase) progress.printed = line.text;
-		progress.log(line.text);
-	}
+function phaseLine(progress: Progress, text: string): void {
+	const { lines } = progress;
+	lines.splice(0, lines.length, ...lines.filter((line) => !line.phase), { text, phase: true });
+}
+
+function print(progress: Progress): void {
+	for (const line of progress.lines.splice(0)) progress.log(line.text);
 }
 
 /**
  * The result of nested call `name`. A call whose saved result is an error runs again, under the next free key
- * `<key>~<n>`. The progress lines before the call print when it runs, and are dropped when it returns a result saved
- * before this process.
+ * `<key>~<n>`. The waiting lines print when the call runs. A call with a saved result drops the log lines and keeps
+ * the phase line, so a resume prints the phase of the first call that runs.
  */
 async function nested(
 	api: ToolExecutionApi,
@@ -358,7 +352,6 @@ async function nested(
 	name: string,
 	args: JsonObject,
 ): Promise<unknown> {
-	const lines = progress.lines.splice(0);
 	const base = keyOf(name, args, counters);
 	let key = base;
 	let saved = await api.snapshot(NestedCallDoc, api.taskId, key, context);
@@ -366,9 +359,9 @@ async function nested(
 		key = `${base}~${n}`;
 		saved = await api.snapshot(NestedCallDoc, api.taskId, key, context);
 	}
-	if (saved?.result === undefined || progress.ran.has(`${api.callId}/${key}`)) {
-		print(progress, lines);
-	}
+	const { lines } = progress;
+	if (saved?.result === undefined) print(progress);
+	else lines.splice(0, lines.length, ...lines.filter((line) => line.phase));
 	const result = await api.executeTool(name, args, context, { key });
 	if (result.isError) {
 		const output = typeof result.structuredOutput === "string" ? [result.structuredOutput] : [];
@@ -392,13 +385,12 @@ async function runScript(
 	api: ToolExecutionApi,
 	context: Context,
 	host: ExtensionHost,
-	ran: ReadonlySet<string>,
 ): Promise<unknown> {
 	const bundle = await bundleOf(api, context);
 	const source = script === undefined ? bundle.main : bundle.scripts[script];
 	if (source === undefined) throw new Error(`no workflow ${script}`);
 	const counters = new Map<string, number>();
-	const progress: Progress = { lines: [], log: host.log, ran };
+	const progress: Progress = { lines: [], log: host.log };
 	const call = (name: string, values: JsonObject) => nested(api, context, counters, progress, name, values);
 	const { callable } = await api.agent(context);
 	const sandbox = new CodemodeSandbox({
@@ -418,7 +410,7 @@ async function runScript(
 			),
 			global("__sh", (cmd: string | string[], check: boolean) => call("sh", { cmd, check })),
 			global("run", (name: string, values?: JsonObject) => call("workflow", { script: name, args: values ?? {} })),
-			global("phase", (title: string) => progress.lines.push({ text: String(title), phase: true })),
+			global("phase", (title: string) => phaseLine(progress, String(title))),
 			global("log", (line: string) => progress.lines.push({ text: String(line), phase: false })),
 			global("__prompt", (name: string, inputs?: Record<string, string> | null) => {
 				const body = bundle.prompts[name];
@@ -434,7 +426,7 @@ async function runScript(
 		result = await sandbox.execute(wrapped, signal === undefined ? {} : { signal });
 	} finally {
 		await sandbox.close();
-		print(progress, progress.lines.splice(0));
+		print(progress);
 	}
 	if (result.ok) return result.value ?? null;
 	if (signal?.aborted) throw signal.reason;
@@ -444,36 +436,21 @@ async function runScript(
 	return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
 }
 
-type Executes = { execute(args: never, api: ToolExecutionApi, context: Context): unknown };
-
-/** `tool`, which adds the ID of each call that it runs to `ran`. */
-function recording<T extends Executes>(tool: T, ran: Set<string>): T {
-	const execute = (args: never, api: ToolExecutionApi, context: Context) => {
-		ran.add(api.callId);
-		return tool.execute(args, api, context);
-	};
-	return { ...tool, execute };
-}
-
 /**
  * Two extensions, one per consumer. `workflows-script` is for the runner: its `workflow` tool, and the `session`, `ask`
  * and `sh` calls that a script makes inside that call. `workflows-answer` is for script sessions: the `respond` tool of
  * a `schema` ask.
  */
-export function scriptExtensions(host: ExtensionHost): Extension[] {
-	const ran = new Set<string>();
+function scriptExtensions(host: ExtensionHost): Extension[] {
 	const workflow = defineTool({
 		...WORKFLOW,
 		execute: async (args, api, context) => {
-			const value = await runScript(args.script, args.args as JsonObject, api, context, host, ran);
+			const value = await runScript(args.script, args.args as JsonObject, api, context, host);
 			return { output: text(JSON.stringify(value)), structuredOutput: value as JsonObject };
 		},
 	});
 	return [
-		defineExtension({
-			name: SCRIPT,
-			tools: [workflow, recording(session, ran), recording(ask, ran), recording(sh, ran)],
-		}),
+		defineExtension({ name: SCRIPT, tools: [workflow, session, ask, sh] }),
 		defineExtension({ name: ANSWER, tools: [respond] }),
 	];
 }
@@ -482,13 +459,13 @@ export function scriptExtensions(host: ExtensionHost): Extension[] {
  * The runner model, which only starts the root `workflow` call. It exists because a pi-durable task cannot call a tool
  * itself: `TaskRuntime` has no `executeTool`.
  */
-export const RUNNER: AgentChoice = { model: { provider: "workflows-runner", modelId: "runner" }, thinkingLevel: "off" };
+const RUNNER: AgentChoice = { model: { provider: "workflows-runner", modelId: "runner" }, thinkingLevel: "off" };
 
 /**
  * Makes `conversation` the runner session of `bundle`: it selects `workflows-script`, offers only `workflow` to the
  * model, and keeps the bundle that its scripts read.
  */
-export async function openRunner(tx: Tx, conversation: ConversationId, bundle: RunBundle): Promise<void> {
+async function openRunner(tx: Tx, conversation: ConversationId, bundle: RunBundle): Promise<void> {
 	await configure(tx, conversation, { extensions: { add: [{ name: SCRIPT }] }, modelTools: [WORKFLOW] });
 	Object.assign(await tx.doc(BundleDoc, conversation), bundle);
 }
@@ -503,7 +480,7 @@ function contentText(message: Message | undefined): string {
  * The runner provider. It answers the run's input, the arguments of the root `workflow` call as JSON, with that call,
  * and the tool result with the result's text.
  */
-export function runnerProvider(): Provider {
+function runnerProvider(): Provider {
 	const faux = fauxProvider({ provider: RUNNER.model.provider, models: [{ id: RUNNER.model.modelId }] });
 	const respond: FauxResponseFactory = (context): AssistantMessage => {
 		faux.appendResponses([respond]);
@@ -518,4 +495,29 @@ export function runnerProvider(): Provider {
 	};
 	faux.setResponses([respond]);
 	return faux.provider;
+}
+
+/** The checkpoint of a workflow that runs one script. */
+export type ScriptCheckpoint = { readonly phase: "run" } & SessionCheckpoint;
+
+/**
+ * What every workflow that runs one script declares: its first checkpoint, and the script runtime, which the store
+ * installs once for all of them.
+ */
+export const scriptWorkflow = {
+	initial: (): ScriptCheckpoint => ({ phase: "run" }),
+	extensions: scriptExtensions,
+	providers: [runnerProvider()],
+};
+
+/** The script phase: a runner session in `cwd` runs `bundle.main` with `args`, and its value is the run's result. */
+export async function scriptPhase(
+	step: Step<unknown, ScriptCheckpoint, ScriptCheckpoint, unknown>,
+	cwd: string,
+	bundle: RunBundle,
+	args: JsonObject,
+): Promise<void> {
+	const runner = await step.session(RUNNER, cwd, (tx, conversation) => openRunner(tx, conversation, bundle));
+	if (runner === undefined) return;
+	await step.finish(JSON.parse(await runner.say("run", JSON.stringify({ args }))));
 }

@@ -13,18 +13,17 @@ const VERDICT = {
 	},
 }
 
-// Each turn writes its phase line, so a resume that continues a later turn of a session still prints it.
-const say = (s, title, prompt, options) => (phase(title), s.ask(prompt, options))
-
+phase("plan")
 const planner = session("planner")
-await say(planner, "plan", prompts.plan({ item }))
-await say(planner, "plan", prompts.challenge())
-let plan = await say(planner, "plan", prompts.handoff())
+await planner.ask(prompts.plan({ item }))
+await planner.ask(prompts.challenge())
+let plan = await planner.ask(prompts.handoff())
 
 let before = start
 for (let round = 1; round <= rounds; round++) {
+	phase(`round ${round}: implement`)
 	const implementer = session("implementer")
-	const reply = await say(implementer, `round ${round}: implement`, prompts.implement({ plan }))
+	const reply = await implementer.ask(prompts.implement({ plan }))
 
 	await sh(["git", "add", "-A"])
 	if (await ok(["git", "diff", "--cached", "--quiet", start])) return { status: "blocked", rounds: round, reply }
@@ -35,23 +34,24 @@ for (let round = 1; round <= rounds; round++) {
 	const change = [await patch(`round-${round}.patch`, start)]
 	if (round > 1) change.push(await patch(`round-${round}-fix.patch`, before))
 
+	phase(`round ${round}: review`)
 	const reviewer = session("reviewer")
-	const review = `round ${round}: review`
-	await say(reviewer, review, prompts.review({ item, plan, change: change.join("\n"), reply }))
+	await reviewer.ask(prompts.review({ item, plan, change: change.join("\n"), reply }))
 	const challenge = `${await prompts.challenge()}\n\nAnswer with respond: SHIP if nothing needs to change, FIX otherwise.`
-	if ((await say(reviewer, review, challenge, { schema: SHIP_OR_FIX })) === "SHIP") return await judgeAndSquash(round)
+	if ((await reviewer.ask(challenge, { schema: SHIP_OR_FIX })) === "SHIP") return await judgeAndSquash(round)
 	if (round === rounds) return { status: "stopped", rounds: round }
-	plan = await say(reviewer, review, prompts.handoff())
+	plan = await reviewer.ask(prompts.handoff())
 	before = await sh(["git", "rev-parse", "HEAD"])
 }
 
 async function judgeAndSquash(round) {
 	const head = await sh(["git", "rev-parse", "HEAD"])
+	phase("judge")
 	const judge = session("judge")
 	let verdict
 	let judgeError
 	try {
-		verdict = await say(judge, "judge", prompts.judge({ item, base: start, head }), { schema: VERDICT })
+		verdict = await judge.ask(prompts.judge({ item, base: start, head }), { schema: VERDICT })
 	} catch (error) {
 		judgeError = error.message
 	}

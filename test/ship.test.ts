@@ -233,7 +233,7 @@ export default function ({ events }) {
 		expect(run.stderr.slice(-2)).toEqual(failed);
 
 		const again = await workflows(["ship", "resume", run.id ?? ""], { cwd: repo });
-		expect([again.code, again.stderr, again.model.calls]).toEqual([1, failed, []]);
+		expect([again.code, again.stderr, again.model.calls]).toEqual([1, ["round 1: implement", ...failed], []]);
 
 		await rm(hook);
 		const resumed = await workflows(["ship", "resume", run.id ?? ""], { cwd: repo });
