@@ -133,7 +133,7 @@ export default function ({ durable, ai, events }) {
 		execute: async (_args, api) => {
 			appendFileSync(${JSON.stringify(join(root, "probe.log"))}, api.conversationId + "\\n");
 			events.emit("probe", api.conversationId);
-			return { content: [{ type: "text", text: "ok" }] };
+			return { output: [{ type: "text", text: "ok" }] };
 		},
 	});
 	return {
@@ -181,6 +181,7 @@ export default function ({ events }) {
 		expect(new Set(probed).size).toBe(4);
 		expect((await readFile(join(root, "events.log"), "utf8")).trim().split("\n")).toEqual(probed);
 		expect(existsSync(join(root, "a.closed")) && existsSync(join(root, "b.closed"))).toBe(true);
+		expect(run.model.results.slice(0, 2)).toEqual(["ok", expect.stringContaining("README.md")]);
 	});
 
 	it("blocks a round that changes nothing", async () => {

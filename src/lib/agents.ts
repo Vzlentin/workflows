@@ -53,7 +53,7 @@ function piTool<T extends TSchema>(create: (cwd: string) => PiTool<T>): ToolRegi
 		execute: async (args, api, context) => {
 			const { cwd = "." } = await api.agent(context);
 			const result = await create(cwd).execute(api.callId, args, context.abortSignal);
-			return { content: result.content };
+			return { output: result.content };
 		},
 	});
 }

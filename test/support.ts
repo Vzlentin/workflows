@@ -98,7 +98,7 @@ export type Script = {
 	readonly interruptAt?: { readonly kind: Kind; readonly nth: number };
 	/** The prompt that the provider answers with an error. */
 	readonly failAt?: { readonly kind: Kind; readonly nth: number };
-	/** The plan, review and judge prompts first call the `probe` tool, and implement calls it next to its edit. */
+	/** The plan prompt first calls `probe` and `ls`, review and judge call `probe`, and implement calls `probe` next to its edit. */
 	readonly probe?: boolean;
 	/** Pressed Ctrl+C. */
 	readonly interrupt: AbortController;
@@ -122,6 +122,8 @@ export const PASSING_JUDGE = [
  */
 export class FakeModel {
 	readonly calls: Call[] = [];
+	/** The text of every tool result the model received. */
+	readonly results: string[] = [];
 	readonly models = createModels();
 	readonly #script: Script;
 
@@ -147,7 +149,11 @@ export class FakeModel {
 	): Promise<AssistantMessage> => {
 		const messages = context.messages;
 		const last = messages.findLast((message) => message.role !== "system");
-		if (last?.role === "toolResult") return fauxAssistantMessage("I fixed the typo in README.md.");
+		if (last?.role === "toolResult") {
+			const after = messages.slice(messages.findLastIndex((message) => message.role === "assistant") + 1);
+			for (const message of after) if (message.role === "toolResult") this.results.push(textOf(message));
+			return fauxAssistantMessage("I fixed the typo in README.md.");
+		}
 		const prompt = last === undefined ? "" : textOf(last);
 		const found = KINDS.find(([start]) => prompt.startsWith(start))?.[1];
 		if (found === undefined) throw new Error(`unexpected prompt: ${prompt}`);
@@ -172,7 +178,10 @@ export class FakeModel {
 			prompt,
 		});
 		const probe = fauxToolCall("probe", {});
-		if (this.#script.probe && (kind === "plan" || kind === "review" || kind === "judge")) {
+		if (this.#script.probe && kind === "plan") {
+			return fauxAssistantMessage([probe, fauxToolCall("ls", {})], { stopReason: "toolUse" });
+		}
+		if (this.#script.probe && (kind === "review" || kind === "judge")) {
 			return fauxAssistantMessage(probe, { stopReason: "toolUse" });
 		}
 		switch (kind) {

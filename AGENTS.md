@@ -1,7 +1,7 @@
 - Check: `npm run check` (Biome, TypeScript, Vitest). The judge session runs the checks listed here.
 - README.md is the behaviour spec: output lines, exit codes, run directory layout, commit message format. Update it in the same change as the behaviour.
 - `dist/` is ignored build output, and `bin` points to it. Run `npm run build` before you try the `workflows` command.
-- Dependency versions are pinned exactly. The four `@earendil-works/*` packages share one version; change them together.
+- Dependency versions are pinned exactly. The four `@earendil-works/*` packages share one version; change them together. Until 1.2.0 is on npm, pi-durable is ahead of the others, at the build in the GitHub release asset.
 - Never verify with a real `workflows` run. It spends model calls, and inside a ship run it starts another run.
 
 ## Library and workflows
