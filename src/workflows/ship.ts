@@ -13,7 +13,7 @@ import { defineWorkflow, type Io, type SessionCheckpoint, type Step, UsageError 
 const PROMPTS = ["plan", "challenge", "handoff", "implement", "review", "judge"] as const;
 type Role = "plan" | "implement" | "review" | "judge";
 
-const OPUS = { provider: "anthropic", modelId: "claude-opus-5-5" };
+const OPUS = { provider: "cursor", modelId: "claude-opus-5-5" };
 const READ_ONLY = ["read", "grep", "find", "ls"];
 
 export const AGENTS: Readonly<Record<Role, AgentChoice>> = {

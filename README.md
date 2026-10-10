@@ -18,7 +18,8 @@ Each box is a new session.
 
 ## Setup
 
-Requires Node.js 22.19 or later, Git, and Pi credentials for the `anthropic` provider (log in once with `pi`).
+Requires Node.js 22.19 or later, Git, and Pi with the pi-cursor package, logged in to the `cursor` provider (log in
+once with `/login cursor` in `pi`).
 GitHub repositories also need an authenticated `gh`.
 
 ```sh
@@ -99,12 +100,13 @@ Blocked and stopped runs keep their branch, worktree and round commits. Delete t
 
 | Session | Model | Thinking | Tools |
 | --- | --- | --- | --- |
-| plan, review | `anthropic/claude-opus-5-5` | `medium` | `read`, `grep`, `find`, `ls` |
-| implement | `anthropic/claude-opus-5-5` | `medium` | `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash` |
-| judge | `anthropic/claude-opus-5-5` | `medium` | `read`, `grep`, `find`, `ls`, `bash` |
+| plan, review | `cursor/claude-opus-5-5` | `medium` | `read`, `grep`, `find`, `ls` |
+| implement | `cursor/claude-opus-5-5` | `medium` | `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash` |
+| judge | `cursor/claude-opus-5-5` | `medium` | `read`, `grep`, `find`, `ls`, `bash` |
 
-Sessions use Pi's provider credentials from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`). Their system prompt has the
-`AGENTS.md` instructions and skills that Pi loads for the worktree. Pi extension packages are not loaded.
+Sessions use Pi's providers and credentials from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers
+that Pi extension packages register, such as `cursor`. Their system prompt has the `AGENTS.md` instructions and skills
+that Pi loads for the worktree. Sessions get no tools from Pi extension packages.
 
 ## Resume
 

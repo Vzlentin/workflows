@@ -1,6 +1,6 @@
 /**
  * What sessions run with: the tools, and the system prompt sections with the project instructions and skills that Pi
- * loads for the session's directory. Pi extension packages are not loaded.
+ * loads for the session's directory. Sessions get no tools from Pi extension packages.
  */
 import type { ImageContent, ModelThinkingLevel, Static, TextContent, TSchema } from "@earendil-works/pi-ai";
 import {
