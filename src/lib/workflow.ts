@@ -186,7 +186,9 @@ export function workflowTask(
 	};
 	return defineTask<Stored, Checkpoint, JsonValue>({
 		name: taskKind(workflow),
-		version: 1,
+		version: 2,
+		// Older inputs only have fields that this version does not read.
+		migrate: (input, checkpoint) => ({ input: input as Stored, checkpoint: checkpoint as Checkpoint }),
 		initial: (stored) => stored.from ?? workflow.initial(stored.input),
 		phases: Object.fromEntries(Object.keys(handlers).map((phase) => [phase, run])),
 		abort: async (_task, runtime, context) => {

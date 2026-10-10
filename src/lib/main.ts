@@ -4,17 +4,27 @@
  * needs, and whatever the workflow writes there.
  */
 import { randomBytes } from "node:crypto";
-import { access, mkdir, rm } from "node:fs/promises";
+import { access, mkdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import * as ai from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import {
+	createEventBus,
+	DefaultPackageManager,
+	getAgentDir,
+	ProjectTrustStore,
+	SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import * as durable from "@earendil-works/pi-durable";
 import {
 	type Cursor,
 	createRegistry,
 	defineExtension,
+	type Extension,
 	Harness,
 	type HarnessSettings,
 	type SettledTask,
@@ -177,13 +187,49 @@ function piSettings(cwd: string): HarnessSettings {
 	};
 }
 
-/** The run's durable store, open with the session tools and every workflow task installed. */
+/** What the default export of a `piDurable` entry returns. */
+type Entry = { readonly extensions: readonly Extension[]; close(): Promise<void> };
+
+/**
+ * The `piDurable` entries of the installed packages in Pi's settings for `cwd`, in one shared event bus. Project
+ * packages count only when Pi trusts the project. Missing packages are skipped, not installed. Node does not strip
+ * types under `node_modules`, so entries of npm packages fail to load.
+ */
+async function loadEntries(cwd: string): Promise<Entry[]> {
+	const agentDir = getAgentDir();
+	const settingsManager = SettingsManager.create(cwd, agentDir, {
+		projectTrusted: new ProjectTrustStore(agentDir).get(cwd) === true,
+	});
+	const roots = new Set(
+		new DefaultPackageManager({ cwd, agentDir, settingsManager })
+			.listConfiguredPackages()
+			.flatMap((found) => found.installedPath ?? []),
+	);
+	const events = createEventBus();
+	const entries: Entry[] = [];
+	for (const root of roots) {
+		const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8").catch(() => "{}")) as {
+			readonly piDurable?: { readonly extensions?: readonly string[] };
+		};
+		for (const path of manifest.piDurable?.extensions ?? []) {
+			const entry = await import(pathToFileURL(resolvePath(root, path)).href);
+			entries.push(await entry.default({ durable, ai, events }));
+		}
+	}
+	return entries;
+}
+
+/** The run's durable store, open with the session tools, the package tools and every workflow task installed. */
 async function openStore(directory: string, terminal: Terminal, workflows: readonly AnyWorkflow[]): Promise<Store> {
 	const registry = createRegistry();
 	registry.install(Sessions);
+	const entries = await loadEntries(terminal.cwd);
+	for (const entry of entries) for (const extension of entry.extensions) registry.install(extension);
 	const tasks = workflows.map((workflow) => workflowTask(workflow, terminal.stderr));
 	registry.install(defineExtension({ name: "workflows", tasks }));
 	const envs = new Map<string, NodeExecutionEnv>();
+	const warn = (error: unknown) =>
+		terminal.stderr(`warning: ${error instanceof Error ? error.message : String(error)}`);
 	const harness = await Harness.open(
 		await openNodeSqliteStorage(join(directory, "durable.sqlite")),
 		{
@@ -196,12 +242,16 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
 				envs.set(cwd, found);
 				return found;
 			},
-			onReport: (error) => terminal.stderr(`warning: ${error instanceof Error ? error.message : String(error)}`),
+			onReport: warn,
 		},
 		BACKGROUND_CONTEXT,
 	);
 	let closed: Promise<void> | undefined;
 	const close = async () => {
+		// Entries close first: an entry may still need the open harness.
+		for (const result of await Promise.allSettled(entries.map((entry) => entry.close()))) {
+			if (result.status === "rejected") warn(result.reason);
+		}
 		await harness.close(BACKGROUND_CONTEXT);
 		for (const env of envs.values()) await env.cleanup(BACKGROUND_CONTEXT);
 	};

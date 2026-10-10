@@ -21,6 +21,7 @@ const worktreeOf = (id: string | undefined) => join(runs(), id ?? "missing", "wo
 const progress = /^(plan|judge|round \d: (implement|review))$/;
 const FIXED = "# Demo\n\nHello world\n";
 const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|failed), [0-9a-f]+$/;
+const TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash"];
 
 describe("workflows ship", () => {
 	it("ships a work item file in two rounds and keeps the checkout", async () => {
@@ -86,12 +87,10 @@ describe("workflows ship", () => {
 			"verdict",
 			"judge",
 		]);
-		const readOnly = ["read", "grep", "find", "ls"];
 		for (const call of calls) {
 			expect(call.thinking).toBe("medium");
 			expect(call.model).toBe("claude-opus-5-5");
-			const tools = { implement: [...readOnly, "write", "edit", "bash"], judge: [...readOnly, "bash"] };
-			expect(call.tools).toEqual(tools[call.kind as keyof typeof tools] ?? readOnly);
+			expect(call.tools).toEqual(TOOLS);
 			expect(call.sections.cwd).toBe(`<cwd>\n${worktree}\n</cwd>`);
 			expect(call.sections.project_context).toContain("Run the demo checks.");
 			expect(call.sections.skills).toContain("<name>demo</name>");
@@ -113,6 +112,75 @@ describe("workflows ship", () => {
 			`## change\n${patch.replace("round-1", "round-2")}\n${patch.replace("round-1", "round-2-fix")}\n`,
 		);
 		expect(calls[10]?.prompt).toMatch(new RegExp(`## base\\n${start}\\n\\n## head\\n[0-9a-f]{40}$`));
+	});
+
+	it("gives every session the tools of the piDurable entries in Pi's packages and closes them", async () => {
+		const pkg = join(root, "probe-package");
+		await mkdir(pkg);
+		await writeFile(
+			join(pkg, "package.json"),
+			JSON.stringify({ name: "probe", type: "module", piDurable: { extensions: ["./a.ts", "./b.ts"] } }),
+		);
+		await writeFile(
+			join(pkg, "a.ts"),
+			`import { appendFileSync, writeFileSync } from "node:fs";
+export default function ({ durable, ai, events }) {
+	const probe = durable.defineTool({
+		name: "probe",
+		description: "Probe",
+		parameters: ai.Type.Object({}),
+		replay: "safe",
+		execute: async (_args, api) => {
+			appendFileSync(${JSON.stringify(join(root, "probe.log"))}, api.conversationId + "\\n");
+			events.emit("probe", api.conversationId);
+			return { content: [{ type: "text", text: "ok" }] };
+		},
+	});
+	return {
+		extensions: [durable.defineExtension({ name: "probe-a", tools: [probe] })],
+		close: async () => writeFileSync(${JSON.stringify(join(root, "a.closed"))}, ""),
+	};
+}
+`,
+		);
+		await writeFile(
+			join(pkg, "b.ts"),
+			`import { appendFileSync, writeFileSync } from "node:fs";
+export default function ({ events }) {
+	events.on("probe", (id) => appendFileSync(${JSON.stringify(join(root, "events.log"))}, id + "\\n"));
+	return { extensions: [], close: async () => writeFileSync(${JSON.stringify(join(root, "b.closed"))}, "") };
+}
+`,
+		);
+		await writeFile(
+			join(root, "agent", "settings.json"),
+			JSON.stringify({ retry: { enabled: false }, packages: [pkg] }),
+		);
+		const untrusted = join(root, "untrusted-package");
+		await mkdir(untrusted);
+		await writeFile(
+			join(untrusted, "package.json"),
+			JSON.stringify({ name: "untrusted", type: "module", piDurable: { extensions: ["./index.ts"] } }),
+		);
+		await writeFile(join(untrusted, "index.ts"), 'throw new Error("untrusted package loaded");\n');
+		await mkdir(join(repo, ".pi"));
+		await writeFile(join(repo, ".pi", "settings.json"), JSON.stringify({ packages: [untrusted] }));
+
+		const run = await workflows(["ship", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED], probe: true },
+		});
+
+		expect(run.code).toBe(0);
+		expect(run.model.calls.map((call) => call.kind)).toEqual([
+			...["plan", "challenge", "handoff", "implement", "review", "verdict", "judge"],
+		]);
+		for (const call of run.model.calls) expect(call.tools).toEqual([...TOOLS, "probe"]);
+		const probed = (await readFile(join(root, "probe.log"), "utf8")).trim().split("\n");
+		expect(probed).toHaveLength(4);
+		expect(new Set(probed).size).toBe(4);
+		expect((await readFile(join(root, "events.log"), "utf8")).trim().split("\n")).toEqual(probed);
+		expect(existsSync(join(root, "a.closed")) && existsSync(join(root, "b.closed"))).toBe(true);
 	});
 
 	it("blocks a round that changes nothing", async () => {

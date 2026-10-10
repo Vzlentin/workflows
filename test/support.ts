@@ -98,6 +98,8 @@ export type Script = {
 	readonly interruptAt?: { readonly kind: Kind; readonly nth: number };
 	/** The prompt that the provider answers with an error. */
 	readonly failAt?: { readonly kind: Kind; readonly nth: number };
+	/** The plan, review and judge prompts first call the `probe` tool, and implement calls it next to its edit. */
+	readonly probe?: boolean;
 	/** Pressed Ctrl+C. */
 	readonly interrupt: AbortController;
 };
@@ -169,6 +171,10 @@ export class FakeModel {
 			sections: Object.assign({}, ...system.map((message) => message.sections ?? {})),
 			prompt,
 		});
+		const probe = fauxToolCall("probe", {});
+		if (this.#script.probe && (kind === "plan" || kind === "review" || kind === "judge")) {
+			return fauxAssistantMessage(probe, { stopReason: "toolUse" });
+		}
 		switch (kind) {
 			case "plan":
 				return fauxAssistantMessage("Problem: README.md says wrold.");
@@ -184,7 +190,7 @@ export class FakeModel {
 							command: `printf '%s' '${edit}' > README.md && git commit -qam 'implementer ${nth}'`,
 						})
 					: fauxToolCall("write", { path: "README.md", content: edit });
-				return fauxAssistantMessage(call, { stopReason: "toolUse" });
+				return fauxAssistantMessage(this.#script.probe ? [call, probe] : call, { stopReason: "toolUse" });
 			}
 			case "review":
 				return fauxAssistantMessage(`Review ${nth}: the change is small.`);

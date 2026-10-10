@@ -1,6 +1,6 @@
 /**
  * What sessions run with: the tools, and the system prompt sections with the project instructions and skills that Pi
- * loads for the session's directory. Sessions get no tools from Pi extension packages.
+ * loads for the session's directory.
  */
 import type { ImageContent, ModelThinkingLevel, Static, TextContent, TSchema } from "@earendil-works/pi-ai";
 import {
@@ -24,11 +24,10 @@ import {
 } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 
-/** The model, thinking level and tool names of a session. */
+/** The model and thinking level of a session. */
 export type AgentChoice = {
 	readonly model: ModelRef;
 	readonly thinkingLevel: ModelThinkingLevel;
-	readonly tools: readonly string[];
 };
 
 /** The part of a Pi coding agent tool that a durable tool needs. */
@@ -110,17 +109,10 @@ export const Sessions = defineExtension({
 	],
 });
 
-/** The `pi.agent` change that makes a conversation a session of `choice` in `cwd`. */
+/**
+ * The `pi.agent` change that makes a conversation a session of `choice` in `cwd`. It selects no extensions, so the
+ * session gets the tools of every installed extension.
+ */
 export function sessionAgent(choice: AgentChoice, cwd: string): AgentChange {
-	return {
-		model: choice.model,
-		thinkingLevel: choice.thinkingLevel,
-		extensions: [Sessions],
-		tools: choice.tools.map((name) => {
-			const tool = TOOLS.find((candidate) => candidate.name === name);
-			if (tool === undefined) throw new Error(`Unknown tool ${name}`);
-			return tool;
-		}),
-		cwd,
-	};
+	return { model: choice.model, thinkingLevel: choice.thinkingLevel, cwd };
 }
