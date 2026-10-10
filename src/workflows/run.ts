@@ -70,6 +70,7 @@ function parseRun(args: readonly string[]) {
 export const run = defineWorkflow<Args, RunInput, RunCheckpoint, unknown>({
 	name: "run",
 	usage: "workflows run <name | file.js | -> [--arg <key>=<value>]... [--json]",
+	version: 2,
 	parse: async (args, io) => {
 		const parsed = parseRun(args);
 		const bundle = await loadBundle(io.cwd);

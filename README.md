@@ -6,7 +6,8 @@ sessions, model calls and tool calls, and stores the progress of the run.
 
 `src/lib/` is the library that runs workflows: run directories, the durable store, sessions, retries, resume and
 workflow scripts. `src/workflows/` holds the workflows built on it: `ship`, and `run`, which runs a JavaScript workflow
-script.
+script. `ship` selects the repository and creates the worktree, then runs the workflow script `workflows/ship.js` in
+the worktree for the sessions, the Git steps and the squash.
 
 ```text
 plan session:       plan  ->  challenge  ->  handoff
@@ -57,7 +58,8 @@ directory, and the run starts from the cloned `origin/<base>`. A bare name such 
 authenticated user, and `owner/calibre` names the owner.
 
 The command prints `run <run-id>`, then one progress line on stderr as each session starts: `plan`,
-`round <n>: implement`, `round <n>: review` and `judge`.
+`round <n>: implement`, `round <n>: review` and `judge`. A resume prints the line of a session only when that session
+has a turn that was not answered before.
 
 The work item ships onto the branch `ship/<run-id>`, in a worktree in the run directory. The selected repository's
 checkout, index and local edits stay unchanged. Ship does not push and does not open a pull request.
@@ -71,7 +73,7 @@ After each implement session, the run stages all changes in the worktree:
 
 The review session gets the work item, the handoff, the implementer's reply, and the paths of the round's patches in
 the run directory: `round-<n>.patch` from the start commit, and from round 2 `round-<n>-fix.patch` from the previous
-round. Its challenge ends with SHIP or FIX. On FIX, its handoff gives the next round's instructions. A run that is
+round. Its challenge answers SHIP or FIX through `respond`. On FIX, its handoff gives the next round's instructions. A run that is
 not shipped after `--rounds` rounds prints `stopped <subject> after <n> rounds: <worktree>` and exits 1.
 
 On SHIP, the judge session reviews the change in the worktree, and the run squashes the work into one commit:
@@ -90,17 +92,20 @@ Judge: 0.83
 ```
 
 The subject is the first non-empty line of the work item without leading `#`. The body is the work item, then the
-judge's failed answers. The judge answers eight questions with PASS or FAIL. If question 1 (complete) or 2 (correct)
-fails, the score is 0. Otherwise the score is the fraction of questions 3 to 8 that pass. If the judge fails or its
-reply misses an answer, the commit has no `Judge` trailer. The command prints
+judge's findings. The judge answers through `respond`: eight PASS or FAIL answers, and one finding line for each failed
+question. If question 1 (complete) or 2 (correct) fails, the score is 0. Otherwise the score is the fraction of
+questions 3 to 8 that pass. If the judge fails or does not answer through `respond`, the commit has no `Judge` trailer,
+and the command prints `judge failed on <subject>: <error>` on stderr. The command prints
 `shipped <subject> in <n> rounds, judge <score or failed>, <commit>` and exits 0.
 
 Blocked and stopped runs keep their branch, worktree and round commits. Delete them when you no longer need them.
 
 ## Sessions
 
-Every session (plan, implement, review and judge) uses `cursor/claude-opus-5-5` with thinking `medium` and gets the
-same tools.
+The plan, implement, review and judge sessions use the agent profiles `agents/planner.md`, `agents/implementer.md`,
+`agents/reviewer.md` and `agents/judge.md`. Each uses `cursor/claude-opus-5-5` with thinking `medium`, and every
+session gets the same tools. `ship` reads `workflows/ship.js`, the prompts and the profiles of the package only, not
+the `.workflows/` folder of the project.
 
 Sessions use Pi's providers and credentials from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers
 that Pi extension packages register, such as `cursor`. Their system prompt has the `AGENTS.md` instructions and skills
@@ -129,6 +134,9 @@ cat fix.js | workflows run - --json
 - Any other argument is a name in the `workflows/` folder of the package or of the project. An unknown name fails
   with `workflows: no workflow <name>` and exits 1.
 
+`workflows/ship.js` stops with an error when it does not get the start commit from `workflows ship`. Thus
+`workflows run ship` and `run("ship")` fail and do not change the current checkout.
+
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
 project file adds to the package files, and replaces the package file of the same name in the same folder.
@@ -136,7 +144,8 @@ project file adds to the package files, and replaces the package file of the sam
 `--arg <key>=<value>` gives the script `args.<key>` as a string, and can be repeated. A value without `=` or a key
 given twice is bad usage: the command prints its usage and exits 2.
 
-The command prints `run <run-id>` on stdout, then each `phase` and `log` line on stderr. When the script returns, the
+The command prints `run <run-id>` on stdout, then each `phase` and `log` line on stderr when the script's next call
+runs, or when the script ends. When the script returns, the
 command prints the return value on stdout and exits 0. A string prints as it is, and any other value prints as JSON.
 With `--json`, the value always prints as JSON.
 
@@ -152,16 +161,17 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | Global | Meaning |
 |---|---|
 | `args` | The `--arg` values |
+| `runId`, `runDir` | The run ID and the run directory. A script that `run()` starts gets the same values |
 | `agent(prompt, { as, schema })` | One turn in a new session of profile `as` (default `default`). Returns the reply text, or the answer with `schema` |
 | `session(profile)` | A new session of `profile` (default `default`). `.ask(prompt, { schema })` is one turn in it |
-| `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code |
+| `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
 | `ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `run(name, args)` | Runs the script `name` of `workflows/` in the package or the project and returns its result |
 | `tools.<name>(args)` | Any tool that sessions get, such as `tools.read({ path })` |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `parallel(thunks)` | Runs the functions at once and returns their results |
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
-| `phase(title)`, `log(text)` | Write one line on stderr |
+| `phase(title)`, `log(text)` | Write one line on stderr before the script's next call runs |
 
 With `schema`, a JSON Schema, the session gets a `respond` tool for that turn. The model gives its answer as
 `respond({ answer })`, which ends the turn, and the call returns `answer`. An answer that does not match the schema
@@ -187,8 +197,9 @@ later edit of a script, prompt or profile, in the package or in `.workflows/`, c
 Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
 again. A call is known by its tool, its arguments and its position among identical calls. A turn that was in progress
 continues in its session. A command that was in progress runs again, so commands must be safe to repeat. Every call
-that failed runs again, also one that the script caught. `phase` and `log` lines are not saved, so resume prints them
-again.
+that failed runs again, also one that the script caught. `phase` and `log` lines are not saved. A call that returns a
+result saved before the resume drops the lines before it, so resume prints only the lines before calls that run. A
+`phase` whose title is the same as the last printed phase line does not print again.
 
 ## Resume
 
@@ -206,7 +217,7 @@ resume <run-id>` and exits 130. A second Ctrl+C exits at once.
 
 Resume opens the run's store and continues the pending work. For `run`, see [Saved inputs and
 resume](#saved-inputs-and-resume). For `ship`, it uses the work item, repository, start commit,
-prompts, models and round limit that the run saved before it started. It does not read the work item file again,
+`workflows/ship.js`, prompts, profiles and round limit that the run saved before it started. It does not read the work item file again,
 select or clone the repository again, or create another branch. Answered turns are not sent to the model again. A
 turn that was in progress is sent again.
 
@@ -215,6 +226,9 @@ A run that fails with an error prints `failed <subject>: <error>` and `continue 
 runs the failed step again: a failed Git step runs again, and a failed turn is sent again in the same session.
 
 A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
+
+A ship run saved before `ship` ran `workflows/ship.js` cannot resume: resume prints
+`workflows: run <run-id> was saved by an earlier version of ship and cannot resume` and exits 1.
 
 Model requests use Pi's retry, stream timeout and compaction settings from its `settings.json`.
 
@@ -234,8 +248,8 @@ A ship run also has:
 
 `prompts/` holds the Pi prompt templates `plan`, `challenge`, `handoff`, `implement`, `review` and `judge`. Edit the
 wording there. Keep the frontmatter and the last line `$@`: the run removes them, then adds its inputs as
-`## <name>` sections. The run adds the SHIP or FIX ending of the review challenge itself, so a template edit cannot
-remove it. The judge rubric is fixed: its eight numbered answers make the score. A run uses the templates as they were
+`## <name>` sections. `workflows/ship.js` adds the SHIP or FIX answer rule of the review challenge itself, so a template
+edit cannot remove it. The judge rubric is fixed: its eight answers, in question order, make the score. A run uses the templates as they were
 when it started.
 
 Workflow scripts get every template of `prompts/` as `prompts.<name>`, and the agent profiles of `agents/`. A run

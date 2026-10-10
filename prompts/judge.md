@@ -39,6 +39,6 @@ The worktree is at head. Read `git diff base head`, then the modules and callers
 7. Test surface: new tests cross the module's interface; tests of replaced code are deleted.
 8. Rules: no AGENTS.md rule is broken, new names use CONTEXT.md terms, no ADR is relitigated.
 
-End with one line per question: `<n> PASS` or `<n> FAIL <file>:<line> <reason>`.
+Answer with `respond`: `answers` holds eight `PASS` or `FAIL` values in question order, and `findings` holds one line per failed question, `<n> FAIL <file>:<line> <reason>`.
 
 $@

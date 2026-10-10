@@ -6,7 +6,7 @@
 import { randomBytes } from "node:crypto";
 import { access, mkdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve as resolvePath } from "node:path";
+import { basename, join, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -145,6 +145,9 @@ async function resume(
 		if (expected !== undefined && expected !== workflow) {
 			throw new UsageError(`run ${id} is a ${workflow.name} run; use workflows ${workflow.name} resume ${id}`);
 		}
+		if (latest.version < workflow.version) {
+			throw new Error(`run ${id} was saved by an earlier version of ${workflow.name} and cannot resume`);
+		}
 		terminal.stdout(`run ${id}`);
 		const from = failedAt(latest);
 		const stored = latest.input as Stored;
@@ -245,7 +248,12 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
 	];
 	for (const extension of selected) registry.install(extension);
 	const failure = new AbortController();
-	const host = { log: terminal.stderr, fail: (message: string) => failure.abort(message) };
+	const host = {
+		runId: basename(directory),
+		runDir: directory,
+		log: terminal.stderr,
+		fail: (message: string) => failure.abort(message),
+	};
 	for (const extension of workflows.flatMap((workflow) => workflow.extensions?.(host) ?? [])) {
 		registry.install(extension);
 	}
