@@ -5,10 +5,17 @@
 import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { type Bundle, loadBundle, RUNNER, RUNNER_AGENT, type WorkflowCall } from "../lib/script.ts";
+import type { JsonObject } from "@earendil-works/pi-durable";
+import { type Bundle, loadBundle, openRunner, RUNNER, runnerProvider, scriptExtension } from "../lib/script.ts";
 import { defineWorkflow, type Io, type SessionCheckpoint, type Step, UsageError } from "../lib/workflow.ts";
 
-type Args = { readonly name: string; readonly json: boolean; readonly call: WorkflowCall };
+type Args = {
+	readonly name: string;
+	readonly json: boolean;
+	readonly source: string;
+	readonly args: JsonObject;
+	readonly bundle: Bundle;
+};
 
 /** Everything a run needs, saved before execution starts. */
 export type RunInput = Args & { readonly cwd: string };
@@ -60,20 +67,24 @@ export const run = defineWorkflow<Args, RunInput, RunCheckpoint, unknown>({
 		const parsed = parseRun(args);
 		const bundle = await loadBundle();
 		const { name, source } = await readScript(parsed.script, bundle, io);
-		return { name, json: parsed.json, call: { ...bundle, source, args: parsed.args } };
+		return { name, json: parsed.json, source, args: parsed.args, bundle };
 	},
 	prepare: async (args, run) => ({ ...args, cwd: run.cwd }),
 	title: (input) => input.name,
 	initial: () => ({ phase: "run" }),
 	phases: {
 		run: async ({ input, session, finish }: Step<RunInput, RunCheckpoint, RunCheckpoint, unknown>) => {
-			const runner = await session(RUNNER, input.cwd, RUNNER_AGENT);
+			const runner = await session(RUNNER, input.cwd, (tx, conversation) =>
+				openRunner(tx, conversation, { ...input.bundle, main: input.source }),
+			);
 			if (runner === undefined) return;
-			await finish(JSON.parse(await runner.say("run", JSON.stringify(input.call))));
+			await finish(JSON.parse(await runner.say("run", JSON.stringify({ args: input.args }))));
 		},
 	},
 	report: (input, result, io) => {
 		io.stdout(typeof result === "string" && !input.json ? result : JSON.stringify(result));
 		return 0;
 	},
+	extensions: (host) => [scriptExtension(host)],
+	providers: [runnerProvider()],
 });

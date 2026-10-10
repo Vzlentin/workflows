@@ -8,13 +8,14 @@
  */
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { Provider } from "@earendil-works/pi-ai/models";
 import {
-	type AgentChange,
 	AssistantEntry,
 	type ConversationHandle,
 	type ConversationId,
 	configure,
 	defineTask,
+	type Extension,
 	type NextTaskState,
 	type RunningTask,
 	type Task,
@@ -48,10 +49,14 @@ export type Step<I, C extends Checkpoint, S extends Checkpoint, R> = {
 	finish(result: R): Promise<void>;
 	/**
 	 * The phase's session, kept in `checkpoint.conversation`. On the phase's first run this opens the session, commits
-	 * it, and returns undefined: the phase then returns and runs again with the session. `change` adds to the session's
-	 * agent.
+	 * it, and returns undefined: the phase then returns and runs again with the session. `setup` runs in the same commit,
+	 * after the session's agent is configured.
 	 */
-	session(choice: AgentChoice, cwd: string, change?: AgentChange): Promise<Session | undefined>;
+	session(
+		choice: AgentChoice,
+		cwd: string,
+		setup?: (tx: Tx, conversation: ConversationId) => Promise<void>,
+	): Promise<Session | undefined>;
 };
 
 type Phases<I, S extends Checkpoint, R> = {
@@ -69,6 +74,14 @@ export type Io = {
 	readonly stderr: (line: string) => void;
 };
 
+/** What the extensions of a workflow get from the command. */
+export type ExtensionHost = {
+	/** Writes one progress line. */
+	log(line: string): void;
+	/** Stops the command with `message` as a resumable failure; the run's task stays pending. */
+	fail(message: string): void;
+};
+
 export type Workflow<A, I, S extends Checkpoint, R> = {
 	/** The command name: `workflows <name>`. */
 	readonly name: string;
@@ -83,6 +96,10 @@ export type Workflow<A, I, S extends Checkpoint, R> = {
 	readonly phases: Phases<I, S, R>;
 	/** Prints the result and returns the exit code. */
 	report(input: I, result: R, io: Io): number;
+	/** Extensions that the store installs for runs of this workflow. Sessions select them only by name. */
+	extensions?(host: ExtensionHost): readonly Extension[];
+	/** Model providers that runs of this workflow use. */
+	readonly providers?: readonly Provider[];
 };
 
 /** Identity function that types a workflow. */
@@ -158,11 +175,12 @@ function stepOf(
 		log,
 		advance: (next) => commit({ status: "running", checkpoint: next }),
 		finish: (result) => commit({ status: "terminal", outcome: { status: "completed", result: result as JsonValue } }),
-		session: async (choice, cwd, change) => {
+		session: async (choice, cwd, setup) => {
 			if (checkpoint.conversation !== undefined) return sessionOf(runtime, checkpoint.conversation, context);
 			await runtime.commit(async (tx) => {
 				const created = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });
-				await configure(tx, created.id, { ...sessionAgent(choice, cwd), ...change });
+				await configure(tx, created.id, sessionAgent(choice, cwd));
+				await setup?.(tx, created.id);
 				return { status: "running", checkpoint: { ...checkpoint, conversation: created.id } };
 			}, context);
 			return undefined;

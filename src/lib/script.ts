@@ -4,8 +4,8 @@
  * calls return their saved results and only the rest runs. A script failure does not settle the `workflow` call: the
  * command stops, and a resume runs the same call again.
  *
- * A local runner model starts the root call: it answers the run's input with one `workflow` call, and the tool result
- * with its text.
+ * The runner conversation holds the run's bundle, and a local runner model starts the root call: it answers the run's
+ * input with one `workflow` call, and the tool result with its text.
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -30,7 +30,6 @@ import {
 import { type CodemodeJsonSchema, CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
-	type AgentChange,
 	type ConversationId,
 	configure,
 	defineDoc,
@@ -41,10 +40,11 @@ import {
 	type ModelRef,
 	NestedCallDoc,
 	type ToolExecutionApi,
+	type Tx,
 } from "@earendil-works/pi-durable";
 import { type AgentChoice, sessionAgent } from "./agents.ts";
 import { instructions, render } from "./prompts.ts";
-import { sessionOf, textOf } from "./workflow.ts";
+import { type ExtensionHost, sessionOf, textOf } from "./workflow.ts";
 
 /** An agent profile from `agents/<name>.md`. */
 export type Profile = {
@@ -60,16 +60,17 @@ export type Bundle = {
 	readonly agents: Readonly<Record<string, Profile>>;
 };
 
-/** The arguments of a `workflow` call: the script, its arguments, and the saved bundle that `run()` finds scripts in. */
-export type WorkflowCall = Bundle & { readonly source: string; readonly args: JsonObject };
+/** The bundle of a run and its own script, kept in the runner conversation. */
+export type RunBundle = Bundle & { readonly main: string };
 
-/** What the command gets from running scripts. */
-export type ScriptHooks = {
-	/** Writes one `phase` or `log` line. */
-	log(line: string): void;
-	/** A script failed; its `workflow` call stays unsettled until the store closes. */
-	fail(message: string): void;
-};
+const BundleDoc = defineDoc<RunBundle>({
+	kind: "workflows.bundle",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "current",
+	initial: () => ({ main: "", scripts: {}, prompts: {}, agents: {} }),
+});
 
 const PACKAGE = new URL("../../", import.meta.url);
 
@@ -122,6 +123,13 @@ const AnswerDoc = defineDoc<{ schema?: JsonObject }>({
 	initial: () => ({}),
 });
 
+/** The bundle of the runner conversation that the calling script runs in. */
+async function bundleOf(api: ToolExecutionApi, context: Context): Promise<RunBundle> {
+	const bundle = await api.snapshot(BundleDoc, api.conversationId, context);
+	if (bundle === undefined) throw new Error("workflow scripts run only in a runner session");
+	return bundle;
+}
+
 const respond = defineTool({
 	name: "respond",
 	description: "Give the answer of this turn in the structured form the prompt asks for. This ends the turn.",
@@ -148,11 +156,9 @@ const WORKFLOW = defineTool({
 	name: "workflow",
 	description: "Run a workflow script.",
 	parameters: Type.Object({
-		source: Type.String(),
+		/** A script of the bundle; absent for the run's own script. */
+		script: Type.Optional(Type.String()),
 		args: Type.Record(Type.String(), Type.Unknown()),
-		scripts: Type.Record(Type.String(), Type.String()),
-		prompts: Type.Record(Type.String(), Type.String()),
-		agents: Type.Record(Type.String(), Type.Unknown()),
 	}),
 	replay: "safe",
 	structuredOutputSchema: Type.Unknown(),
@@ -165,13 +171,14 @@ const WORKFLOW = defineTool({
 const session = defineTool({
 	name: "session",
 	description: "Open a session of a workflow script.",
-	parameters: Type.Object({ profile: Type.String(), agent: Type.Unknown() }),
+	parameters: Type.Object({ profile: Type.String() }),
 	callers: ["tools"],
 	replay: "safe",
 	structuredOutputSchema: Type.Number(),
 	execute: async (args, api, context) => {
 		const { cwd = "." } = await api.agent(context);
-		const profile = args.agent as Profile;
+		const profile = (await bundleOf(api, context)).agents[args.profile];
+		if (profile === undefined) throw new Error(`no agent profile ${args.profile}`);
 		const id = await api.commit(async (tx) => {
 			const created = await tx.createConversation({ ownership: { kind: "ownerless" } });
 			await configure(tx, created.id, {
@@ -255,9 +262,9 @@ const sh = defineTool({
 const OWN = new Set([WORKFLOW.name, session.name, ask.name, sh.name, respond.name]);
 
 /** The sandbox functions that are not host calls. */
-function prelude(call: WorkflowCall): string {
+function prelude(args: JsonObject, prompts: readonly string[]): string {
 	return `
-const args = ${JSON.stringify(call.args)};
+const args = ${JSON.stringify(args)};
 const __unavailable = (name) => function () {
 	throw new Error(name + " is not available in workflow scripts");
 };
@@ -267,7 +274,7 @@ const Math = Object.freeze({
 	random: __unavailable("Math.random"),
 });
 const prompts = Object.fromEntries(
-	${JSON.stringify(Object.keys(call.prompts))}.map((name) => [name, (inputs) => __prompt(name, inputs)]),
+	${JSON.stringify(prompts)}.map((name) => [name, (inputs) => __prompt(name, inputs)]),
 );
 function session(profile = "default") {
 	const id = __session(profile);
@@ -299,48 +306,27 @@ function keyOf(name: string, args: JsonObject, counters: Map<string, number>): s
 	return `${hash}.${n}`;
 }
 
-/** The key of the nested call whose error stopped the script, per `workflow` call; absent when no such call. */
-const RetryDoc = defineDoc<{ key?: string }>({
-	kind: "workflows.retry",
-	version: 1,
-	scope: "task",
-	initial: () => ({}),
-});
-
-/** One script execution: its key counters, the key to retry, and each error message thrown into the script with the latest key that threw it. */
-type Execution = {
-	readonly counters: Map<string, number>;
-	readonly retry: string | undefined;
-	readonly thrown: Map<string, string>;
-};
-
 /**
- * The result of nested call `name`. Only the call that stopped the script before is sent again, under the next free key
- * `<key>~<n>`; any other saved error is thrown again. With `Promise.all`, another call that also failed throws its saved
- * error, and is sent again only if it stops the next resume.
+ * The result of nested call `name`. A call whose saved result is an error runs again, under the next free key
+ * `<key>~<n>`.
  */
 async function nested(
 	api: ToolExecutionApi,
 	context: Context,
-	execution: Execution,
+	counters: Map<string, number>,
 	name: string,
 	args: JsonObject,
 ): Promise<unknown> {
-	const base = keyOf(name, args, execution.counters);
-	const saved = (key: string) => api.snapshot(NestedCallDoc, api.taskId, key, context);
+	const base = keyOf(name, args, counters);
 	let key = base;
-	for (let n = 2; (await saved(key))?.result?.isError === true; n++) {
-		const next = `${base}~${n}`;
-		if (key !== execution.retry && (await saved(next)) === undefined) break;
-		key = next;
+	for (let n = 2; (await api.snapshot(NestedCallDoc, api.taskId, key, context))?.result?.isError === true; n++) {
+		key = `${base}~${n}`;
 	}
 	const result = await api.executeTool(name, args, context, { key });
 	if (result.isError) {
 		const output = typeof result.structuredOutput === "string" ? [result.structuredOutput] : [];
 		const reasons = [...output, ...result.diagnostics.map((diagnostic) => diagnostic.message)];
-		const message = reasons.filter((reason) => reason !== "").join("\n") || `${name} failed`;
-		execution.thrown.set(message, key);
-		throw new Error(message);
+		throw new Error(reasons.filter((reason) => reason !== "").join("\n") || `${name} failed`);
 	}
 	return result.structuredOutput;
 }
@@ -349,16 +335,22 @@ function global(name: string, execute: (...values: never[]) => unknown): Codemod
 	return { name, spread: true, execute: (values) => execute(...(values as never[])) };
 }
 
-/** The script's return value. A script failure is reported to `hooks` and waits for the store to close. */
+/**
+ * The return value of the script `script` of the bundle, or of the run's own script. A script failure is reported to
+ * `host` and waits for the store to close.
+ */
 async function runScript(
-	call: WorkflowCall,
+	script: string | undefined,
+	args: JsonObject,
 	api: ToolExecutionApi,
 	context: Context,
-	hooks: ScriptHooks,
+	host: ExtensionHost,
 ): Promise<unknown> {
-	const retry = (await api.snapshot(RetryDoc, api.taskId, context))?.key;
-	const execution: Execution = { counters: new Map(), retry, thrown: new Map() };
-	const host = (name: string, args: JsonObject) => nested(api, context, execution, name, args);
+	const bundle = await bundleOf(api, context);
+	const source = script === undefined ? bundle.main : bundle.scripts[script];
+	if (source === undefined) throw new Error(`no workflow ${script}`);
+	const counters = new Map<string, number>();
+	const call = (name: string, values: JsonObject) => nested(api, context, counters, name, values);
 	const { callable } = await api.agent(context);
 	const sandbox = new CodemodeSandbox({
 		timeoutMs: Number.POSITIVE_INFINITY,
@@ -368,27 +360,19 @@ async function runScript(
 				name: tool.name,
 				description: tool.description,
 				inputSchema: tool.parameters as CodemodeJsonSchema,
-				execute: (args) => host(tool.name, args as JsonObject),
+				execute: (values) => call(tool.name, values as JsonObject),
 			})),
 		globals: [
-			global("__session", (profile: string) => {
-				const agent = call.agents[profile];
-				if (agent === undefined) throw new Error(`no agent profile ${profile}`);
-				return host("session", { profile, agent });
-			}),
+			global("__session", (profile: string) => call("session", { profile })),
 			global("__ask", (conversation: number, prompt: string, schema?: JsonObject) =>
-				host("ask", { conversation, prompt, ...(schema === undefined ? {} : { schema }) }),
+				call("ask", { conversation, prompt, ...(schema === undefined ? {} : { schema }) }),
 			),
-			global("__sh", (cmd: string, check: boolean) => host("sh", { cmd, check })),
-			global("run", (name: string, args?: JsonObject) => {
-				const source = call.scripts[name];
-				if (source === undefined) throw new Error(`no workflow ${name}`);
-				return host("workflow", { ...call, source, args: args ?? {} });
-			}),
-			global("phase", (title: string) => hooks.log(String(title))),
-			global("log", (line: string) => hooks.log(String(line))),
+			global("__sh", (cmd: string, check: boolean) => call("sh", { cmd, check })),
+			global("run", (name: string, values?: JsonObject) => call("workflow", { script: name, args: values ?? {} })),
+			global("phase", (title: string) => host.log(String(title))),
+			global("log", (line: string) => host.log(String(line))),
 			global("__prompt", (name: string, inputs?: Record<string, string>) => {
-				const body = call.prompts[name];
+				const body = bundle.prompts[name];
 				if (body === undefined) throw new Error(`no prompt ${name}`);
 				return render(body, inputs);
 			}),
@@ -397,43 +381,45 @@ async function runScript(
 	const signal = context.abortSignal;
 	let result: Awaited<ReturnType<CodemodeSandbox["execute"]>>;
 	try {
-		const source = `${prelude(call)}\nreturn await (async () => {\n${call.source}\n})();`;
-		result = await sandbox.execute(source, signal === undefined ? {} : { signal });
+		const wrapped = `${prelude(args, Object.keys(bundle.prompts))}\nreturn await (async () => {\n${source}\n})();`;
+		result = await sandbox.execute(wrapped, signal === undefined ? {} : { signal });
 	} finally {
 		await sandbox.close();
 	}
 	if (result.ok) return result.value ?? null;
 	if (signal?.aborted) throw signal.reason;
-	const { message } = result.error;
-	// A script that threw its own error, or another one after it caught a call's error, retries no call.
-	const stopped = execution.thrown.get(message);
-	await api.commit(async (tx) => {
-		const doc = await tx.doc(RetryDoc, api.taskId);
-		if (stopped === undefined) delete doc.key;
-		else doc.key = stopped;
-		return undefined;
-	}, context);
-	hooks.fail(message);
+	// A failed task would not do: its resume starts a new task, and the saved nested calls belong to this one. So the
+	// call stays open, the command stops, and a resume runs this call again.
+	host.fail(result.error.message);
 	return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
 }
 
 /** The script tools: `workflow`, its `session`, `ask` and `sh` calls, and the `respond` tool of a `schema` ask. */
-export function scriptExtension(hooks: ScriptHooks): Extension {
+export function scriptExtension(host: ExtensionHost): Extension {
 	const workflow = defineTool({
 		...WORKFLOW,
 		execute: async (args, api, context) => {
-			const value = await runScript(args as WorkflowCall, api, context, hooks);
+			const value = await runScript(args.script, args.args as JsonObject, api, context, host);
 			return { output: text(JSON.stringify(value)), structuredOutput: value as JsonObject };
 		},
 	});
 	return defineExtension({ name: SCRIPT, tools: [workflow, session, ask, sh, respond] });
 }
 
-/** The runner model, which only starts the root `workflow` call. */
+/**
+ * The runner model, which only starts the root `workflow` call. It exists because a pi-durable task cannot call a tool
+ * itself: `TaskRuntime` has no `executeTool`.
+ */
 export const RUNNER: AgentChoice = { model: { provider: "workflows-runner", modelId: "runner" }, thinkingLevel: "off" };
 
-/** The runner session's agent: the script tools, with only `workflow` offered. */
-export const RUNNER_AGENT: AgentChange = { extensions: { add: [{ name: SCRIPT }] }, modelTools: [WORKFLOW] };
+/**
+ * Makes `conversation` the runner session of `bundle`: it gets the script tools, with only `workflow` offered, and
+ * keeps the bundle that its scripts read.
+ */
+export async function openRunner(tx: Tx, conversation: ConversationId, bundle: RunBundle): Promise<void> {
+	await configure(tx, conversation, { extensions: { add: [{ name: SCRIPT }] }, modelTools: [WORKFLOW] });
+	Object.assign(await tx.doc(BundleDoc, conversation), bundle);
+}
 
 function contentText(message: Message | undefined): string {
 	if (message === undefined || message.role === "system") return "";
@@ -442,8 +428,8 @@ function contentText(message: Message | undefined): string {
 }
 
 /**
- * The runner provider. It answers the run's input, a `WorkflowCall` as JSON, with one `workflow` call, and the tool
- * result with the result's text.
+ * The runner provider. It answers the run's input, the arguments of the root `workflow` call as JSON, with that call,
+ * and the tool result with the result's text.
  */
 export function runnerProvider(): Provider {
 	const faux = fauxProvider({ provider: RUNNER.model.provider, models: [{ id: RUNNER.model.modelId }] });

@@ -11,7 +11,7 @@ import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import * as ai from "@earendil-works/pi-ai";
-import type { Models } from "@earendil-works/pi-ai/models";
+import type { Models, Provider } from "@earendil-works/pi-ai/models";
 import {
 	createEventBus,
 	DefaultPackageManager,
@@ -28,13 +28,13 @@ import {
 	Harness,
 	type HarnessSettings,
 	type SettledTask,
+	type Storage,
 	type TaskId,
 	type TaskRecord,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Sessions } from "./agents.ts";
-import { scriptExtension } from "./script.ts";
 import {
 	type AnyWorkflow,
 	type Checkpoint,
@@ -47,6 +47,8 @@ import {
 
 export type Terminal = Io & {
 	readonly models: Models;
+	/** Adds a provider to `models`. */
+	addProvider(provider: Provider): void;
 	/** Aborted by Ctrl+C: the run stops where it is and stays resumable. */
 	readonly interrupt: AbortSignal;
 };
@@ -104,16 +106,18 @@ async function start(
 	const id = newRunId();
 	const directory = join(runsDirectory(), id);
 	await mkdir(directory, { recursive: true });
+	let storage: Storage | undefined;
 	let store: Store | undefined;
 	let task: TaskId<JsonValue>;
 	let input: JsonValue;
 	try {
 		input = await workflow.prepare(parsed, { id, directory, cwd: terminal.cwd });
-		const opened = await openStore(directory, terminal, workflows);
+		storage = await openStorage(directory);
+		const opened = await openStore(storage, terminal, workflows, workflow);
 		store = opened;
 		task = await opened.create(workflow, { input });
 	} catch (error) {
-		await store?.close();
+		await (store?.close() ?? storage?.close(BACKGROUND_CONTEXT));
 		await rm(directory, { recursive: true, force: true });
 		throw error;
 	}
@@ -134,9 +138,10 @@ async function resume(
 	await access(join(directory, "durable.sqlite")).catch(() => {
 		throw new Error(`no run ${id} in ${runsDirectory()}`);
 	});
-	const store = await openStore(directory, terminal, workflows);
+	const storage = await openStorage(directory);
+	let store: Store | undefined;
 	try {
-		const latest = await store.latest();
+		const latest = await latestTask(storage, workflows);
 		if (latest === undefined) throw new Error(`run ${id} has no workflow`);
 		const workflow = workflows.find((candidate) => taskKind(candidate) === latest.kind);
 		if (workflow === undefined) throw new Error(`run ${id} is a ${latest.kind} run, which this command cannot run`);
@@ -144,13 +149,32 @@ async function resume(
 			throw new UsageError(`run ${id} is a ${workflow.name} run; use workflows ${workflow.name} resume ${id}`);
 		}
 		terminal.stdout(`run ${id}`);
+		store = await openStore(storage, terminal, workflows, workflow);
 		const from = failedAt(latest);
 		const stored = latest.input as Stored;
 		const task = from === undefined ? latest.id : await store.create(workflow, { input: stored.input, from });
 		return await follow(store, workflow, task, stored.input, id, terminal);
 	} finally {
-		await store.close();
+		await (store?.close() ?? storage.close(BACKGROUND_CONTEXT));
 	}
+}
+
+const openStorage = (directory: string): Promise<Storage> => openNodeSqliteStorage(join(directory, "durable.sqlite"));
+
+/** The newest workflow task in `storage`, read before the harness opens. */
+async function latestTask(
+	storage: Storage,
+	workflows: readonly AnyWorkflow[],
+): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined> {
+	const kinds = new Set(workflows.map(taskKind));
+	let latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined;
+	let cursor: Cursor | undefined;
+	do {
+		const page = await storage.scanTasks({}, 256, cursor, BACKGROUND_CONTEXT);
+		for (const task of page.items) if (kinds.has(task.kind)) latest = task;
+		cursor = page.next;
+	} while (cursor !== undefined);
+	return latest;
 }
 
 /** The checkpoint of a failed phase, which a resume runs again. */
@@ -162,11 +186,12 @@ function failedAt(task: TaskRecord<JsonValue, JsonValue, JsonValue>): Checkpoint
 
 type Store = {
 	readonly harness: Harness;
-	/** Aborted with the error when a workflow script fails; its tool call stays open for a resume. */
+	/**
+	 * Aborted with the message of a workflow extension's `fail`. The task stays pending, because a resume after a failed
+	 * task starts a new task, and work saved under the old one would run again.
+	 */
 	readonly failed: AbortSignal;
 	create(workflow: AnyWorkflow, stored: Stored): Promise<TaskId<JsonValue>>;
-	/** The newest workflow task of the run. */
-	latest(): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined>;
 	close(): Promise<void>;
 };
 
@@ -226,10 +251,15 @@ async function loadEntries(cwd: string): Promise<Entry[]> {
 }
 
 /**
- * The run's durable store, open with the session tools, the package tools, the script tools and every workflow task
- * installed. Only script sessions select the script tools.
+ * The run's durable store over `storage`, open with the session tools, the package tools and every workflow task
+ * selected by default, and the extensions and providers of `workflow` installed.
  */
-async function openStore(directory: string, terminal: Terminal, workflows: readonly AnyWorkflow[]): Promise<Store> {
+async function openStore(
+	storage: Storage,
+	terminal: Terminal,
+	workflows: readonly AnyWorkflow[],
+	workflow: AnyWorkflow,
+): Promise<Store> {
 	const registry = createRegistry();
 	const entries = await loadEntries(terminal.cwd);
 	const tasks = workflows.map((workflow) => workflowTask(workflow, terminal.stderr));
@@ -240,12 +270,14 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
 	];
 	for (const extension of selected) registry.install(extension);
 	const failure = new AbortController();
-	registry.install(scriptExtension({ log: terminal.stderr, fail: (message) => failure.abort(message) }));
+	const host = { log: terminal.stderr, fail: (message: string) => failure.abort(message) };
+	for (const extension of workflow.extensions?.(host) ?? []) registry.install(extension);
+	for (const provider of workflow.providers ?? []) terminal.addProvider(provider);
 	const envs = new Map<string, NodeExecutionEnv>();
 	const warn = (error: unknown) =>
 		terminal.stderr(`warning: ${error instanceof Error ? error.message : String(error)}`);
 	const harness = await Harness.open(
-		await openNodeSqliteStorage(join(directory, "durable.sqlite")),
+		storage,
 		{
 			models: terminal.models,
 			registry,
@@ -280,17 +312,6 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
 				(tx) => tx.createTask(task, stored, { ownership: { kind: "conversation" } }),
 				BACKGROUND_CONTEXT,
 			);
-		},
-		latest: async () => {
-			const kinds = new Set(workflows.map(taskKind));
-			let latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined;
-			let cursor: Cursor | undefined;
-			do {
-				const page = await harness.commit((tx) => tx.scanTasks({}, 256, cursor), BACKGROUND_CONTEXT);
-				for (const task of page.items) if (kinds.has(task.kind)) latest = task;
-				cursor = page.next;
-			} while (cursor !== undefined);
-			return latest;
 		},
 		close: () => {
 			closed ??= close();

@@ -6,7 +6,6 @@ import type { AssistantMessage, Message, SimpleStreamOptions, TranscriptContext 
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { main } from "../src/lib/main.ts";
-import { runnerProvider } from "../src/lib/script.ts";
 import { run } from "../src/workflows/run.ts";
 import { ship } from "../src/workflows/ship.ts";
 
@@ -138,7 +137,6 @@ export class FakeModel {
 		});
 		faux.setResponses(Array.from({ length: 200 }, () => this.#respond));
 		this.models.setProvider(faux.provider);
-		this.models.setProvider(runnerProvider());
 	}
 
 	count(kind: Kind): number {
@@ -251,6 +249,7 @@ export async function workflows(
 			stdout: (line) => stdout.push(line),
 			stderr: (line) => stderr.push(line),
 			models: model.models,
+			addProvider: (provider) => model.models.setProvider(provider),
 			interrupt: interrupt.signal,
 		},
 		[ship, run],

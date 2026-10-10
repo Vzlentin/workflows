@@ -180,11 +180,11 @@ Before the run starts, it saves the script, every `workflows/*.js` of the packag
 every profile, the args and the current directory. Resume and `run()` use these saved inputs, so a later edit of a
 script, prompt or profile changes only new runs.
 
-Resume runs the script again from the top. A call that finished before returns its saved result, and is not run
+Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
 again. A call is known by its tool, its arguments and its position among identical calls. A turn that was in progress
-continues in its session. A command that was in progress runs again, so commands must be safe to repeat. The call
-whose error stopped the run runs again. Any other call that failed gives its saved error again. `phase` and `log`
-lines are not saved, so resume prints them again.
+continues in its session. A command that was in progress runs again, so commands must be safe to repeat. Every call
+that failed runs again, also one that the script caught. `phase` and `log` lines are not saved, so resume prints them
+again.
 
 ## Resume
 

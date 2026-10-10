@@ -3,7 +3,6 @@
 import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { main } from "./lib/main.ts";
-import { runnerProvider } from "./lib/script.ts";
 import { run } from "./workflows/run.ts";
 import { ship } from "./workflows/ship.ts";
 
@@ -14,7 +13,6 @@ process.on("SIGINT", () => {
 });
 
 const { modelRuntime } = await createAgentSessionServices({ cwd: process.cwd() });
-modelRuntime.registerNativeProvider(runnerProvider());
 
 process.exitCode = await main(
 	process.argv.slice(2),
@@ -24,6 +22,7 @@ process.exitCode = await main(
 		stdout: (line) => process.stdout.write(`${line}\n`),
 		stderr: (line) => process.stderr.write(`${line}\n`),
 		models: modelRuntime,
+		addProvider: (provider) => modelRuntime.registerNativeProvider(provider),
 		interrupt: interrupt.signal,
 	},
 	[ship, run],

@@ -130,7 +130,7 @@ return { reply }`,
 		expect(await log()).toBe("a\nb\n");
 	});
 
-	it("gives a caught error again on resume", async () => {
+	it("runs a caught failure again on resume", async () => {
 		await writeFile(
 			join(root, "x.js"),
 			`let seen = "ok"
@@ -142,26 +142,7 @@ return seen`,
 		const first = await stopped(["run", "x.js"], { gate: "g" });
 		expect(first.code).toBe(130);
 		const resumed = await workflows(["run", "resume", first.id ?? ""], { cwd: root });
-		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "missing"]);
-	});
-
-	it("runs a rethrown earlier error's call again on resume", async () => {
-		await writeFile(
-			join(root, "x.js"),
-			`const results = await Promise.allSettled([sh("test -f a"), ok("true"), sh("test -f b")])
-const failed = results.find((r) => r.status === "rejected")
-if (failed) throw failed.reason
-return "done"`,
-		);
-		const run = await workflows(["run", "x.js"], { cwd: root });
-		expect(run.code).toBe(1);
-		await writeFile(join(root, "a"), "");
-		await writeFile(join(root, "b"), "");
-		const resume = ["run", "resume", run.id ?? ""];
-		const again = await workflows(resume, { cwd: root });
-		expect([again.code, again.stderr[0]]).toEqual([1, "failed x: sh exited with 1: test -f b"]);
-		const resumed = await workflows(resume, { cwd: root });
-		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "done"]);
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "ok"]);
 	});
 
 	it("rejects bad scripts and arguments", async () => {
