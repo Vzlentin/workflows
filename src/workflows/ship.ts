@@ -14,13 +14,12 @@ const PROMPTS = ["plan", "challenge", "handoff", "implement", "review", "judge"]
 type Role = "plan" | "implement" | "review" | "judge";
 
 const OPUS = { provider: "cursor", modelId: "claude-opus-5-5" };
-const READ_ONLY = ["read", "grep", "find", "ls"];
 
 export const AGENTS: Readonly<Record<Role, AgentChoice>> = {
-	plan: { model: OPUS, thinkingLevel: "medium", tools: READ_ONLY },
-	implement: { model: OPUS, thinkingLevel: "medium", tools: [...READ_ONLY, "write", "edit", "bash"] },
-	review: { model: OPUS, thinkingLevel: "medium", tools: READ_ONLY },
-	judge: { model: OPUS, thinkingLevel: "medium", tools: [...READ_ONLY, "bash"] },
+	plan: { model: OPUS, thinkingLevel: "medium" },
+	implement: { model: OPUS, thinkingLevel: "medium" },
+	review: { model: OPUS, thinkingLevel: "medium" },
+	judge: { model: OPUS, thinkingLevel: "medium" },
 };
 
 type Args = {

@@ -98,15 +98,19 @@ Blocked and stopped runs keep their branch, worktree and round commits. Delete t
 
 ## Sessions
 
-| Session | Model | Thinking | Tools |
-| --- | --- | --- | --- |
-| plan, review | `cursor/claude-opus-5-5` | `medium` | `read`, `grep`, `find`, `ls` |
-| implement | `cursor/claude-opus-5-5` | `medium` | `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash` |
-| judge | `cursor/claude-opus-5-5` | `medium` | `read`, `grep`, `find`, `ls`, `bash` |
+Every session (plan, implement, review and judge) uses `cursor/claude-opus-5-5` with thinking `medium` and gets the
+same tools.
 
 Sessions use Pi's providers and credentials from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers
 that Pi extension packages register, such as `cursor`. Their system prompt has the `AGENTS.md` instructions and skills
-that Pi loads for the worktree. Sessions get no tools from Pi extension packages.
+that Pi loads for the worktree.
+
+The tools are `read`, `grep`, `find`, `ls`, `write`, `edit` and `bash`, plus the tools of the packages in Pi's
+settings that declare `"piDurable": { "extensions": [...] }`, such as pi-ipython and pi-rlm. Git packages and local
+package directories are supported. Packages installed from npm are not supported, because Node does not strip types
+from TypeScript files under `node_modules`. The run does not install missing packages, and it loads the packages
+again at each resume. A package entry that fails to load fails the start or resume with `workflows: <error>`. Each
+entry's `close()` runs when the command ends, also after Ctrl+C, and an error from it prints a `warning:` line.
 
 ## Resume
 
