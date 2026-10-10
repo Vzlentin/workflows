@@ -13,7 +13,7 @@ import {
 	RUNNER,
 	type RunBundle,
 	runnerProvider,
-	scriptExtension,
+	scriptExtensions,
 } from "../lib/script.ts";
 import { defineWorkflow, type Io, type SessionCheckpoint, type Step, UsageError } from "../lib/workflow.ts";
 
@@ -29,7 +29,7 @@ export type RunInput = Args & { readonly cwd: string };
 
 type RunCheckpoint = { readonly phase: "run" } & SessionCheckpoint;
 
-/** A name in the package's `workflows/`, a `.js` file or a path relative to the current directory, or `-` for stdin. */
+/** A name in the bundle's scripts, a `.js` file or a path relative to the current directory, or `-` for stdin. */
 async function readScript(argument: string, bundle: Bundle, io: Io): Promise<{ name: string; source: string }> {
 	if (argument === "-") {
 		const source = await io.stdin();
@@ -72,7 +72,7 @@ export const run = defineWorkflow<Args, RunInput, RunCheckpoint, unknown>({
 	usage: "workflows run <name | file.js | -> [--arg <key>=<value>]... [--json]",
 	parse: async (args, io) => {
 		const parsed = parseRun(args);
-		const bundle = await loadBundle();
+		const bundle = await loadBundle(io.cwd);
 		const { name, source } = await readScript(parsed.script, bundle, io);
 		return { name, json: parsed.json, args: parsed.args, bundle: { ...bundle, main: source } };
 	},
@@ -90,6 +90,6 @@ export const run = defineWorkflow<Args, RunInput, RunCheckpoint, unknown>({
 		io.stdout(typeof result === "string" && !input.json ? result : JSON.stringify(result));
 		return 0;
 	},
-	extensions: (host) => [scriptExtension(host)],
+	extensions: scriptExtensions,
 	providers: [runnerProvider()],
 });

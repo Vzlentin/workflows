@@ -10,6 +10,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import {
 	type AssistantMessage,
@@ -43,6 +45,7 @@ import {
 	type Tx,
 } from "@earendil-works/pi-durable";
 import { type AgentChoice, sessionAgent } from "./agents.ts";
+import { git } from "./git.ts";
 import { instructions, render } from "./prompts.ts";
 import { type ExtensionHost, sessionOf, textOf } from "./workflow.ts";
 
@@ -53,7 +56,7 @@ export type Profile = {
 	readonly instructions: string;
 };
 
-/** The package's scripts, prompt instructions and profiles, saved by a run before it starts. */
+/** The scripts, prompt instructions and profiles of the package and the project, saved by a run before it starts. */
 export type Bundle = {
 	readonly scripts: Readonly<Record<string, string>>;
 	readonly prompts: Readonly<Record<string, string>>;
@@ -72,16 +75,25 @@ const BundleDoc = defineDoc<RunBundle>({
 	initial: () => ({ main: "", scripts: {}, prompts: {}, agents: {} }),
 });
 
-const PACKAGE = new URL("../../", import.meta.url);
+const PACKAGE = fileURLToPath(new URL("../../", import.meta.url));
 
-/** `<folder>/*<extension>` of the package by name; a missing folder has none. */
-async function readFolder(folder: string, extension: string): Promise<Record<string, string>> {
-	const directory = new URL(`${folder}/`, PACKAGE);
+/** `<base>/<folder>/*<extension>` by name; a missing folder has none. */
+async function readFolder(base: string, folder: string, extension: string): Promise<Record<string, string>> {
+	const directory = join(base, folder);
 	const files = (await readdir(directory).catch(() => [])).filter((file) => file.endsWith(extension)).sort();
 	const entries = await Promise.all(
-		files.map(async (file) => [file.slice(0, -extension.length), await readFile(new URL(file, directory), "utf8")]),
+		files.map(async (file) => [file.slice(0, -extension.length), await readFile(join(directory, file), "utf8")]),
 	);
 	return Object.fromEntries(entries);
+}
+
+/** `<folder>/*<extension>` of the package, and of the project, whose files replace the package files of their name. */
+async function readMerged(project: string, folder: string, extension: string): Promise<Record<string, string>> {
+	const [own, local] = await Promise.all([
+		readFolder(PACKAGE, folder, extension),
+		readFolder(project, folder, extension),
+	]);
+	return { ...own, ...local };
 }
 
 function profileOf(name: string, text: string): Profile {
@@ -95,12 +107,17 @@ function profileOf(name: string, text: string): Profile {
 	};
 }
 
-/** The package's `workflows/*.js`, `prompts/*.md` and `agents/*.md`, read now. */
-export async function loadBundle(): Promise<Bundle> {
+/**
+ * The `workflows/*.js`, `prompts/*.md` and `agents/*.md` of the package and of `.workflows/` in the Git repository of
+ * `cwd`, or in `cwd` outside a repository, read now.
+ */
+export async function loadBundle(cwd: string): Promise<Bundle> {
+	const root = await git(cwd, "rev-parse", "--show-toplevel").catch(() => cwd);
+	const project = join(root, ".workflows");
 	const [scripts, templates, profiles] = await Promise.all([
-		readFolder("workflows", ".js"),
-		readFolder("prompts", ".md"),
-		readFolder("agents", ".md"),
+		readMerged(project, "workflows", ".js"),
+		readMerged(project, "prompts", ".md"),
+		readMerged(project, "agents", ".md"),
 	]);
 	return {
 		scripts,
@@ -112,6 +129,7 @@ export async function loadBundle(): Promise<Bundle> {
 const text = (value: string): TextContent[] => [{ type: "text", text: value }];
 
 const SCRIPT = "workflows-script";
+const ANSWER = "workflows-answer";
 
 /** The JSON Schema of the current ask's answer, per conversation; absent when the ask has no `schema`. */
 const AnswerDoc = defineDoc<{ schema?: JsonObject }>({
@@ -184,8 +202,8 @@ const session = defineTool({
 			await configure(tx, created.id, {
 				...sessionAgent(profile, cwd),
 				...(profile.instructions === "" ? {} : { instructions: profile.instructions }),
-				extensions: { add: [{ name: SCRIPT }] },
-				modelTools: { remove: [WORKFLOW, respond] },
+				extensions: { add: [{ name: ANSWER }] },
+				modelTools: { remove: [respond] },
 			});
 			return created.id;
 		}, context);
@@ -212,7 +230,8 @@ const ask = defineTool({
 			if (schema === undefined) delete doc.schema;
 			else doc.schema = schema as JsonObject;
 			await configure(tx, conversation, {
-				modelTools: { remove: schema === undefined ? [WORKFLOW, respond] : [WORKFLOW] },
+				extensions: { add: [{ name: ANSWER }], remove: [{ name: SCRIPT }] },
+				modelTools: { remove: schema === undefined ? [respond] : [] },
 			});
 			return undefined;
 		}, context);
@@ -259,7 +278,7 @@ const sh = defineTool({
 	},
 });
 
-const OWN = new Set([WORKFLOW.name, session.name, ask.name, sh.name, respond.name]);
+const OWN = new Set([WORKFLOW.name, session.name, ask.name, sh.name]);
 
 /** The sandbox functions that are not host calls. */
 function prelude(args: JsonObject, prompts: readonly string[]): string {
@@ -394,8 +413,12 @@ async function runScript(
 	return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
 }
 
-/** The script tools: `workflow`, its `session`, `ask` and `sh` calls, and the `respond` tool of a `schema` ask. */
-export function scriptExtension(host: ExtensionHost): Extension {
+/**
+ * Two extensions, one per consumer. `workflows-script` is for the runner: its `workflow` tool, and the `session`, `ask`
+ * and `sh` calls that a script makes inside that call. `workflows-answer` is for script sessions: the `respond` tool of
+ * a `schema` ask.
+ */
+export function scriptExtensions(host: ExtensionHost): Extension[] {
 	const workflow = defineTool({
 		...WORKFLOW,
 		execute: async (args, api, context) => {
@@ -403,7 +426,10 @@ export function scriptExtension(host: ExtensionHost): Extension {
 			return { output: text(JSON.stringify(value)), structuredOutput: value as JsonObject };
 		},
 	});
-	return defineExtension({ name: SCRIPT, tools: [workflow, session, ask, sh, respond] });
+	return [
+		defineExtension({ name: SCRIPT, tools: [workflow, session, ask, sh] }),
+		defineExtension({ name: ANSWER, tools: [respond] }),
+	];
 }
 
 /**
@@ -413,8 +439,8 @@ export function scriptExtension(host: ExtensionHost): Extension {
 export const RUNNER: AgentChoice = { model: { provider: "workflows-runner", modelId: "runner" }, thinkingLevel: "off" };
 
 /**
- * Makes `conversation` the runner session of `bundle`: it gets the script tools, with only `workflow` offered, and
- * keeps the bundle that its scripts read.
+ * Makes `conversation` the runner session of `bundle`: it selects `workflows-script`, offers only `workflow` to the
+ * model, and keeps the bundle that its scripts read.
  */
 export async function openRunner(tx: Tx, conversation: ConversationId, bundle: RunBundle): Promise<void> {
 	await configure(tx, conversation, { extensions: { add: [{ name: SCRIPT }] }, modelTools: [WORKFLOW] });

@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
-import { chmod, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type Kind, sandbox, workflows } from "./support.ts";
+import { type Kind, repository, sandbox, workflows } from "./support.ts";
 
 let root: string;
 
@@ -20,15 +20,15 @@ afterEach(() => rm(root, { recursive: true, force: true }));
 
 const log = () => readFile(join(root, "log"), "utf8");
 
-/** Runs `argv` and presses Ctrl+C at the `nth` script prompt, or once the `gate` command is reached. */
-async function stopped(argv: string[], stop: { readonly nth: number } | { readonly gate: string }) {
+/** Runs `argv` in `cwd` and presses Ctrl+C at the `nth` script prompt, or once the `gate` command is reached. */
+async function stopped(argv: string[], stop: { readonly nth: number } | { readonly gate: string }, cwd = root) {
 	if ("nth" in stop) {
 		const interruptAt = { kind: "script" as Kind, nth: stop.nth };
-		return workflows(argv, { cwd: root, script: { interruptAt } });
+		return workflows(argv, { cwd, script: { interruptAt } });
 	}
 	const interrupt = new AbortController();
-	const pending = workflows(argv, { cwd: root, interrupt });
-	const gate = join(root, stop.gate);
+	const pending = workflows(argv, { cwd, interrupt });
+	const gate = join(cwd, stop.gate);
 	while (!existsSync(`${gate}.reached`)) await new Promise((resolve) => setTimeout(resolve, 10));
 	interrupt.abort();
 	const outcome = await pending;
@@ -159,6 +159,39 @@ return "done"`,
 		await writeFile(join(root, "b"), "");
 		const resumed = await workflows(["run", "resume", run.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "done"]);
+	});
+
+	it("runs and resumes project workflows from .workflows/ of the repository", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "workflows");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "parent.js"), `await sh("echo x >> log")\nreturn await run("child", args)`);
+		const gate = join(root, "gate.sh");
+		await writeFile(join(scripts, "child.js"), `await sh("echo x >> log")\nawait sh("${gate} c")\nreturn args.word`);
+		const cwd = join(repo, "sub", "dir");
+		await mkdir(cwd, { recursive: true });
+
+		const first = await stopped(["run", "parent", "--arg", "word=nested"], { gate: "c" }, cwd);
+		expect(first.code).toBe(130);
+		const resumed = await workflows(["run", "resume", first.id ?? ""], { cwd });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "nested"]);
+		expect(await readFile(join(cwd, "log"), "utf8")).toBe("x\nx\n");
+	});
+
+	it("uses a project agent profile in place of the package profile", async () => {
+		const agents = join(root, ".workflows", "agents");
+		await mkdir(agents, { recursive: true });
+		await writeFile(
+			join(agents, "default.md"),
+			"---\nmodel: cursor/claude-opus-5-5\nthinking: high\n---\nProject profile body.\n",
+		);
+		await writeFile(join(root, "x.js"), `return await agent("Script: one")`);
+		const run = await workflows(["run", "x.js"], { cwd: root });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, "Reply to one"]);
+		const [call] = run.model.calls;
+		expect(call?.thinking).toBe("high");
+		expect(call?.sections.instructions).toContain("Project profile body.");
 	});
 
 	it("rejects bad scripts and arguments", async () => {
