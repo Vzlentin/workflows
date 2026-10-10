@@ -8,15 +8,19 @@
  */
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { Provider } from "@earendil-works/pi-ai/models";
 import {
 	AssistantEntry,
+	type ConversationHandle,
 	type ConversationId,
 	configure,
 	defineTask,
+	type Extension,
 	type NextTaskState,
 	type RunningTask,
 	type Task,
 	type TaskRuntime,
+	type Tx,
 } from "@earendil-works/pi-durable";
 import { type AgentChoice, sessionAgent } from "./agents.ts";
 
@@ -45,9 +49,14 @@ export type Step<I, C extends Checkpoint, S extends Checkpoint, R> = {
 	finish(result: R): Promise<void>;
 	/**
 	 * The phase's session, kept in `checkpoint.conversation`. On the phase's first run this opens the session, commits
-	 * it, and returns undefined: the phase then returns and runs again with the session.
+	 * it, and returns undefined: the phase then returns and runs again with the session. `setup` runs in the same commit,
+	 * after the session's agent is configured.
 	 */
-	session(choice: AgentChoice, cwd: string): Promise<Session | undefined>;
+	session(
+		choice: AgentChoice,
+		cwd: string,
+		setup?: (tx: Tx, conversation: ConversationId) => Promise<void>,
+	): Promise<Session | undefined>;
 };
 
 type Phases<I, S extends Checkpoint, R> = {
@@ -65,6 +74,14 @@ export type Io = {
 	readonly stderr: (line: string) => void;
 };
 
+/** What the extensions of a workflow get from the command. */
+export type ExtensionHost = {
+	/** Writes one progress line. */
+	log(line: string): void;
+	/** Stops the command with `message` as a resumable failure; the run's task stays pending. */
+	fail(message: string): void;
+};
+
 export type Workflow<A, I, S extends Checkpoint, R> = {
 	/** The command name: `workflows <name>`. */
 	readonly name: string;
@@ -79,6 +96,10 @@ export type Workflow<A, I, S extends Checkpoint, R> = {
 	readonly phases: Phases<I, S, R>;
 	/** Prints the result and returns the exit code. */
 	report(input: I, result: R, io: Io): number;
+	/** Extensions that the store installs for every run. Sessions select them only by name. */
+	extensions?(host: ExtensionHost): readonly Extension[];
+	/** Model providers that runs of this workflow use. */
+	readonly providers?: readonly Provider[];
 };
 
 /** Identity function that types a workflow. */
@@ -96,38 +117,48 @@ export const taskKind = (workflow: AnyWorkflow): string => `workflows.${workflow
 
 type Runtime = TaskRuntime<Stored, Checkpoint, JsonValue, object>;
 
-function textOf(message: AssistantMessage): string {
+/** What turns need from a task runtime or a tool API. */
+export type Turns = {
+	conversation(id: ConversationId, context: Context): Promise<ConversationHandle | undefined>;
+	commit(change: (tx: Tx) => Promise<undefined>, context: Context): Promise<unknown>;
+};
+
+export function textOf(message: AssistantMessage): string {
 	return message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 }
 
-function sessionOf(runtime: Runtime, conversation: ConversationId, context: Context): Session {
-	return {
-		say: async (requestId, content) => {
-			const handle = await runtime.conversation(conversation, context);
-			if (handle === undefined) throw new Error(`Session ${conversation} is missing`);
-			// A turn that failed before is sent again under the next free request ID.
-			let attempt = requestId;
-			await runtime.commit(async (tx) => {
-				for (let n = 2; (await tx.submissionByRequest(conversation, attempt))?.status === "unanswered"; n++) {
-					attempt = `${requestId}#${n}`;
-				}
-				return undefined;
-			}, context);
-			const submission = await handle.submit({ type: "input", content, requestId: attempt }, context);
-			const settled = await submission.wait(context);
-			if (settled.type !== "input" || settled.status !== "done") {
-				const detail = settled.detail === undefined ? "" : ` ${JSON.stringify(settled.detail)}`;
-				throw new Error(`The ${requestId} turn was not answered: ${settled.reason ?? settled.status}${detail}`);
+/** A session whose `turn` also gives the whole answer message. */
+export function sessionOf(
+	runtime: Turns,
+	conversation: ConversationId,
+	context: Context,
+): Session & { turn(requestId: string, content: string): Promise<AssistantMessage> } {
+	const turn = async (requestId: string, content: string) => {
+		const handle = await runtime.conversation(conversation, context);
+		if (handle === undefined) throw new Error(`Session ${conversation} is missing`);
+		// A turn that failed before is sent again under the next free request ID.
+		let attempt = requestId;
+		await runtime.commit(async (tx) => {
+			for (let n = 2; (await tx.submissionByRequest(conversation, attempt))?.status === "unanswered"; n++) {
+				attempt = `${requestId}#${n}`;
 			}
-			let answer: AssistantMessage | undefined;
-			await runtime.commit(async (tx) => {
-				answer = (await tx.entry(AssistantEntry, settled.answer))?.model?.[0] as AssistantMessage | undefined;
-				return undefined;
-			}, context);
-			if (answer === undefined) throw new Error(`The ${requestId} answer ${settled.answer} is missing`);
-			return textOf(answer).trim();
-		},
+			return undefined;
+		}, context);
+		const submission = await handle.submit({ type: "input", content, requestId: attempt }, context);
+		const settled = await submission.wait(context);
+		if (settled.type !== "input" || settled.status !== "done") {
+			const detail = settled.detail === undefined ? "" : ` ${JSON.stringify(settled.detail)}`;
+			throw new Error(`The ${requestId} turn was not answered: ${settled.reason ?? settled.status}${detail}`);
+		}
+		let answer: AssistantMessage | undefined;
+		await runtime.commit(async (tx) => {
+			answer = (await tx.entry(AssistantEntry, settled.answer))?.model?.[0] as AssistantMessage | undefined;
+			return undefined;
+		}, context);
+		if (answer === undefined) throw new Error(`The ${requestId} answer ${settled.answer} is missing`);
+		return answer;
 	};
+	return { turn, say: async (requestId, content) => textOf(await turn(requestId, content)).trim() };
 }
 
 function stepOf(
@@ -144,11 +175,12 @@ function stepOf(
 		log,
 		advance: (next) => commit({ status: "running", checkpoint: next }),
 		finish: (result) => commit({ status: "terminal", outcome: { status: "completed", result: result as JsonValue } }),
-		session: async (choice, cwd) => {
+		session: async (choice, cwd, setup) => {
 			if (checkpoint.conversation !== undefined) return sessionOf(runtime, checkpoint.conversation, context);
 			await runtime.commit(async (tx) => {
 				const created = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });
 				await configure(tx, created.id, sessionAgent(choice, cwd));
+				await setup?.(tx, created.id);
 				return { status: "running", checkpoint: { ...checkpoint, conversation: created.id } };
 			}, context);
 			return undefined;

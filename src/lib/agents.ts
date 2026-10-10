@@ -111,7 +111,8 @@ export const Sessions = defineExtension({
 
 /**
  * The `pi.agent` change that makes a conversation a session of `choice` in `cwd`. It selects no extensions, so the
- * session gets the tools of every installed extension.
+ * session gets the store's default selection: the session tools, the package tools and the workflow tasks, but not
+ * the extensions that a workflow installs.
  */
 export function sessionAgent(choice: AgentChoice, cwd: string): AgentChange {
 	return { model: choice.model, thinkingLevel: choice.thinkingLevel, cwd };
