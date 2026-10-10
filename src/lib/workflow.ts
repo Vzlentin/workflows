@@ -76,6 +76,10 @@ export type Io = {
 
 /** What the extensions of a workflow get from the command. */
 export type ExtensionHost = {
+	/** The run ID, which is the base name of `runDir`. */
+	readonly runId: string;
+	/** The run directory. */
+	readonly runDir: string;
 	/** Writes one progress line. */
 	log(line: string): void;
 	/** Stops the command with `message` as a resumable failure; the run's task stays pending. */
@@ -86,6 +90,8 @@ export type Workflow<A, I, S extends Checkpoint, R> = {
 	/** The command name: `workflows <name>`. */
 	readonly name: string;
 	readonly usage: string;
+	/** The task version. A run saved by an earlier version cannot resume. */
+	readonly version: number;
 	/** The checked arguments; throws `UsageError` or `Error` before a run directory exists. */
 	parse(args: readonly string[], io: Io): Promise<A>;
 	/** The input saved before execution starts; may write into the new run directory. */
@@ -218,9 +224,8 @@ export function workflowTask(
 	};
 	return defineTask<Stored, Checkpoint, JsonValue>({
 		name: taskKind(workflow),
-		version: 2,
-		// Older inputs only have fields that this version does not read.
-		migrate: (input, checkpoint) => ({ input: input as Stored, checkpoint: checkpoint as Checkpoint }),
+		version: workflow.version,
+		// No `migrate`: the store does not run a task of an earlier version, and `resume` refuses it.
 		initial: (stored) => stored.from ?? workflow.initial(stored.input),
 		phases: Object.fromEntries(Object.keys(handlers).map((phase) => [phase, run])),
 		abort: async (_task, runtime, context) => {

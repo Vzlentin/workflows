@@ -9,13 +9,12 @@ import type { JsonObject } from "@earendil-works/pi-durable";
 import {
 	type Bundle,
 	loadBundle,
-	openRunner,
-	RUNNER,
 	type RunBundle,
-	runnerProvider,
-	scriptExtensions,
+	type ScriptCheckpoint,
+	scriptPhase,
+	scriptWorkflow,
 } from "../lib/script.ts";
-import { defineWorkflow, type Io, type SessionCheckpoint, type Step, UsageError } from "../lib/workflow.ts";
+import { defineWorkflow, type Io, UsageError } from "../lib/workflow.ts";
 
 type Args = {
 	readonly name: string;
@@ -26,8 +25,6 @@ type Args = {
 
 /** Everything a run needs, saved before execution starts. */
 export type RunInput = Args & { readonly cwd: string };
-
-type RunCheckpoint = { readonly phase: "run" } & SessionCheckpoint;
 
 /** A name in the bundle's scripts, a `.js` file or a path relative to the current directory, or `-` for stdin. */
 async function readScript(argument: string, bundle: Bundle, io: Io): Promise<{ name: string; source: string }> {
@@ -67,9 +64,11 @@ function parseRun(args: readonly string[]) {
 	return { script, args: parsed, json: values.json ?? false };
 }
 
-export const run = defineWorkflow<Args, RunInput, RunCheckpoint, unknown>({
+export const run = defineWorkflow<Args, RunInput, ScriptCheckpoint, unknown>({
+	...scriptWorkflow,
 	name: "run",
 	usage: "workflows run <name | file.js | -> [--arg <key>=<value>]... [--json]",
+	version: 2,
 	parse: async (args, io) => {
 		const parsed = parseRun(args);
 		const bundle = await loadBundle(io.cwd);
@@ -78,18 +77,9 @@ export const run = defineWorkflow<Args, RunInput, RunCheckpoint, unknown>({
 	},
 	prepare: async (args, run) => ({ ...args, cwd: run.cwd }),
 	title: (input) => input.name,
-	initial: () => ({ phase: "run" }),
-	phases: {
-		run: async ({ input, session, finish }: Step<RunInput, RunCheckpoint, RunCheckpoint, unknown>) => {
-			const runner = await session(RUNNER, input.cwd, (tx, conversation) => openRunner(tx, conversation, input.bundle));
-			if (runner === undefined) return;
-			await finish(JSON.parse(await runner.say("run", JSON.stringify({ args: input.args }))));
-		},
-	},
+	phases: { run: (step) => scriptPhase(step, step.input.cwd, step.input.bundle, step.input.args) },
 	report: (input, result, io) => {
 		io.stdout(typeof result === "string" && !input.json ? result : JSON.stringify(result));
 		return 0;
 	},
-	extensions: scriptExtensions,
-	providers: [runnerProvider()],
 });

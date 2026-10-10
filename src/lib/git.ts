@@ -3,21 +3,27 @@ import { execFile } from "node:child_process";
 import { realpath, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
-type Result = { readonly code: number; readonly stdout: string; readonly stderr: string };
+export type Result = { readonly code: number; readonly stdout: string; readonly stderr: string };
 
-function run(command: string, args: readonly string[], cwd: string): Promise<Result> {
+/** The exit code and output of `command <args>` in `cwd`, with no shell. */
+export function run(command: string, args: readonly string[], cwd: string, signal?: AbortSignal): Promise<Result> {
 	return new Promise((done, fail) => {
-		execFile(command, args, { cwd, maxBuffer: 256 * 1024 * 1024 }, (error, stdout, stderr) => {
+		execFile(command, args, { cwd, signal, maxBuffer: 1 << 30 }, (error, stdout, stderr) => {
 			if (error !== null && typeof error.code !== "number") fail(error);
 			else done({ code: error === null ? 0 : (error.code as number), stdout, stderr });
 		});
 	});
 }
 
+/** The error text of the failed command `argv`: its first two words and its output. */
+export function failure(argv: readonly string[], result: Result): string {
+	return `${argv.slice(0, 2).join(" ")} failed: ${result.stdout}${result.stderr}`.trim();
+}
+
 /** The trimmed stdout of `git <args>` in `cwd`; throws with the command output when git fails. */
 export async function git(cwd: string, ...args: string[]): Promise<string> {
 	const result = await run("git", args, cwd);
-	if (result.code !== 0) throw new Error(`git ${args[0]} failed: ${result.stdout}${result.stderr}`.trim());
+	if (result.code !== 0) throw new Error(failure(["git", ...args], result));
 	return result.stdout.replace(/\n$/, "");
 }
 

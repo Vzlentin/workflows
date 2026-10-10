@@ -7,7 +7,6 @@
  * The runner conversation holds the run's bundle, and a local runner model starts the root call: it answers the run's
  * input with one `workflow` call, and the tool result with its text.
  */
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -45,9 +44,9 @@ import {
 	type Tx,
 } from "@earendil-works/pi-durable";
 import { type AgentChoice, sessionAgent } from "./agents.ts";
-import { git } from "./git.ts";
+import { failure, git, run } from "./git.ts";
 import { instructions, render } from "./prompts.ts";
-import { type ExtensionHost, sessionOf, textOf } from "./workflow.ts";
+import { type ExtensionHost, type SessionCheckpoint, type Step, sessionOf, textOf } from "./workflow.ts";
 
 /** An agent profile from `agents/<name>.md`. */
 export type Profile = {
@@ -109,11 +108,11 @@ function profileOf(name: string, text: string): Profile {
 
 /**
  * The `workflows/*.js`, `prompts/*.md` and `agents/*.md` of the package and of `.workflows/` in the Git repository of
- * `cwd`, or in `cwd` outside a repository, read now.
+ * `cwd`, or in `cwd` outside a repository, read now. Without `cwd`, only the package files.
  */
-export async function loadBundle(cwd: string): Promise<Bundle> {
-	const root = await git(cwd, "rev-parse", "--show-toplevel").catch(() => cwd);
-	const project = join(root, ".workflows");
+export async function loadBundle(cwd?: string): Promise<Bundle> {
+	const root = cwd === undefined ? undefined : await git(cwd, "rev-parse", "--show-toplevel").catch(() => cwd);
+	const project = root === undefined ? PACKAGE : join(root, ".workflows");
 	const [scripts, templates, profiles] = await Promise.all([
 		readMerged(project, "workflows", ".js"),
 		readMerged(project, "prompts", ".md"),
@@ -248,29 +247,24 @@ const ask = defineTool({
 	},
 });
 
-type ShellResult = { readonly code: number; readonly stdout: string; readonly stderr: string };
-
-function shell(cmd: string, cwd: string, signal: AbortSignal | undefined): Promise<ShellResult> {
-	return new Promise((resolve, reject) => {
-		execFile("sh", ["-c", cmd], { cwd, signal, encoding: "utf8", maxBuffer: 1 << 30 }, (error, stdout, stderr) => {
-			if (error !== null && typeof error.code !== "number") reject(error);
-			else resolve({ code: error === null ? 0 : (error.code as number), stdout, stderr });
-		});
-	});
-}
-
 const sh = defineTool({
 	name: "sh",
 	description: "Run a shell command of a workflow script.",
-	parameters: Type.Object({ cmd: Type.String(), check: Type.Boolean() }),
+	parameters: Type.Object({
+		cmd: Type.Union([Type.String(), Type.Array(Type.String(), { minItems: 1 })]),
+		check: Type.Boolean(),
+	}),
 	callers: ["tools"],
 	replay: "safe",
 	structuredOutputSchema: Type.Object({ code: Type.Number(), stdout: Type.String(), stderr: Type.String() }),
 	execute: async (args, api, context) => {
 		const { cwd = "." } = await api.agent(context);
-		const result = await shell(args.cmd, cwd, context.abortSignal);
+		// A string is `sh -c <cmd>`; an array is the program `cmd[0]` with the arguments `cmd.slice(1)` and no shell.
+		const [file = "", ...rest] = typeof args.cmd === "string" ? ["sh", "-c", args.cmd] : args.cmd;
+		const result = await run(file, rest, cwd, context.abortSignal);
 		// A failed check is an error result, so a resume runs the command again.
 		if (args.check && result.code !== 0) {
+			if (typeof args.cmd !== "string") throw new Error(failure(args.cmd, result));
 			const stderr = result.stderr.trim();
 			throw new Error(`sh exited with ${result.code}: ${args.cmd}${stderr === "" ? "" : `\n${stderr}`}`);
 		}
@@ -281,9 +275,11 @@ const sh = defineTool({
 const OWN = new Set([WORKFLOW.name, session.name, ask.name, sh.name]);
 
 /** The sandbox functions that are not host calls. */
-function prelude(args: JsonObject, prompts: readonly string[]): string {
+function prelude(args: JsonObject, prompts: readonly string[], host: ExtensionHost): string {
 	return `
 const args = ${JSON.stringify(args)};
+const runId = ${JSON.stringify(host.runId)};
+const runDir = ${JSON.stringify(host.runDir)};
 const __unavailable = (name) => function () {
 	throw new Error(name + " is not available in workflow scripts");
 };
@@ -325,22 +321,47 @@ function keyOf(name: string, args: JsonObject, counters: Map<string, number>): s
 	return `${hash}.${n}`;
 }
 
+/** A `phase` or `log` line. */
+type Line = { readonly text: string; readonly phase: boolean };
+
+/**
+ * The lines of a script that wait for its next call that runs, in order, and where they print. At most one is a phase
+ * line: a new phase line replaces it.
+ */
+type Progress = { readonly lines: Line[]; readonly log: (line: string) => void };
+
+function phaseLine(progress: Progress, text: string): void {
+	const { lines } = progress;
+	lines.splice(0, lines.length, ...lines.filter((line) => !line.phase), { text, phase: true });
+}
+
+function print(progress: Progress): void {
+	for (const line of progress.lines.splice(0)) progress.log(line.text);
+}
+
 /**
  * The result of nested call `name`. A call whose saved result is an error runs again, under the next free key
- * `<key>~<n>`.
+ * `<key>~<n>`. The waiting lines print when the call runs. A call with a saved result drops the log lines and keeps
+ * the phase line, so a resume prints the phase of the first call that runs.
  */
 async function nested(
 	api: ToolExecutionApi,
 	context: Context,
 	counters: Map<string, number>,
+	progress: Progress,
 	name: string,
 	args: JsonObject,
 ): Promise<unknown> {
 	const base = keyOf(name, args, counters);
 	let key = base;
-	for (let n = 2; (await api.snapshot(NestedCallDoc, api.taskId, key, context))?.result?.isError === true; n++) {
+	let saved = await api.snapshot(NestedCallDoc, api.taskId, key, context);
+	for (let n = 2; saved?.result?.isError === true; n++) {
 		key = `${base}~${n}`;
+		saved = await api.snapshot(NestedCallDoc, api.taskId, key, context);
 	}
+	const { lines } = progress;
+	if (saved?.result === undefined) print(progress);
+	else lines.splice(0, lines.length, ...lines.filter((line) => line.phase));
 	const result = await api.executeTool(name, args, context, { key });
 	if (result.isError) {
 		const output = typeof result.structuredOutput === "string" ? [result.structuredOutput] : [];
@@ -369,7 +390,8 @@ async function runScript(
 	const source = script === undefined ? bundle.main : bundle.scripts[script];
 	if (source === undefined) throw new Error(`no workflow ${script}`);
 	const counters = new Map<string, number>();
-	const call = (name: string, values: JsonObject) => nested(api, context, counters, name, values);
+	const progress: Progress = { lines: [], log: host.log };
+	const call = (name: string, values: JsonObject) => nested(api, context, counters, progress, name, values);
 	const { callable } = await api.agent(context);
 	const sandbox = new CodemodeSandbox({
 		timeoutMs: Number.POSITIVE_INFINITY,
@@ -386,24 +408,25 @@ async function runScript(
 			global("__ask", (conversation: number, prompt: string, schema?: JsonObject) =>
 				call("ask", { conversation, prompt, ...(schema === undefined ? {} : { schema }) }),
 			),
-			global("__sh", (cmd: string, check: boolean) => call("sh", { cmd, check })),
+			global("__sh", (cmd: string | string[], check: boolean) => call("sh", { cmd, check })),
 			global("run", (name: string, values?: JsonObject) => call("workflow", { script: name, args: values ?? {} })),
-			global("phase", (title: string) => host.log(String(title))),
-			global("log", (line: string) => host.log(String(line))),
-			global("__prompt", (name: string, inputs?: Record<string, string>) => {
+			global("phase", (title: string) => phaseLine(progress, String(title))),
+			global("log", (line: string) => progress.lines.push({ text: String(line), phase: false })),
+			global("__prompt", (name: string, inputs?: Record<string, string> | null) => {
 				const body = bundle.prompts[name];
 				if (body === undefined) throw new Error(`no prompt ${name}`);
-				return render(body, inputs);
+				return render(body, inputs ?? {});
 			}),
 		],
 	});
 	const signal = context.abortSignal;
 	let result: Awaited<ReturnType<CodemodeSandbox["execute"]>>;
 	try {
-		const wrapped = `${prelude(args, Object.keys(bundle.prompts))}\nreturn await (async () => {\n${source}\n})();`;
+		const wrapped = `${prelude(args, Object.keys(bundle.prompts), host)}\nreturn await (async () => {\n${source}\n})();`;
 		result = await sandbox.execute(wrapped, signal === undefined ? {} : { signal });
 	} finally {
 		await sandbox.close();
+		print(progress);
 	}
 	if (result.ok) return result.value ?? null;
 	if (signal?.aborted) throw signal.reason;
@@ -418,7 +441,7 @@ async function runScript(
  * and `sh` calls that a script makes inside that call. `workflows-answer` is for script sessions: the `respond` tool of
  * a `schema` ask.
  */
-export function scriptExtensions(host: ExtensionHost): Extension[] {
+function scriptExtensions(host: ExtensionHost): Extension[] {
 	const workflow = defineTool({
 		...WORKFLOW,
 		execute: async (args, api, context) => {
@@ -436,13 +459,13 @@ export function scriptExtensions(host: ExtensionHost): Extension[] {
  * The runner model, which only starts the root `workflow` call. It exists because a pi-durable task cannot call a tool
  * itself: `TaskRuntime` has no `executeTool`.
  */
-export const RUNNER: AgentChoice = { model: { provider: "workflows-runner", modelId: "runner" }, thinkingLevel: "off" };
+const RUNNER: AgentChoice = { model: { provider: "workflows-runner", modelId: "runner" }, thinkingLevel: "off" };
 
 /**
  * Makes `conversation` the runner session of `bundle`: it selects `workflows-script`, offers only `workflow` to the
  * model, and keeps the bundle that its scripts read.
  */
-export async function openRunner(tx: Tx, conversation: ConversationId, bundle: RunBundle): Promise<void> {
+async function openRunner(tx: Tx, conversation: ConversationId, bundle: RunBundle): Promise<void> {
 	await configure(tx, conversation, { extensions: { add: [{ name: SCRIPT }] }, modelTools: [WORKFLOW] });
 	Object.assign(await tx.doc(BundleDoc, conversation), bundle);
 }
@@ -457,7 +480,7 @@ function contentText(message: Message | undefined): string {
  * The runner provider. It answers the run's input, the arguments of the root `workflow` call as JSON, with that call,
  * and the tool result with the result's text.
  */
-export function runnerProvider(): Provider {
+function runnerProvider(): Provider {
 	const faux = fauxProvider({ provider: RUNNER.model.provider, models: [{ id: RUNNER.model.modelId }] });
 	const respond: FauxResponseFactory = (context): AssistantMessage => {
 		faux.appendResponses([respond]);
@@ -472,4 +495,29 @@ export function runnerProvider(): Provider {
 	};
 	faux.setResponses([respond]);
 	return faux.provider;
+}
+
+/** The checkpoint of a workflow that runs one script. */
+export type ScriptCheckpoint = { readonly phase: "run" } & SessionCheckpoint;
+
+/**
+ * What every workflow that runs one script declares: its first checkpoint, and the script runtime, which the store
+ * installs once for all of them.
+ */
+export const scriptWorkflow = {
+	initial: (): ScriptCheckpoint => ({ phase: "run" }),
+	extensions: scriptExtensions,
+	providers: [runnerProvider()],
+};
+
+/** The script phase: a runner session in `cwd` runs `bundle.main` with `args`, and its value is the run's result. */
+export async function scriptPhase(
+	step: Step<unknown, ScriptCheckpoint, ScriptCheckpoint, unknown>,
+	cwd: string,
+	bundle: RunBundle,
+	args: JsonObject,
+): Promise<void> {
+	const runner = await step.session(RUNNER, cwd, (tx, conversation) => openRunner(tx, conversation, bundle));
+	if (runner === undefined) return;
+	await step.finish(JSON.parse(await runner.say("run", JSON.stringify({ args }))));
 }

@@ -2,10 +2,17 @@ import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AssistantMessage, Message, SimpleStreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
+import type {
+	AssistantMessage,
+	Message,
+	SimpleStreamOptions,
+	ToolCall,
+	TranscriptContext,
+} from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { main } from "../src/lib/main.ts";
+import type { AnyWorkflow } from "../src/lib/workflow.ts";
 import { run } from "../src/workflows/run.ts";
 import { ship } from "../src/workflows/ship.ts";
 
@@ -95,7 +102,8 @@ export type Script = {
 	readonly edits?: readonly (string | undefined)[];
 	/** The review verdict of each round. */
 	readonly verdicts?: readonly ("SHIP" | "FIX")[];
-	readonly judge?: string;
+	/** The judge's `respond` answer, or a text reply without `respond`. */
+	readonly judge?: Verdict | string;
 	/** The prompt that interrupts the run: Ctrl+C is pressed while it waits for its answer. */
 	readonly interruptAt?: { readonly kind: Kind; readonly nth: number };
 	/** The prompt that the provider answers with an error. */
@@ -106,17 +114,12 @@ export type Script = {
 	readonly interrupt: AbortController;
 };
 
-export const PASSING_JUDGE = [
-	"Everything holds up.",
-	"1 PASS",
-	"2 PASS",
-	"3 PASS",
-	"4 FAIL README.md:3 adds a line the work item does not need",
-	"5 PASS",
-	"6 PASS",
-	"7 PASS",
-	"8 PASS",
-].join("\n");
+export type Verdict = { readonly answers: readonly ("PASS" | "FAIL")[]; readonly findings: readonly string[] };
+
+export const PASSING_JUDGE: Verdict = {
+	answers: ["PASS", "PASS", "PASS", "FAIL", "PASS", "PASS", "PASS", "PASS"],
+	findings: ["4 FAIL README.md:3 adds a line the work item does not need"],
+};
 
 /**
  * A scripted model for the `cursor` provider. It records every prompt it answers. After Ctrl+C it answers
@@ -150,16 +153,24 @@ export class FakeModel {
 		model: { readonly id: string },
 	): Promise<AssistantMessage> => {
 		const messages = context.messages;
+		const system = messages.flatMap((message) => (message.role === "system" ? [message] : []));
+		const tools: string[] = [];
+		for (const message of system) {
+			const removed = new Set((message.toolsRemoved ?? []).map((tool) => tool.name));
+			tools.splice(0, tools.length, ...tools.filter((name) => !removed.has(name)));
+			tools.push(...(message.toolsAdded ?? []).map((tool) => tool.name));
+		}
 		const last = messages.findLast((message) => message.role !== "system");
 		if (last?.role === "toolResult") {
 			const after = messages.slice(messages.findLastIndex((message) => message.role === "assistant") + 1);
 			for (const message of after) if (message.role === "toolResult") this.results.push(textOf(message));
+			if (tools.includes("respond")) return this.#judge();
 			return fauxAssistantMessage("I fixed the typo in README.md.");
 		}
 		const prompt = last === undefined ? "" : textOf(last);
 		const found = KINDS.find(([start]) => prompt.startsWith(start))?.[1];
 		if (found === undefined) throw new Error(`unexpected prompt: ${prompt}`);
-		const kind = found === "challenge" && prompt.includes("End with one line: SHIP") ? "verdict" : found;
+		const kind = found === "challenge" && tools.includes("respond") ? "verdict" : found;
 		const nth = this.count(kind) + 1;
 		const { interruptAt, interrupt } = this.#script;
 		if (interruptAt?.kind === kind && interruptAt.nth === nth) interrupt.abort();
@@ -170,12 +181,11 @@ export class FakeModel {
 		if (failAt?.kind === kind && failAt.nth === nth) {
 			return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" });
 		}
-		const system = messages.flatMap((message) => (message.role === "system" ? [message] : []));
 		this.calls.push({
 			kind,
 			model: model.id,
 			thinking: options?.reasoning,
-			tools: system.flatMap((message) => (message.toolsAdded ?? []).map((tool) => tool.name)),
+			tools,
 			sections: Object.assign({}, ...system.map((message) => message.sections ?? {})),
 			prompt,
 		});
@@ -206,17 +216,26 @@ export class FakeModel {
 			case "review":
 				return fauxAssistantMessage(`Review ${nth}: the change is small.`);
 			case "verdict":
-				return fauxAssistantMessage(`Nothing else.\n\n**${this.#script.verdicts?.[nth - 1] ?? "SHIP"}**`);
+				return respond(this.#script.verdicts?.[nth - 1] ?? "SHIP");
 			case "judge":
-				return fauxAssistantMessage(this.#script.judge ?? PASSING_JUDGE);
+				return this.#judge();
 			case "script": {
 				// `Script respond: <json>` answers with `respond`, any other `Script: <text>` with `Reply to <text>`.
 				const answer = /^Script respond: (.*)$/s.exec(prompt)?.[1];
 				if (answer === undefined) return fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
-				return fauxAssistantMessage(fauxToolCall("respond", { answer: JSON.parse(answer) }), { stopReason: "toolUse" });
+				return respond(JSON.parse(answer));
 			}
 		}
 	};
+
+	#judge(): AssistantMessage {
+		const { judge = PASSING_JUDGE } = this.#script;
+		return typeof judge === "string" ? fauxAssistantMessage(judge) : respond(judge);
+	}
+}
+
+function respond(answer: ToolCall["arguments"][string]): AssistantMessage {
+	return fauxAssistantMessage(fauxToolCall("respond", { answer }), { stopReason: "toolUse" });
 }
 
 export type Outcome = {
@@ -235,6 +254,8 @@ export async function workflows(
 		readonly stdin?: string;
 		readonly script?: Omit<Script, "interrupt">;
 		readonly interrupt?: AbortController;
+		/** The installed workflows; `ship` and `run` by default. */
+		readonly installed?: readonly AnyWorkflow[];
 	},
 ): Promise<Outcome> {
 	const interrupt = options.interrupt ?? new AbortController();
@@ -252,7 +273,7 @@ export async function workflows(
 			addProvider: (provider) => model.models.setProvider(provider),
 			interrupt: interrupt.signal,
 		},
-		[ship, run],
+		options.installed ?? [ship, run],
 	);
 	const id = stdout.find((line) => line.startsWith("run "))?.slice(4);
 	return { code, stdout, stderr, model, id };
