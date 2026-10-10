@@ -34,6 +34,7 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Sessions } from "./agents.ts";
+import { scriptExtension } from "./script.ts";
 import {
 	type AnyWorkflow,
 	type Checkpoint,
@@ -74,7 +75,8 @@ export async function main(
 		return await start(workflow, args, terminal, workflows);
 	} catch (error) {
 		terminal.stderr(`workflows: ${error instanceof Error ? error.message : String(error)}`);
-		if (error instanceof UsageError) {
+		const code = (error as { code?: unknown } | undefined)?.code;
+		if (error instanceof UsageError || (typeof code === "string" && code.startsWith("ERR_PARSE_ARGS"))) {
 			terminal.stderr(usage);
 			return 2;
 		}
@@ -104,8 +106,9 @@ async function start(
 	await mkdir(directory, { recursive: true });
 	let store: Store | undefined;
 	let task: TaskId<JsonValue>;
+	let input: JsonValue;
 	try {
-		const input = await workflow.prepare(parsed, { id, directory, cwd: terminal.cwd });
+		input = await workflow.prepare(parsed, { id, directory, cwd: terminal.cwd });
 		const opened = await openStore(directory, terminal, workflows);
 		store = opened;
 		task = await opened.create(workflow, { input });
@@ -115,7 +118,7 @@ async function start(
 		throw error;
 	}
 	terminal.stdout(`run ${id}`);
-	return follow(store, workflow, task, id, terminal);
+	return follow(store, workflow, task, input, id, terminal);
 }
 
 async function resume(
@@ -144,7 +147,7 @@ async function resume(
 		const from = failedAt(latest);
 		const stored = latest.input as Stored;
 		const task = from === undefined ? latest.id : await store.create(workflow, { input: stored.input, from });
-		return await follow(store, workflow, task, id, terminal);
+		return await follow(store, workflow, task, stored.input, id, terminal);
 	} finally {
 		await store.close();
 	}
@@ -159,16 +162,19 @@ function failedAt(task: TaskRecord<JsonValue, JsonValue, JsonValue>): Checkpoint
 
 type Store = {
 	readonly harness: Harness;
+	/** Aborted with the error when a workflow script fails; its tool call stays open for a resume. */
+	readonly failed: AbortSignal;
 	create(workflow: AnyWorkflow, stored: Stored): Promise<TaskId<JsonValue>>;
 	/** The newest workflow task of the run. */
 	latest(): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined>;
 	close(): Promise<void>;
 };
 
-/** Pi's run settings from its `settings.json`, read at every use. */
-function piSettings(cwd: string): HarnessSettings {
+/** Pi's run settings from its `settings.json`, read at every use, with `extensions` as the default selection. */
+function piSettings(cwd: string, extensions: readonly Extension[]): HarnessSettings {
 	const settings = SettingsManager.create(cwd);
 	return {
+		extensions,
 		get stream() {
 			const provider = settings.getProviderRetrySettings();
 			const idle = settings.getHttpIdleTimeoutMs();
@@ -219,14 +225,22 @@ async function loadEntries(cwd: string): Promise<Entry[]> {
 	return entries;
 }
 
-/** The run's durable store, open with the session tools, the package tools and every workflow task installed. */
+/**
+ * The run's durable store, open with the session tools, the package tools, the script tools and every workflow task
+ * installed. Only script sessions select the script tools.
+ */
 async function openStore(directory: string, terminal: Terminal, workflows: readonly AnyWorkflow[]): Promise<Store> {
 	const registry = createRegistry();
-	registry.install(Sessions);
 	const entries = await loadEntries(terminal.cwd);
-	for (const entry of entries) for (const extension of entry.extensions) registry.install(extension);
 	const tasks = workflows.map((workflow) => workflowTask(workflow, terminal.stderr));
-	registry.install(defineExtension({ name: "workflows", tasks }));
+	const selected = [
+		Sessions,
+		...entries.flatMap((entry) => entry.extensions),
+		defineExtension({ name: "workflows", tasks }),
+	];
+	for (const extension of selected) registry.install(extension);
+	const failure = new AbortController();
+	registry.install(scriptExtension({ log: terminal.stderr, fail: (message) => failure.abort(message) }));
 	const envs = new Map<string, NodeExecutionEnv>();
 	const warn = (error: unknown) =>
 		terminal.stderr(`warning: ${error instanceof Error ? error.message : String(error)}`);
@@ -235,7 +249,7 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
 		{
 			models: terminal.models,
 			registry,
-			settings: piSettings(terminal.cwd),
+			settings: piSettings(terminal.cwd, selected),
 			env: ({ cwd }) => {
 				if (cwd === undefined) return undefined;
 				const found = envs.get(cwd) ?? new NodeExecutionEnv({ cwd });
@@ -257,6 +271,7 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
 	};
 	return {
 		harness,
+		failed: failure.signal,
 		create: async (workflow, stored) => {
 			const task = tasks[workflows.indexOf(workflow)];
 			if (task === undefined) throw new Error(`${workflow.name} is not installed`);
@@ -284,28 +299,36 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
 	};
 }
 
-/** Runs the task to its end and reports it; Ctrl+C closes the store with the task still pending. */
+/**
+ * Runs the task to its end and reports it; Ctrl+C and a failed workflow script close the store with the task still
+ * pending.
+ */
 async function follow(
 	store: Store,
 	workflow: AnyWorkflow,
 	task: TaskId<JsonValue>,
+	input: JsonValue,
 	id: string,
 	terminal: Terminal,
 ): Promise<number> {
+	const failed = (message: unknown, resumable: boolean) => {
+		terminal.stderr(`failed ${workflow.title(input)}: ${message}`);
+		if (resumable) terminal.stderr(`continue with: workflows ${workflow.name} resume ${id}`);
+		return 1;
+	};
 	let settled: SettledTask<JsonValue>;
 	try {
-		settled = await store.harness.waitForTask(task, withAbortSignal(terminal.interrupt, BACKGROUND_CONTEXT));
+		const signal = AbortSignal.any([terminal.interrupt, store.failed]);
+		settled = await store.harness.waitForTask(task, withAbortSignal(signal, BACKGROUND_CONTEXT));
 	} catch (error) {
+		if (store.failed.aborted && !terminal.interrupt.aborted) return failed(store.failed.reason, true);
 		if (!terminal.interrupt.aborted) throw error;
 		terminal.stderr(`interrupted; continue with: workflows ${workflow.name} resume ${id}`);
 		return 130;
 	} finally {
 		await store.close();
 	}
-	const input = (settled.input as Stored).input;
 	const { outcome } = settled.state;
 	if (outcome.status === "completed") return workflow.report(input, outcome.result, terminal);
-	terminal.stderr(`failed ${workflow.title(input)}: ${outcome.error?.message ?? outcome.reason ?? outcome.status}`);
-	if (outcome.status === "failed") terminal.stderr(`continue with: workflows ${workflow.name} resume ${id}`);
-	return 1;
+	return failed(outcome.error?.message ?? outcome.reason ?? outcome.status, outcome.status === "failed");
 }

@@ -6,6 +6,8 @@ import type { AssistantMessage, Message, SimpleStreamOptions, TranscriptContext 
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { main } from "../src/lib/main.ts";
+import { runnerProvider } from "../src/lib/script.ts";
+import { run } from "../src/workflows/run.ts";
 import { ship } from "../src/workflows/ship.ts";
 
 export function git(cwd: string, ...args: string[]): string {
@@ -58,7 +60,7 @@ export async function repository(path: string, readme = "# Demo\n\nHello wrold\n
 	return git(path, "rev-parse", "HEAD");
 }
 
-export type Kind = "plan" | "challenge" | "handoff" | "implement" | "review" | "verdict" | "judge";
+export type Kind = "plan" | "challenge" | "handoff" | "implement" | "review" | "verdict" | "judge" | "script";
 
 /** One answered prompt: its kind, model, thinking level, offered tools, system prompt sections, and text. */
 export type Call = {
@@ -77,6 +79,7 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Implement this plan", "implement"],
 	["Perform a deep code quality audit", "review"],
 	["## Vocabulary", "judge"],
+	["Script", "script"],
 ];
 
 function textOf(message: Message): string {
@@ -135,6 +138,7 @@ export class FakeModel {
 		});
 		faux.setResponses(Array.from({ length: 200 }, () => this.#respond));
 		this.models.setProvider(faux.provider);
+		this.models.setProvider(runnerProvider());
 	}
 
 	count(kind: Kind): number {
@@ -207,6 +211,12 @@ export class FakeModel {
 				return fauxAssistantMessage(`Nothing else.\n\n**${this.#script.verdicts?.[nth - 1] ?? "SHIP"}**`);
 			case "judge":
 				return fauxAssistantMessage(this.#script.judge ?? PASSING_JUDGE);
+			case "script": {
+				// `Script respond: <json>` answers with `respond`, any other `Script: <text>` with `Reply to <text>`.
+				const answer = /^Script respond: (.*)$/s.exec(prompt)?.[1];
+				if (answer === undefined) return fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
+				return fauxAssistantMessage(fauxToolCall("respond", { answer: JSON.parse(answer) }), { stopReason: "toolUse" });
+			}
 		}
 	};
 }
@@ -243,7 +253,7 @@ export async function workflows(
 			models: model.models,
 			interrupt: interrupt.signal,
 		},
-		[ship],
+		[ship, run],
 	);
 	const id = stdout.find((line) => line.startsWith("run "))?.slice(4);
 	return { code, stdout, stderr, model, id };

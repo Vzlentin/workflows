@@ -148,12 +148,7 @@ export const ship = defineWorkflow<Args, ShipInput, ShipCheckpoint, ShipResult>(
 	name: "ship",
 	usage: "workflows ship [--repo <repository>] [--base <branch>] [--rounds <n>] [<item.md> | <text>]",
 	parse: async (args, io) => {
-		let parsed: ReturnType<typeof parseShip>;
-		try {
-			parsed = parseShip(args);
-		} catch (error) {
-			throw error instanceof UsageError ? error : new UsageError((error as Error).message);
-		}
+		const parsed = parseShip(args);
 		return { ...parsed, item: await readItem(parsed.item, io) };
 	},
 	prepare: async (args, run) => {
