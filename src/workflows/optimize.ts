@@ -46,8 +46,8 @@ type Evaluation = { readonly runId: string; readonly result?: ShipResult };
 
 type Trajectory = { readonly item: Item; readonly result: ShipResult };
 
-/** A candidate that the adapter evaluated on all the items, and its score on each item in item order. */
-type Evaluated = { readonly candidate: Candidate; readonly scores: readonly number[] };
+/** A candidate that the adapter evaluated on all the items, and its score on each item by item name. */
+type Evaluated = { readonly candidate: Candidate; readonly scores: ReadonlyMap<string, number> };
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -171,7 +171,7 @@ function adapterOf(cli: readonly string[], input: OptimizeInput, session: Sessio
 			const outputs: ShipResult[] = [];
 			for (const item of batch) outputs.push(await evaluate(cli, input, candidate, item));
 			const scores = outputs.map(score);
-			evaluated.push({ candidate, scores });
+			evaluated.push({ candidate, scores: new Map(batch.map((item, index) => [item.name, scores[index] ?? 0])) });
 			return {
 				outputs,
 				scores,
@@ -295,18 +295,19 @@ export function optimizeWith(cli: readonly string[]) {
 						throw error() ?? thrown;
 					});
 				if (error() !== undefined) throw error();
-				// Each batch is all the items, so every entry has a score for each item. Ax evaluates the baseline first, and
-				// the strict comparison keeps it on a tie. Ax's own choice can skip a better candidate that its limit did not
-				// let it check again.
+				// Each batch has every item once, in an order that Ax shuffles, so the scores are read by item name. Ax
+				// evaluates the baseline first, and the strict comparison keeps it on a tie. Ax's own choice can skip a better
+				// candidate that its limit did not let it check again.
 				const [first, ...rest] = evaluated;
 				if (first === undefined) throw new Error("Ax evaluated no candidate");
-				const best = rest.reduce((top, entry) => (mean(entry.scores) > mean(top.scores) ? entry : top), first);
+				const total = (entry: Evaluated) => mean([...entry.scores.values()]);
+				const best = rest.reduce((top, entry) => (total(entry) > total(top) ? entry : top), first);
 				const lines = input.items.map(
-					(item, index) =>
-						`${item.name}: baseline ${first.scores[index]?.toFixed(2)}, best ${best.scores[index]?.toFixed(2)}`,
+					(item) =>
+						`${item.name}: baseline ${first.scores.get(item.name)?.toFixed(2)}, best ${best.scores.get(item.name)?.toFixed(2)}`,
 				);
 				const diff = await writeDiff(input, baseline, best.candidate, lines);
-				await step.finish({ baseline: mean(first.scores), best: mean(best.scores), diff });
+				await step.finish({ baseline: total(first), best: total(best), diff });
 			},
 		},
 		report: (_input, result, io) => {

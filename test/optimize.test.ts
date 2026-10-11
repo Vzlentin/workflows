@@ -17,9 +17,9 @@ beforeEach(async () => {
 afterEach(() => rm(root, { recursive: true, force: true }));
 
 /**
- * A fake `workflows` command that logs its arguments. A ship run creates its branch and passes 6 of 8 judge questions,
- * or 8 when a prompt of its `--prompts` folder has a reflected text. The first such run of the second item fails, and
- * its resume passes 8.
+ * A fake `workflows` command that logs its arguments. A ship run creates its branch and passes 6 of 8 judge questions.
+ * When a prompt of its `--prompts` folder has a reflected text, it passes 7 for the third item and 8 for the others. The
+ * first such run of the second item fails, and its resume passes 8.
  */
 const fake = (root: string) => `
 import { execFileSync } from "node:child_process";
@@ -55,7 +55,7 @@ if (args[0] === "resume") {
 		console.log(JSON.stringify({ runId: id, status: "failed", error: "boom" }));
 		process.exitCode = 1;
 	} else {
-		finished(id, shipped(improved ? 8 : 6));
+		finished(id, shipped(improved ? (args.at(-1).includes("Third") ? 7 : 8) : 6));
 	}
 }
 `;
@@ -78,7 +78,7 @@ describe("workflows optimize", () => {
 	it("stops at a failed ship run, resumes it and reuses every finished evaluation and reflect turn", async () => {
 		const items = join(root, "items");
 		await mkdir(items);
-		for (const name of ["First", "Second"]) {
+		for (const name of ["First", "Second", "Third"]) {
 			const text = `---\nrepo: ../repo\nstart: "${start}"\n---\n# ${name} item\n\nFix the README.\n`;
 			await writeFile(join(items, `${name.toLowerCase()}.md`), text);
 		}
@@ -90,7 +90,7 @@ describe("workflows optimize", () => {
 
 		expect(first.code).toBe(1);
 		expect(first.stderr).toEqual([
-			"failed ship: ship run fake-4 failed on second: boom; continue with: workflows resume fake-4",
+			"failed ship: ship run fake-6 failed on second: boom; continue with: workflows resume fake-6",
 			`continue with: workflows optimize resume ${first.id}`,
 		]);
 		expect(first.model.calls.map((call) => call.kind)).toEqual(["reflect"]);
@@ -101,13 +101,15 @@ describe("workflows optimize", () => {
 		const directory = join(root, "state", "workflows", "runs", first.id ?? "");
 		const diff = join(directory, "prompts.diff");
 		expect(resumed.code).toBe(0);
-		expect(resumed.stdout).toEqual([`run ${first.id}`, `optimized ship: baseline 0.75, best 1.00, ${diff}`]);
+		expect(resumed.stdout).toEqual([`run ${first.id}`, `optimized ship: baseline 0.75, best 0.96, ${diff}`]);
 		expect(resumed.model.calls).toEqual([]);
 		const log = (await readFile(join(root, "cli.log"), "utf8")).trim().split("\n");
 		const commands = log.map((line) => JSON.parse(line).slice(0, 2).join(" "));
-		expect(commands).toEqual([...Array(4).fill("ship --repo"), "resume fake-4"]);
+		expect(commands).toEqual([...Array(6).fill("ship --repo"), "resume fake-6"]);
 		const text = await readFile(diff, "utf8");
-		expect(text).toMatch(/^first: baseline 0\.75, best 1\.00\nsecond: baseline 0\.75, best 1\.00\ndiff --git /);
+		expect(text).toMatch(
+			/^first: baseline 0\.75, best 1\.00\nsecond: baseline 0\.75, best 1\.00\nthird: baseline 0\.75, best 0\.88\ndiff --git /,
+		);
 		expect(text).toMatch(/\n--- a\/prompts\/\w+\.md\n\+\+\+ b\/prompts\/\w+\.md\n/);
 		expect(text).toContain("\n+Improved prompt 1.\n");
 		expect(git(join(root, "repo"), "branch", "--list", "ship/*")).toBe("");
