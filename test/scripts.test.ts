@@ -687,6 +687,15 @@ return [one.reply, two.reply].join(", ")`,
 		expect(flag.stdout.at(-1)).toBe('{"path":"src","depth":2,"all":false}');
 	});
 
+	it("leaves out an optional text argument without a value and without stdin", async () => {
+		await writeFile(
+			join(root, "note.js"),
+			`export const meta = { args: { note: { type: "text" } } }\nreturn "note" in args`,
+		);
+		const run = await workflows(["note.js"], { cwd: root });
+		expect([run.code, run.stderr, run.stdout.at(-1)]).toEqual([0, [], "false"]);
+	});
+
 	it("rejects bad arguments with the usage of the workflow", async () => {
 		await writeFile(
 			join(root, "x.js"),

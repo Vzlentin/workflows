@@ -237,7 +237,8 @@ settings that declare `"piDurable": { "extensions": [...] }`, such as pi-ipython
 package directories are supported. Packages installed from npm are not supported, because Node does not strip types
 from TypeScript files under `node_modules`. The run does not install missing packages, and it loads the packages
 again at each resume. A package entry that fails to load fails the start or resume with `workflows: <error>`. Each
-entry's `close()` runs when the command ends, also after Ctrl+C, and an error from it prints a `warning:` line.
+entry's `close()` runs when the command ends, also after Ctrl+C and when the start or resume fails, and an error from
+it prints a `warning:` line.
 
 ## Workflow scripts
 
@@ -278,7 +279,7 @@ script runs without `export`, so it can read `meta`. A script without `meta` tak
 export const meta = {
   description: "Ship one work item onto a new branch.",
   args: {
-    item: { type: "text", positional: true, label: "work item" },
+    item: { type: "text", positional: true, label: "work item", required: true },
     rounds: { type: "number", default: 3 },
   },
   worktree: true,
@@ -292,7 +293,8 @@ export const meta = {
   - `string` is the value as given. `number` is a positive integer; any other value fails with
     `--<name> must be a positive integer`. `boolean` is a flag without a value, false when not given.
   - `text` is a `.md` file, inline text, or stdin when the argument is not given, with the rules of the work item of
-    [Ship](#ship). Errors name the `label`, such as `missing work item` or `the work item is empty`.
+    [Ship](#ship). Errors name the `label`, such as `missing work item` or `the work item is empty`. A `text`
+    argument that is not `required` and has no `default`, no value and no stdin is not in `args`.
   - At most one argument is `positional`. It also works as `--<name>`; giving it both ways is bad usage. Two
     positional values fail with `give the <label> as one argument`.
   - A `required` argument without a value fails with `missing <label>`. `label` defaults to the argument name.
@@ -444,7 +446,8 @@ calls moved to documents, or before calls recorded their start and end, cannot r
 resume prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1.
 `list` does not show these runs.
 
-Model requests use Pi's retry, stream timeout and compaction settings from its `settings.json`.
+Model requests use Pi's retry, stream timeout and compaction settings from its `settings.json`. The project's
+`.pi/settings.json`, with its packages and these settings, counts only when Pi trusts the project.
 
 ## JSON output
 

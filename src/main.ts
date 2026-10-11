@@ -127,7 +127,7 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 /**
  * The open store, the task and the input of the run in `directory`. When the store holds a workflow task, this is that
  * task, or a new task with its input when it failed, so that the script runs again with its saved calls; it throws for
- * a task that an earlier version saved.
+ * a task that an earlier version saved. When the new task cannot be created, the store closes and the run stays.
  * Otherwise `source` gives the input of a new run, and without `source` it throws. When the new run fails to start,
  * the store closes and the directory is removed.
  */
@@ -142,8 +142,14 @@ async function openRun(
 	if (latest !== undefined) {
 		const { input, state } = checked(latest, id, "resume");
 		const store = await openStore(directory, terminal);
-		const failed = state.status === "terminal" && state.outcome.status === "failed";
-		return { store, task: failed ? await store.create(input) : latest.id, input };
+		if (state.status !== "terminal" || state.outcome.status !== "failed") return { store, task: latest.id, input };
+		try {
+			return { store, task: await store.create(input), input };
+		} catch (error) {
+			// The run stays saved, so a later resume can try again.
+			await store.close();
+			throw error;
+		}
 	}
 	if (source === undefined) throw new Error(`run ${id} has no workflow`);
 	await mkdir(directory, { recursive: true });
@@ -312,7 +318,9 @@ function checked(
 ): TaskRecord<script.ScriptInput, JsonValue, JsonValue> {
 	if (latest === undefined) throw new Error(`run ${id} has no workflow`);
 	if (current(latest)) return latest;
-	const name = latest.kind.slice(PREFIX.length);
+	// A script task of an earlier version names its workflow in its input; an earlier task kind names it in the kind.
+	const { input } = latest;
+	const name = script.isObject(input) && typeof input.name === "string" ? input.name : latest.kind.slice(PREFIX.length);
 	throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot ${verb}`);
 }
 
@@ -369,9 +377,8 @@ type Store = {
 	close(): Promise<void>;
 };
 
-/** Pi's run settings from its `settings.json`, read at every use, with `extensions` as the default selection. */
-function piSettings(cwd: string, extensions: readonly Extension[]): HarnessSettings {
-	const settings = SettingsManager.create(cwd);
+/** Pi's run settings from `settings`, read at every use, with `extensions` as the default selection. */
+function piSettings(settings: SettingsManager, extensions: readonly Extension[]): HarnessSettings {
 	return {
 		extensions,
 		get stream() {
@@ -396,15 +403,11 @@ function piSettings(cwd: string, extensions: readonly Extension[]): HarnessSetti
 type Entry = { readonly extensions: readonly Extension[]; close(): Promise<void> };
 
 /**
- * The `piDurable` entries of the installed packages in Pi's settings for `cwd`, in one shared event bus. Project
- * packages count only when Pi trusts the project. Missing packages are skipped, not installed. Node does not strip
- * types under `node_modules`, so entries of npm packages fail to load.
+ * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, in one shared event bus.
+ * Missing packages are skipped, not installed. Node does not strip types under `node_modules`, so entries of npm
+ * packages fail to load.
  */
-async function loadEntries(cwd: string): Promise<Entry[]> {
-	const agentDir = getAgentDir();
-	const settingsManager = SettingsManager.create(cwd, agentDir, {
-		projectTrusted: new ProjectTrustStore(agentDir).get(cwd) === true,
-	});
+async function loadEntries(cwd: string, agentDir: string, settingsManager: SettingsManager): Promise<Entry[]> {
 	const roots = new Set(
 		new DefaultPackageManager({ cwd, agentDir, settingsManager })
 			.listConfiguredPackages()
@@ -431,39 +434,54 @@ async function loadEntries(cwd: string): Promise<Entry[]> {
 async function openStore(directory: string, terminal: Terminal): Promise<Store> {
 	const task = scriptTask({ log: terminal.stderr });
 	const registry = createRegistry();
-	const entries = await loadEntries(terminal.cwd);
-	const selected = [
-		Sessions,
-		...entries.flatMap((entry) => entry.extensions),
-		defineExtension({ name: "workflows", tasks: [task] }),
-	];
-	for (const extension of selected) registry.install(extension);
-	registry.install(answerExtension);
-	const envs = new Map<string, NodeExecutionEnv>();
+	const agentDir = getAgentDir();
+	// Project settings and packages count only when Pi trusts the project.
+	const settings = SettingsManager.create(terminal.cwd, agentDir, {
+		projectTrusted: new ProjectTrustStore(agentDir).get(terminal.cwd) === true,
+	});
+	const entries = await loadEntries(terminal.cwd, agentDir, settings);
 	const warn = (error: unknown) =>
 		terminal.stderr(`warning: ${error instanceof Error ? error.message : String(error)}`);
-	const harness = await Harness.open(
-		await openNodeSqliteStorage(join(directory, "durable.sqlite")),
-		{
-			models: terminal.models,
-			registry,
-			settings: piSettings(terminal.cwd, selected),
-			env: ({ cwd }) => {
-				if (cwd === undefined) return undefined;
-				const found = envs.get(cwd) ?? new NodeExecutionEnv({ cwd });
-				envs.set(cwd, found);
-				return found;
-			},
-			onReport: warn,
-		},
-		BACKGROUND_CONTEXT,
-	);
-	let closed: Promise<void> | undefined;
-	const close = async () => {
-		// Entries close first: an entry may still need the open harness.
+	const closeEntries = async () => {
 		for (const result of await Promise.allSettled(entries.map((entry) => entry.close()))) {
 			if (result.status === "rejected") warn(result.reason);
 		}
+	};
+	const envs = new Map<string, NodeExecutionEnv>();
+	let harness: Harness;
+	try {
+		const selected = [
+			Sessions,
+			...entries.flatMap((entry) => entry.extensions),
+			defineExtension({ name: "workflows", tasks: [task] }),
+		];
+		for (const extension of selected) registry.install(extension);
+		registry.install(answerExtension);
+		// When its open fails, the harness closes the storage itself.
+		harness = await Harness.open(
+			await openNodeSqliteStorage(join(directory, "durable.sqlite")),
+			{
+				models: terminal.models,
+				registry,
+				settings: piSettings(settings, selected),
+				env: ({ cwd }) => {
+					if (cwd === undefined) return undefined;
+					const found = envs.get(cwd) ?? new NodeExecutionEnv({ cwd });
+					envs.set(cwd, found);
+					return found;
+				},
+				onReport: warn,
+			},
+			BACKGROUND_CONTEXT,
+		);
+	} catch (error) {
+		await closeEntries();
+		throw error;
+	}
+	let closed: Promise<void> | undefined;
+	const close = async () => {
+		// Entries close first: an entry may still need the open harness.
+		await closeEntries();
 		await harness.close(BACKGROUND_CONTEXT);
 		for (const env of envs.values()) await env.cleanup(BACKGROUND_CONTEXT);
 	};

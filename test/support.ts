@@ -124,7 +124,7 @@ export type Script = {
 	readonly queues?: readonly (readonly string[])[];
 	/** The prompt that interrupts the run: Ctrl+C is pressed while it waits for its answer. */
 	readonly interruptAt?: { readonly kind: Kind; readonly nth: number };
-	/** The prompt that the provider answers with an error. */
+	/** The prompt that the provider answers with an error, once: a retry of it is answered. */
 	readonly failAt?: { readonly kind: Kind; readonly nth: number };
 	/** The plan prompt first calls `probe` and `ls`, review and judge call `probe`, and implement calls `probe` next to its edit. */
 	readonly probe?: boolean;
@@ -149,6 +149,7 @@ export class FakeModel {
 	readonly results: string[] = [];
 	readonly models = createModels();
 	readonly #script: Script;
+	#failed = false;
 
 	constructor(script: Script) {
 		this.#script = script;
@@ -200,7 +201,8 @@ export class FakeModel {
 			await new Promise((_, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
 		}
 		const { failAt } = this.#script;
-		if (failAt?.kind === kind && failAt.nth === nth) {
+		if (failAt?.kind === kind && failAt.nth === nth && !this.#failed) {
+			this.#failed = true;
 			return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" });
 		}
 		this.calls.push({
