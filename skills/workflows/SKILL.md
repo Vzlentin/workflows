@@ -44,17 +44,18 @@ stays resumable: call the tool again with `resume: runId`. Esc stops the run as 
 ## Workflow scripts
 
 A script is the body of an async function, so top-level `await` and `return` work. It runs in the codemode sandbox,
-with `agent`, `session`, `sh`, `ok`, `run`, `tools`, `prompts`, `parallel`, `pipeline`, `phase` and `log`. `run` starts a
-child run with its own run ID, which its result has as `runId`. With `args.repo`, the child gets its own worktree;
+with `agent`, `session`, `sh`, `ok`, `run`, `prompts`, `parallel`, `pipeline`, `phase` and `log`. `run` starts a
+child run with its own run ID, which its result has as `runId`. The child run is a task in the caller's store:
+`workflows list` does not show it, and a resume of the caller continues it. With `args.repo`, the child gets its own worktree;
 without it, the child runs in the caller's directory. For the
 meaning of each function, see [the script API](../../README.md#the-script-api).
 
 Sandbox rules:
 
-- No file system, network, modules or timers. Effects go through `sh`, `ok` and `tools`.
+- No file system, network, modules or timers. Effects go through `sh` and `ok`.
 - `Date`, `Date.now()` and `Math.random()` throw, so that a script makes the same calls each time it runs.
 - A resume runs the script again from the top. Calls that succeeded return their saved results. Commands in `sh`
-  and `ok` must be safe to repeat.
+  and `ok` must be safe to repeat. A call that fails is not saved, so it runs again.
 
 ## Command line
 

@@ -8,19 +8,19 @@
 
 ## Engine and workflows
 
-- `src/` is the engine: run directory, durable store, sessions, turns, retry, resume, Git repository selection, prompts, and `meta.ts`, the generic entry point that runs any workflow script as `workflows <wf>`. `run(name, args)` in a script starts a child run with its own run directory and store, through `ExtensionHost.child`, which `main.ts` provides.
+- `src/` is the engine: run directory, durable store, sessions, turns, retry, resume, Git repository selection, prompts, and `meta.ts`, the generic entry point that runs any workflow script as `workflows <wf>`. `task.ts` holds the script task and its checkpoint; its saved input is `ScriptInput` of `meta.ts`. `script.ts` holds the script calls and sessions. `run.ts` holds the run ID, `UsageError`, `Run` and `Io`. `run(name, args)` in a script starts a child run with its own run directory, as a pi-durable child task of the caller's task in the caller's store. The caller waits for the child task with `waitForTask`. A failed phase commits a `failed` outcome, so the waiter of a child or root task sees the failure in the task's outcome.
 - The workflows are data: `workflows/*.js`, `prompts/*.md` and `agents/*.md`. There is no workflow in TypeScript.
 - A workflow script declares its description, arguments, worktree and exit codes in `export const meta = { ... }`, a literal object at the top. It returns its report lines as `result.report`.
 - `optimize` is the workflow script `workflows/optimize.js`: it evaluates each candidate with `run("ship", ...)` child runs, and reads and writes files through `sh`.
 - `ship` is the workflow script `workflows/ship.js`: its `meta` gives the work item, the rounds and the worktree, and the script does the plan, the rounds, the review, the judge, the squash and the report lines.
-- Every script run is the task `workflows.run`, `scriptTask` in `src/meta.ts`. Bump its `version` when the shape of its saved input changes.
-- Start, resume and child runs share one way to open a run, which continues the run's task or creates a new one, and one way to wait for the task to end. Keep a new kind of run on that path.
+- Every script run is the task `workflows.run`, `scriptTask(host)` in `src/task.ts`, whose name and version are `TASK`. Bump `TASK.version` when the shape of its saved input changes.
+- Start and resume share one way to open a run, which continues the run's root task or creates a new one, and one way to wait for the task to end. Keep a new kind of run on that path. A child run is not a run of its own: `list` and `resume` see only root tasks. A failed task, root or child, ends as `failed`. The saved calls of a script are session-scoped documents of the store, keyed `<run ID>/<call key>`, so they stay after the task ends: a resume creates a new root task with the input of a failed one, and a `run()` call creates a new child task with the input of a child task that ended without completing.
 - Biome does not check `workflows/*.js`: a script body has a top-level `return`.
 
 ## Durable runs
 
-- Saved runs in `durable.sqlite` resume against the current code. When you change the shape of the stored input or the checkpoint, bump the `version` of `scriptTask`. A run saved by an earlier version cannot resume.
-- A phase can rerun after an interruption or a failure. Keep Git steps safe to repeat, and keep each `say` request ID unique in its session: an answered request ID returns its saved answer, and a failed one is sent again under the next free ID.
+- Saved runs in `durable.sqlite` resume against the current code. When you change the shape of the stored input or the checkpoint, bump `TASK.version` in `src/task.ts`. A run saved by an earlier version cannot resume.
+- A phase can rerun after an interruption or a failure. Keep Git steps safe to repeat, and keep each turn request ID unique in its session: an answered request ID returns its saved answer, and a failed one is sent again under the next free ID.
 - A workflow script also runs again from the top at resume. Keep its `sh` and `ok` Git steps safe to repeat: a step whose result was not saved runs again.
 - A run saves its prompts and models before it starts. Prompt or model edits change only new runs.
 

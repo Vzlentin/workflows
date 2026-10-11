@@ -6,13 +6,12 @@
 import { readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import type { Context, JsonValue } from "@earendil-works/chord";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import { defineTask, type JsonObject, type RunningTask, type TaskRuntime } from "@earendil-works/pi-durable";
-import { ensureWorktree, selectRepository } from "./git.ts";
+import type { JsonObject } from "@earendil-works/pi-durable";
+import { selectRepository } from "./git.ts";
 import { instructions } from "./prompts.ts";
-import { type Bundle, type ChildRequest, loadBundle, META, type RunBundle, runScriptPhase } from "./script.ts";
-import { type Checkpoint, type Io, type Run, type Stored, UsageError } from "./workflow.ts";
+import { type Io, type Run, UsageError } from "./run.ts";
+import { type Bundle, loadBundle, META, type RunBundle } from "./script.ts";
 
 /** The first non-empty line of `item`, without leading #. */
 function subject(item: string): string {
@@ -81,7 +80,7 @@ export type Meta = {
 
 const SPEC_KEYS = new Set(["type", "default", "required", "positional", "label"]);
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
+export const isObject = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
 function checkMeta(value: unknown, name: string): Meta {
@@ -259,6 +258,8 @@ type Args = {
 
 /** Everything a run needs, saved before execution starts. */
 export type ScriptInput = Omit<Args, "repo" | "base"> & {
+	readonly runId: string;
+	readonly runDir: string;
 	readonly cwd: string;
 	readonly worktree?: {
 		readonly repository: string;
@@ -355,9 +356,10 @@ export async function parse([word = "", ...argv]: readonly string[], io: Io): Pr
 
 /** The input saved before execution starts; with `meta.worktree`, it selects the repository of the new worktree. */
 export async function prepare({ repo, base, ...args }: Args, run: Run): Promise<ScriptInput> {
-	if (!args.meta.worktree) return { ...args, cwd: run.cwd };
+	const own = { ...args, runId: run.id, runDir: run.directory, cwd: run.cwd };
+	if (!args.meta.worktree) return own;
 	const { worktree, ...prepared } = await prepareWorktree(args.name, { repo, base }, run);
-	return { ...args, cwd: run.cwd, worktree: { ...prepared, path: worktree } };
+	return { ...own, worktree: { ...prepared, path: worktree } };
 }
 
 /** A short name of the run's subject for output lines: the subject of its first text argument, or the script name. */
@@ -375,59 +377,16 @@ export function report(input: ScriptInput, result: unknown, io: Io): number {
 	return status !== undefined && Object.hasOwn(input.meta.exit, status) ? (input.meta.exit[status] ?? 0) : 0;
 }
 
-type Runtime = TaskRuntime<Stored, Checkpoint, JsonValue, object>;
-
 /**
- * The one phase: a runner session runs the script, in the run's worktree when it has one. The phase may run again after
- * an interruption or a failure: answered turns are not sent again, and Git steps must be safe to repeat. A phase that
- * throws fails the run and keeps its checkpoint. A resume starts a new task from that checkpoint, which runs the phase
- * again and sends a failed turn again under a new request ID.
+ * The input of the child run `run` of a `run(name, args)` call: the script `name` of the caller's `bundle`, with the
+ * `meta` defaults and the given args. With `meta.worktree` and `repo`, the child gets its own worktree from `repo` and
+ * `base`; otherwise it runs in the caller's directory. `prompts` maps prompt names to texts that replace them in this
+ * run only. The args are not checked against `meta`.
  */
-async function runPhase(task: RunningTask<Stored, Checkpoint, JsonValue>, runtime: Runtime, context: Context) {
-	const { checkpoint } = task.state;
-	const input = task.input.input as ScriptInput;
-	try {
-		const { worktree } = input;
-		if (worktree === undefined) {
-			await runScriptPhase(runtime, checkpoint, context, input.cwd, input.bundle, input.args);
-		} else {
-			await ensureWorktree(worktree.repository, worktree.path, worktree.branch, worktree.start);
-			const args = { ...input.args, start: worktree.start };
-			await runScriptPhase(runtime, checkpoint, context, worktree.path, input.bundle, args);
-		}
-	} catch (error) {
-		// A closing store cancels the phase; it runs again when the run resumes.
-		if (runtime.signal.aborted) throw error;
-		const message = error instanceof Error ? error.message : String(error);
-		await runtime.commit(
-			(_tx, current) => ({
-				status: "terminal",
-				outcome: { status: "failed", error: { message, detail: { from: current.state.checkpoint } } },
-			}),
-			context,
-		);
-	}
-}
-
-/** The task of every script run; `list` shows the script name. A run saved by an earlier version cannot resume. */
-export const scriptTask = defineTask<Stored, Checkpoint, JsonValue>({
-	name: "workflows.run",
-	version: 4,
-	// No `migrate`: the store does not run a task of an earlier version, and `resume` refuses it.
-	initial: (stored) => stored.from ?? { phase: "run" },
-	phases: { run: runPhase },
-	abort: async (_task, runtime, context) => {
-		await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
-	},
-});
-
-/**
- * The input of the child run of `request`: the script `request.name` of the caller's bundle, with the `meta` defaults
- * and the given args. With `meta.worktree` and `repo`, the child gets its own worktree from `repo` and `base`; otherwise
- * it runs in the caller's directory. `prompts` maps prompt names to texts that replace them in this run only. The args
- * are not checked against `meta`.
- */
-export async function childInput(request: ChildRequest, run: Run): Promise<ScriptInput> {
+export async function childInput(
+	request: { readonly name: string; readonly args: JsonObject; readonly bundle: RunBundle },
+	run: Run,
+): Promise<ScriptInput> {
 	const { name, bundle } = request;
 	const source = Object.hasOwn(bundle.scripts, name) ? bundle.scripts[name] : undefined;
 	if (source === undefined) throw new Error(`no workflow ${name}`);
@@ -444,6 +403,6 @@ export async function childInput(request: ChildRequest, run: Run): Promise<Scrip
 	);
 	const args = { ...Object.fromEntries(defaults), ...given };
 	const input = { name, args, meta, bundle: { ...bundle, prompts: replaced, main: source } };
-	if (repo === undefined || !meta.worktree) return { ...input, cwd: run.cwd };
+	if (repo === undefined || !meta.worktree) return { ...input, runId: run.id, runDir: run.directory, cwd: run.cwd };
 	return prepare({ ...input, repo: String(repo), base: String(base) }, run);
 }

@@ -1,7 +1,13 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { JsonValue } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CallDoc } from "../src/script.ts";
 import { git, type Kind, repository, sandbox, workflows } from "./support.ts";
 
 let root: string;
@@ -21,6 +27,32 @@ afterEach(() => rm(root, { recursive: true, force: true }));
 const log = () => readFile(join(root, "log"), "utf8");
 const runs = () => join(root, "state", "workflows", "runs");
 
+/** The `workflows.run` tasks in the store of run `id`. */
+async function runTasks(id: string) {
+	const storage = await openNodeSqliteStorage(join(runs(), id, "durable.sqlite"));
+	try {
+		const { items } = await storage.scanTasks({}, 256, undefined, BACKGROUND_CONTEXT);
+		return items.filter((task) => task.kind === "workflows.run");
+	} finally {
+		await storage.close(BACKGROUND_CONTEXT);
+	}
+}
+
+const stateOf = ({ state }: Awaited<ReturnType<typeof runTasks>>[number]) =>
+	state.status === "terminal" ? { status: state.status, outcome: state.outcome.status } : { status: state.status };
+
+/** The state of each `workflows.run` task that no task owns in the store of run `id`. */
+async function rootTasks(id: string) {
+	return (await runTasks(id)).filter((task) => task.owner === undefined).map(stateOf);
+}
+
+/** The run ID and the state of each `workflows.run` task that a task owns in the store of run `id`. */
+async function childTasks(id: string) {
+	return (await runTasks(id))
+		.filter((task) => task.owner !== undefined)
+		.map((task) => ({ runId: (task.input as { runId: string }).runId, ...stateOf(task) }));
+}
+
 /** Runs `argv` in `cwd` and presses Ctrl+C at the `nth` script prompt, or once the `gate` command is reached. */
 async function stopped(argv: string[], stop: { readonly nth: number } | { readonly gate: string }, cwd = root) {
 	if ("nth" in stop) {
@@ -36,6 +68,59 @@ async function stopped(argv: string[], stop: { readonly nth: number } | { readon
 	await writeFile(`${gate}.open`, "");
 	return outcome;
 }
+
+/** A task that saves `value` as the call `key` and fails, or, without `value`, returns the saved value of `key`. */
+const probe = defineTask<{ key: string; value?: string }, { phase: "run" }, JsonValue>({
+	name: "probe",
+	version: 1,
+	initial: () => ({ phase: "run" }),
+	phases: {
+		run: async ({ input }, runtime, context) => {
+			const { key, value } = input;
+			if (value === undefined) {
+				const result = (await runtime.snapshot(CallDoc, key, context))?.value ?? null;
+				await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
+				return;
+			}
+			await runtime.commit(async (tx) => {
+				await tx.doc(CallDoc, key, value);
+				return { status: "terminal", outcome: { status: "failed", error: { message: "no" } } };
+			}, context);
+		},
+	},
+	abort: async () => undefined,
+});
+
+/** Runs a `probe` task with `input` in a new harness on the store at `path`, and closes it. */
+async function runProbe(path: string, input: { key: string; value?: string }) {
+	const extension = defineExtension({ name: "probe", tasks: [probe] });
+	const registry = createRegistry();
+	registry.install(extension);
+	const harness = await Harness.open(
+		await openNodeSqliteStorage(path),
+		{ models: createModels(), registry, settings: { extensions: [extension] } },
+		BACKGROUND_CONTEXT,
+	);
+	try {
+		const root = await harness.root(BACKGROUND_CONTEXT);
+		const task: TaskId<JsonValue> = await root.commit(
+			(tx) => tx.createTask(probe, input, { ownership: { kind: "conversation" } }),
+			BACKGROUND_CONTEXT,
+		);
+		return (await harness.waitForTask(task, BACKGROUND_CONTEXT)).state.outcome;
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
+}
+
+describe("saved calls", () => {
+	it("keeps a saved call of a failed task for a new task after a reopen", async () => {
+		const path = join(root, "durable.sqlite");
+		const key = "run1/k.1";
+		expect(await runProbe(path, { key, value: "saved" })).toMatchObject({ status: "failed" });
+		expect(await runProbe(path, { key })).toEqual({ status: "completed", result: "saved" });
+	});
+});
 
 describe("workflow scripts", () => {
 	it("resumes after a stop at each call and repeats no finished call", async () => {
@@ -231,6 +316,48 @@ return "done"`,
 		expect(await readFile(join(cwd, "log"), "utf8")).toBe("x\nx\n");
 	});
 
+	it("ends the task as failed when a phase fails, and a resume continues its saved calls in a new task", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "workflows");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "w.js"),
+			`export const meta = { worktree: true }
+const one = await agent("Script: one")
+const two = await agent("Script: two")
+return [one, two].join(", ")`,
+		);
+		const first = await stopped(["w", "--repo", "."], { nth: 2 }, repo);
+		expect(first.code).toBe(130);
+		const id = first.id ?? "";
+		// Another worktree holds the run's branch, so the worktree step of the resume fails.
+		const worktree = join(runs(), id, "worktree");
+		const branch = git(worktree, "branch", "--show-current");
+		expect(branch).toBe(`w/${id}`);
+		await rm(worktree, { recursive: true, force: true });
+		git(repo, "worktree", "prune");
+		git(repo, "worktree", "add", "-q", join(root, "other"), branch);
+
+		const failed = await workflows(["resume", id], { cwd: repo });
+		expect(failed.code).toBe(1);
+		expect(failed.stderr.at(-2)).toMatch(/^failed w: git worktree failed: /);
+		expect(failed.stderr.at(-1)).toBe(`continue with: workflows resume ${id}`);
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "failed" }]);
+
+		git(repo, "worktree", "remove", "--force", join(root, "other"));
+		const resumed = await workflows(["resume", id], { cwd: repo });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to one, Reply to two"]);
+		// The open store continues the interrupted turn, so the failed resume can already send it. The new task submits
+		// it again in the conversation of the failed task, and the saved turn is not sent again.
+		const sent = [...failed.model.calls, ...resumed.model.calls].map((call) => call.prompt);
+		expect(sent).toEqual(["Script: two"]);
+		expect(await rootTasks(id)).toEqual([
+			{ status: "terminal", outcome: "failed" },
+			{ status: "terminal", outcome: "completed" },
+		]);
+	});
+
 	it("runs a child run with its own run directory, worktree and prompts", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
@@ -262,10 +389,9 @@ return { runId, runDir, branch, start: args.start, plan: await prompts.plan() }`
 		});
 		expect(plan).toMatch(/^Plan this change\./);
 		expect(existsSync(join(runs(), child.runId, "worktree", "README.md"))).toBe(true);
+		expect(existsSync(join(runs(), child.runId, "durable.sqlite"))).toBe(false);
 		const listed = await workflows(["list"], { cwd: repo });
-		expect(listed.stdout.toSorted()).toEqual(
-			[`${child.runId} child done child`, `${run.id} parent done parent`].toSorted(),
-		);
+		expect(listed.stdout).toEqual([`${run.id} parent done parent`]);
 	});
 
 	it("runs a child run without repo in the directory of the caller", async () => {
@@ -304,11 +430,13 @@ return [one.reply, two.reply].join(", ")`,
 		const first = await stopped(["parent.js"], { nth: 2 });
 		expect(first.code).toBe(130);
 		expect(first.stderr).toEqual([`interrupted; continue with: workflows resume ${first.id}`]);
+		const children = await readdir(runs());
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${first.id}`, "Reply to one, Reply to two"]]);
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
+		expect(await readdir(runs())).toEqual(children);
 		const listed = await workflows(["list"], { cwd: root });
-		expect(listed.stdout).toHaveLength(3);
+		expect(listed.stdout).toHaveLength(1);
 	});
 
 	it("fails the caller with a failed child run, and its resume continues the child run", async () => {
@@ -322,10 +450,49 @@ return [one.reply, two.reply].join(", ")`,
 		const child = /^failed parent: child run (\S+) failed: /.exec(line)?.[1];
 		expect(child).toBeDefined();
 		expect(next).toBe(`continue with: workflows resume ${run.id}`);
+		const own = await workflows(["resume", child ?? ""], { cwd: root });
+		expect([own.code, own.stderr[0]]).toEqual([1, `workflows: no run ${child} in ${runs()}`]);
+		const directories = await readdir(runs());
+		expect(directories).toEqual([run.id, child].toSorted());
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${run.id}`, "Reply to one"]]);
-		const listed = await workflows(["list"], { cwd: root });
-		expect(listed.stdout).toContain(`${child} child done child`);
+		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: one"]);
+		expect(await readdir(runs())).toEqual(directories);
+		// The failed child task stays, and a new child task continues its run ID.
+		expect(await childTasks(run.id ?? "")).toEqual([
+			{ runId: child, status: "terminal", outcome: "failed" },
+			{ runId: child, status: "terminal", outcome: "completed" },
+		]);
+	});
+
+	it("keeps one session and one child run when a run stops after it opens them", async () => {
+		await writeFile(join(root, "parent.js"), 'session()\nreturn await run("child")');
+		await mkdir(join(root, ".workflows", "workflows"), { recursive: true });
+		await writeFile(join(root, ".workflows", "workflows", "child.js"), 'await sh("./gate.sh c")\nreturn "done"');
+
+		const first = await stopped(["parent.js"], { gate: "c" });
+		expect(first.code).toBe(130);
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "done"]);
+		const id = first.id ?? "";
+		const storage = await openNodeSqliteStorage(join(runs(), id, "durable.sqlite"));
+		try {
+			const { items } = await storage.scanConversations({}, 256, undefined, BACKGROUND_CONTEXT);
+			expect(items.filter((conversation) => conversation.owner !== undefined)).toHaveLength(1);
+		} finally {
+			await storage.close(BACKGROUND_CONTEXT);
+		}
+		expect(await childTasks(id)).toHaveLength(1);
+		expect((await readdir(runs())).filter((run) => run !== id)).toHaveLength(1);
+	});
+
+	it("ends a caller that catches the failure of a child run", async () => {
+		await writeFile(join(root, "parent.js"), 'try { await run("child") } catch (error) { return "caught" }');
+		await mkdir(join(root, ".workflows", "workflows"), { recursive: true });
+		await writeFile(join(root, ".workflows", "workflows", "child.js"), 'throw new Error("no")');
+
+		const run = await workflows(["parent.js"], { cwd: root });
+		expect([run.code, run.stdout, run.stderr]).toEqual([0, [`run ${run.id}`, "caught"], []]);
 	});
 
 	it("uses a project agent profile in place of the package profile", async () => {
@@ -356,6 +523,10 @@ return [one.reply, two.reply].join(", ")`,
 				`failed clock: ${name} is not available in workflow scripts`,
 			]);
 		}
+
+		await writeFile(join(root, "x.js"), 'await tools.read({ path: "x" })');
+		const tools = await workflows(["x.js"], { cwd: root });
+		expect([tools.code, tools.stderr[0]]).toEqual([1, expect.stringContaining("failed x: tools.read does not exist")]);
 
 		await writeFile(join(root, "ok.js"), "const ok = 1; return ok");
 		await writeFile(join(root, "status.js"), 'return { status: "toString" }');

@@ -143,7 +143,8 @@ A planner session splits the goal into work items with the `split` prompt, and a
 work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the plan, the rounds, the review, the
 judge and the squash of `workflows/ship.js`, from the commit that the item before it made. So each shipped item is one
 commit, with the commit message of `ship`. No `ship/<run-id>` branch is made, and nothing is merged or pushed. Each
-item is a ship child run, with its own run ID and run directory: see `run` in [the script API](#the-script-api).
+item is a ship child run, with its own run ID and run directory, in the store of the campaign run: see `run` in
+[the script API](#the-script-api).
 
 After each shipped item, also the last one, a new planner session gets the goal, the shipped item and the remaining
 items with the `requeue` prompt. Its answer through `respond` is the new queue, which can be empty. The campaign ends
@@ -216,7 +217,7 @@ means and the path.
 
 A ship child run that fails stops the optimization with `failed optimize: child run <id> failed: <error>`, as any
 failed `run()` call does. `workflows resume <run-id>` runs the script again: the finished ship runs and reflect turns
-return their saved results, and the failed ship run continues.
+return their saved results, and the failed ship run continues. `workflows list` shows only the optimize run.
 
 ## Sessions
 
@@ -322,7 +323,8 @@ code comes from `meta.exit`. With `--json`, stdout gets one JSON outcome line in
 
 A script that throws, or a call in it that fails, stops the run: the command prints `failed <title>: <error>` and
 `continue with: workflows resume <run-id>` on stderr, and exits 1. `<title>` is the subject of the first `text`
-argument, or else the file name without `.js`, the workflow name, or `stdin`.
+argument, or else the file name without `.js`, the workflow name, or `stdin`. The run's task ends as failed, and its
+saved calls stay in the run's store for the resume.
 
 `workflows/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
 workflows campaign, which give it the start commit`. `run("ship", { repo })` gets its own worktree and `start`, as
@@ -333,8 +335,10 @@ directory and can commit there.
 ### Child runs
 
 `run(name, args)` starts a child run of the script `name` of the caller's saved scripts. The child run has its own run
-ID, run directory and store, so `workflows list` shows it and `workflows resume <child-id>` continues it. It runs in
-the same process, and its `phase` and `log` lines go to the same stderr. It prints no `run` or report line.
+ID and run directory, but no store: it is a child task of the caller's task, in the caller's store. So `workflows list`
+does not show it, and `workflows resume <child-id>` prints `workflows: no run <child-id> in <runs>`. A resume of the
+caller continues it. It runs in the same process, and its `phase` and `log` lines go to the same stderr. It prints no
+`run` or report line.
 
 - The child's args are the defaults of its `meta.args`, then `args`, without `repo`, `base` and `prompts`. They are not
   checked against `meta`, so an undeclared arg reaches the script.
@@ -346,8 +350,10 @@ the same process, and its `phase` and `log` lines go to the same stderr. It prin
 - The child run gets the caller's saved scripts, prompts and profiles.
 
 `run()` returns the child's result, with `runId`, the child run ID, added to an object result. A failed child run
-fails the call with `child run <id> failed: <error>`. A resume of the caller continues the same child run, also after
-a failed call: the child ID is saved before the child starts.
+fails the call with `child run <id> failed: <error>`, and the child's task ends as failed. A caller that fails aborts
+its child runs that are still running. A resume of the caller continues the same child run, with the same run ID and
+run directory, also after a failed call, an abort or an interruption, and repeats no call that the child run saved. A
+child run that ended without a result continues in a new task.
 
 ### The script API
 
@@ -363,7 +369,6 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
 | `ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `run(name, args)` | Runs the script `name` of `workflows/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
-| `tools.<name>(args)` | Any tool that sessions get, such as `tools.read({ path })` |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `parallel(thunks)` | Runs the functions at once and returns their results |
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
@@ -377,7 +382,7 @@ accepted. A string answer to a string schema, such as SHIP or FIX, stays a strin
 schema goes back to the model as an error, and the model tries again.
 
 The script runs in the pi-codemode sandbox, with no time limit. It has no file system, network, modules or timers.
-Effects go through `sh`, `ok` and `tools`. `Date`, `Date.now()` and `Math.random()` throw, so that a script makes
+Effects go through `sh` and `ok`. `Date`, `Date.now()` and `Math.random()` throw, so that a script makes
 the same calls each time it runs.
 
 ### Agent profiles
@@ -394,9 +399,10 @@ of every prompt, every profile, the args and the current directory. Resume and `
 later edit of a script, prompt or profile, in the package or in `.workflows/`, changes only new runs.
 
 Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
-again. A call is known by its tool, its arguments and its position among identical calls. A turn that was in progress
-continues in its session. A command that was in progress runs again, so commands must be safe to repeat. Every call
-that failed runs again, also one that the script caught. `phase` and `log` lines are not saved. A resume prints the
+again. A call is known by its name, its arguments and its position among identical calls. A turn that was in progress
+continues in its session. A command that was in progress runs again, so commands must be safe to repeat. A call that
+fails is not saved, so every call that failed runs again, also one that the script caught. The saved results stay in
+the run's store also after the run fails. `phase` and `log` lines are not saved. A resume prints the
 phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
 lines before it, and keeps the last `phase` line waiting for the next call that runs.
 
@@ -421,16 +427,18 @@ item file again, select or clone the repository again, or create another branch.
 model again. A turn that was in progress is sent again.
 
 A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows resume <run-id>`, and
-exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. Resume
-runs the failed step again: a failed Git step runs again, and a failed turn is sent again in the same session.
+exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. The run's task ends as
+failed. Resume runs the script again in a new task of the same run: a failed Git step runs again, a failed turn is sent
+again in the same session, saved calls return their results, and child runs continue.
 
 A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
 
 A run saved before every workflow script became a command, such as a run of the earlier `workflows ship`,
 `workflows campaign` or `workflows run`, or before `run()` started child runs, such as an earlier `workflows optimize`
-run, cannot resume: resume prints
-`workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1. `list` does not
-show these runs.
+run, or before a child run became a task in the caller's store, or before a failed run kept its task, or before saved
+calls moved to documents, cannot resume:
+resume prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1.
+`list` does not show these runs.
 
 Model requests use Pi's retry, stream timeout and compaction settings from its `settings.json`.
 
@@ -462,7 +470,7 @@ workflows list --json
 ```
 
 `workflows list` prints one line for each run in the runs directory, newest run ID first: `<run-id> <workflow>
-<status> <title>`. `<workflow>` is the script name. Child runs are listed as runs of their own. The title is the subject of the first `text`
+<status> <title>`. `<workflow>` is the script name. Child runs are not listed: they are in the store of their caller. The title is the subject of the first `text`
 argument, such as the work item for ship and the goal for campaign, or else the script name. A finished run has the
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
 `done` when the result has no `status`. Any other run, also a failed one, is `unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
@@ -558,7 +566,8 @@ An optimize run has:
 - `baseline/<name>.md` and `best/<name>.md`: the baseline texts and the texts of the best candidate
 - `prompts.diff`: the score lines and the diff
 
-A child run that `run()` starts is a run directory of its own, next to the caller's.
+A child run that `run()` starts is a run directory of its own, next to the caller's, without `durable.sqlite`: the
+caller's store holds its task. A child run without a worktree can have an empty run directory.
 
 ## Prompts
 
@@ -581,3 +590,15 @@ npm run check
 
 This runs Biome, the TypeScript check and Vitest. The tests use a fake model provider, a fake `gh`, a fake
 `workflows` command for the extension, and temporary Git repositories. They do not call a real model or open Pi.
+
+The engine files in `src/`:
+
+- `cli.ts`: the `workflows` command entry point.
+- `main.ts`: the commands `start`, `resume` and `list`, the run directory and the durable store.
+- `meta.ts`: the `meta` of a workflow script, its arguments, its usage, and the report lines and exit code of a run.
+- `task.ts`: the task of every script run, its saved input and checkpoint, its phase, and child runs.
+- `script.ts`: the workflow script calls, agent profiles, prompts for scripts, and sessions.
+- `run.ts`: the run ID, usage errors, and what a run gets from the command line.
+- `agents.ts`: the tools and system prompt sections of sessions.
+- `git.ts`: Git commands, repository selection and worktrees.
+- `prompts.ts`: the instructions of a prompt template.
