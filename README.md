@@ -586,3 +586,15 @@ npm run check
 
 This runs Biome, the TypeScript check and Vitest. The tests use a fake model provider, a fake `gh`, a fake
 `workflows` command for the extension, and temporary Git repositories. They do not call a real model or open Pi.
+
+The engine files in `src/`:
+
+- `cli.ts`: the `workflows` command entry point.
+- `main.ts`: the commands `start`, `resume` and `list`, the run directory and the durable store.
+- `meta.ts`: the `meta` of a workflow script, its arguments, its usage, and the report lines and exit code of a run.
+- `task.ts`: the task of every script run, its saved input and checkpoint, its phase, and child runs.
+- `script.ts`: the workflow script calls, agent profiles, prompts for scripts, and sessions.
+- `run.ts`: the run ID, usage errors, and what a run gets from the command line.
+- `agents.ts`: the tools and system prompt sections of sessions.
+- `git.ts`: Git commands, repository selection and worktrees.
+- `prompts.ts`: the instructions of a prompt template.

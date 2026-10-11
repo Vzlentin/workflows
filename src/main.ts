@@ -35,8 +35,9 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Sessions } from "./agents.ts";
 import * as script from "./meta.ts";
+import { type Io, newRunId, UsageError } from "./run.ts";
 import { answerExtension } from "./script.ts";
-import { type Io, newRunId, type Stored, UsageError } from "./workflow.ts";
+import { current, scriptTask, type TaskInput } from "./task.ts";
 
 export type Terminal = Io & {
 	readonly models: Models;
@@ -133,7 +134,7 @@ async function openRun(
 			const name = latest.kind.slice(PREFIX.length);
 			throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot resume`);
 		}
-		const input = (latest.input as Stored).input as script.ScriptInput;
+		const { input } = latest.input;
 		return { store: await openStore(directory, terminal), task: latest.id, input };
 	}
 	if (source === undefined) throw new Error(`run ${id} has no workflow`);
@@ -148,11 +149,6 @@ async function openRun(
 		await rm(directory, { recursive: true, force: true });
 		throw error;
 	}
-}
-
-/** Whether the script task can continue the task `latest`. */
-function current(latest: TaskRecord<JsonValue, JsonValue, JsonValue>): boolean {
-	return latest.kind === script.TASK.name && latest.version >= script.TASK.version;
 }
 
 type Outcome =
@@ -198,7 +194,7 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 		if (!existsSync(path)) continue;
 		const latest = await latestTask(path);
 		if (latest === undefined || !current(latest)) continue;
-		const input = (latest.input as Stored).input as script.ScriptInput;
+		const { input } = latest.input;
 		const { state } = latest;
 		const finished = state.status === "terminal" && state.outcome.status === "completed";
 		const status = finished ? (script.statusOf(state.outcome.result) ?? "done") : "unfinished";
@@ -319,7 +315,7 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 		fail: (task: TaskId, message: string) => failure(task).reject(new Error(message)),
 		failure: (task: TaskId) => failure(task).promise,
 	};
-	const task = script.scriptTask(host);
+	const task = scriptTask(host);
 	const registry = createRegistry();
 	const entries = await loadEntries(terminal.cwd);
 	const selected = [
@@ -361,7 +357,7 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 		harness,
 		failure: host.failure,
 		create: async (input) => {
-			const stored: Stored = { input };
+			const stored: TaskInput = { input };
 			const root = await harness.root(BACKGROUND_CONTEXT);
 			return root.commit(
 				(tx) => tx.createTask(task, stored, { ownership: { kind: "conversation" } }),

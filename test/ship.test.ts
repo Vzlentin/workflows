@@ -5,8 +5,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineExtension, defineTask, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { TASK } from "../src/meta.ts";
-import { newRunId } from "../src/workflow.ts";
+import { newRunId } from "../src/run.ts";
+import { TASK } from "../src/task.ts";
 import { FakeModel, git, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
 
 let root: string;

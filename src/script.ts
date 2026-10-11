@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import {
+	type AssistantMessage,
 	type ModelThinkingLevel,
 	type TextContent,
 	type TSchema,
@@ -21,6 +22,8 @@ import {
 import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
+	AssistantEntry,
+	type ConversationHandle,
 	type ConversationId,
 	configure,
 	defineDoc,
@@ -31,12 +34,12 @@ import {
 	type SettledTask,
 	section,
 	type TaskId,
-	type TaskRuntime,
+	type Tx,
 } from "@earendil-works/pi-durable";
 import { sessionAgent } from "./agents.ts";
 import { failure, git, run } from "./git.ts";
 import { instructions, render } from "./prompts.ts";
-import { type Checkpoint, type Stored, sessionOf, textOf } from "./workflow.ts";
+import type { Runtime } from "./task.ts";
 
 /** An agent profile from `agents/<name>.md`. */
 export type Profile = {
@@ -279,7 +282,55 @@ function print(progress: Progress): void {
 	for (const line of progress.lines.splice(0)) progress.log(line.text);
 }
 
-type Runtime = TaskRuntime<Stored, Checkpoint, JsonValue, object>;
+/** One conversation with a fixed agent. */
+export type Session = {
+	/** The answer to `content`. A turn answered before returns its saved answer without a model call. */
+	say(requestId: string, content: string): Promise<string>;
+};
+
+/** What turns need from a task runtime or a tool API. */
+export type Turns = {
+	conversation(id: ConversationId, context: Context): Promise<ConversationHandle | undefined>;
+	commit(change: (tx: Tx) => Promise<undefined>, context: Context): Promise<unknown>;
+};
+
+export function textOf(message: AssistantMessage): string {
+	return message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+}
+
+/** A session whose `turn` also gives the whole answer message. */
+export function sessionOf(
+	runtime: Turns,
+	conversation: ConversationId,
+	context: Context,
+): Session & { turn(requestId: string, content: string): Promise<AssistantMessage> } {
+	const turn = async (requestId: string, content: string) => {
+		const handle = await runtime.conversation(conversation, context);
+		if (handle === undefined) throw new Error(`Session ${conversation} is missing`);
+		// A turn that failed before is sent again under the next free request ID.
+		let attempt = requestId;
+		await runtime.commit(async (tx) => {
+			for (let n = 2; (await tx.submissionByRequest(conversation, attempt))?.status === "unanswered"; n++) {
+				attempt = `${requestId}#${n}`;
+			}
+			return undefined;
+		}, context);
+		const submission = await handle.submit({ type: "input", content, requestId: attempt }, context);
+		const settled = await submission.wait(context);
+		if (settled.type !== "input" || settled.status !== "done") {
+			const detail = settled.detail === undefined ? "" : ` ${JSON.stringify(settled.detail)}`;
+			throw new Error(`The ${requestId} turn was not answered: ${settled.reason ?? settled.status}${detail}`);
+		}
+		let answer: AssistantMessage | undefined;
+		await runtime.commit(async (tx) => {
+			answer = (await tx.entry(AssistantEntry, settled.answer))?.model?.[0] as AssistantMessage | undefined;
+			return undefined;
+		}, context);
+		if (answer === undefined) throw new Error(`The ${requestId} answer ${settled.answer} is missing`);
+		return answer;
+	};
+	return { turn, say: async (requestId, content) => textOf(await turn(requestId, content)).trim() };
+}
 
 /** What the calls of one script execution share. */
 type Calls = {
