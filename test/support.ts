@@ -13,6 +13,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { main } from "../src/lib/main.ts";
 import type { AnyWorkflow } from "../src/lib/workflow.ts";
+import { campaign } from "../src/workflows/campaign.ts";
 import { run } from "../src/workflows/run.ts";
 import { ship } from "../src/workflows/ship.ts";
 
@@ -66,7 +67,17 @@ export async function repository(path: string, readme = "# Demo\n\nHello wrold\n
 	return git(path, "rev-parse", "HEAD");
 }
 
-export type Kind = "plan" | "challenge" | "handoff" | "implement" | "review" | "verdict" | "judge" | "script";
+export type Kind =
+	| "plan"
+	| "challenge"
+	| "handoff"
+	| "implement"
+	| "review"
+	| "verdict"
+	| "judge"
+	| "split"
+	| "requeue"
+	| "script";
 
 /** One answered prompt: its kind, model, thinking level, offered tools, system prompt sections, and text. */
 export type Call = {
@@ -85,6 +96,8 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Implement this plan", "implement"],
 	["Perform a deep code quality audit", "review"],
 	["## Vocabulary", "judge"],
+	["Split this goal into work items.", "split"],
+	["Update the work item queue", "requeue"],
 	["Script", "script"],
 ];
 
@@ -104,6 +117,10 @@ export type Script = {
 	readonly verdicts?: readonly ("SHIP" | "FIX")[];
 	/** The judge's `respond` answer, or a text reply without `respond`. */
 	readonly judge?: Verdict | string;
+	/** The work items of the split answer. */
+	readonly items?: readonly string[];
+	/** The queue of each requeue answer; a missing answer is an empty queue. */
+	readonly queues?: readonly (readonly string[])[];
 	/** The prompt that interrupts the run: Ctrl+C is pressed while it waits for its answer. */
 	readonly interruptAt?: { readonly kind: Kind; readonly nth: number };
 	/** The prompt that the provider answers with an error. */
@@ -219,6 +236,10 @@ export class FakeModel {
 				return respond(this.#script.verdicts?.[nth - 1] ?? "SHIP");
 			case "judge":
 				return this.#judge();
+			case "split":
+				return respond({ items: [...(this.#script.items ?? [])] });
+			case "requeue":
+				return respond({ items: [...(this.#script.queues?.[nth - 1] ?? [])] });
 			case "script": {
 				// `Script respond: <json>` answers with `respond`, any other `Script: <text>` with `Reply to <text>`.
 				const answer = /^Script respond: (.*)$/s.exec(prompt)?.[1];
@@ -254,7 +275,7 @@ export async function workflows(
 		readonly stdin?: string;
 		readonly script?: Omit<Script, "interrupt">;
 		readonly interrupt?: AbortController;
-		/** The installed workflows; `ship` and `run` by default. */
+		/** The installed workflows; `ship`, `campaign` and `run` by default. */
 		readonly installed?: readonly AnyWorkflow[];
 	},
 ): Promise<Outcome> {
@@ -273,7 +294,7 @@ export async function workflows(
 			addProvider: (provider) => model.models.setProvider(provider),
 			interrupt: interrupt.signal,
 		},
-		options.installed ?? [ship, run],
+		options.installed ?? [ship, campaign, run],
 	);
 	const id = stdout.find((line) => line.startsWith("run "))?.slice(4);
 	return { code, stdout, stderr, model, id };

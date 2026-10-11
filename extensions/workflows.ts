@@ -38,16 +38,23 @@ const CLI = [process.execPath, fileURLToPath(new URL("../src/cli.ts", import.met
 
 const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
 
+/** The workflows that are commands of their own, and the arg that is their positional argument. */
+const POSITIONAL: ReadonlyMap<string, string> = new Map([
+	["ship", "item"],
+	["campaign", "goal"],
+]);
+
 /** The `workflows` arguments of a tool call, always with `--json`. */
 function cliArgs({ name, script, resume, args = {} }: WorkflowCall): string[] {
 	const given = [name, script, resume].filter((value) => value !== undefined).length;
 	if (given !== 1) throw new Error("give exactly one of name, script or resume");
 	if (resume !== undefined) return ["resume", resume, "--json"];
-	if (name === "ship") {
-		// `ship` rejects a flag it does not know, so a mistyped arg fails before a run exists.
-		const { item, ...flags } = args;
-		const options = Object.entries(flags).map(([key, value]) => `--${key}=${text(value)}`);
-		return ["ship", ...options, "--json", ...(item === undefined ? [] : ["--", text(item)])];
+	const positional = name === undefined ? undefined : POSITIONAL.get(name);
+	if (name !== undefined && positional !== undefined) {
+		// The command rejects a flag it does not know, so a mistyped arg fails before a run exists.
+		const { [positional]: value, ...flags } = args;
+		const options = Object.entries(flags).map(([key, flag]) => `--${key}=${text(flag)}`);
+		return [name, ...options, "--json", ...(value === undefined ? [] : ["--", text(value)])];
 	}
 	const pairs = Object.entries(args).map(([key, value]) => `--arg=${key}=${text(value)}`);
 	return ["run", name ?? "-", ...pairs, "--json"];
@@ -116,16 +123,20 @@ function resultOf(outcome: WorkflowOutcome, steps: readonly string[]): AgentTool
 	};
 }
 
-/** `ship <slug>`, `<name>`, `script` or `resume <run-id>`. The arguments can be partial while the call streams. */
+/**
+ * `ship <slug>`, `campaign <slug>`, `<name>`, `script` or `resume <run-id>`. The arguments can be partial while the
+ * call streams.
+ */
 function callLabel({ name, script, resume, args }: WorkflowCall): string {
 	if (resume !== undefined) return `resume ${resume}`;
 	if (script !== undefined) return "script";
-	if (name !== "ship") return name ?? "";
-	const item = args?.item;
-	if (typeof item !== "string") return "ship";
-	if (item.endsWith(".md")) return `ship ${basename(item, ".md")}`;
+	const positional = name === undefined ? undefined : POSITIONAL.get(name);
+	if (positional === undefined) return name ?? "";
+	const item = args?.[positional];
+	if (typeof item !== "string") return name ?? "";
+	if (item.endsWith(".md")) return `${name} ${basename(item, ".md")}`;
 	const line = item.split("\n").find((candidate) => candidate.trim() !== "") ?? "";
-	return `ship ${line.replace(/^#+/, "").trim().slice(0, 40)}`;
+	return `${name} ${line.replace(/^#+/, "").trim().slice(0, 40)}`;
 }
 
 /**
@@ -147,12 +158,13 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 		name: "workflow",
 		label: "Workflow",
 		description:
-			"Run a durable workflow and wait for its result. Give exactly one of: `name` (`ship`, or a saved workflow script), " +
-			"`script` (the body of an inline workflow script), or `resume` (a run ID). `args` are the workflow's arguments; " +
-			"for `ship`: `item` (the work item), and optional `repo`, `base` and `rounds`. A failed or interrupted run stays " +
-			"resumable.",
+			"Run a durable workflow and wait for its result. Give exactly one of: `name` (`ship`, `campaign`, or a saved " +
+			"workflow script), `script` (the body of an inline workflow script), or `resume` (a run ID). `args` are the " +
+			"workflow's arguments; for `ship`: `item` (the work item), and optional `repo`, `base` and `rounds`. For " +
+			"`campaign`, which splits a goal into work items and ships each one as a commit on one branch: `goal`, and " +
+			"optional `repo`, `base` and `rounds`. A failed or interrupted run stays resumable.",
 		parameters: Type.Object({
-			name: Type.Optional(Type.String({ description: "`ship`, or the name of a workflow script" })),
+			name: Type.Optional(Type.String({ description: "`ship`, `campaign`, or the name of a workflow script" })),
 			script: Type.Optional(Type.String({ description: "An inline workflow script" })),
 			resume: Type.Optional(Type.String({ description: "The ID of a run to continue" })),
 			args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
