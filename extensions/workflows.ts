@@ -4,11 +4,13 @@
  */
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { basename } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
-import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 
 type WorkflowCall = {
 	readonly name?: string;
@@ -19,9 +21,18 @@ type WorkflowCall = {
 
 /** The stdout line of `workflows --json` after `run <run-id>`. */
 type WorkflowOutcome =
-	| { readonly runId: string; readonly status: "finished"; readonly result: JsonValue }
+	| {
+			readonly runId: string;
+			readonly status: "finished";
+			readonly result: JsonValue;
+			/** The lines that the workflow's report prints without `--json`. */
+			readonly report: readonly string[];
+	  }
 	| { readonly runId: string; readonly status: "failed"; readonly error: string }
 	| { readonly runId: string; readonly status: "interrupted" };
+
+/** The `details` of each update and of the result, so the steps draw the same after a reload. */
+type WorkflowDetails = { readonly steps: readonly string[]; readonly outcome?: WorkflowOutcome };
 
 const CLI = [process.execPath, fileURLToPath(new URL("../src/cli.ts", import.meta.url))];
 
@@ -49,7 +60,11 @@ async function runCli(
 	command: readonly string[],
 	args: readonly string[],
 	cwd: string,
-	options: { stdin?: string | undefined; signal?: AbortSignal | undefined; progress?: (line: string) => void },
+	options: {
+		stdin?: string | undefined;
+		signal?: AbortSignal | undefined;
+		progress?: (line: string) => void;
+	},
 ): Promise<Output> {
 	const [program = "", ...prefix] = command;
 	const child = spawn(program, [...prefix, ...args], { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -92,13 +107,39 @@ function summary(outcome: WorkflowOutcome): string {
 	}
 }
 
-function resultOf(outcome: WorkflowOutcome): AgentToolResult<undefined> {
+function resultOf(outcome: WorkflowOutcome, steps: readonly string[]): AgentToolResult<WorkflowDetails> {
 	return {
 		content: [{ type: "text", text: summary(outcome) }],
-		details: undefined,
+		details: { steps, outcome },
 		structuredContent: outcome,
 		...(outcome.status === "finished" ? {} : { isError: true }),
 	};
+}
+
+/** `ship <slug>`, `<name>`, `script` or `resume <run-id>`. The arguments can be partial while the call streams. */
+function callLabel({ name, script, resume, args }: WorkflowCall): string {
+	if (resume !== undefined) return `resume ${resume}`;
+	if (script !== undefined) return "script";
+	if (name !== "ship") return name ?? "";
+	const item = args?.item;
+	if (typeof item !== "string") return "ship";
+	if (item.endsWith(".md")) return `ship ${basename(item, ".md")}`;
+	const line = item.split("\n").find((candidate) => candidate.trim() !== "") ?? "";
+	return `ship ${line.replace(/^#+/, "").trim().slice(0, 40)}`;
+}
+
+/**
+ * The steps, the last one as running, done or failed, then the report lines of a finished run, or the summary of a
+ * failed or interrupted one.
+ */
+function detailLines({ steps, outcome }: WorkflowDetails, theme: Theme): string[] {
+	const done = theme.fg("success", "✓");
+	const last =
+		outcome === undefined ? theme.fg("accent", "◉") : outcome.status === "finished" ? done : theme.fg("error", "✗");
+	const lines = steps.map((step, index) => `${index === steps.length - 1 ? last : done} ${theme.fg("muted", step)}`);
+	if (outcome === undefined) return lines;
+	if (outcome.status === "finished") return [...lines, ...outcome.report];
+	return [...lines, theme.fg("error", `✗ ${summary(outcome)}`)];
 }
 
 export default function workflows(pi: ExtensionAPI, command: readonly string[] = CLI) {
@@ -120,15 +161,32 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 			runId: Type.String(),
 			status: Type.Union([Type.Literal("finished"), Type.Literal("failed"), Type.Literal("interrupted")]),
 			result: Type.Optional(Type.Unknown()),
+			report: Type.Optional(Type.Array(Type.String())),
 			error: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const steps: string[] = [];
 			const output = await runCli(command, cliArgs(params), ctx.cwd, {
 				stdin: params.script,
 				signal,
-				progress: (line) => onUpdate?.({ content: [{ type: "text", text: line }], details: undefined }),
+				progress: (line) => {
+					steps.push(line);
+					onUpdate?.({ content: [{ type: "text", text: line }], details: { steps: [...steps] } });
+				},
 			});
-			return resultOf(outcomeOf(output));
+			return resultOf(outcomeOf(output), steps);
+		},
+		renderCall(args, theme) {
+			return new Text(theme.fg("toolTitle", theme.bold("workflow ")) + theme.fg("accent", callLabel(args)), 0, 0);
+		},
+		renderResult(result, _options, theme) {
+			// A result of an older session, or of a call that failed before a run existed, has no details.
+			const details = result.details as WorkflowDetails | undefined;
+			if (details?.steps === undefined) {
+				const [first] = result.content;
+				return new Text(first?.type === "text" ? first.text : "", 0, 0);
+			}
+			return new Text(detailLines(details, theme).join("\n"), 0, 0);
 		},
 	});
 

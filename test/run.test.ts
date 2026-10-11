@@ -106,6 +106,21 @@ return (await pipeline([1, 2], first, second)).join(" ")`,
 		expect(await log()).toBe("2a\n2b\n1a\n1b\n");
 	});
 
+	it("accepts an object answer sent as JSON text, and keeps a string answer to a string schema", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const planner = session()
+const object = { type: "object", properties: { n: { type: "number" } }, required: ["n"] }
+const text = JSON.stringify(JSON.stringify({ n: 3 }))
+const { n } = await planner.ask(\`Script respond: \${text}\`, { schema: object })
+const verdict = await planner.ask('Script respond: "SHIP"', { schema: { type: "string", enum: ["SHIP", "FIX"] } })
+return [n, typeof n, verdict].join(", ")`,
+		);
+		const run = await workflows(["run", "x.js"], { cwd: root });
+		expect(run.stderr).toEqual([]);
+		expect(run.stdout).toEqual([`run ${run.id}`, "3, number, SHIP"]);
+	});
+
 	it("runs a failed call again on resume, and no finished call", async () => {
 		await writeFile(
 			join(root, "x.js"),
@@ -119,7 +134,7 @@ return { reply }`,
 		expect(run.code).toBe(1);
 		const error = "sh exited with 1: test -f fixed";
 		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, status: "failed", error })]);
-		expect(run.stderr).toEqual([`failed x: ${error}`, `continue with: workflows run resume ${run.id}`]);
+		expect(run.stderr).toEqual([]);
 
 		await writeFile(join(root, "fixed"), "");
 		const resumed = await workflows(["run", "resume", run.id ?? ""], { cwd: root });

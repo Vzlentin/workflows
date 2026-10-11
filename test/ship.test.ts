@@ -211,7 +211,11 @@ export default function ({ events }) {
 		const resumed = await workflows(["resume", run.id ?? "", "--json"], { cwd: repo, script: { edits: [] } });
 		const result = { status: "blocked", rounds: 1, reply: "I found nothing to change." };
 		expect(resumed.code).toBe(1);
-		expect(resumed.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, status: "finished", result })]);
+		const report = [`blocked Fix the README typo after 1 rounds: ${worktreeOf(run.id)}`, result.reply];
+		expect(resumed.stdout).toEqual([
+			`run ${run.id}`,
+			JSON.stringify({ runId: run.id, status: "finished", result, report }),
+		]);
 
 		const item = await workflows(["ship", "--", "--json"], { cwd: repo, script: { edits: [] } });
 		expect(item.stdout.slice(1, 2)).toEqual([expect.stringMatching(/^blocked --json after 1 rounds: /)]);
