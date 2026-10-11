@@ -77,6 +77,7 @@ export type Kind =
 	| "judge"
 	| "split"
 	| "requeue"
+	| "reflect"
 	| "script";
 
 /** One answered prompt: its kind, model, thinking level, offered tools, system prompt sections, and text. */
@@ -101,6 +102,7 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["## Vocabulary", "judge"],
 	["Split this goal into work items.", "split"],
 	["Update the work item queue", "requeue"],
+	["Improve this prompt", "reflect"],
 	["Script", "script"],
 ];
 
@@ -250,6 +252,8 @@ export class FakeModel {
 				return respond({ items: [...(this.#script.items ?? [])] });
 			case "requeue":
 				return respond({ items: [...(this.#script.queues?.[nth - 1] ?? [])] });
+			case "reflect":
+				return fauxAssistantMessage(`Improved prompt ${nth}.`);
 			case "script":
 				return scriptAttempt(messages) ?? fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
 		}

@@ -78,7 +78,7 @@ const BundleDoc = defineDoc<RunBundle>({
 const PACKAGE = fileURLToPath(new URL("../../", import.meta.url));
 
 /** `<base>/<folder>/*<extension>` by name; a missing folder has none. */
-async function readFolder(base: string, folder: string, extension: string): Promise<Record<string, string>> {
+export async function readFolder(base: string, folder: string, extension: string): Promise<Record<string, string>> {
 	const directory = join(base, folder);
 	const files = (await readdir(directory).catch(() => [])).filter((file) => file.endsWith(extension)).sort();
 	const entries = await Promise.all(

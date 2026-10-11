@@ -52,7 +52,7 @@ Sandbox rules:
 ## Command line
 
 ```sh
-workflows ship [--repo <repository>] [--base <branch>] [--rounds <n>] [<item.md> | <text>] [--json]
+workflows ship [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<item.md> | <text>] [--json]
 workflows campaign [--repo <repository>] [--base <branch>] [--rounds <n>] [<goal.md> | <text>] [--json]
 workflows run <name | file.js | -> [--arg <key>=<value>]... [--json]
 workflows resume <run-id> [--json]
