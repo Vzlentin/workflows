@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -8,7 +9,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CallDoc } from "../src/script.ts";
+import { CallDoc, prelude, type ScriptRun } from "../src/script.ts";
 import { git, type Kind, repository, sandbox, workflows } from "./support.ts";
 
 let root: string;
@@ -125,6 +126,33 @@ function rows(id: string) {
 		database.close();
 	}
 }
+
+/** The names of `pattern` in `text`, without the internal `__` names and the replaced `Date` and `Math`. */
+function names(text: string, pattern: RegExp): Set<string> {
+	const all = [...text.matchAll(pattern)].map((match) => match[1] ?? "");
+	return new Set(all.filter((name) => !name.startsWith("__") && name !== "Date" && name !== "Math"));
+}
+
+describe("workflows/script.d.ts", () => {
+	const declarations = readFileSync("workflows/script.d.ts", "utf8");
+
+	it("compiles", () => {
+		const tsc = ["--ignoreConfig", "--noEmit", "--strict", "--lib", "es2024", "workflows/script.d.ts"];
+		execFileSync("node_modules/.bin/tsc", tsc);
+	});
+
+	it("declares the script globals of the runtime", () => {
+		const code = prelude({}, [], { runId: "", runDir: "" } as ScriptRun);
+		const host = readFileSync("src/script.ts", "utf8");
+		const runtime = new Set([...names(code, /^(?:const|function) (\w+)/gm), ...names(host, /global\("(\w+)"/g)]);
+		expect(names(declarations, /^declare (?:const|function) (\w+)/gm)).toEqual(runtime);
+	});
+
+	it("is the globals block of the skill", () => {
+		const skill = readFileSync("skills/workflows/SKILL.md", "utf8");
+		expect(skill.match(/```ts\n([\s\S]*?)```/)?.[1]).toBe(declarations);
+	});
+});
 
 describe("workflows show", () => {
 	it("shows the failed call and the error of a failed run", async () => {

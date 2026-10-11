@@ -211,7 +211,7 @@ const respond = defineTool({
 });
 
 /** The sandbox functions that are not host calls. */
-function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun): string {
+export function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun): string {
 	return `
 const args = ${JSON.stringify(args)};
 const runId = ${JSON.stringify(script.runId)};
