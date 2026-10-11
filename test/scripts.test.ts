@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { git, type Kind, repository, sandbox, workflows } from "./support.ts";
 
@@ -20,6 +22,23 @@ afterEach(() => rm(root, { recursive: true, force: true }));
 
 const log = () => readFile(join(root, "log"), "utf8");
 const runs = () => join(root, "state", "workflows", "runs");
+
+/** The state of each `workflows.run` task that no task owns in the store of run `id`. */
+async function rootTasks(id: string) {
+	const storage = await openNodeSqliteStorage(join(runs(), id, "durable.sqlite"));
+	try {
+		const { items } = await storage.scanTasks({}, 256, undefined, BACKGROUND_CONTEXT);
+		return items
+			.filter((task) => task.kind === "workflows.run" && task.owner === undefined)
+			.map(({ state }) =>
+				state.status === "terminal"
+					? { status: state.status, outcome: state.outcome.status }
+					: { status: state.status },
+			);
+	} finally {
+		await storage.close(BACKGROUND_CONTEXT);
+	}
+}
 
 /** Runs `argv` in `cwd` and presses Ctrl+C at the `nth` script prompt, or once the `gate` command is reached. */
 async function stopped(argv: string[], stop: { readonly nth: number } | { readonly gate: string }, cwd = root) {
@@ -229,6 +248,44 @@ return "done"`,
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "nested"]);
 		expect(await readFile(join(cwd, "log"), "utf8")).toBe("x\nx\n");
+	});
+
+	it("keeps the task and its saved calls when a phase fails", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "workflows");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "w.js"),
+			`export const meta = { worktree: true }
+const one = await agent("Script: one")
+const two = await agent("Script: two")
+return [one, two].join(", ")`,
+		);
+		const first = await stopped(["w", "--repo", "."], { nth: 2 }, repo);
+		expect(first.code).toBe(130);
+		const id = first.id ?? "";
+		// Another worktree holds the run's branch, so the worktree step of the resume fails.
+		const worktree = join(runs(), id, "worktree");
+		const branch = git(worktree, "branch", "--show-current");
+		expect(branch).toBe(`w/${id}`);
+		await rm(worktree, { recursive: true, force: true });
+		git(repo, "worktree", "prune");
+		git(repo, "worktree", "add", "-q", join(root, "other"), branch);
+
+		const failed = await workflows(["resume", id], { cwd: repo });
+		expect(failed.code).toBe(1);
+		expect(failed.stderr.at(-2)).toMatch(/^failed w: git worktree failed: /);
+		expect(failed.stderr.at(-1)).toBe(`continue with: workflows resume ${id}`);
+		expect(await rootTasks(id)).toEqual([{ status: "running" }]);
+
+		git(repo, "worktree", "remove", "--force", join(root, "other"));
+		const resumed = await workflows(["resume", id], { cwd: repo });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to one, Reply to two"]);
+		// The open store continues the interrupted turn, so the failed resume can already send it.
+		const sent = [...failed.model.calls, ...resumed.model.calls].map((call) => call.prompt);
+		expect(sent).toEqual(["Script: two"]);
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
 	});
 
 	it("runs a child run with its own run directory, worktree and prompts", async () => {

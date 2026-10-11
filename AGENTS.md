@@ -14,7 +14,7 @@
 - `optimize` is the workflow script `workflows/optimize.js`: it evaluates each candidate with `run("ship", ...)` child runs, and reads and writes files through `sh`.
 - `ship` is the workflow script `workflows/ship.js`: its `meta` gives the work item, the rounds and the worktree, and the script does the plan, the rounds, the review, the judge, the squash and the report lines.
 - Every script run is the task `workflows.run`, `scriptTask(host)` in `src/meta.ts`, whose name and version are `TASK`. Bump `TASK.version` when the shape of its saved input changes.
-- Start and resume share one way to open a run, which continues the run's root task or creates a new one, and one way to wait for the task to end. Keep a new kind of run on that path. A child run is not a run of its own: `list` and `resume` see only root tasks, and a failed child task stays pending so that it keeps its memos.
+- Start and resume share one way to open a run, which continues the run's root task or creates a new one, and one way to wait for the task to end. Keep a new kind of run on that path. A child run is not a run of its own: `list` and `resume` see only root tasks, and a failed task, root or child, stays pending so that it keeps its memos.
 - Biome does not check `workflows/*.js`: a script body has a top-level `return`.
 
 ## Durable runs

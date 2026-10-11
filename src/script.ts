@@ -1,8 +1,8 @@
 /**
  * Workflow scripts. A script is JavaScript that runs in the pi-codemode sandbox in the phase of the run's task. Each
  * call it makes saves its result as a keyed memo of the task, so when the phase runs again after an interruption, the
- * finished calls return their saved results and only the rest runs. A call that fails saves nothing. A script failure
- * keeps the task pending: the command stops, and a resume runs the script again. `run(name, args)` starts a child run
+ * finished calls return their saved results and only the rest runs. A call that fails saves nothing. A failure of the
+ * phase keeps the task pending: the command stops, and a resume runs the script again. `run(name, args)` starts a child run
  * as a child task of the caller in the caller's store, with its own run directory, and a resume of the caller continues
  * that child run.
  */
@@ -422,8 +422,8 @@ export const answerExtension = defineExtension({
 });
 
 /**
- * Runs `script.bundle.main` with `script.args` in `cwd`, and returns its value or the message of its failure. A closing
- * store cancels the script: then it throws the reason of the abort.
+ * Runs `script.bundle.main` with `script.args` in `cwd` and returns its value. It throws the error of a failed script,
+ * or the reason of the abort when a closing store cancels the script.
  */
 export async function runScript(
 	runtime: Runtime,
@@ -431,7 +431,7 @@ export async function runScript(
 	cwd: string,
 	host: ExtensionHost,
 	script: ScriptRun,
-): Promise<{ readonly ok: true; readonly value: JsonValue } | { readonly ok: false; readonly error: string }> {
+): Promise<JsonValue> {
 	const { bundle, args } = script;
 	// A module export is a syntax error in the function body that the script runs as.
 	const source = bundle.main.replace(META, "$1$2");
@@ -473,7 +473,7 @@ export async function runScript(
 		await sandbox.close();
 		print(progress);
 	}
-	if (result.ok) return { ok: true, value: (result.value ?? null) as JsonValue };
+	if (result.ok) return (result.value ?? null) as JsonValue;
 	if (signal.aborted) throw signal.reason;
-	return { ok: false, error: result.error.message };
+	throw new Error(result.error.message);
 }

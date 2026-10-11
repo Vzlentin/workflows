@@ -116,7 +116,7 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 
 /**
  * The open store, the task and the input of the run in `directory`. When the store holds a workflow task, this is that
- * task, or a new task after a failed phase; it throws for a task that an earlier version saved.
+ * task, also after a failed phase; it throws for a task that an earlier version saved.
  * Otherwise `source` gives the input of a new run, and without `source` it throws. When the new run fails to start,
  * the store closes and the directory is removed.
  */
@@ -134,13 +134,7 @@ async function openRun(
 			throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot resume`);
 		}
 		const input = (latest.input as Stored).input as script.ScriptInput;
-		const store = await openStore(directory, terminal);
-		try {
-			return { store, task: failed(latest) ? await store.create(input) : latest.id, input };
-		} catch (error) {
-			await store.close();
-			throw error;
-		}
+		return { store: await openStore(directory, terminal), task: latest.id, input };
 	}
 	if (source === undefined) throw new Error(`run ${id} has no workflow`);
 	await mkdir(directory, { recursive: true });
@@ -164,11 +158,12 @@ function current(latest: TaskRecord<JsonValue, JsonValue, JsonValue>): boolean {
 type Outcome =
 	| { readonly status: "completed"; readonly result: JsonValue }
 	| { readonly status: "interrupted" }
-	| { readonly status: "failed"; readonly error: string; readonly resumable: boolean };
+	| { readonly status: "failed"; readonly error: string };
 
 /**
- * Runs `task` to its end and closes the store. `interrupt` and a failed workflow script both stop it and leave the task
- * pending; when both happen, the outcome is `interrupted`. Any other error of the wait propagates.
+ * Runs `task` to its end and closes the store. `interrupt` and a failed phase both stop it and leave the task pending;
+ * when both happen, the outcome is `interrupted`. Any other error of the wait propagates, and so does a task that ends
+ * without completing, which only an abort can do.
  */
 async function wait(store: Store, task: TaskId<JsonValue>, interrupt: AbortSignal): Promise<Outcome> {
 	let settled: SettledTask<JsonValue> | { readonly failed: string };
@@ -185,11 +180,10 @@ async function wait(store: Store, task: TaskId<JsonValue>, interrupt: AbortSigna
 		await store.close();
 	}
 	if ("failed" in settled)
-		return interrupt.aborted ? { status: "interrupted" } : { status: "failed", error: settled.failed, resumable: true };
+		return interrupt.aborted ? { status: "interrupted" } : { status: "failed", error: settled.failed };
 	const { outcome } = settled.state;
 	if (outcome.status === "completed") return { status: "completed", result: outcome.result };
-	const error = outcome.error?.message ?? outcome.reason ?? outcome.status;
-	return { status: "failed", error, resumable: outcome.status === "failed" };
+	throw new Error(`run ended ${outcome.status}`);
 }
 
 type Listed = { readonly runId: string; readonly workflow: string; readonly title: string; readonly status: string };
@@ -237,16 +231,11 @@ async function latestTask(path: string): Promise<TaskRecord<JsonValue, JsonValue
 	}
 }
 
-/** Whether the phase of `task` failed, so a resume starts a new task. */
-function failed(task: TaskRecord<JsonValue, JsonValue, JsonValue>): boolean {
-	return task.state.status === "terminal" && task.state.outcome.status === "failed";
-}
-
 type Store = {
 	readonly harness: Harness;
 	/**
-	 * Rejects with the failure that the script host's `fail` reports for `task`. The task stays pending, because a
-	 * resume after a failed task starts a new task, and work saved under the old one would run again.
+	 * Rejects with the failure that the script host's `fail` reports for `task`. The task stays pending, so that a
+	 * resume runs the failed phase again with its saved calls.
 	 */
 	failure(task: TaskId): Promise<never>;
 	/** A new task of the script workflow. */
@@ -387,7 +376,7 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 }
 
 /**
- * Runs the task to its end and reports it; Ctrl+C and a failed workflow script close the store with the task still
+ * Runs the task to its end and reports it; Ctrl+C and a failed phase close the store with the task still
  * pending.
  */
 async function follow(
@@ -407,12 +396,6 @@ async function follow(
 		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
 		else for (const line of footer) terminal.stderr(line);
 	};
-	const failed = (message: unknown, resumable: boolean) => {
-		const footer = [`failed ${script.title(input)}: ${message}`];
-		if (resumable) footer.push(`continue with: workflows resume ${id}`);
-		end("failed", { error: String(message) }, ...footer);
-		return 1;
-	};
 	let outcome: Outcome;
 	try {
 		outcome = await wait(store, task, terminal.interrupt);
@@ -424,7 +407,11 @@ async function follow(
 		end("interrupted", {}, `interrupted; continue with: workflows resume ${id}`);
 		return 130;
 	}
-	if (outcome.status === "failed") return failed(outcome.error, outcome.resumable);
+	if (outcome.status === "failed") {
+		const { error } = outcome;
+		end("failed", { error }, `failed ${script.title(input)}: ${error}`, `continue with: workflows resume ${id}`);
+		return 1;
+	}
 	if (!json) return script.report(input, outcome.result, terminal);
 	const report: string[] = [];
 	const code = script.report(input, outcome.result, { ...terminal, stdout: (line) => report.push(line) });

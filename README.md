@@ -425,15 +425,16 @@ model again. A turn that was in progress is sent again.
 
 A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows resume <run-id>`, and
 exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. Resume
-runs the failed step again: a failed Git step runs again, and a failed turn is sent again in the same session.
+runs the failed step again in the same run: a failed Git step runs again, a failed turn is sent again in the same
+session, saved calls return their results, and child runs continue.
 
 A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
 
 A run saved before every workflow script became a command, such as a run of the earlier `workflows ship`,
 `workflows campaign` or `workflows run`, or before `run()` started child runs, such as an earlier `workflows optimize`
-run, or before a child run became a task in the caller's store, cannot resume: resume prints
-`workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1. `list` does not
-show these runs.
+run, or before a child run became a task in the caller's store, or before a failed run kept its task, cannot resume:
+resume prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1.
+`list` does not show these runs.
 
 Model requests use Pi's retry, stream timeout and compaction settings from its `settings.json`.
 

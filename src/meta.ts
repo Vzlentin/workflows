@@ -422,9 +422,8 @@ async function startChild(
 
 /**
  * The one phase: it runs the script, in the run's worktree when it has one. The phase may run again after an
- * interruption or a failure: saved calls do not run again, and Git steps must be safe to repeat. A phase that throws
- * fails a root run, and a resume starts a new task, which runs the phase again. A child run that throws reports the
- * failure to `host` and stays pending, so that it keeps its saved calls.
+ * interruption or a failure: saved calls do not run again, and Git steps must be safe to repeat. A failed phase, in a
+ * root run or a child run, reports the failure to `host` and stays pending, so that it keeps its saved calls.
  */
 async function runPhase(
 	definition: ScriptTask,
@@ -436,7 +435,6 @@ async function runPhase(
 	const input = task.input.input as ScriptInput;
 	const { worktree } = input;
 	const cwd = worktree?.path ?? input.cwd;
-	let failure: string;
 	try {
 		if (worktree !== undefined)
 			await ensureWorktree(worktree.repository, worktree.path, worktree.branch, worktree.start);
@@ -447,32 +445,21 @@ async function runPhase(
 			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },
 			child: (key, name, args) => startChild(definition, runtime, context, { input, cwd }, key, name, args),
 		});
-		if (result.ok) {
-			// A child run whose failure the script caught is still live, and the task cannot end while it owns live tasks.
-			for (const child of await runtime.ownedTasks(context)) await runtime.abortOwned(child.id, context);
-			const outcome = { status: "completed", result: result.value } as const;
-			await runtime.commit(() => ({ status: "terminal", outcome }), context);
-			return;
-		}
-		failure = result.error;
+		// A child run whose failure the script caught is still live, and the task cannot end while it owns live tasks.
+		for (const child of await runtime.ownedTasks(context)) await runtime.abortOwned(child.id, context);
+		await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
 	} catch (error) {
 		// A closing store cancels the phase; it runs again when the run resumes.
 		if (runtime.signal.aborted) throw error;
-		const message = error instanceof Error ? error.message : String(error);
-		if (task.owner === undefined) {
-			await runtime.commit(() => ({ status: "terminal", outcome: { status: "failed", error: { message } } }), context);
-			return;
-		}
-		failure = message;
+		// A failed task would drop the saved calls, so the task stays pending until the store closes.
+		host.fail(runtime.taskId, error instanceof Error ? error.message : String(error));
+		const { signal } = runtime;
+		await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
 	}
-	// A failed task would drop the saved calls, so the task stays pending until the store closes.
-	host.fail(runtime.taskId, failure);
-	const { signal } = runtime;
-	await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
 }
 
 /** The kind and version of the task of every script run. A run saved by an earlier version cannot resume. */
-export const TASK = { name: "workflows.run", version: 6 } as const;
+export const TASK = { name: "workflows.run", version: 7 } as const;
 
 /** The task of every script run, whose scripts reach the command through `host`; `list` shows the script name. */
 export function scriptTask(host: ExtensionHost): ScriptTask {
