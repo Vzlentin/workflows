@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Context } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import {
 	type AssistantMessage,
 	type Message,
@@ -42,13 +42,14 @@ import {
 	type ModelRef,
 	NestedCallDoc,
 	section,
+	type TaskRuntime,
 	type ToolExecutionApi,
 	type Tx,
 } from "@earendil-works/pi-durable";
 import { type AgentChoice, sessionAgent } from "./agents.ts";
 import { failure, git, run } from "./git.ts";
 import { instructions, render } from "./prompts.ts";
-import { type ExtensionHost, newRunId, type SessionCheckpoint, type Step, sessionOf, textOf } from "./workflow.ts";
+import { type Checkpoint, newRunId, type Stored, sessionOf, textOf } from "./workflow.ts";
 
 /** An agent profile from `agents/<name>.md`. */
 export type Profile = {
@@ -66,6 +67,32 @@ export type Bundle = {
 
 /** The bundle of a run and its own script, kept in the runner conversation. */
 export type RunBundle = Bundle & { readonly main: string };
+
+/** A `run(name, args)` call of a workflow script: its child run ID, and the bundle and directory of the caller. */
+export type ChildRequest = {
+	readonly id: string;
+	readonly name: string;
+	readonly args: JsonObject;
+	readonly bundle: RunBundle;
+	readonly cwd: string;
+};
+
+/** What the script extensions get from the command. */
+export type ExtensionHost = {
+	/** The run ID, which is the base name of `runDir`. */
+	readonly runId: string;
+	/** The run directory. */
+	readonly runDir: string;
+	/** Writes one progress line. */
+	log(line: string): void;
+	/** Stops the command with `message` as a resumable failure; the run's task stays pending. */
+	fail(message: string): void;
+	/**
+	 * The result of the child run `request.id`. The first call starts the run, and a later call continues it. Throws
+	 * `child run <id> failed: <error>` when the run fails.
+	 */
+	child(request: ChildRequest, signal: AbortSignal | undefined): Promise<JsonValue>;
+};
 
 const BundleDoc = defineDoc<RunBundle>({
 	kind: "workflows.bundle",
@@ -486,7 +513,7 @@ async function runScript(args: JsonObject, api: ToolExecutionApi, context: Conte
  * and `sh` calls that a script makes inside that call. `workflows-answer` is for script sessions: the `respond` tool of
  * a `schema` ask, and the `answer_schema` section that shows the schema to the model.
  */
-function scriptExtensions(host: ExtensionHost): Extension[] {
+export function scriptExtensions(host: ExtensionHost): Extension[] {
 	const workflow = defineTool({
 		...WORKFLOW,
 		execute: async (args, api, context) => {
@@ -567,7 +594,7 @@ function contentText(message: Message | undefined): string {
  * The runner provider. It answers the run's input, the arguments of the root `workflow` call as JSON, with that call,
  * and the tool result with the result's text.
  */
-function runnerProvider(): Provider {
+export function runnerProvider(): Provider {
 	const faux = fauxProvider({ provider: RUNNER.model.provider, models: [{ id: RUNNER.model.modelId }] });
 	const respond: FauxResponseFactory = (context): AssistantMessage => {
 		faux.appendResponses([respond]);
@@ -584,27 +611,29 @@ function runnerProvider(): Provider {
 	return faux.provider;
 }
 
-/** The checkpoint of a workflow that runs one script. */
-export type ScriptCheckpoint = { readonly phase: "run" } & SessionCheckpoint;
-
 /**
- * What every workflow that runs one script declares: its first checkpoint, and the script runtime, which the store
- * installs once for all of them.
+ * Runs `bundle.main` with `args` in a runner session in `cwd`. Without a session in `checkpoint`, it opens the session,
+ * commits it into the checkpoint, and returns: the phase then runs again with the session. With a session, the
+ * script's value is the run's result.
  */
-export const scriptWorkflow = {
-	initial: (): ScriptCheckpoint => ({ phase: "run" }),
-	extensions: scriptExtensions,
-	providers: [runnerProvider()],
-};
-
-/** The script phase: a runner session in `cwd` runs `bundle.main` with `args`, and its value is the run's result. */
-export async function scriptPhase(
-	step: Step<unknown, ScriptCheckpoint, ScriptCheckpoint, unknown>,
+export async function runScriptPhase(
+	runtime: TaskRuntime<Stored, Checkpoint, JsonValue, object>,
+	checkpoint: Checkpoint,
+	context: Context,
 	cwd: string,
 	bundle: RunBundle,
 	args: JsonObject,
 ): Promise<void> {
-	const runner = await step.session(RUNNER, cwd, (tx, conversation) => openRunner(tx, conversation, bundle));
-	if (runner === undefined) return;
-	await step.finish(JSON.parse(await runner.say("run", JSON.stringify({ args }))));
+	if (checkpoint.conversation === undefined) {
+		await runtime.commit(async (tx) => {
+			const created = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });
+			await configure(tx, created.id, sessionAgent(RUNNER, cwd));
+			await openRunner(tx, created.id, bundle);
+			return { status: "running", checkpoint: { ...checkpoint, conversation: created.id } };
+		}, context);
+		return;
+	}
+	const answer = await sessionOf(runtime, checkpoint.conversation, context).say("run", JSON.stringify({ args }));
+	const result = JSON.parse(answer) as JsonValue;
+	await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
 }

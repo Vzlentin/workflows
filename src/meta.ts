@@ -6,20 +6,13 @@
 import { readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import type { JsonObject } from "@earendil-works/pi-durable";
+import { defineTask, type JsonObject, type RunningTask, type TaskRuntime } from "@earendil-works/pi-durable";
 import { ensureWorktree, selectRepository } from "./git.ts";
 import { instructions } from "./prompts.ts";
-import {
-	type Bundle,
-	loadBundle,
-	META,
-	type RunBundle,
-	type ScriptCheckpoint,
-	scriptPhase,
-	scriptWorkflow,
-} from "./script.ts";
-import { type ChildRequest, defineWorkflow, type Io, type Run, UsageError } from "./workflow.ts";
+import { type Bundle, type ChildRequest, loadBundle, META, type RunBundle, runScriptPhase } from "./script.ts";
+import { type Checkpoint, type Io, type Run, type Stored, UsageError } from "./workflow.ts";
 
 /** The first non-empty line of `item`, without leading #. */
 function subject(item: string): string {
@@ -343,55 +336,89 @@ function textArg(input: ScriptInput): string | undefined {
 }
 
 /** The status of a result object, if it has one. */
-function statusOf(result: unknown): string | undefined {
+export function statusOf(result: unknown): string | undefined {
 	return isObject(result) && typeof result.status === "string" ? result.status : undefined;
 }
 
+export const USAGE = "workflows <workflow | file.js | -> [<text>] [--<arg> <value>]...";
+
+/** The checked arguments of `workflows <wf> ...`; throws `UsageError` or `Error` before a run directory exists. */
+export async function parse([word = "", ...argv]: readonly string[], io: Io): Promise<Args> {
+	const found = await findScript(word, io);
+	const meta = await readMeta(found.source, found.name);
+	const { args, prompts, repo, base } = await parseValues(meta, argv, io, usageOf(found.name, meta));
+	const bundle = prompts === undefined ? found.bundle : await loadBundle(io.cwd, resolve(io.cwd, prompts));
+	const failed = problem(found.source, found.name, bundle, false);
+	if (failed !== undefined) throw new Error(failed);
+	return { name: found.name, args, meta, bundle: { ...bundle, main: found.source }, repo, base };
+}
+
+/** The input saved before execution starts; with `meta.worktree`, it selects the repository of the new worktree. */
+export async function prepare({ repo, base, ...args }: Args, run: Run): Promise<ScriptInput> {
+	if (!args.meta.worktree) return { ...args, cwd: run.cwd };
+	const { worktree, ...prepared } = await prepareWorktree(args.name, { repo, base }, run);
+	return { ...args, cwd: run.cwd, worktree: { ...prepared, path: worktree } };
+}
+
+/** A short name of the run's subject for output lines: the subject of its first text argument, or the script name. */
+export function title(input: ScriptInput): string {
+	const text = textArg(input);
+	return text === undefined ? input.name : subject(text);
+}
+
+/** Prints the result's report lines and returns the exit code of its status. */
+export function report(input: ScriptInput, result: unknown, io: Io): number {
+	const lines = isObject(result) ? result.report : undefined;
+	if (Array.isArray(lines)) for (const line of lines) io.stdout(String(line));
+	else io.stdout(typeof result === "string" ? result : JSON.stringify(result));
+	const status = statusOf(result);
+	return status !== undefined && Object.hasOwn(input.meta.exit, status) ? (input.meta.exit[status] ?? 0) : 0;
+}
+
+type Runtime = TaskRuntime<Stored, Checkpoint, JsonValue, object>;
+
 /**
- * The workflow that runs any script: `workflows <wf>` with the word `<wf>` as the first argument. It is the task
- * `workflows.run`, and `list` shows the script name.
+ * The one phase: a runner session runs the script, in the run's worktree when it has one. The phase may run again after
+ * an interruption or a failure: answered turns are not sent again, and Git steps must be safe to repeat. A phase that
+ * throws fails the run and keeps its checkpoint. A resume starts a new task from that checkpoint, which runs the phase
+ * again and sends a failed turn again under a new request ID.
  */
-export const script = defineWorkflow<Args, ScriptInput, ScriptCheckpoint, unknown>({
-	...scriptWorkflow,
-	name: "run",
-	usage: "workflows <workflow | file.js | -> [<text>] [--<arg> <value>]...",
-	version: 4,
-	parse: async ([word = "", ...argv], io) => {
-		const found = await findScript(word, io);
-		const meta = await readMeta(found.source, found.name);
-		const { args, prompts, repo, base } = await parseValues(meta, argv, io, usageOf(found.name, meta));
-		const bundle = prompts === undefined ? found.bundle : await loadBundle(io.cwd, resolve(io.cwd, prompts));
-		const failed = problem(found.source, found.name, bundle, false);
-		if (failed !== undefined) throw new Error(failed);
-		return { name: found.name, args, meta, bundle: { ...bundle, main: found.source }, repo, base };
-	},
-	prepare: async ({ repo, base, ...args }, run) => {
-		if (!args.meta.worktree) return { ...args, cwd: run.cwd };
-		const { worktree, ...prepared } = await prepareWorktree(args.name, { repo, base }, run);
-		return { ...args, cwd: run.cwd, worktree: { ...prepared, path: worktree } };
-	},
-	title: (input) => {
-		const text = textArg(input);
-		return text === undefined ? input.name : subject(text);
-	},
-	label: (input) => input.name,
-	phases: {
-		run: async (step) => {
-			const { input } = step;
-			const { worktree } = input;
-			if (worktree === undefined) return scriptPhase(step, input.cwd, input.bundle, input.args);
+async function runPhase(task: RunningTask<Stored, Checkpoint, JsonValue>, runtime: Runtime, context: Context) {
+	const { checkpoint } = task.state;
+	const input = task.input.input as ScriptInput;
+	try {
+		const { worktree } = input;
+		if (worktree === undefined) {
+			await runScriptPhase(runtime, checkpoint, context, input.cwd, input.bundle, input.args);
+		} else {
 			await ensureWorktree(worktree.repository, worktree.path, worktree.branch, worktree.start);
-			await scriptPhase(step, worktree.path, input.bundle, { ...input.args, start: worktree.start });
-		},
+			const args = { ...input.args, start: worktree.start };
+			await runScriptPhase(runtime, checkpoint, context, worktree.path, input.bundle, args);
+		}
+	} catch (error) {
+		// A closing store cancels the phase; it runs again when the run resumes.
+		if (runtime.signal.aborted) throw error;
+		const message = error instanceof Error ? error.message : String(error);
+		await runtime.commit(
+			(_tx, current) => ({
+				status: "terminal",
+				outcome: { status: "failed", error: { message, detail: { from: current.state.checkpoint } } },
+			}),
+			context,
+		);
+	}
+}
+
+/** The task of every script run; `list` shows the script name. A run saved by an earlier version cannot resume. */
+export const scriptTask = defineTask<Stored, Checkpoint, JsonValue>({
+	name: "workflows.run",
+	version: 4,
+	// No `migrate`: the store does not run a task of an earlier version, and `resume` refuses it.
+	initial: (stored) => stored.from ?? { phase: "run" },
+	phases: { run: runPhase },
+	abort: async (_task, runtime, context) => {
+		await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
 	},
-	report: (input, result, io) => {
-		const report = isObject(result) ? result.report : undefined;
-		if (Array.isArray(report)) for (const line of report) io.stdout(String(line));
-		else io.stdout(typeof result === "string" ? result : JSON.stringify(result));
-		const status = statusOf(result);
-		return status !== undefined && Object.hasOwn(input.meta.exit, status) ? (input.meta.exit[status] ?? 0) : 0;
-	},
-	status: (result) => statusOf(result) ?? "done",
 });
 
 /**
@@ -418,5 +445,5 @@ export async function childInput(request: ChildRequest, run: Run): Promise<Scrip
 	const args = { ...Object.fromEntries(defaults), ...given };
 	const input = { name, args, meta, bundle: { ...bundle, prompts: replaced, main: source } };
 	if (repo === undefined || !meta.worktree) return { ...input, cwd: run.cwd };
-	return script.prepare({ ...input, repo: String(repo), base: String(base) }, run);
+	return prepare({ ...input, repo: String(repo), base: String(base) }, run);
 }
