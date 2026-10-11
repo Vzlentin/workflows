@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { git, repository, sandbox, workflows } from "./support.ts";
+import { git, PASSING_JUDGE, repository, sandbox, workflows } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -28,13 +28,19 @@ const ROUND = ["plan", "round 1: implement", "round 1: review", "judge"];
 
 describe("workflows campaign", () => {
 	it("ships two items as two commits on the campaign branch", async () => {
-		const run = await workflows(["campaign", GOAL], {
+		const run = await workflows(["campaign", "--json", GOAL], {
 			cwd: repo,
 			script: { items: [FIRST], edits: [FIXED, THANKED], queues: [[SECOND], []] },
 		});
 
 		expect(run.code).toBe(0);
-		expect(run.stdout).toEqual([`run ${run.id}`, expect.stringMatching(/^done Fix the README in 2 items, [0-9a-f]+$/)]);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(run.stdout).toHaveLength(2);
+		expect(report).toEqual([expect.stringMatching(/^done Fix the README in 2 items, [0-9a-f]+$/)]);
+		expect(result.items[0].result).toMatchObject({
+			...PASSING_JUDGE,
+			memory: ["#1 planner 0: Handoff 1: one word changes.", "#2 implementer 1: Implement 1: README.md had wrold."],
+		});
 		expect(run.stderr).toEqual(["item 1: Fix the README typo", ...ROUND, "item 2: Add a thanks line", ...ROUND]);
 		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "requeue", ...SHIP, "requeue"]);
 		const [split] = run.model.calls;
@@ -51,7 +57,7 @@ describe("workflows campaign", () => {
 			"Fix the README typo",
 		]);
 		for (const message of messages) expect(message).toMatch(/\nRounds: 1\nJudge: 0\.83/);
-		expect(run.stdout[1]).toContain(git(worktree, "rev-parse", "--short", "HEAD"));
+		expect(report[0]).toContain(git(worktree, "rev-parse", "--short", "HEAD"));
 		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(THANKED);
 		expect(await readFile(join(runs(), run.id ?? "", "item-2", "round-1.patch"), "utf8")).toContain("+Thanks.");
 		expect(existsSync(join(runs(), run.id ?? "", "round-1.patch"))).toBe(false);
