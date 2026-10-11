@@ -38,27 +38,24 @@ const CLI = [process.execPath, fileURLToPath(new URL("../src/cli.ts", import.met
 
 const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
 
-/** The workflows that are commands of their own, and the arg that is their positional argument. */
-const POSITIONAL: ReadonlyMap<string, string> = new Map([
-	["ship", "item"],
-	["campaign", "goal"],
-	["optimize", "workflow"],
-]);
+/** The built-in workflows whose positional argument has no flag, and the arg that is that argument. */
+const POSITIONAL: ReadonlyMap<string, string> = new Map([["optimize", "workflow"]]);
 
-/** The `workflows` arguments of a tool call, always with `--json`. */
+/**
+ * The `workflows` arguments of a tool call, always with `--json`. The command rejects a flag it does not know, so a
+ * mistyped arg fails before a run exists.
+ */
 function cliArgs({ name, script, resume, args = {} }: WorkflowCall): string[] {
 	const given = [name, script, resume].filter((value) => value !== undefined).length;
 	if (given !== 1) throw new Error("give exactly one of name, script or resume");
 	if (resume !== undefined) return ["resume", resume, "--json"];
-	const positional = POSITIONAL.get(name ?? "");
-	if (name !== undefined && positional !== undefined) {
-		// The command rejects a flag it does not know, so a mistyped arg fails before a run exists.
-		const { [positional]: value, ...flags } = args;
-		const options = Object.entries(flags).map(([key, flag]) => `--${key}=${text(flag)}`);
-		return [name, ...options, "--json", ...(value === undefined ? [] : ["--", text(value)])];
-	}
-	const pairs = Object.entries(args).map(([key, value]) => `--arg=${key}=${text(value)}`);
-	return ["run", name ?? "-", ...pairs, "--json"];
+	if (name === undefined) return ["-", "--json"];
+	const positional = POSITIONAL.get(name);
+	const { [positional ?? ""]: value, ...flags } = args;
+	const options = Object.entries(positional === undefined ? args : flags).flatMap(([key, flag]) =>
+		flag === false ? [] : [flag === true ? `--${key}` : `--${key}=${text(flag)}`],
+	);
+	return [name, ...options, "--json", ...(positional === undefined || value === undefined ? [] : ["--", text(value)])];
 }
 
 type Output = { readonly code: number | null; readonly stdout: readonly string[]; readonly stderr: readonly string[] };
@@ -125,15 +122,13 @@ function resultOf(outcome: WorkflowOutcome, steps: readonly string[]): AgentTool
 }
 
 /**
- * `ship <slug>`, `campaign <slug>`, `optimize <workflow>`, `<name>`, `script` or `resume <run-id>`. The arguments can
- * be partial while the call streams.
+ * `<name> <slug>`, `<name>`, `script` or `resume <run-id>`. The slug comes from the first string argument. The
+ * arguments can be partial while the call streams.
  */
 function callLabel({ name, script, resume, args }: WorkflowCall): string {
 	if (resume !== undefined) return `resume ${resume}`;
 	if (script !== undefined) return "script";
-	const positional = POSITIONAL.get(name ?? "");
-	if (positional === undefined) return name ?? "";
-	const item = args?.[positional];
+	const item = Object.values(args ?? {}).find((value) => typeof value === "string");
 	if (typeof item !== "string") return name ?? "";
 	if (item.endsWith(".md")) return `${name} ${basename(item, ".md")}`;
 	const line = item.split("\n").find((candidate) => candidate.trim() !== "") ?? "";
@@ -159,13 +154,14 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 		name: "workflow",
 		label: "Workflow",
 		description:
-			"Run a durable workflow and wait for its result. Give exactly one of: `name` (`ship`, `campaign`, `optimize`, " +
-			"or a saved workflow script), `script` (the body of an inline workflow script), or `resume` (a run ID). `args` " +
-			"are the workflow's arguments; for `ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and " +
-			"`prompts`. For `campaign`, which splits a goal into work items and ships each one as a commit on one branch: " +
-			"`goal`, and optional `repo`, `base`, `rounds` and `prompts`. For `optimize`, which searches for better ship " +
-			"prompts over a folder of work items: `workflow` (`ship`) and `items`, and optional `prompts` and `trials`. A " +
-			"failed or interrupted run stays resumable.",
+			"Run a durable workflow and wait for its result. Give exactly one of: `name` (a workflow script such as " +
+			"`ship` or `campaign`, or `optimize`), `script` (the body of an inline workflow script), or `resume` (a run " +
+			"ID). `args` are the workflow's arguments, each passed as `--<key>`; the script's `meta` declares them. For " +
+			"`ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and `prompts`. For `campaign`, which " +
+			"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
+			"`base`, `rounds` and `prompts`. For `optimize`, which searches for better ship prompts over a folder of work " +
+			"items: `workflow` (`ship`) and `items`, and optional `prompts` and `trials`. A failed or interrupted run " +
+			"stays resumable.",
 		parameters: Type.Object({
 			name: Type.Optional(
 				Type.String({ description: "`ship`, `campaign`, `optimize`, or the name of a workflow script" }),

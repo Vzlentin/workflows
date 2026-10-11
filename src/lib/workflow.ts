@@ -24,8 +24,15 @@ import {
 } from "@earendil-works/pi-durable";
 import { type AgentChoice, sessionAgent } from "./agents.ts";
 
-/** Bad command-line usage: the command prints its usage and exits 2. */
-export class UsageError extends Error {}
+/** Bad command-line usage: the command prints `usage`, or its own usage, and exits 2. */
+export class UsageError extends Error {
+	readonly usage: string | undefined;
+
+	constructor(message: string, usage?: string) {
+		super(message);
+		this.usage = usage;
+	}
+}
 
 export type Checkpoint = { readonly phase: string };
 
@@ -98,6 +105,8 @@ export type Workflow<A, I, S extends Checkpoint, R> = {
 	prepare(args: A, run: Run): Promise<I>;
 	/** A short name of the run's subject for output lines. */
 	title(input: I): string;
+	/** The workflow name of the run in `workflows list`; `name` by default. */
+	label?(input: I): string;
 	initial(input: I): S;
 	readonly phases: Phases<I, S, R>;
 	/** Prints the result and returns the exit code. */

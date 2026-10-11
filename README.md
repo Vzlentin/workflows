@@ -7,10 +7,11 @@ headless and resumable. [pi-durable](https://www.npmjs.com/package/@earendil-wor
 model calls and tool calls, and stores the progress of the run.
 
 `src/lib/` is the library that runs workflows: run directories, the durable store, sessions, retries, resume and
-workflow scripts. `src/workflows/` holds the workflows built on it: `ship`, `campaign`, `optimize`, and `run`, which runs
-a JavaScript workflow script. `ship` selects the repository and creates the worktree, then runs the workflow script
-`workflows/ship.js` in the worktree for the sessions, the Git steps and the squash. `campaign` does the same with
-`workflows/campaign.js`, which runs `workflows/ship.js` once for each work item.
+workflow scripts. Every workflow script is a command: `workflows <wf>` runs `workflows/<wf>.js`, and the `meta` at
+the top of the script declares its arguments. See [Workflow scripts](#workflow-scripts). `workflows/ship.js` and
+`workflows/campaign.js` are scripts of the package. `ship` selects the repository and creates the worktree, through its
+`meta`, then runs in the worktree for the sessions, the Git steps and the squash. `campaign` does the same, and runs
+`workflows/ship.js` once for each work item. `src/workflows/` holds `optimize`, the only built-in command.
 
 ```text
 plan session:       plan  ->  challenge  ->  handoff
@@ -135,6 +136,7 @@ workflows campaign --repo calibre --base develop --rounds 2 "Make the docs compl
 
 The goal comes from one argument or from stdin, as the work item of `ship` does, and `--repo`, `--base`, `--rounds`
 and `--prompts` work as for `ship`. `--rounds` applies to each work item. Errors name the goal, such as `the goal is empty`.
+When the judge of an item fails, the command prints `judge failed on <item subject>: <error>` on stderr, as `ship` does.
 
 A planner session splits the goal into work items with the `split` prompt, and answers through `respond`. Then each
 work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the plan, the rounds, the review, the
@@ -216,9 +218,10 @@ command while a ship run runs loses that ship run's ID, and the resume runs that
 
 The plan, implement, review and judge sessions use the agent profiles `agents/planner.md`, `agents/implementer.md`,
 `agents/reviewer.md` and `agents/judge.md`. Each uses `anthropic/claude-opus-5-5` with thinking `medium`, and every
-session gets the same tools. Like `workflows run`, `ship` and `campaign` read the scripts, prompts and profiles of the
-package and of the project folder `.workflows/` of the current directory, also when `--repo` selects another
-repository. See [Run](#run). A project `agents/planner.md`, for example, gives the planner another model.
+session gets the same tools. Like every workflow script, `ship` and `campaign` read the scripts, prompts and profiles
+of the package and of the project folder `.workflows/` of the current directory, also when `--repo` selects another
+repository. See [Workflow scripts](#workflow-scripts). A project `agents/planner.md`, for example, gives the planner
+another model.
 
 Sessions use Pi's providers and credentials from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers
 that Pi extension packages register, such as `cursor`. Their system prompt has the `AGENTS.md` instructions and skills
@@ -231,42 +234,93 @@ from TypeScript files under `node_modules`. The run does not install missing pac
 again at each resume. A package entry that fails to load fails the start or resume with `workflows: <error>`. Each
 entry's `close()` runs when the command ends, also after Ctrl+C, and an error from it prints a `warning:` line.
 
-## Run
+## Workflow scripts
 
 ```sh
-workflows run review --arg path=src/lib
-workflows run ./fix.js --arg item="Fix the README typo"
-cat fix.js | workflows run - --json
+workflows                                  # lists the workflows
+workflows review --path src/lib
+workflows ship --help
+workflows ./fix.js "Fix the README typo"
+cat fix.js | workflows - --json
+workflows check review
 ```
 
-`workflows run` runs one workflow script. The script comes from one argument:
+`workflows <wf>` runs one workflow script. The first word selects it:
 
 - `-` reads the script from stdin.
-- An argument that ends in `.js` or contains `/` is a file, relative to the current directory. A missing file is an
+- A word that ends in `.js` or contains `/` is a file, relative to the current directory. A missing file is an
   error.
-- Any other argument is a name in the `workflows/` folder of the package or of the project. An unknown name fails
-  with `workflows: no workflow <name>` and exits 1.
+- Any other word is a name: `<wf>.js` in `workflows/` of the project folder first, then of the package. A project
+  script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
+  and exits 2.
 
-`workflows/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
-workflows campaign, which give it the start commit`. Thus `workflows run ship` and `run("ship")` without `start` fail
-before they change anything. The script does not check where `start` comes from: with `--arg start=<commit>`, it runs
-in the current directory and can commit there.
+`resume`, `list`, `check` and `optimize` are commands, so no script of these names can run.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
 project file adds to the package files, and replaces the package file of the same name in the same folder.
 
-`--arg <key>=<value>` gives the script `args.<key>` as a string, and can be repeated. A value without `=` or a key
-given twice is bad usage: the command prints its usage and exits 2.
+`workflows` without arguments prints one line `<name>: <description>` for each script, then one line for each
+built-in command. The description is the first line of the script's leading `//` comment.
+
+### `meta`
+
+A script declares its command line in `export const meta = { ... }`, after its leading comments and before any other
+code. `meta` is an object literal. The command evaluates it alone, in the sandbox, and does not run the script. The
+script runs without `export`, so it can read `meta`. A script without `meta` takes no arguments.
+
+```js
+// Ship one work item onto a new branch.
+export const meta = {
+  args: {
+    item: { type: "text", positional: true, label: "work item" },
+    rounds: { type: "number", default: 3 },
+  },
+  worktree: true,
+  exit: { blocked: 1, stopped: 1 },
+}
+```
+
+- `args` gives each argument a `type`, and optionally `default`, `required`, `positional` and `label`:
+  - `string` is the value as given. `number` is a positive integer; any other value fails with
+    `--<name> must be a positive integer`. `boolean` is a flag without a value, false when not given.
+  - `text` is a `.md` file, inline text, or stdin when the argument is not given, with the rules of the work item of
+    [Ship](#ship). Errors name the `label`, such as `missing work item` or `the work item is empty`.
+  - At most one argument is `positional`. It also works as `--<name>`; giving it both ways is bad usage. Two
+    positional values fail with `give the <label> as one argument`.
+  - A `required` argument without a value fails with `missing <label>`. `label` defaults to the argument name.
+- `worktree: true` adds `--repo` and `--base`, with the rules of [Ship](#ship). The run gets a new worktree on the
+  branch `<wf>/<run-id>` in the run directory, runs the script there, and gives it `args.start`, the start commit.
+- `exit` maps `result.status` to the exit code. Any other status, or a result without `status`, exits 0.
+
+Every script also takes `--prompts <folder>`, as `ship` does, `--json` and `--help`. `workflows <wf> --help` prints
+the usage line, built from `meta`, and the description, and exits 0. Any other flag is bad usage. Bad usage prints
+`workflows: <error>` and the usage line of the script, and exits 2. A bad `meta` fails with
+`workflows: <name>: <problem>` and exits 1.
+
+Before the run starts, the command scans the script for `prompts.<name>`. A name without a template fails with
+`<name> uses prompts.<prompt>, which has no template`.
+
+`workflows check <wf>` reads and checks `meta`, the scanned prompts, and the agent profiles of each literal
+`session("<profile>")` and `as: "<profile>"`. It prints `ok <name>` and exits 0, or prints the first problem and exits
+1. It starts no run.
+
+### Output
 
 The command prints `run <run-id>` on stdout, then each `phase` and `log` line on stderr when the script's next call
-runs, or when the script ends. When the script returns, the
-command prints the return value on stdout and exits 0. A string prints as it is, and any other value prints as JSON.
-With `--json`, stdout gets one JSON outcome line in place of the value. See [JSON output](#json-output).
+runs, or when the script ends. When the script returns a result with `report`, a list of lines, the command prints
+those lines on stdout. Otherwise it prints the return value: a string as it is, and any other value as JSON. The exit
+code comes from `meta.exit`. With `--json`, stdout gets one JSON outcome line in place of the lines, and its `result`
+has no `report` field. See [JSON output](#json-output).
 
-A script that throws, or a call in it that fails, stops the run: the command prints `failed <name>: <error>` and
-`continue with: workflows run resume <run-id>` on stderr, and exits 1. `<name>` is the file name without `.js`, the
-workflow name, or `stdin`.
+A script that throws, or a call in it that fails, stops the run: the command prints `failed <title>: <error>` and
+`continue with: workflows resume <run-id>` on stderr, and exits 1. `<title>` is the subject of the first `text`
+argument, or else the file name without `.js`, the workflow name, or `stdin`.
+
+`workflows/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
+workflows campaign, which give it the start commit`. Thus `run("ship")` without `start` fails before it changes
+anything. The script does not check where `start` comes from: with `start` from another script, it runs in that
+script's directory and can commit there.
 
 ### The script API
 
@@ -275,7 +329,7 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 
 | Global | Meaning |
 |---|---|
-| `args` | The `--arg` values |
+| `args` | The argument values of `meta.args`, and `start` with `worktree: true` |
 | `runId`, `runDir` | The run ID and the run directory. A script that `run()` starts gets the same values |
 | `agent(prompt, { as, schema })` | One turn in a new session of profile `as` (default `default`). Returns the reply text, or the answer with `schema` |
 | `session(profile)` | A new session of `profile` (default `default`). `.ask(prompt, { schema })` is one turn in it |
@@ -322,33 +376,34 @@ lines before it, and keeps the last `phase` line waiting for the next call that 
 ## Resume
 
 ```sh
-workflows ship resume <run-id>
-workflows run resume <run-id>
 workflows resume <run-id>
+workflows optimize resume <run-id>
 ```
 
-Each form continues the run. `workflows resume` finds the workflow that the run saved, and `workflows ship resume`
-or `workflows run resume` refuses a run of another workflow.
+`workflows resume` finds the workflow that the run saved and continues the run. A run of a workflow script continues
+with the script that the run saved. `workflows optimize resume` refuses a run of another workflow.
 
-Ctrl+C stops the run and keeps it resumable: the command prints `interrupted; continue with: workflows <workflow>
-resume <run-id>` and exits 130. Ctrl+C also stops a Git step that is running, and resume runs that step again. A
-second Ctrl+C exits at once.
+Ctrl+C stops the run and keeps it resumable: the command prints `interrupted; continue with: workflows resume
+<run-id>`, or `workflows optimize resume <run-id>` for optimize, and exits 130. Ctrl+C also stops a Git step that is
+running, and resume runs that step again. A second Ctrl+C exits at once.
 
-Resume opens the run's store and continues the pending work. For `run`, see [Saved inputs and
+Resume opens the run's store and continues the pending work. For a script, see [Saved inputs and
 resume](#saved-inputs-and-resume). For `ship`, it uses the work item, repository, start commit, `workflows/ship.js`,
 prompts, profiles and round limit that the run saved before it started. `campaign` does the same with its goal and
 `workflows/campaign.js`: the split, the shipped items and the requeues are not run again. It does not read the work
 item file again, select or clone the repository again, or create another branch. Answered turns are not sent to the
 model again. A turn that was in progress is sent again.
 
-A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows ship resume
-<run-id>`, and exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. Resume
+A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows resume <run-id>`, and
+exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. Resume
 runs the failed step again: a failed Git step runs again, and a failed turn is sent again in the same session.
 
 A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
 
-A ship run saved before `ship` ran `workflows/ship.js` cannot resume: resume prints
-`workflows: run <run-id> was saved by an earlier version of ship and cannot resume` and exits 1.
+A run saved before every workflow script became a command, such as a run of the earlier `workflows ship`,
+`workflows campaign` or `workflows run`, cannot resume: resume prints
+`workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1. `list` does not
+show these runs.
 
 Model requests use Pi's retry, stream timeout and compaction settings from its `settings.json`.
 
@@ -380,10 +435,10 @@ workflows list --json
 ```
 
 `workflows list` prints one line for each run in the runs directory, newest run ID first: `<run-id> <workflow>
-<status> <title>`. The title is the subject of the work item for ship, the subject of the goal for campaign, and the
-script name for `run`. A finished ship run has the status of its result: `shipped`, `blocked` or `stopped`. A finished
-campaign has `done` or `stopped`. A finished `run` has the status `done`. Any other run, also a failed one, is
-`unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
+<status> <title>`. `<workflow>` is the script name, or `optimize`. The title is the subject of the first `text`
+argument, such as the work item for ship and the goal for campaign, or else the script name. A finished run has the
+`status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
+`done` when the result has no `status`. Any other run, also a failed one, is `unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
 
 `list` only reads the stores. It does not load Pi packages, and no run continues.
 
@@ -415,22 +470,22 @@ continues it from a terminal. The child process runs outside Pi, so the package 
 
 The tool takes one of `name`, `script` or `resume`, plus `args`:
 
-- `name: "ship"` runs `workflows ship`. `args.item` is the work item, and each other arg becomes `--<key>=<value>`,
-  such as `--rounds=2`. An arg that `ship` does not know is bad usage, so no run starts.
-- `name: "campaign"` runs `workflows campaign` in the same way, with `args.goal` as the goal.
-- `name: "optimize"` runs `workflows optimize` in the same way, with `args.workflow` as the workflow to optimize, such
-  as `{ workflow: "ship", items: "items/", trials: 5 }`.
-- Any other `name` runs `workflows run <name>`. Each arg becomes `--arg <key>=<value>`: a string as it is, any other
-  value as its JSON text. The script gets every arg as a string, so `{ depth: 2 }` reaches it as `"2"`.
-- `script` runs `workflows run -` with the script on stdin.
+- `name` runs `workflows <name> --<key>=<value>... --json`, with each arg as a flag: a string as it is, `true` as a
+  bare `--<key>`, no flag for `false`, and any other value as its JSON text. For example
+  `{ name: "ship", args: { item: "Fix the README typo", rounds: 2 } }` runs
+  `workflows ship --item=Fix the README typo --rounds=2 --json`. An arg that the script's `meta` does not declare is
+  bad usage, so no run starts.
+- `name: "optimize"` runs `workflows optimize`, with `args.workflow` as its positional argument and each other arg as
+  a flag, such as `{ workflow: "ship", items: "items/", trials: 5 }`.
+- `script` runs `workflows - --json` with the script on stdin.
 - `resume` runs `workflows resume <run-id>`.
 
 Each stderr line of the run is a progress update of the tool. Esc sends SIGINT to the run, as Ctrl+C does, so the run
 stays resumable.
 
-In Pi, the call line is `workflow ship <slug>`, `workflow campaign <slug>`, `workflow optimize <workflow>`,
-`workflow <name>`, `workflow script` or `workflow resume <run-id>`. The slug is the file name of a `.md` item or goal without `.md`, or else the first 40
-characters of its subject. Under it, each stderr line is a step: `✓` for a step that is done, `◉` for the step that
+In Pi, the call line is `workflow <name> <slug>`, `workflow <name>`, `workflow script` or `workflow resume <run-id>`,
+such as `workflow ship Fix the README typo` or `workflow optimize ship`. The slug comes from the first string arg: the
+file name of a `.md` file without `.md`, or else the first 40 characters of its subject. Under it, each stderr line is a step: `✓` for a step that is done, `◉` for the step that
 runs now, and `✗` for the step where the run failed or was interrupted. A finished run ends with its `report` lines,
 such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8`. A failed or interrupted run ends with the
 error and the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the

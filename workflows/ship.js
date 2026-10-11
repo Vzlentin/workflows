@@ -1,9 +1,21 @@
+// Ship one work item onto a new branch: plan, implement and review rounds, judge, and one squashed commit.
 // The plan, the rounds, the review, the judge and the squash of `workflows ship` and of each `workflows campaign`
 // item, in its worktree. Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
-const { item, rounds, start, subject, patches = runDir } = args
+export const meta = {
+	args: {
+		item: { type: "text", positional: true, label: "work item" },
+		rounds: { type: "number", default: 3 },
+	},
+	worktree: true,
+	exit: { blocked: 1, stopped: 1 },
+}
+
+const { item, rounds, start, patches = runDir } = args
 if (typeof start !== "string") {
 	throw new Error("ship runs only through workflows ship or workflows campaign, which give it the start commit")
 }
+const subject = (item.split("\n").find((line) => line.trim() !== "") ?? "").replace(/^#+/, "").trim()
+const worktree = `${runDir}/worktree`
 
 const SHIP_OR_FIX = { enum: ["SHIP", "FIX"] }
 const VERDICT = {
@@ -51,7 +63,10 @@ for (let round = 1; round <= rounds; round++) {
 	)
 
 	await sh(["git", "add", "-A"])
-	if (await ok(["git", "diff", "--cached", "--quiet", start])) return { status: "blocked", rounds: round, reply, memory }
+	if (await ok(["git", "diff", "--cached", "--quiet", start])) {
+		const report = [`blocked ${subject} after ${round} rounds: ${worktree}`, reply]
+		return { status: "blocked", rounds: round, reply, memory, report }
+	}
 	// The check's result is saved, so a commit that succeeded before a stop may run again with nothing staged.
 	if (!(await ok(["git", "diff", "--cached", "--quiet"]))) {
 		await sh(["git", "commit", "--allow-empty", "-m", `round ${round}`])
@@ -65,7 +80,9 @@ for (let round = 1; round <= rounds; round++) {
 	const answer = "Answer with respond: SHIP if nothing needs to change, FIX otherwise."
 	const challenge = `${await prompts.challenge()}\n\n${EVIDENCE}\n\n${answer}`
 	if ((await reviewer.ask(challenge, { schema: SHIP_OR_FIX })) === "SHIP") return await judgeAndSquash(round)
-	if (round === rounds) return { status: "stopped", rounds: round, memory }
+	if (round === rounds) {
+		return { status: "stopped", rounds: round, memory, report: [`stopped ${subject} after ${round} rounds: ${worktree}`] }
+	}
 	plan = await reviewer.noted(
 		round,
 		prompts.handoff(),
@@ -84,17 +101,21 @@ async function judgeAndSquash(round) {
 		verdict = await judge.ask(prompts.judge({ item, base: start, head }), { schema: VERDICT })
 	} catch (error) {
 		judgeError = error.message
+		log(`judge failed on ${subject}: ${judgeError}`)
 	}
 	// One command, so that a repeat resets a squash commit that was made but not saved.
 	const squash = 'git reset -q --soft "$1" && git commit -q -m "$2"'
 	await sh(["sh", "-c", squash, "squash", start, message(round, verdict)])
+	const short = await sh(["git", "rev-parse", "--short", "HEAD"])
+	const judged = verdict === undefined ? "failed" : score(verdict.answers).toFixed(2)
 	return {
 		status: "shipped",
 		rounds: round,
-		head: await sh(["git", "rev-parse", "--short", "HEAD"]),
+		head: short,
 		...(verdict === undefined ? {} : { score: score(verdict.answers), answers: verdict.answers, findings: verdict.findings }),
 		...(judgeError === undefined ? {} : { judgeError }),
 		memory,
+		report: [`shipped ${subject} in ${round} rounds, judge ${judged}, ${short}`],
 	}
 }
 

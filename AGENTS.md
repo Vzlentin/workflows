@@ -8,10 +8,11 @@
 
 ## Library and workflows
 
-- `src/lib/` is the library: run directory, durable store, sessions, turns, retry, resume, Git repository selection and prompts. `src/workflows/` holds one file per workflow, built only on the library. `src/cli.ts` lists the installed workflows.
+- `src/lib/` is the library: run directory, durable store, sessions, turns, retry, resume, Git repository selection, prompts, and `meta.ts`, the generic entry point that runs any workflow script as `workflows <wf>`. `src/workflows/` holds the built-in workflows, now only `optimize`, built only on the library. `src/cli.ts` lists them.
 - `src/lib/` never imports from `src/workflows/`. Biome enforces it.
-- A workflow declares its arguments, saved input, phases and report. Keep logic that only one workflow needs in its file.
-- `ship` keeps its arguments, repository selection, worktree and report in `src/workflows/ship.ts`. The plan, the rounds, the review, the judge and the squash are in the workflow script `workflows/ship.js`, which runs on the runtime of `workflows run`.
+- A workflow script declares its arguments, worktree and exit codes in `export const meta = { ... }`, a literal object at the top. Its description is the first line of its leading comment. It returns its report lines as `result.report`. A built-in workflow declares its arguments, saved input, phases and report in its file.
+- `ship` is the workflow script `workflows/ship.js`: its `meta` gives the work item, the rounds and the worktree, and the script does the plan, the rounds, the review, the judge, the squash and the report lines.
+- Every script run is the task `workflows.run`. Bump its `version` in `src/lib/meta.ts` when the shape of its saved input changes.
 - Biome does not check `workflows/*.js`: a script body has a top-level `return`.
 
 ## Durable runs
