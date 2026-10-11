@@ -28,16 +28,17 @@ export type CampaignInput = {
 };
 
 /** The return value of `workflows/campaign.js`: each item that ran, in order, with its ship result. */
-export type CampaignResult = {
-	readonly status: "done" | "stopped";
-	readonly items: readonly { readonly item: string; readonly result: ShipResult }[];
-};
+export type CampaignResult =
+	| { readonly status: "done"; readonly head: string; readonly items: readonly CampaignItem[] }
+	| { readonly status: "stopped"; readonly items: readonly CampaignItem[] };
+
+type CampaignItem = { readonly item: string; readonly result: ShipResult };
 
 export const campaign = defineWorkflow<Args, CampaignInput, ScriptCheckpoint, CampaignResult>({
 	...scriptWorkflow,
 	name: "campaign",
 	usage: "workflows campaign [--repo <repository>] [--base <branch>] [--rounds <n>] [<goal.md> | <text>]",
-	version: 1,
+	version: 2,
 	parse: async (args, io) => {
 		const { item, ...parsed } = parseItemArgs(args, "goal");
 		return { ...parsed, goal: await readItem(item, io, "goal") };
@@ -45,7 +46,7 @@ export const campaign = defineWorkflow<Args, CampaignInput, ScriptCheckpoint, Ca
 	prepare: async (args, run) => ({
 		goal: args.goal,
 		rounds: args.rounds,
-		...(await prepareWorktree("campaign", args, run, `campaign/${run.id}`)),
+		...(await prepareWorktree("campaign", args, run)),
 	}),
 	title: (input) => subject(input.goal),
 	phases: {
@@ -57,9 +58,8 @@ export const campaign = defineWorkflow<Args, CampaignInput, ScriptCheckpoint, Ca
 	},
 	report: (input, result, io) => {
 		const name = subject(input.goal);
-		const last = result.items.at(-1)?.result;
 		if (result.status === "done") {
-			io.stdout(`done ${name} in ${result.items.length} items, ${last?.status === "shipped" ? last.head : ""}`);
+			io.stdout(`done ${name} in ${result.items.length} items, ${result.head}`);
 			return 0;
 		}
 		io.stdout(`stopped ${name} at item ${result.items.length}: ${input.worktree}`);

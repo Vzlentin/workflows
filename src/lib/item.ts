@@ -48,13 +48,12 @@ export function parseItemArgs(args: readonly string[], noun: string) {
 
 /**
  * The package's bundle with `workflows/<scriptName>.js` as the run's own script, the selected repository and its start
- * commit, and the worktree path of `run` on `branch`.
+ * commit, and the worktree path of `run` on the branch `<scriptName>/<run-id>`.
  */
 export async function prepareWorktree(
 	scriptName: string,
 	args: { readonly repo: string | undefined; readonly base: string },
 	run: Run,
-	branch: string,
 ): Promise<{ bundle: RunBundle; repository: string; start: string; branch: string; worktree: string }> {
 	const bundle = await loadBundle();
 	const main = bundle.scripts[scriptName];
@@ -64,7 +63,7 @@ export async function prepareWorktree(
 		bundle: { ...bundle, main },
 		repository: repository.path,
 		start: repository.start,
-		branch,
+		branch: `${scriptName}/${run.id}`,
 		worktree: join(run.directory, "worktree"),
 	};
 }

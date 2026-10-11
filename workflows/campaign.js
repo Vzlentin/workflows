@@ -16,14 +16,15 @@ const done = []
 for (let n = 1; queue.length > 0; n++) {
 	const [item, ...rest] = queue
 	const line = item.split("\n").find((candidate) => candidate.trim() !== "") ?? ""
-	phase(`item ${n}: ${line.replace(/^#+/, "").trim()}`)
+	const subject = line.replace(/^#+/, "").trim()
+	phase(`item ${n}: ${subject}`)
 	const patches = `${runDir}/item-${n}`
 	await sh(["mkdir", "-p", patches])
 	const start = await sh(["git", "rev-parse", "HEAD"])
-	const result = await run("ship", { item, rounds, start, patches })
+	const result = await run("ship", { item, subject, rounds, start, patches })
 	done.push({ item, result })
 	if (result.status !== "shipped" || result.score === 0) return { status: "stopped", items: done }
 	const requeue = await prompts.requeue({ goal, done: item, queue: JSON.stringify(rest) })
 	queue = (await agent(`${requeue}${answer}`, { as: "planner", schema: items(0) })).items
 }
-return { status: "done", items: done }
+return { status: "done", head: done.at(-1).result.head, items: done }

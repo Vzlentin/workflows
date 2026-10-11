@@ -25,7 +25,7 @@ await tools.workflow({ resume: "20261010T234930-3a93e88c" })
   any other arg is an error.
 - `name: "campaign"` splits `args.goal` into work items and ships each one as a commit on the branch
   `campaign/<run-id>`. After each item, a planner updates the queue. `repo`, `base` and `rounds` are optional. The
-  result is `{ status: "done" | "stopped", items: [{ item, result }] }`.
+  result is `{ status: "done", head, items: [{ item, result }] }` or `{ status: "stopped", items }`.
 - Any other `name` is a script in `workflows/` of the package or of the project's `.workflows/`. Each arg reaches
   the script as the string `args.<key>`: a string as it is, any other value as its JSON text, so `{ depth: 2 }` gives
   `"2"`.

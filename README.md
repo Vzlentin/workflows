@@ -130,7 +130,8 @@ resume can print the line of the item it continues after the first lines of that
   `stopped <subject> at item <n>: <worktree>` and exits 1. A missing score, when the judge failed, does not stop it.
 
 `<subject>` is the first non-empty line of the goal without leading `#`. The result is
-`{ "status": "done" | "stopped", "items": [{ "item", "result" }] }`, with the `ship` result of each item that ran.
+`{ "status": "done", "head", "items": [{ "item", "result" }] }` or `{ "status": "stopped", "items" }`, with the `ship`
+result of each item that ran. `head` is the commit of the last item.
 
 ## Sessions
 

@@ -50,7 +50,7 @@ export const ship = defineWorkflow<Args, ShipInput, ScriptCheckpoint, ShipResult
 	prepare: async (args, run) => ({
 		item: args.item,
 		rounds: args.rounds,
-		...(await prepareWorktree("ship", args, run, `ship/${run.id}`)),
+		...(await prepareWorktree("ship", args, run)),
 	}),
 	title: (input) => subject(input.item),
 	phases: {

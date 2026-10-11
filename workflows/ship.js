@@ -1,10 +1,9 @@
 // The plan, the rounds, the review, the judge and the squash of `workflows ship` and of each `workflows campaign`
 // item, in its worktree. Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
-const { item, rounds, start, patches = runDir } = args
+const { item, rounds, start, subject, patches = runDir } = args
 if (typeof start !== "string") {
 	throw new Error("ship runs only through workflows ship or workflows campaign, which give it the start commit")
 }
-const subject = args.subject ?? (item.split("\n").find((line) => line.trim() !== "") ?? "").replace(/^#+/, "").trim()
 
 const SHIP_OR_FIX = { enum: ["SHIP", "FIX"] }
 const VERDICT = {
