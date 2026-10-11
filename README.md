@@ -222,8 +222,9 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | `phase(title)`, `log(text)` | Write one line on stderr before the script's next call that runs |
 
 With `schema`, a JSON Schema, the session gets a `respond` tool for that turn. The model gives its answer as
-`respond({ answer })`, which ends the turn, and the call returns the checked answer. A string answer that does not
-match the schema is parsed as JSON, and the parsed value is checked instead, so an object sent as its JSON text is
+`respond({ answer })`, which ends the turn, and the call returns the checked answer. The schema goes to the model as
+JSON in the `answer_schema` system prompt section, and the prompt goes unchanged. A string answer that does not match
+the schema is parsed as JSON, and a parsed object or array is checked instead, so an object sent as its JSON text is
 accepted. A string answer to a string schema, such as SHIP or FIX, stays a string. An answer that does not match the
 schema goes back to the model as an error, and the model tries again.
 

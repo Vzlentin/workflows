@@ -189,6 +189,8 @@ export class FakeModel {
 		if (last?.role === "toolResult") {
 			const after = messages.slice(messages.findLastIndex((message) => message.role === "assistant") + 1);
 			for (const message of after) if (message.role === "toolResult") this.results.push(textOf(message));
+			const scripted = scriptAttempt(messages);
+			if (scripted !== undefined) return scripted;
 			if (kind === "judge") return this.#judge();
 			if (kind === "implement") return implemented(this.count(kind), "I fixed the typo in README.md.");
 			return fauxAssistantMessage("I fixed the typo in README.md.");
@@ -248,12 +250,8 @@ export class FakeModel {
 				return respond({ items: [...(this.#script.items ?? [])] });
 			case "requeue":
 				return respond({ items: [...(this.#script.queues?.[nth - 1] ?? [])] });
-			case "script": {
-				// `Script respond: <json>` answers with `respond`, any other `Script: <text>` with `Reply to <text>`.
-				const answer = /^Script respond: (.*)$/s.exec(prompt)?.[1];
-				if (answer === undefined) return fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
-				return respond(JSON.parse(answer));
-			}
+			case "script":
+				return scriptAttempt(messages) ?? fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
 		}
 	};
 
@@ -261,6 +259,21 @@ export class FakeModel {
 		const { judge = PASSING_JUDGE } = this.#script;
 		return typeof judge === "string" ? fauxAssistantMessage(judge) : respond(judge);
 	}
+}
+
+/**
+ * The `respond` call of the current attempt at a `Script respond: <json>` prompt, which has one JSON text per line:
+ * attempt n answers with line n. Undefined for any other prompt, whose reply is `Reply to <text>`.
+ */
+function scriptAttempt(messages: readonly Message[]): AssistantMessage | undefined {
+	const user = messages.findLastIndex((message) => message.role === "user");
+	const prompt = messages[user];
+	const answers = prompt && /^Script respond: (.*)$/s.exec(textOf(prompt))?.[1]?.split("\n");
+	if (answers === undefined) return undefined;
+	const tried = messages.slice(user).filter((message) => message.role === "toolResult").length;
+	const answer = answers[tried];
+	if (answer === undefined) throw new Error(`no scripted answer for attempt ${tried + 1}`);
+	return respond(JSON.parse(answer));
 }
 
 function respond(answer: ToolCall["arguments"][string]): AssistantMessage {
