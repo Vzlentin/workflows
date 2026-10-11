@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,7 +8,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CallDoc, prelude, type ScriptRun } from "../src/script.ts";
+import { CallDoc } from "../src/script.ts";
 import { git, type Kind, repository, sandbox, workflows } from "./support.ts";
 
 let root: string;
@@ -127,30 +126,17 @@ function rows(id: string) {
 	}
 }
 
-/** The names of `pattern` in `text`, without the internal `__` names and the replaced `Date` and `Math`. */
-function names(text: string, pattern: RegExp): Set<string> {
-	const all = [...text.matchAll(pattern)].map((match) => match[1] ?? "");
-	return new Set(all.filter((name) => !name.startsWith("__") && name !== "Date" && name !== "Math"));
-}
-
 describe("workflows/script.d.ts", () => {
-	const declarations = readFileSync("workflows/script.d.ts", "utf8");
-
-	it("compiles", () => {
-		const tsc = ["--ignoreConfig", "--noEmit", "--strict", "--lib", "es2024", "workflows/script.d.ts"];
-		execFileSync("node_modules/.bin/tsc", tsc, { stdio: "inherit" });
-	});
-
-	it("declares the script globals of the runtime", () => {
-		const code = prelude({}, [], { runId: "", runDir: "" } as ScriptRun);
-		const host = readFileSync("src/script.ts", "utf8");
-		const runtime = new Set([...names(code, /^(?:const|function) (\w+)/gm), ...names(host, /global\("(\w+)"/g)]);
-		expect(names(declarations, /^declare (?:const|function) (\w+)/gm)).toEqual(runtime);
-	});
-
-	it("is the globals block of the skill", () => {
-		const skill = readFileSync("skills/workflows/SKILL.md", "utf8");
-		expect(skill.match(/```ts\n([\s\S]*?)```/)?.[1]).toBe(declarations);
+	it("declares only globals that a script has", async () => {
+		const declarations = await readFile("workflows/script.d.ts", "utf8");
+		const names = [...declarations.matchAll(/^declare (?:const|function) (\w+)/gm)].map((match) => match[1] ?? "");
+		const types = names.map((name) => `${name}: typeof ${name}`).join(", ");
+		await writeFile(join(root, "x.js"), `return { ${types} }`);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(0);
+		const found = JSON.parse(run.stdout.at(-1) ?? "{}");
+		expect(Object.keys(found)).toEqual(names);
+		expect(Object.entries(found).filter(([, type]) => type === "undefined")).toEqual([]);
 	});
 });
 

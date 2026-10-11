@@ -375,7 +375,7 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | `phase(title)`, `log(text)` | Write one line on stderr before the script's next call that runs |
 
 `workflows/script.d.ts` declares these globals for editors. A project gets the same completion when it copies
-`script.d.ts` and `jsconfig.json` into `.workflows/workflows/`.
+`script.d.ts` and `jsconfig.json` into `.workflows/workflows/`, and copies them again after an upgrade of the package.
 
 With `schema`, a JSON Schema, the session gets a `respond` tool for that turn. The model gives its answer as
 `respond({ answer })`, which ends the turn, and the call returns the checked answer. The schema goes to the model as
