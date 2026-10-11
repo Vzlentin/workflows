@@ -382,13 +382,19 @@ async function follow(
 	terminal: Terminal,
 	json: boolean,
 ): Promise<number> {
-	const end = (status: "finished" | "failed" | "interrupted", rest: { result?: JsonValue; error?: string }) => {
+	// With `--json`, the outcome line replaces the footer lines on stderr, so each stderr line is a step.
+	const end = (
+		status: "finished" | "failed" | "interrupted",
+		rest: { result?: JsonValue; report?: string[]; error?: string },
+		...footer: string[]
+	) => {
 		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
+		else for (const line of footer) terminal.stderr(line);
 	};
 	const failed = (message: unknown, resumable: boolean) => {
-		terminal.stderr(`failed ${workflow.title(input)}: ${message}`);
-		end("failed", { error: String(message) });
-		if (resumable) terminal.stderr(`continue with: workflows ${workflow.name} resume ${id}`);
+		const footer = [`failed ${workflow.title(input)}: ${message}`];
+		if (resumable) footer.push(`continue with: workflows ${workflow.name} resume ${id}`);
+		end("failed", { error: String(message) }, ...footer);
 		return 1;
 	};
 	let settled: SettledTask<JsonValue>;
@@ -401,8 +407,7 @@ async function follow(
 			end("failed", { error: error instanceof Error ? error.message : String(error) });
 			throw error;
 		}
-		terminal.stderr(`interrupted; continue with: workflows ${workflow.name} resume ${id}`);
-		end("interrupted", {});
+		end("interrupted", {}, `interrupted; continue with: workflows ${workflow.name} resume ${id}`);
 		return 130;
 	} finally {
 		await store.close();
@@ -410,10 +415,9 @@ async function follow(
 	const { outcome } = settled.state;
 	if (outcome.status === "completed") {
 		if (!json) return workflow.report(input, outcome.result, terminal);
-		// `report` also gives the exit code, so it runs with stdout muted. Split it from the exit code when a third
-		// workflow needs this.
-		const code = workflow.report(input, outcome.result, { ...terminal, stdout: () => {} });
-		end("finished", { result: outcome.result });
+		const report: string[] = [];
+		const code = workflow.report(input, outcome.result, { ...terminal, stdout: (line) => report.push(line) });
+		end("finished", { result: outcome.result, report });
 		return code;
 	}
 	return failed(outcome.error?.message ?? outcome.reason ?? outcome.status, outcome.status === "failed");
