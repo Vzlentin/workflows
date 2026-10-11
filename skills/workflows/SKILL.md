@@ -57,7 +57,8 @@ Sandbox rules:
 - No file system, network, modules or timers. Effects go through `sh` and `ok`.
 - `Date`, `Date.now()` and `Math.random()` throw, so that a script makes the same calls each time it runs.
 - A resume runs the script again from the top. Calls that succeeded return their saved results. Commands in `sh`
-  and `ok` must be safe to repeat. A call that fails saves no result, so it runs again.
+  and `ok` must be safe to repeat. A call that fails saves no result, so it runs again. An ask whose answer was cut,
+  for example at its length limit, fails, and a resume asks again.
 
 ## Command line
 

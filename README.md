@@ -436,14 +436,16 @@ A run that fails with an error prints `failed <subject>: <error>` and `continue 
 exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. The run's task ends as
 failed. Resume runs the script again in a new task of the same run: a failed Git step runs again, a failed turn is sent
 again in the same session, saved calls return their results, and child runs continue. A run whose task ended in
-another way, such as an aborted, faulted or orphaned task, resumes in the same way.
+another way, such as an aborted, faulted or orphaned task, resumes in the same way. An ask whose answer stopped for a
+reason other than its end, such as its length, fails its call, and a resume asks again.
 
 A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
 
 A run saved before every workflow script became a command, such as a run of the earlier `workflows ship`,
 `workflows campaign` or `workflows run`, or before `run()` started child runs, such as an earlier `workflows optimize`
 run, or before a child run became a task in the caller's store, or before a failed run kept its task, or before saved
-calls moved to documents, or before calls recorded their start and end, cannot resume:
+calls moved to documents, or before calls recorded their start and end, or before `respond` saved its answer, cannot
+resume:
 resume prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1.
 `list` does not show these runs. A run saved by a later version cannot resume either: resume prints `workflows: run
 <run-id> was saved by a later version of <workflow> and cannot resume` and exits 1.

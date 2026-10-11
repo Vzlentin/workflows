@@ -152,14 +152,23 @@ const text = (value: string): TextContent[] => [{ type: "text", text: value }];
 
 const ANSWER = "workflows-answer";
 
-/** The JSON Schema of the current ask's answer, per conversation; absent when the ask has no `schema`. */
-const AnswerDoc = defineDoc<{ schema?: JsonObject }>({
+/** True when a document change is stored as a complete base: after 31 deltas since the last one. */
+const checkpointWhen = (_value: unknown, _ops: unknown, info: { readonly deltasSinceBase: number }): boolean =>
+	info.deltasSinceBase >= 31;
+
+/**
+ * The JSON Schema of the current ask's answer, per conversation, and the answer that `respond` checked and saved. The
+ * schema is absent when the ask has no `schema`, and the answer is absent until `respond` accepts one.
+ */
+export const AnswerDoc = defineDoc<{ schema?: JsonObject; answer?: JsonValue }>({
 	kind: "workflows.answer-schema",
-	version: 1,
+	// No `migrate`: only a task at `TASK.version` runs, and `show` does not read this document.
+	version: 2,
 	scope: "conversation",
 	history: "latest",
 	fork: "current",
 	initial: () => ({}),
+	checkpointWhen,
 });
 
 /**
@@ -201,11 +210,17 @@ const respond = defineTool({
 	execute: async (args, api, context) => {
 		const schema = (await api.snapshot(AnswerDoc, api.conversationId, context))?.schema;
 		if (schema === undefined) return { isError: true, output: text("This turn asks for no structured answer.") };
+		let answer: JsonValue;
 		try {
-			checkedAnswer(schema, args as JsonObject, api.callId);
+			answer = checkedAnswer(schema, args as JsonObject, api.callId) as JsonValue;
 		} catch (error) {
 			return { isError: true, output: text(error instanceof Error ? error.message : String(error)) };
 		}
+		await api.commit(async (tx) => {
+			const doc = await tx.doc(AnswerDoc, api.conversationId);
+			doc.answer = answer;
+			return undefined;
+		}, context);
 		return { output: text("Answer recorded."), control: { terminate: true } };
 	},
 });
@@ -283,6 +298,7 @@ export const CallDoc = defineDocFamily<CallRecord, null>({
 	scope: "session",
 	family: true,
 	initial: () => ({ kind: "sh", args: {}, phase: null, startedAt: "" }),
+	checkpointWhen,
 });
 
 /** The saved result of the call `key`, if it has one. */
@@ -325,24 +341,25 @@ export function textOf(message: AssistantMessage): string {
 	return message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 }
 
-/** The answer message to `content` in `conversation`. A turn answered before returns its saved answer. */
+/** True when `message` stopped for a reason other than its end or a tool call, such as its length. */
+function cut(message: AssistantMessage): boolean {
+	return message.stopReason !== "stop" && message.stopReason !== "toolUse";
+}
+
+/**
+ * The answer message to `content` in `conversation`, sent under the request ID `attempt` of the turn `requestId`. A
+ * turn answered before returns its saved answer. A cut answer throws.
+ */
 async function turn(
 	runtime: Runtime,
 	conversation: ConversationId,
 	context: Context,
 	requestId: string,
+	attempt: string,
 	content: string,
 ): Promise<AssistantMessage> {
 	const handle = await runtime.conversation(conversation, context);
 	if (handle === undefined) throw new Error(`Session ${conversation} is missing`);
-	// A turn that failed before is sent again under the next free request ID.
-	let attempt = requestId;
-	await runtime.commit(async (tx) => {
-		for (let n = 2; (await tx.submissionByRequest(conversation, attempt))?.status === "unanswered"; n++) {
-			attempt = `${requestId}#${n}`;
-		}
-		return undefined;
-	}, context);
 	const submission = await handle.submit({ type: "input", content, requestId: attempt }, context);
 	const settled = await submission.wait(context);
 	if (settled.type !== "input" || settled.status !== "done") {
@@ -355,6 +372,7 @@ async function turn(
 		return undefined;
 	}, context);
 	if (answer === undefined) throw new Error(`The ${requestId} answer ${settled.answer} is missing`);
+	if (cut(answer)) throw new Error(`The ${requestId} turn stopped: ${answer.stopReason}`);
 	return answer;
 }
 
@@ -466,21 +484,35 @@ async function askTurn(
 	schema: JsonObject | null,
 ): Promise<JsonValue> {
 	const { runtime, context } = calls;
+	// A turn that failed before, or whose answer was cut, is sent again under the next free request ID.
+	let attempt = key;
 	await runtime.commit(async (tx) => {
+		let record = await tx.submissionByRequest(conversation, attempt);
+		for (let n = 2; ; n++) {
+			if (record?.status === "done") {
+				if (record.answer === undefined) break;
+				const answer = (await tx.entry(AssistantEntry, record.answer))?.model?.[0] as AssistantMessage | undefined;
+				if (answer === undefined || !cut(answer)) break;
+			} else if (record?.status !== "unanswered") break;
+			attempt = `${key}#${n}`;
+			record = await tx.submissionByRequest(conversation, attempt);
+		}
 		const doc = await tx.doc(AnswerDoc, conversation);
 		if (schema === null) delete doc.schema;
 		else doc.schema = schema;
+		// A new turn drops the answer of an earlier one. A turn sent before keeps the answer `respond` saved in it.
+		if (record === undefined) delete doc.answer;
 		await configure(tx, conversation, {
 			extensions: { add: [{ name: ANSWER }] },
 			modelTools: { remove: schema === null ? [respond] : [] },
 		});
 		return undefined;
 	}, context);
-	const answer = await turn(runtime, conversation, context, key, prompt);
+	const answer = await turn(runtime, conversation, context, key, attempt, prompt);
 	if (schema === null) return textOf(answer).trim();
-	const call = answer.content.findLast((part) => part.type === "toolCall" && part.name === "respond");
-	if (call?.type !== "toolCall") throw new Error("the answer did not call respond");
-	return checkedAnswer(schema, call.arguments as JsonObject, call.id) as JsonValue;
+	const doc = await runtime.snapshot(AnswerDoc, conversation, context);
+	if (doc === undefined || !("answer" in doc)) throw new Error("the answer did not call respond");
+	return doc.answer as JsonValue;
 }
 
 /** The result of a shell command in `cwd`. With `check`, a non-zero exit throws. */

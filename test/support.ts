@@ -124,8 +124,11 @@ export type Script = {
 	readonly queues?: readonly (readonly string[])[];
 	/** The prompt that interrupts the run: Ctrl+C is pressed while it waits for its answer. */
 	readonly interruptAt?: { readonly kind: Kind; readonly nth: number };
-	/** The prompt that the provider answers with an error, once: a retry of it is answered. */
-	readonly failAt?: { readonly kind: Kind; readonly nth: number };
+	/**
+	 * The prompt that the provider answers with an error, once: a retry of it is answered. With `stopReason`, the
+	 * provider answers a cut text that stopped for that reason instead.
+	 */
+	readonly failAt?: { readonly kind: Kind; readonly nth: number; readonly stopReason?: "length" };
 	/** The plan prompt first calls `probe` and `ls`, review and judge call `probe`, and implement calls `probe` next to its edit. */
 	readonly probe?: boolean;
 	/** Pressed Ctrl+C. */
@@ -203,6 +206,7 @@ export class FakeModel {
 		const { failAt } = this.#script;
 		if (failAt?.kind === kind && failAt.nth === nth && !this.#failed) {
 			this.#failed = true;
+			if (failAt.stopReason !== undefined) return fauxAssistantMessage("cut", { stopReason: failAt.stopReason });
 			return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" });
 		}
 		this.calls.push({
@@ -255,8 +259,15 @@ export class FakeModel {
 				const current = /\n## current\n([\s\S]*?)\n\n## records\n/.exec(prompt)?.[1] ?? "";
 				return fauxAssistantMessage(`${current}\nImproved prompt ${nth}.`);
 			}
-			case "script":
+			case "script": {
+				// `respond` and a tool call in one message: the tool result then gets a text reply that ends the turn.
+				const both = /^Script respond and ls: (.*)$/s.exec(prompt)?.[1];
+				if (both !== undefined) {
+					const calls = [fauxToolCall("respond", { answer: JSON.parse(both) }), fauxToolCall("ls", {})];
+					return fauxAssistantMessage(calls, { stopReason: "toolUse" });
+				}
 				return scriptAttempt(messages) ?? fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
+			}
 		}
 	};
 

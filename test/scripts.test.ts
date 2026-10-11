@@ -9,7 +9,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CallDoc } from "../src/script.ts";
+import { AnswerDoc, CallDoc } from "../src/script.ts";
 import { TASK } from "../src/task.ts";
 import { git, type Kind, repository, sandbox, workflows } from "./support.ts";
 
@@ -374,6 +374,41 @@ return findings[0].finding`,
 		expect(run.model.results[0]).toContain("must have required properties finding");
 		expect(run.model.calls[0]?.prompt).toBe(prompt);
 		expect(run.model.calls[0]?.sections.answer_schema).toContain(JSON.stringify(schema));
+	});
+
+	it("fails an ask whose answer was cut, and asks again on resume", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'const one = await agent("Script: one")\nreturn await agent("Script: two") + ", " + one',
+		);
+		const run = await workflows(["x.js"], {
+			cwd: root,
+			script: { failAt: { kind: "script", nth: 2, stopReason: "length" } },
+		});
+		expect(run.code).toBe(1);
+		expect(run.stderr[0]).toMatch(/^failed x: The \S+ turn stopped: length$/);
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${run.id}`, "Reply to two, Reply to one"]]);
+		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
+	});
+
+	it("returns the respond answer of a message that also calls another tool", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const { n } = await agent('Script respond and ls: {"n": 3}', { schema: { type: "object", properties: { n: { type: "number" } }, required: ["n"] } })
+return n`,
+		);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.stderr).toEqual([]);
+		expect(run.stdout).toEqual([`run ${run.id}`, "3"]);
+	});
+
+	it("stores a complete base of the answer and call documents after 31 deltas", () => {
+		for (const definition of [AnswerDoc, CallDoc]) {
+			const { checkpointWhen } = definition.definition;
+			expect(checkpointWhen?.({} as never, [], { deltasSinceBase: 31 })).toBe(true);
+			expect(checkpointWhen?.({} as never, [], { deltasSinceBase: 0 })).toBe(false);
+		}
 	});
 
 	it("runs a failed call again on resume, and no finished call", async () => {

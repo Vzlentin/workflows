@@ -21,7 +21,7 @@
 
 - Saved runs in `durable.sqlite` resume against the current code. When you change the shape of the stored input or the checkpoint, bump `TASK.version` in `src/task.ts`. Only a task at exactly `TASK.version` resumes: a run saved by an earlier or a later version cannot resume.
 - One process runs a run at a time. `openTask` in `src/main.ts` takes the `lock` file of the run directory, with the process ID, before it opens the store, and the close of the store removes it. `list`, `show` and child runs take no lock.
-- A phase can rerun after an interruption or a failure. Keep Git steps safe to repeat, and keep each turn request ID unique in its session: an answered request ID returns its saved answer, and a failed one is sent again under the next free ID.
+- A phase can rerun after an interruption or a failure. Keep Git steps safe to repeat, and keep each turn request ID unique in its session: an answered request ID returns its saved answer, and a failed one is sent again under the next free ID. An answer that stopped for a reason other than its end or a tool call, such as its length, counts as failed.
 - A workflow script also runs again from the top at resume. Keep its `sh` and `ok` Git steps safe to repeat: a step whose result was not saved runs again.
 - A run saves its prompts and models before it starts. Prompt or model edits change only new runs.
 
