@@ -57,7 +57,7 @@ declare function run(name: string, args?: Record<string, unknown>): Promise<any>
 declare function parallel<const T extends readonly (() => unknown)[]>(thunks: T): Promise<{ -readonly [K in keyof T]: Awaited<ReturnType<T[K]>> }>;
 
 /** Sends each item through the stages in order, and the items at once. */
-declare function pipeline(items: unknown[], ...stages: Array<(value: any) => unknown>): Promise<any[]>;
+declare function pipeline(items: readonly unknown[], ...stages: Array<(value: any) => unknown>): Promise<any[]>;
 
 /** Writes the phase line `title` on stderr before the script's next call that runs. */
 declare function phase(title: string): void;
