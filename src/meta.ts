@@ -21,19 +21,13 @@ function subject(item: string): string {
 
 /**
  * The text that `noun` names, such as `work item`: a `.md` file, inline text, or piped stdin. Throws when it has no
- * non-empty line. Without an argument and without stdin, it is undefined when `optional` is set, and throws otherwise.
+ * non-empty line. It is undefined without an argument and without stdin.
  */
-async function readItem(
-	argument: string | undefined,
-	io: Io,
-	noun: string,
-	optional: boolean,
-): Promise<string | undefined> {
+async function readItem(argument: string | undefined, io: Io, noun: string): Promise<string | undefined> {
 	let text: string | undefined;
 	if (argument === undefined) {
 		text = await io.stdin();
-		if (text === undefined && optional) return undefined;
-		if (text === undefined) throw new UsageError(`missing ${noun}`);
+		if (text === undefined) return undefined;
 	} else if (argument.endsWith(".md")) {
 		const path = resolve(io.cwd, argument);
 		text = await readFile(path, "utf8").catch(() => {
@@ -324,11 +318,10 @@ async function parseValues(meta: Meta, argv: readonly string[], io: Io, usage: s
 	for (const [arg, spec] of entries) {
 		if (spec.type !== "text") continue;
 		const raw = values[arg] as string | undefined;
-		const value =
-			raw === undefined && spec.default !== undefined
-				? spec.default
-				: await readItem(raw, io, labelOf(arg, spec), !spec.required);
+		const label = labelOf(arg, spec);
+		const value = raw === undefined && spec.default !== undefined ? spec.default : await readItem(raw, io, label);
 		if (value !== undefined) args[arg] = value;
+		else if (spec.required) throw new UsageError(`missing ${label}`);
 	}
 	return {
 		args,

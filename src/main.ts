@@ -141,26 +141,31 @@ async function openRun(
 	const latest = existsSync(path) ? await latestTask(path) : undefined;
 	if (latest !== undefined) {
 		const { input, state } = checked(latest, id, "resume");
-		const store = await openStore(directory, terminal);
-		if (state.status !== "terminal" || state.outcome.status !== "failed") return { store, task: latest.id, input };
-		try {
-			return { store, task: await store.create(input), input };
-		} catch (error) {
-			// The run stays saved, so a later resume can try again.
-			await store.close();
-			throw error;
-		}
+		const failed = state.status === "terminal" && state.outcome.status === "failed";
+		return openTask(directory, terminal, input, failed ? undefined : latest.id);
 	}
 	if (source === undefined) throw new Error(`run ${id} has no workflow`);
 	await mkdir(directory, { recursive: true });
-	let store: Store | undefined;
 	try {
-		const input = await source();
-		store = await openStore(directory, terminal);
-		return { store, task: await store.create(input), input };
+		return await openTask(directory, terminal, await source());
 	} catch (error) {
-		await store?.close();
 		await rm(directory, { recursive: true, force: true });
+		throw error;
+	}
+}
+
+/** The open store of `directory` with `task`, or with a new task of `input`. It closes when the task cannot be created. */
+async function openTask(
+	directory: string,
+	terminal: Terminal,
+	input: script.ScriptInput,
+	task?: TaskId<JsonValue>,
+): Promise<{ store: Store; task: TaskId<JsonValue>; input: script.ScriptInput }> {
+	const store = await openStore(directory, terminal);
+	try {
+		return { store, task: task ?? (await store.create(input)), input };
+	} catch (error) {
+		await store.close();
 		throw error;
 	}
 }
@@ -405,11 +410,17 @@ function piSettings(settings: SettingsManager, extensions: readonly Extension[])
 type Entry = { readonly extensions: readonly Extension[]; close(): Promise<void> };
 
 /**
- * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, in one shared event bus.
- * Missing packages are skipped, not installed. Node does not strip types under `node_modules`, so entries of npm
- * packages fail to load.
+ * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, in one shared event bus, as one
+ * entry whose `close()` closes each of them and passes its errors to `warn`. When an entry fails to load, the entries
+ * loaded before it close. Missing packages are skipped, not installed. Node does not strip types under
+ * `node_modules`, so entries of npm packages fail to load.
  */
-async function loadEntries(cwd: string, agentDir: string, settingsManager: SettingsManager): Promise<Entry[]> {
+async function loadEntries(
+	cwd: string,
+	agentDir: string,
+	settingsManager: SettingsManager,
+	warn: (error: unknown) => void,
+): Promise<Entry> {
 	const roots = new Set(
 		new DefaultPackageManager({ cwd, agentDir, settingsManager })
 			.listConfiguredPackages()
@@ -417,16 +428,26 @@ async function loadEntries(cwd: string, agentDir: string, settingsManager: Setti
 	);
 	const events = createEventBus();
 	const entries: Entry[] = [];
-	for (const root of roots) {
-		const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8").catch(() => "{}")) as {
-			readonly piDurable?: { readonly extensions?: readonly string[] };
-		};
-		for (const path of manifest.piDurable?.extensions ?? []) {
-			const entry = await import(pathToFileURL(resolvePath(root, path)).href);
-			entries.push(await entry.default({ durable, ai, events }));
+	const close = async () => {
+		for (const result of await Promise.allSettled(entries.map((entry) => entry.close()))) {
+			if (result.status === "rejected") warn(result.reason);
 		}
+	};
+	try {
+		for (const root of roots) {
+			const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8").catch(() => "{}")) as {
+				readonly piDurable?: { readonly extensions?: readonly string[] };
+			};
+			for (const path of manifest.piDurable?.extensions ?? []) {
+				const entry = await import(pathToFileURL(resolvePath(root, path)).href);
+				entries.push(await entry.default({ durable, ai, events }));
+			}
+		}
+	} catch (error) {
+		await close();
+		throw error;
 	}
-	return entries;
+	return { extensions: entries.flatMap((entry) => entry.extensions), close };
 }
 
 /**
@@ -441,22 +462,13 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 	const settings = SettingsManager.create(terminal.cwd, agentDir, {
 		projectTrusted: new ProjectTrustStore(agentDir).get(terminal.cwd) === true,
 	});
-	const entries = await loadEntries(terminal.cwd, agentDir, settings);
 	const warn = (error: unknown) =>
 		terminal.stderr(`warning: ${error instanceof Error ? error.message : String(error)}`);
-	const closeEntries = async () => {
-		for (const result of await Promise.allSettled(entries.map((entry) => entry.close()))) {
-			if (result.status === "rejected") warn(result.reason);
-		}
-	};
+	const entries = await loadEntries(terminal.cwd, agentDir, settings, warn);
 	const envs = new Map<string, NodeExecutionEnv>();
 	let harness: Harness;
 	try {
-		const selected = [
-			Sessions,
-			...entries.flatMap((entry) => entry.extensions),
-			defineExtension({ name: "workflows", tasks: [task] }),
-		];
+		const selected = [Sessions, ...entries.extensions, defineExtension({ name: "workflows", tasks: [task] })];
 		for (const extension of selected) registry.install(extension);
 		registry.install(answerExtension);
 		// When its open fails, the harness closes the storage itself.
@@ -477,13 +489,13 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 			BACKGROUND_CONTEXT,
 		);
 	} catch (error) {
-		await closeEntries();
+		await entries.close();
 		throw error;
 	}
 	let closed: Promise<void> | undefined;
 	const close = async () => {
 		// Entries close first: an entry may still need the open harness.
-		await closeEntries();
+		await entries.close();
 		await harness.close(BACKGROUND_CONTEXT);
 		for (const env of envs.values()) await env.cleanup(BACKGROUND_CONTEXT);
 	};

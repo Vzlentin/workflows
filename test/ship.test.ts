@@ -432,6 +432,27 @@ export default function ({ events }) {
 		expect(existsSync(runs()) ? await readdir(runs()) : []).toEqual([]);
 	});
 
+	it("closes the loaded package entries when a later package entry fails to load", async () => {
+		const marker = await closingPackage("[]");
+		const failing = join(root, "failing-package");
+		await mkdir(failing);
+		await writeFile(
+			join(failing, "package.json"),
+			JSON.stringify({ name: "failing", type: "module", piDurable: { extensions: ["./index.ts"] } }),
+		);
+		await writeFile(join(failing, "index.ts"), `export default function () {\n\tthrow new Error("no entry");\n}\n`);
+		await writeFile(
+			join(root, "agent", "settings.json"),
+			JSON.stringify({ retry: { enabled: false }, packages: [join(root, "closing-package"), failing] }),
+		);
+
+		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
+
+		expect([run.code, run.stderr]).toEqual([1, ["workflows: no entry"]]);
+		expect(existsSync(marker)).toBe(true);
+		expect(existsSync(runs()) ? await readdir(runs()) : []).toEqual([]);
+	});
+
 	it("clones a GitHub repository through gh and ships without a judge score when the judge fails", async () => {
 		const remote = join(root, "github", "octocat", "calibre");
 		await repository(remote);
