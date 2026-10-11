@@ -14,10 +14,12 @@ import { fileURLToPath } from "node:url";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import {
 	type AssistantMessage,
+	type Message,
 	type ModelThinkingLevel,
 	type TextContent,
 	type TSchema,
 	Type,
+	type UserMessage,
 	validateToolArguments,
 } from "@earendil-works/pi-ai";
 import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
@@ -31,6 +33,9 @@ import {
 	defineExtension,
 	defineTool,
 	type EntryId,
+	GenerationTask,
+	type HookApi,
+	hook,
 	type JsonObject,
 	type ModelRef,
 	section,
@@ -158,11 +163,13 @@ const ANSWER = "workflows-answer";
 const checkpointWhen = (_value: unknown, _ops: unknown, info: { readonly deltasSinceBase: number }): boolean =>
 	info.deltasSinceBase >= 31;
 
+type Answer = { schema?: JsonObject; answer?: JsonValue };
+
 /**
  * The JSON Schema of the current ask's answer, per conversation, and the answer that `respond` checked and saved. The
  * schema is absent when the ask has no `schema`, and the answer is absent until `respond` accepts one.
  */
-const AnswerDoc = defineDoc<{ schema?: JsonObject; answer?: JsonValue }>({
+const AnswerDoc = defineDoc<Answer>({
 	kind: "workflows.answer-schema",
 	// No `migrate`: only a task at `TASK.version` runs, and `show` does not read this document.
 	version: 2,
@@ -172,6 +179,11 @@ const AnswerDoc = defineDoc<{ schema?: JsonObject; answer?: JsonValue }>({
 	initial: () => ({}),
 	checkpointWhen,
 });
+
+/** True when `doc` asks for a structured answer and `respond` has not saved one. */
+function awaitsRespond(doc: Answer | undefined): boolean {
+	return doc?.schema !== undefined && !("answer" in doc);
+}
 
 /**
  * The answer of `args` checked against `schema`, as `validateToolArguments` returns it. A string answer that does not
@@ -226,6 +238,43 @@ const respond = defineTool({
 		return { output: text("Answer recorded."), control: { terminate: true } };
 	},
 });
+
+/** The user message that asks again for a `respond` call after an answer of a `schema` ask without one. */
+export const REMINDER = "Answer with the respond tool, as the schema in answer_schema says.";
+
+/** How many reminders one turn submission gets before its call fails. */
+const REMINDERS = 2;
+
+/**
+ * Saves the number of reminders at the end of `messages` as the memo `reminders` of the generation. A continuation
+ * starts a new generation, so each generation counts the reminders of its turn again from its messages. A compaction
+ * in the turn can summarize reminders away and reset the count. Each reset needs a compaction, so the turn still ends.
+ */
+async function countReminders(
+	request: { readonly messages: readonly Message[] },
+	api: HookApi,
+	context: Context,
+): Promise<undefined> {
+	let count = 0;
+	for (const message of request.messages.toReversed()) {
+		if (message.role !== "user") continue;
+		if (textOf(message) !== REMINDER) break;
+		count++;
+	}
+	await api.memo("reminders", count, context);
+	return undefined;
+}
+
+/** A reminder to call `respond`, when a `schema` ask got a complete answer without one and has reminders left. */
+async function remind(
+	answer: AssistantMessage,
+	api: HookApi,
+	context: Context,
+): Promise<{ readonly continue: string } | undefined> {
+	if (cut(answer) || !awaitsRespond(await api.snapshot(AnswerDoc, api.conversationId, context))) return undefined;
+	const count = (await api.memo<number>("reminders", context)) ?? 0;
+	return count < REMINDERS ? { continue: REMINDER } : undefined;
+}
 
 /** The sandbox functions that are not host calls. */
 function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun): string {
@@ -339,7 +388,8 @@ function print(progress: Progress): void {
 	for (const line of progress.lines.splice(0)) progress.log(line.text);
 }
 
-export function textOf(message: AssistantMessage): string {
+export function textOf(message: AssistantMessage | UserMessage): string {
+	if (typeof message.content === "string") return message.content;
 	return message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 }
 
@@ -355,8 +405,9 @@ async function answerMessage(tx: Tx, id: EntryId): Promise<AssistantMessage | un
 
 /**
  * The answer message to `content` in `conversation`. A turn answered before returns its saved answer. A turn that
- * failed before, or whose answer was cut, is sent again under the next free request ID, and a cut answer throws.
- * `start` runs in the transaction that picks the request ID, with whether that ID is new.
+ * failed before, or whose answer was cut, or a `schema` turn whose answer did not call `respond`, is sent again under
+ * the next free request ID, and a cut answer throws. `start` runs in the transaction that picks the request ID, with
+ * whether that ID is new.
  */
 async function turn(
 	runtime: Runtime,
@@ -374,7 +425,7 @@ async function turn(
 		for (let n = 2; ; n++) {
 			if (record?.status === "done") {
 				const answer = record.answer === undefined ? undefined : await answerMessage(tx, record.answer);
-				if (answer === undefined || !cut(answer)) break;
+				if ((answer === undefined || !cut(answer)) && !awaitsRespond(await tx.doc(AnswerDoc, conversation))) break;
 			} else if (record?.status !== "unanswered") break;
 			attempt = `${requestId}#${n}`;
 			record = await tx.submissionByRequest(conversation, attempt);
@@ -566,12 +617,13 @@ function global(name: string, execute: (...values: never[]) => unknown): Codemod
 }
 
 /**
- * `workflows-answer` is for script sessions: the `respond` tool of a `schema` ask, and the `answer_schema` section that
- * shows the schema to the model.
+ * `workflows-answer` is for script sessions: the `respond` tool of a `schema` ask, the `answer_schema` section that
+ * shows the schema to the model, and the reminders to call `respond`.
  */
 export const answerExtension = defineExtension({
 	name: ANSWER,
 	tools: [respond],
+	hooks: [hook(GenerationTask, { beforeRequest: countReminders, onYield: remind })],
 	sections: [
 		section("answer_schema", async ({ read, conversationId }, context) => {
 			const schema = (await read.snapshot(AnswerDoc, conversationId, context))?.schema;

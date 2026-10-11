@@ -9,7 +9,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CallDoc } from "../src/script.ts";
+import { CallDoc, REMINDER } from "../src/script.ts";
 import { TASK } from "../src/task.ts";
 import { git, type Kind, lockHolder, repository, sandbox, workflows } from "./support.ts";
 
@@ -390,6 +390,33 @@ return findings[0].finding`,
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${run.id}`, "Reply to two, Reply to one"]]);
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
+	});
+
+	it("reminds the model to call respond after an answer without it", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const { n } = await agent('Script respond: {"n": 3}', { schema: { type: "object", properties: { n: { type: "number" } }, required: ["n"] } })
+return n`,
+		);
+		const run = await workflows(["x.js"], { cwd: root, script: { plain: 1 } });
+		expect(run.stderr).toEqual([]);
+		expect(run.stdout).toEqual([`run ${run.id}`, "3"]);
+		expect(run.model.calls.map((call) => call.prompt)).toEqual(['Script respond: {"n": 3}', REMINDER]);
+	});
+
+	it("fails an ask whose answer did not call respond after two reminders, and asks again on resume", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const { n } = await agent('Script respond: {"n": 3}', { schema: { type: "object", properties: { n: { type: "number" } }, required: ["n"] } })
+return n`,
+		);
+		const run = await workflows(["x.js"], { cwd: root, script: { plain: 3 } });
+		expect(run.code).toBe(1);
+		expect(run.stderr[0]).toBe("failed x: the answer did not call respond");
+		expect(run.model.calls.map((call) => call.prompt)).toEqual(['Script respond: {"n": 3}', REMINDER, REMINDER]);
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${run.id}`, "3"]]);
+		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(['Script respond: {"n": 3}']);
 	});
 
 	it("returns the respond answer of a message that also calls another tool", async () => {
