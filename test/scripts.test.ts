@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import { createRegistry, defineExtension, defineTask, Harness, type TaskId } fro
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CallDoc } from "../src/script.ts";
+import { TASK } from "../src/task.ts";
 import { git, type Kind, repository, sandbox, workflows } from "./support.ts";
 
 let root: string;
@@ -52,6 +54,37 @@ async function childTasks(id: string) {
 	return (await runTasks(id))
 		.filter((task) => task.owner !== undefined)
 		.map((task) => ({ runId: (task.input as { runId: string }).runId, ...stateOf(task) }));
+}
+
+/** A task of the script task's kind and version whose phase ends the task as aborted. */
+const aborting = defineTask<JsonValue, { phase: "run" }, JsonValue>({
+	...TASK,
+	initial: () => ({ phase: "run" }),
+	phases: {
+		run: async (_task, runtime, context) => {
+			await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
+		},
+	},
+	abort: async () => undefined,
+});
+
+/** Opens the store of run `id` with `aborting`, which ends its pending root task as aborted, and closes it. */
+async function abortRun(id: string) {
+	const extension = defineExtension({ name: "workflows", tasks: [aborting] });
+	const registry = createRegistry();
+	registry.install(extension);
+	const path = join(runs(), id, "durable.sqlite");
+	const [pending] = (await runTasks(id)).filter((task) => task.owner === undefined);
+	const harness = await Harness.open(
+		await openNodeSqliteStorage(path),
+		{ models: createModels(), registry, settings: { extensions: [extension] } },
+		BACKGROUND_CONTEXT,
+	);
+	try {
+		await harness.waitForTask(pending?.id as TaskId<JsonValue>, BACKGROUND_CONTEXT);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
 }
 
 /** Runs `argv` in `cwd` and presses Ctrl+C at the `nth` script prompt, or once the `gate` command is reached. */
@@ -436,6 +469,40 @@ return [one, two].join(", ")`,
 		expect(sent).toEqual(["Script: two"]);
 		expect(await rootTasks(id)).toEqual([
 			{ status: "terminal", outcome: "failed" },
+			{ status: "terminal", outcome: "completed" },
+		]);
+	});
+
+	it("resumes a run whose lock names a process that has ended, and removes the lock", async () => {
+		await writeFile(join(root, "x.js"), `const one = await agent("Script: one")\nreturn one`);
+		const first = await stopped(["x.js"], { nth: 1 });
+		expect(first.code).toBe(130);
+		const id = first.id ?? "";
+		const lock = join(runs(), id, "lock");
+		expect(existsSync(lock)).toBe(false);
+		await writeFile(lock, String(spawnSync(process.execPath, ["-e", ""]).pid));
+
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to one"]);
+		expect(existsSync(lock)).toBe(false);
+	});
+
+	it("resumes an aborted run in a new task with its saved calls", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const one = await agent("Script: one")\nconst two = await agent("Script: two")\nreturn [one, two].join(", ")`,
+		);
+		const first = await stopped(["x.js"], { nth: 2 });
+		expect(first.code).toBe(130);
+		const id = first.id ?? "";
+		await abortRun(id);
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
+
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to one, Reply to two"]);
+		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
+		expect(await rootTasks(id)).toEqual([
+			{ status: "terminal", outcome: "aborted" },
 			{ status: "terminal", outcome: "completed" },
 		]);
 	});

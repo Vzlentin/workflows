@@ -5,7 +5,7 @@
  * store, which holds everything a resume needs, and whatever the workflow writes there.
  */
 import { existsSync } from "node:fs";
-import { access, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -38,7 +38,7 @@ import { Sessions } from "./agents.ts";
 import * as script from "./meta.ts";
 import { type Io, newRunId, UsageError } from "./run.ts";
 import { answerExtension, CALL_KIND, type CallRecord } from "./script.ts";
-import { current, scriptTask } from "./task.ts";
+import { current, scriptTask, TASK } from "./task.ts";
 
 export type Terminal = Io & {
 	readonly models: Models;
@@ -126,10 +126,10 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 
 /**
  * The open store, the task and the input of the run in `directory`. When the store holds a workflow task, this is that
- * task, or a new task with its input when it failed, so that the script runs again with its saved calls; it throws for
- * a task that an earlier version saved. When the new task cannot be created, the store closes and the run stays.
- * Otherwise `source` gives the input of a new run, and without `source` it throws. When the new run fails to start,
- * the store closes and the directory is removed.
+ * task, or a new task with its input when it ended without completing, so that the script runs again with its saved
+ * calls; it throws for a task that another version saved. When the new task cannot be created, the store closes and
+ * the run stays. Otherwise `source` gives the input of a new run, and without `source` it throws. When the new run fails
+ * to start, the store closes and the directory is removed.
  */
 async function openRun(
 	directory: string,
@@ -141,8 +141,8 @@ async function openRun(
 	const latest = existsSync(path) ? await latestTask(path) : undefined;
 	if (latest !== undefined) {
 		const { input, state } = checked(latest, id, "resume");
-		const failed = state.status === "terminal" && state.outcome.status === "failed";
-		return openTask(directory, terminal, input, failed ? undefined : latest.id);
+		const ended = state.status === "terminal" && state.outcome.status !== "completed";
+		return openTask(directory, terminal, input, ended ? undefined : latest.id);
 	}
 	if (source === undefined) throw new Error(`run ${id} has no workflow`);
 	await mkdir(directory, { recursive: true });
@@ -154,19 +154,72 @@ async function openRun(
 	}
 }
 
-/** The open store of `directory` with `task`, or with a new task of `input`. It closes when the task cannot be created. */
+/**
+ * The open store of `directory` with `task`, or with a new task of `input`, under the lock of the run: it throws when
+ * another process runs the run. The store and the lock close together, and they close when the task cannot be created.
+ */
 async function openTask(
 	directory: string,
 	terminal: Terminal,
 	input: script.ScriptInput,
 	task?: TaskId<JsonValue>,
 ): Promise<{ store: Store; task: TaskId<JsonValue>; input: script.ScriptInput }> {
-	const store = await openStore(directory, terminal);
+	const lock = join(directory, "lock");
+	await takeLock(lock, basename(directory));
+	let store: Store | undefined;
 	try {
-		return { store, task: task ?? (await store.create(input)), input };
+		const opened = await openStore(directory, terminal);
+		store = opened;
+		const close = async () => {
+			await opened.close();
+			await rm(lock, { force: true });
+		};
+		return { store: { ...opened, close }, task: task ?? (await opened.create(input)), input };
 	} catch (error) {
-		await store.close();
+		await store?.close();
+		await rm(lock, { force: true });
 		throw error;
+	}
+}
+
+/** Writes the process ID to `lock`. It replaces a lock whose process has ended, and throws when the process lives. */
+async function takeLock(lock: string, id: string): Promise<void> {
+	if (await tryLock(lock)) return;
+	const content = await readFile(lock, "utf8").catch(() => "");
+	const pid = Number(content);
+	// A PID that the system gave again to a new process makes an old lock look live; the user deletes the lock then.
+	if (Number.isInteger(pid) && pid > 0 && alive(pid)) throw new Error(`run ${id} is running`);
+	// Only the process that creates the guard replaces the old lock, so that no process removes a new lock. A process
+	// that stops while it holds the guard leaves it, and the user deletes it then.
+	const guard = `${lock}.replace`;
+	if (!(await tryLock(guard))) throw new Error(`run ${id} is running`);
+	try {
+		if ((await readFile(lock, "utf8").catch(() => "")) !== content) throw new Error(`run ${id} is running`);
+		await rm(lock, { force: true });
+		if (!(await tryLock(lock))) throw new Error(`run ${id} is running`);
+	} finally {
+		await rm(guard, { force: true });
+	}
+}
+
+/** Whether `lock` was created with the process ID; false when it exists. */
+async function tryLock(lock: string): Promise<boolean> {
+	try {
+		await writeFile(lock, String(process.pid), { flag: "wx" });
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+		throw error;
+	}
+}
+
+/** Whether the process `pid` lives. */
+function alive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
 	}
 }
 
@@ -177,7 +230,8 @@ type Outcome =
 
 /**
  * Runs `task` to its end and closes the store. `interrupt` stops it and leaves the task pending. Any other error of the
- * wait propagates, and so does a task that ends neither completed nor failed, which only an abort can do.
+ * wait propagates, and so does a task that ends neither completed nor failed, with any other terminal outcome.
+ * Resume continues such a task in a new task, as a failed one.
  */
 async function wait(store: Store, task: TaskId<JsonValue>, interrupt: AbortSignal): Promise<Outcome> {
 	let settled: SettledTask<JsonValue>;
@@ -315,7 +369,7 @@ function labelOf(
 	return String(session?.args.profile);
 }
 
-/** The task `latest` of the run `id`. It throws when there is none, or when an earlier version saved it. */
+/** The task `latest` of the run `id`. It throws when there is none, or when another version saved it. */
 function checked(
 	latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined,
 	id: string,
@@ -328,7 +382,8 @@ function checked(
 	const { input } = latest;
 	const saved = script.isObject(input) && script.isObject(input.input) ? input.input : input;
 	const name = script.isObject(saved) && typeof saved.name === "string" ? saved.name : latest.kind.slice(PREFIX.length);
-	throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot ${verb}`);
+	const word = latest.kind === TASK.name && latest.version > TASK.version ? "a later" : "an earlier";
+	throw new Error(`run ${id} was saved by ${word} version of ${name} and cannot ${verb}`);
 }
 
 /** `12s`, `3m05s` or `1h02m`. */

@@ -39,7 +39,8 @@ await tools.workflow({ resume: "20261010T234930-3a93e88c" })
 
 The run starts in the session's directory. The result is `{ runId, status, result?, error? }`. `status` is
 `finished`, `failed` or `interrupted`. A failed or interrupted run is an error result that keeps this data, and it
-stays resumable: call the tool again with `resume: runId`. Esc stops the run as Ctrl+C does.
+stays resumable: call the tool again with `resume: runId`. Esc stops the run as Ctrl+C does. A run that another
+process runs is refused, and every ended run that did not complete resumes.
 
 ## Workflow scripts
 
