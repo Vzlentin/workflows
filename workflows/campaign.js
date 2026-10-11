@@ -1,8 +1,8 @@
-// Split a goal into work items and ship each one as a commit on one branch.
 // The split, the items and the requeue of `workflows campaign`, in its worktree. Each item ships through ship.js as
 // one commit on top of the item before it. Every Git step is safe to repeat: a resume runs a step again when its
 // result was not saved.
 export const meta = {
+	description: "Split a goal into work items and ship each one as a commit on one branch.",
 	args: {
 		goal: { type: "text", positional: true, label: "goal" },
 		rounds: { type: "number", default: 3 },

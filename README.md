@@ -163,11 +163,11 @@ result of each item that ran. `head` is the commit of the last item.
 
 ```sh
 workflows optimize ship --items items/
-workflows optimize ship --items items/ --prompts review,handoff --trials 5
+workflows optimize --workflow ship --items items/ --prompts review,handoff --trials 5
 ```
 
 `workflows optimize ship` searches for better texts of some ship prompts with a reflective loop. It never changes
-`prompts/`: the result is a diff to apply by hand.
+`prompts/`: the result is a diff to apply by hand. The workflow to optimize, `ship`, is one argument or `--workflow`.
 
 The items folder, relative to the current directory, holds at least 2 work items as `<name>.md` files. Each file has
 the frontmatter `repo`, the path of a local Git repository, relative to the items folder, and `start`, the commit that
@@ -209,7 +209,7 @@ candidate, which `git apply` takes in the checkout. When no candidate is better,
 
 A ship run that does not finish, such as a failed or interrupted one, stops the optimization. The command prints
 `failed ship: ship run <id> failed on <item>: <error>; continue with: workflows resume <id>` and
-`continue with: workflows optimize resume <run-id>`, and exits 1. `workflows optimize resume <run-id>` runs the loop
+`continue with: workflows resume <run-id>`, and exits 1. `workflows resume <run-id>` runs the loop
 again from the start. A finished evaluation of the same texts and item returns its saved result and starts no ship run, and
 an unfinished one resumes its ship run. A reflect turn with the same prompt returns its saved answer. A hard kill of the
 command while a ship run runs loses that ship run's ID, and the resume runs that item again in a new ship run.
@@ -260,8 +260,8 @@ The project folder is `.workflows/` at the root of the current directory's Git r
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
 project file adds to the package files, and replaces the package file of the same name in the same folder.
 
-`workflows` without arguments prints one line `<name>: <description>` for each script, then one line for each
-built-in command. The description is the first line of the script's leading `//` comment.
+`workflows` without arguments prints one line `<name>: <description>` for each script, or `<name>` for a script
+without `meta.description`, then one line for each built-in command.
 
 ### `meta`
 
@@ -270,8 +270,8 @@ code. `meta` is an object literal. The command evaluates it alone, in the sandbo
 script runs without `export`, so it can read `meta`. A script without `meta` takes no arguments.
 
 ```js
-// Ship one work item onto a new branch.
 export const meta = {
+  description: "Ship one work item onto a new branch.",
   args: {
     item: { type: "text", positional: true, label: "work item" },
     rounds: { type: "number", default: 3 },
@@ -281,6 +281,8 @@ export const meta = {
 }
 ```
 
+- `description` is one line for `workflows` and `--help`, like the `description` in the frontmatter of the profiles
+  and prompts. It is a string.
 - `args` gives each argument a `type`, and optionally `default`, `required`, `positional` and `label`:
   - `string` is the value as given. `number` is a positive integer; any other value fails with
     `--<name> must be a positive integer`. `boolean` is a flag without a value, false when not given.
@@ -294,7 +296,7 @@ export const meta = {
 - `exit` maps `result.status` to the exit code. Any other status, or a result without `status`, exits 0.
 
 Every script also takes `--prompts <folder>`, as `ship` does, `--json` and `--help`. `workflows <wf> --help` prints
-the usage line, built from `meta`, and the description, and exits 0. Any other flag is bad usage. Bad usage prints
+the usage line, built from `meta`, and `meta.description` when the script has one, and exits 0. Any other flag is bad usage. Bad usage prints
 `workflows: <error>` and the usage line of the script, and exits 2. A bad `meta` fails with
 `workflows: <name>: <problem>` and exits 1.
 
@@ -310,8 +312,8 @@ Before the run starts, the command scans the script for `prompts.<name>`. A name
 The command prints `run <run-id>` on stdout, then each `phase` and `log` line on stderr when the script's next call
 runs, or when the script ends. When the script returns a result with `report`, a list of lines, the command prints
 those lines on stdout. Otherwise it prints the return value: a string as it is, and any other value as JSON. The exit
-code comes from `meta.exit`. With `--json`, stdout gets one JSON outcome line in place of the lines, and its `result`
-has no `report` field. See [JSON output](#json-output).
+code comes from `meta.exit`. With `--json`, stdout gets one JSON outcome line in place of the lines. See
+[JSON output](#json-output).
 
 A script that throws, or a call in it that fails, stops the run: the command prints `failed <title>: <error>` and
 `continue with: workflows resume <run-id>` on stderr, and exits 1. `<title>` is the subject of the first `text`
@@ -377,14 +379,13 @@ lines before it, and keeps the last `phase` line waiting for the next call that 
 
 ```sh
 workflows resume <run-id>
-workflows optimize resume <run-id>
 ```
 
 `workflows resume` finds the workflow that the run saved and continues the run. A run of a workflow script continues
-with the script that the run saved. `workflows optimize resume` refuses a run of another workflow.
+with the script that the run saved.
 
 Ctrl+C stops the run and keeps it resumable: the command prints `interrupted; continue with: workflows resume
-<run-id>`, or `workflows optimize resume <run-id>` for optimize, and exits 130. Ctrl+C also stops a Git step that is
+<run-id>` and exits 130. Ctrl+C also stops a Git step that is
 running, and resume runs that step again. A second Ctrl+C exits at once.
 
 Resume opens the run's store and continues the pending work. For a script, see [Saved inputs and
@@ -475,8 +476,8 @@ The tool takes one of `name`, `script` or `resume`, plus `args`:
   `{ name: "ship", args: { item: "Fix the README typo", rounds: 2 } }` runs
   `workflows ship --item=Fix the README typo --rounds=2 --json`. An arg that the script's `meta` does not declare is
   bad usage, so no run starts.
-- `name: "optimize"` runs `workflows optimize`, with `args.workflow` as its positional argument and each other arg as
-  a flag, such as `{ workflow: "ship", items: "items/", trials: 5 }`.
+- `name: "optimize"` runs `workflows optimize` in the same way, such as `{ workflow: "ship", items: "items/" }` for
+  `workflows optimize --workflow=ship --items=items/ --json`.
 - `script` runs `workflows - --json` with the script on stdin.
 - `resume` runs `workflows resume <run-id>`.
 

@@ -109,7 +109,7 @@ describe("the workflow tool", () => {
 		expect(await readFile(join(root, "args.log"), "utf8")).toBe('ok --path=src --depth=2 --all --tags=["a"] --json\n');
 	});
 
-	it("sends a script on stdin, passes every script argument as a flag, and keeps the optimize positional", async () => {
+	it("sends a script on stdin, passes every argument as a flag", async () => {
 		const script = await call({ script: "return 'hi'" });
 		expect(script.result.structuredContent).toEqual({
 			runId: "r2",
@@ -145,7 +145,7 @@ describe("the workflow tool", () => {
 			"- --json",
 			"ship --item=Fix the README typo --rounds=2 --json",
 			"campaign --base=develop --goal=goal.md --json",
-			"optimize --items=items --trials=4 --json -- ship",
+			"optimize --workflow=ship --items=items --trials=4 --json",
 			"",
 		]);
 	});

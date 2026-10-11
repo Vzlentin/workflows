@@ -33,6 +33,7 @@ await tools.workflow({ resume: "20261010T234930-3a93e88c" })
   apply by hand.
 - Any other `name` is a script in `workflows/` of the project's `.workflows/` or of the package. Each arg becomes the
   flag `--<key>`, and the script's `meta` declares the args it takes, with their types. An undeclared arg is an error.
+  `workflows` lists the scripts with their `meta.description`.
 - `script` is an inline workflow script.
 - `resume` continues a run by its ID.
 
@@ -58,7 +59,7 @@ Sandbox rules:
 ```sh
 workflows ship [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<item.md> | <text>] [--json]
 workflows campaign [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<goal.md> | <text>] [--json]
-workflows optimize ship --items <folder> [--prompts <name,...>] [--trials <n>] [--json]
+workflows optimize <ship | --workflow ship> --items <folder> [--prompts <name,...>] [--trials <n>] [--json]
 workflows <name | file.js | -> [<text>] [--<arg> <value>]... [--json]
 workflows <name> --help
 workflows check <name>

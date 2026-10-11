@@ -1,7 +1,7 @@
-// Ship one work item onto a new branch: plan, implement and review rounds, judge, and one squashed commit.
 // The plan, the rounds, the review, the judge and the squash of `workflows ship` and of each `workflows campaign`
 // item, in its worktree. Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
 export const meta = {
+	description: "Ship one work item onto a new branch: plan, implement and review rounds, judge, and one squashed commit.",
 	args: {
 		item: { type: "text", positional: true, label: "work item" },
 		rounds: { type: "number", default: 3 },

@@ -38,24 +38,19 @@ const CLI = [process.execPath, fileURLToPath(new URL("../src/cli.ts", import.met
 
 const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
 
-/** The built-in workflows whose positional argument has no flag, and the arg that is that argument. */
-const POSITIONAL: ReadonlyMap<string, string> = new Map([["optimize", "workflow"]]);
-
 /**
- * The `workflows` arguments of a tool call, always with `--json`. The command rejects a flag it does not know, so a
- * mistyped arg fails before a run exists.
+ * The `workflows` arguments of a tool call, always with `--json`, with each arg as a flag. The command rejects a flag
+ * it does not know, so a mistyped arg fails before a run exists.
  */
 function cliArgs({ name, script, resume, args = {} }: WorkflowCall): string[] {
 	const given = [name, script, resume].filter((value) => value !== undefined).length;
 	if (given !== 1) throw new Error("give exactly one of name, script or resume");
 	if (resume !== undefined) return ["resume", resume, "--json"];
 	if (name === undefined) return ["-", "--json"];
-	const positional = POSITIONAL.get(name);
-	const { [positional ?? ""]: value, ...flags } = args;
-	const options = Object.entries(positional === undefined ? args : flags).flatMap(([key, flag]) =>
+	const flags = Object.entries(args).flatMap(([key, flag]) =>
 		flag === false ? [] : [flag === true ? `--${key}` : `--${key}=${text(flag)}`],
 	);
-	return [name, ...options, "--json", ...(positional === undefined || value === undefined ? [] : ["--", text(value)])];
+	return [name, ...flags, "--json"];
 }
 
 type Output = { readonly code: number | null; readonly stdout: readonly string[]; readonly stderr: readonly string[] };
@@ -156,7 +151,7 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 		description:
 			"Run a durable workflow and wait for its result. Give exactly one of: `name` (a workflow script such as " +
 			"`ship` or `campaign`, or `optimize`), `script` (the body of an inline workflow script), or `resume` (a run " +
-			"ID). `args` are the workflow's arguments, each passed as `--<key>`; the script's `meta` declares them. For " +
+			"ID). `args` are the workflow's arguments, each passed as `--<key>`; a script's `meta` declares them. For " +
 			"`ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and `prompts`. For `campaign`, which " +
 			"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
 			"`base`, `rounds` and `prompts`. For `optimize`, which searches for better ship prompts over a folder of work " +

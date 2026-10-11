@@ -68,7 +68,6 @@ export async function main(
 		`${script.usage} [--json]`,
 		"workflows <workflow> --help",
 		...builtins.map((workflow) => `${workflow.usage} [--json]`),
-		...builtins.map((workflow) => `workflows ${workflow.name} resume <run-id> [--json]`),
 		"workflows resume <run-id> [--json]",
 		"workflows list [--json]",
 		"workflows check <workflow>",
@@ -89,13 +88,10 @@ export async function main(
 			return 0;
 		}
 		if (command === "list") return await list(args, terminal, workflows, json);
-		if (command === "resume") return await resume(args, terminal, workflows, undefined, json);
+		if (command === "resume") return await resume(args, terminal, workflows, json);
 		if (command === "check") return await check(args, terminal);
 		const workflow = builtins.find((candidate) => candidate.name === command);
-		if (workflow !== undefined) {
-			if (args[0] === "resume") return await resume(args.slice(1), terminal, workflows, workflow, json);
-			return await start(workflow, args, terminal, workflows, json);
-		}
+		if (workflow !== undefined) return await start(workflow, args, terminal, workflows, json);
 		const flags = args.indexOf("--");
 		if (args.slice(0, flags === -1 ? args.length : flags).includes("--help")) {
 			for (const line of await help(command, terminal)) terminal.stdout(line);
@@ -111,18 +107,6 @@ export async function main(
 		}
 		return 1;
 	}
-}
-
-/** The command that continues the run `id` of `workflow`. */
-function resumeCommand(workflow: AnyWorkflow, id: string): string {
-	return workflow === script ? `workflows resume ${id}` : `workflows ${workflow.name} resume ${id}`;
-}
-
-/** `result` without its `report` lines, which the JSON outcome line has in its own field. */
-function withoutReport(result: JsonValue): JsonValue {
-	if (typeof result !== "object" || result === null || Array.isArray(result) || !("report" in result)) return result;
-	const { report: _, ...rest } = result;
-	return rest;
 }
 
 function runsDirectory(): string {
@@ -167,7 +151,6 @@ async function resume(
 	args: readonly string[],
 	terminal: Terminal,
 	workflows: readonly AnyWorkflow[],
-	expected: AnyWorkflow | undefined,
 	json: boolean,
 ): Promise<number> {
 	const [id, ...rest] = args;
@@ -185,9 +168,6 @@ async function resume(
 		if (workflow === undefined) {
 			const name = latest.kind.slice(PREFIX.length);
 			throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot resume`);
-		}
-		if (expected !== undefined && expected !== workflow) {
-			throw new UsageError(`run ${id} is a ${workflow.name} run; use ${resumeCommand(workflow, id)}`);
 		}
 		if (latest.version < workflow.version) {
 			throw new Error(`run ${id} was saved by an earlier version of ${workflow.name} and cannot resume`);
@@ -219,7 +199,7 @@ async function list(
 		if (!existsSync(path)) continue;
 		const latest = await latestTask(path);
 		const workflow = workflows.find((candidate) => taskKind(candidate) === latest?.kind);
-		if (latest === undefined || workflow === undefined) continue;
+		if (latest === undefined || workflow === undefined || latest.version < workflow.version) continue;
 		const { input } = latest.input as Stored;
 		let title = "";
 		let name = workflow.name;
@@ -431,7 +411,7 @@ async function follow(
 	};
 	const failed = (message: unknown, resumable: boolean) => {
 		const footer = [`failed ${workflow.title(input)}: ${message}`];
-		if (resumable) footer.push(`continue with: ${resumeCommand(workflow, id)}`);
+		if (resumable) footer.push(`continue with: workflows resume ${id}`);
 		end("failed", { error: String(message) }, ...footer);
 		return 1;
 	};
@@ -445,7 +425,7 @@ async function follow(
 			end("failed", { error: error instanceof Error ? error.message : String(error) });
 			throw error;
 		}
-		end("interrupted", {}, `interrupted; continue with: ${resumeCommand(workflow, id)}`);
+		end("interrupted", {}, `interrupted; continue with: workflows resume ${id}`);
 		return 130;
 	} finally {
 		await store.close();
@@ -455,7 +435,7 @@ async function follow(
 		if (!json) return workflow.report(input, outcome.result, terminal);
 		const report: string[] = [];
 		const code = workflow.report(input, outcome.result, { ...terminal, stdout: (line) => report.push(line) });
-		end("finished", { result: withoutReport(outcome.result), report });
+		end("finished", { result: outcome.result, report });
 		return code;
 	}
 	return failed(outcome.error?.message ?? outcome.reason ?? outcome.status, outcome.status === "failed");

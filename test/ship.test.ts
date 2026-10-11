@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { script } from "../src/lib/meta.ts";
 import { defineWorkflow } from "../src/lib/workflow.ts";
 import { git, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
 
@@ -242,7 +243,7 @@ export default function ({ events }) {
 		const report = [`blocked Fix the README typo after 1 rounds: ${worktreeOf(run.id)}`, result.reply];
 		expect(resumed.stdout).toEqual([
 			`run ${run.id}`,
-			JSON.stringify({ runId: run.id, status: "finished", result, report }),
+			JSON.stringify({ runId: run.id, status: "finished", result: { ...result, report }, report }),
 		]);
 
 		const item = await workflows(["ship", "--", "--json"], { cwd: repo, script: { edits: [] } });
@@ -442,7 +443,7 @@ export default function ({ events }) {
 });
 
 describe("workflows resume of ship runs", () => {
-	it("refuses a run that the earlier ship command saved", async () => {
+	it("refuses and does not list a run that the earlier ship or run command saved", async () => {
 		const earlier = defineWorkflow<object, object, { readonly phase: "done" }, object>({
 			name: "ship",
 			usage: "workflows ship",
@@ -454,17 +455,31 @@ describe("workflows resume of ship runs", () => {
 			phases: { done: ({ finish }) => finish({}) },
 			report: () => 0,
 		});
-		const old = await workflows(["ship"], { cwd: repo, installed: [earlier] });
-		expect(old.code).toBe(0);
+		const ship = await workflows(["ship"], { cwd: repo, installed: [earlier] });
+		expect(ship.code).toBe(0);
+		// The script workflow owns the task kind of the earlier `run` command, so only its version can be earlier.
+		const current = script.version;
+		const mutable = script as { version: number };
+		mutable.version = current - 1;
+		await writeFile(join(root, "old.js"), "return 1");
+		const run = await workflows(["old.js"], { cwd: root }).finally(() => {
+			mutable.version = current;
+		});
+		expect(run.code).toBe(0);
 
-		const resumed = await workflows(["resume", old.id ?? ""], { cwd: repo });
-		expect(resumed.code).toBe(1);
+		for (const [old, name] of [
+			[ship, "ship"],
+			[run, "run"],
+		] as const) {
+			const resumed = await workflows(["resume", old.id ?? ""], { cwd: repo });
+			expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([
+				1,
+				[],
+				[`workflows: run ${old.id} was saved by an earlier version of ${name} and cannot resume`],
+			]);
+		}
 		const listed = await workflows(["list"], { cwd: repo });
 		expect(listed.stdout).toEqual([]);
-		expect(resumed.stdout).toEqual([]);
-		expect(resumed.stderr).toEqual([
-			`workflows: run ${old.id} was saved by an earlier version of ship and cannot resume`,
-		]);
 	});
 
 	it("continues a turn interrupted by Ctrl+C from the saved inputs", async () => {

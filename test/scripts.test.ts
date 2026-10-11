@@ -303,14 +303,20 @@ return "done"`,
 	it("lists the workflows and prints the usage of one from its meta", async () => {
 		await writeFile(
 			join(root, "count.js"),
-			`// Count words.\nexport const meta = { args: { path: { type: "string", positional: true, required: true }, depth: { type: "number", default: 2 }, all: { type: "boolean" } } }\nreturn args`,
+			`// Not the description.\nexport const meta = { description: "Count words.", args: { path: { type: "string", positional: true, required: true }, depth: { type: "number", default: 2 }, all: { type: "boolean" } } }\nreturn args`,
 		);
+		const scripts = join(root, ".workflows", "workflows");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "plain.js"), "// Not the description.\nreturn 1");
 		const listed = await workflows([], { cwd: root });
 		expect(listed.code).toBe(0);
 		expect(listed.stdout).toEqual([
 			"campaign: Split a goal into work items and ship each one as a commit on one branch.",
 			"ship: Ship one work item onto a new branch: plan, implement and review rounds, judge, and one squashed commit.",
+			"plain",
 		]);
+		const plain = await workflows(["plain", "--help"], { cwd: root });
+		expect(plain.stdout).toEqual(["usage: workflows plain [--prompts <folder>] [--json]"]);
 
 		const ship = await workflows(["ship", "--help"], { cwd: root });
 		expect([ship.code, ship.stdout[0]]).toEqual([
@@ -349,6 +355,12 @@ return "done"`,
 		expect([bad.code, bad.stderr[0]]).toEqual([
 			1,
 			"workflows: bad: meta.args.n.type is not string, number, boolean or text",
+		]);
+		await writeFile(join(root, "described.js"), `export const meta = { description: 1 }\nreturn 1`);
+		const described = await workflows(["described.js"], { cwd: root });
+		expect([described.code, described.stderr[0]]).toEqual([
+			1,
+			"workflows: described: meta.description is not a string",
 		]);
 	});
 

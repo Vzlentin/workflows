@@ -91,19 +91,19 @@ describe("workflows optimize", () => {
 		const installed = [optimizeWith([process.execPath, join(root, "fake.mjs")])];
 		const before = await promptsHash();
 
-		const first = await workflows(["optimize", "ship", "--items", "items"], { cwd: root, installed });
+		const first = await workflows(["optimize", "--workflow", "ship", "--items", "items"], { cwd: root, installed });
 
 		expect(first.code).toBe(1);
 		expect(first.stderr).toEqual([
 			"failed ship: ship run fake-5 failed on second: boom; continue with: workflows resume fake-5",
-			`continue with: workflows optimize resume ${first.id}`,
+			`continue with: workflows resume ${first.id}`,
 		]);
 		expect(first.model.calls.map((call) => call.kind)).toEqual(["reflect"]);
 		expect(first.model.calls[0]?.prompt).toMatch(
 			/^Improve this prompt[\s\S]*\n\n## prompt\nreview\n[\s\S]*\n\n## records\n\[\n/,
 		);
 
-		const resumed = await workflows(["optimize", "resume", first.id ?? ""], { cwd: root, installed });
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root, installed });
 
 		const directory = join(root, "state", "workflows", "runs", first.id ?? "");
 		const diff = join(directory, "prompts.diff");

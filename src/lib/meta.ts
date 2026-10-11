@@ -33,6 +33,8 @@ export type ArgSpec = {
 };
 
 export type Meta = {
+	/** One line for `workflows` and `--help`; empty when the script has none. */
+	readonly description: string;
 	readonly args: Readonly<Record<string, ArgSpec>>;
 	/** The run gets `--repo` and `--base`, a worktree on `<wf>/<run-id>`, and `args.start`. */
 	readonly worktree: boolean;
@@ -48,9 +50,10 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 function checkMeta(value: unknown, name: string): Meta {
 	const fail = (problem: string) => new Error(`${name}: ${problem}`);
 	if (!isObject(value)) throw fail("meta is not an object");
-	const { args = {}, worktree = false, exit = {}, ...rest } = value;
+	const { description = "", args = {}, worktree = false, exit = {}, ...rest } = value;
 	const [extra] = Object.keys(rest);
 	if (extra !== undefined) throw fail(`meta.${extra} is not a meta field`);
+	if (typeof description !== "string") throw fail("meta.description is not a string");
 	if (!isObject(args)) throw fail("meta.args is not an object");
 	if (typeof worktree !== "boolean") throw fail("meta.worktree is not a boolean");
 	if (!isObject(exit) || !Object.values(exit).every(Number.isInteger)) {
@@ -80,7 +83,7 @@ function checkMeta(value: unknown, name: string): Meta {
 	if (Object.values(args).filter((spec) => (spec as ArgSpec).positional).length > 1) {
 		throw fail("meta.args has more than one positional argument");
 	}
-	return { args: args as Meta["args"], worktree, exit: exit as Meta["exit"] };
+	return { description, args: args as Meta["args"], worktree, exit: exit as Meta["exit"] };
 }
 
 /**
@@ -89,7 +92,7 @@ function checkMeta(value: unknown, name: string): Meta {
  */
 export async function readMeta(source: string, name: string): Promise<Meta> {
 	const found = META.exec(source);
-	if (found === null) return { args: {}, worktree: false, exit: {} };
+	if (found === null) return { description: "", args: {}, worktree: false, exit: {} };
 	const from = found[0].length;
 	let literal: string | undefined;
 	if (source.slice(from).trimStart().startsWith("{")) {
@@ -112,11 +115,6 @@ export async function readMeta(source: string, name: string): Promise<Meta> {
 	} finally {
 		await sandbox.close();
 	}
-}
-
-/** The first line of the leading `//` comment of the script. */
-export function description(source: string): string {
-	return /^\s*\/\/(.*)/.exec(source)?.[1]?.trim() ?? "";
 }
 
 const unique = (matches: Iterable<RegExpMatchArray>, group: number) =>
@@ -186,14 +184,19 @@ export function usageOf(name: string, meta: Meta): string {
 /** The usage and the description of the script `word`, for `workflows <wf> --help`. */
 export async function help(word: string, io: Io): Promise<string[]> {
 	const found = await findScript(word, io);
-	const text = description(found.source);
-	return [`usage: ${usageOf(found.name, await readMeta(found.source, found.name))}`, ...(text === "" ? [] : [text])];
+	const meta = await readMeta(found.source, found.name);
+	return [`usage: ${usageOf(found.name, meta)}`, ...(meta.description === "" ? [] : [meta.description])];
 }
 
-/** One line `<name>: <description>` for each script of the package and of the project. */
+/** One line `<name>: <description>`, or `<name>` without a description, for each script of the package and project. */
 export async function listScripts(io: Io): Promise<string[]> {
 	const { scripts } = await loadBundle(io.cwd);
-	return Object.entries(scripts).map(([name, source]) => `${name}: ${description(source)}`.trimEnd());
+	return Promise.all(
+		Object.entries(scripts).map(async ([name, source]) => {
+			const { description } = await readMeta(source, name);
+			return description === "" ? name : `${name}: ${description}`;
+		}),
+	);
 }
 
 /** `workflows check <wf>`: reads `meta` and checks the prompts and profiles that the script names; starts no run. */

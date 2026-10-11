@@ -215,15 +215,21 @@ async function writeDiff(input: OptimizeInput, best: Candidate, lines: readonly 
 export function optimizeWith(cli: readonly string[]) {
 	return defineWorkflow<Args, OptimizeInput, OptimizeCheckpoint, OptimizeResult>({
 		name: "optimize",
-		usage: "workflows optimize ship --items <folder> [--prompts <name,...>] [--trials <n>]",
+		usage: "workflows optimize <ship | --workflow ship> --items <folder> [--prompts <name,...>] [--trials <n>]",
 		version: 1,
 		parse: async (args, io) => {
 			const { values, positionals } = parseArgs({
 				args: [...args],
-				options: { items: { type: "string" }, prompts: { type: "string" }, trials: { type: "string" } },
+				options: {
+					workflow: { type: "string" },
+					items: { type: "string" },
+					prompts: { type: "string" },
+					trials: { type: "string" },
+				},
 				allowPositionals: true,
 			});
-			if (positionals.length !== 1 || positionals[0] !== "ship") throw new UsageError("optimize takes ship only");
+			const workflows = [...positionals, ...(values.workflow === undefined ? [] : [values.workflow])];
+			if (workflows.length !== 1 || workflows[0] !== "ship") throw new UsageError("optimize takes ship only");
 			if (values.items === undefined) throw new UsageError("missing --items");
 			const items = await readItems(resolve(io.cwd, values.items));
 			if (items.length < 2) throw new UsageError("--items needs at least 2 items");
