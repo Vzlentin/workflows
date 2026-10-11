@@ -37,7 +37,7 @@ import { Sessions } from "./agents.ts";
 import * as script from "./meta.ts";
 import { type Io, newRunId, UsageError } from "./run.ts";
 import { answerExtension } from "./script.ts";
-import { current, scriptTask, type TaskInput } from "./task.ts";
+import { current, scriptTask } from "./task.ts";
 
 export type Terminal = Io & {
 	readonly models: Models;
@@ -117,7 +117,8 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 
 /**
  * The open store, the task and the input of the run in `directory`. When the store holds a workflow task, this is that
- * task, also after a failed phase; it throws for a task that an earlier version saved.
+ * task, or a new task with its input when it failed, so that the script runs again with its saved calls; it throws for
+ * a task that an earlier version saved.
  * Otherwise `source` gives the input of a new run, and without `source` it throws. When the new run fails to start,
  * the store closes and the directory is removed.
  */
@@ -134,8 +135,10 @@ async function openRun(
 			const name = latest.kind.slice(PREFIX.length);
 			throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot resume`);
 		}
-		const { input } = latest.input;
-		return { store: await openStore(directory, terminal), task: latest.id, input };
+		const { input, state } = latest;
+		const store = await openStore(directory, terminal);
+		const failed = state.status === "terminal" && state.outcome.status === "failed";
+		return { store, task: failed ? await store.create(input) : latest.id, input };
 	}
 	if (source === undefined) throw new Error(`run ${id} has no workflow`);
 	await mkdir(directory, { recursive: true });
@@ -157,28 +160,22 @@ type Outcome =
 	| { readonly status: "failed"; readonly error: string };
 
 /**
- * Runs `task` to its end and closes the store. `interrupt` and a failed phase both stop it and leave the task pending;
- * when both happen, the outcome is `interrupted`. Any other error of the wait propagates, and so does a task that ends
- * without completing, which only an abort can do.
+ * Runs `task` to its end and closes the store. `interrupt` stops it and leaves the task pending. Any other error of the
+ * wait propagates, and so does a task that ends neither completed nor failed, which only an abort can do.
  */
 async function wait(store: Store, task: TaskId<JsonValue>, interrupt: AbortSignal): Promise<Outcome> {
-	let settled: SettledTask<JsonValue> | { readonly failed: string };
+	let settled: SettledTask<JsonValue>;
 	try {
-		const settling = store.harness.waitForTask(task, withAbortSignal(interrupt, BACKGROUND_CONTEXT));
-		// After a failure, the wait rejects when the store closes.
-		settling.catch(() => undefined);
-		const failed = store.failure(task).catch((error: Error) => ({ failed: error.message }));
-		settled = await Promise.race([settling, failed]);
+		settled = await store.harness.waitForTask(task, withAbortSignal(interrupt, BACKGROUND_CONTEXT));
 	} catch (error) {
 		if (interrupt.aborted) return { status: "interrupted" };
 		throw error;
 	} finally {
 		await store.close();
 	}
-	if ("failed" in settled)
-		return interrupt.aborted ? { status: "interrupted" } : { status: "failed", error: settled.failed };
 	const { outcome } = settled.state;
 	if (outcome.status === "completed") return { status: "completed", result: outcome.result };
+	if (outcome.status === "failed") return { status: "failed", error: outcome.error.message };
 	throw new Error(`run ended ${outcome.status}`);
 }
 
@@ -194,8 +191,7 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 		if (!existsSync(path)) continue;
 		const latest = await latestTask(path);
 		if (latest === undefined || !current(latest)) continue;
-		const { input } = latest.input;
-		const { state } = latest;
+		const { input, state } = latest;
 		const finished = state.status === "terminal" && state.outcome.status === "completed";
 		const status = finished ? (script.statusOf(state.outcome.result) ?? "done") : "unfinished";
 		runs.push({ runId: id, workflow: input.name, title: script.title(input), status });
@@ -229,11 +225,6 @@ async function latestTask(path: string): Promise<TaskRecord<JsonValue, JsonValue
 
 type Store = {
 	readonly harness: Harness;
-	/**
-	 * Rejects with the failure that the script host's `fail` reports for `task`. The task stays pending, so that a
-	 * resume runs the failed phase again with its saved calls.
-	 */
-	failure(task: TaskId): Promise<never>;
 	/** A new task of the script workflow. */
 	create(input: script.ScriptInput): Promise<TaskId<JsonValue>>;
 	close(): Promise<void>;
@@ -299,23 +290,7 @@ async function loadEntries(cwd: string): Promise<Entry[]> {
  * and `workflows-answer` installed. Sessions select it only by name.
  */
 async function openStore(directory: string, terminal: Terminal): Promise<Store> {
-	// A failure is kept until it is read: a child run can fail before its caller waits for it.
-	const failures = new Map<TaskId, PromiseWithResolvers<never>>();
-	const failure = (task: TaskId) => {
-		let found = failures.get(task);
-		if (found === undefined) {
-			found = Promise.withResolvers<never>();
-			found.promise.catch(() => undefined);
-			failures.set(task, found);
-		}
-		return found;
-	};
-	const host = {
-		log: terminal.stderr,
-		fail: (task: TaskId, message: string) => failure(task).reject(new Error(message)),
-		failure: (task: TaskId) => failure(task).promise,
-	};
-	const task = scriptTask(host);
+	const task = scriptTask({ log: terminal.stderr });
 	const registry = createRegistry();
 	const entries = await loadEntries(terminal.cwd);
 	const selected = [
@@ -355,12 +330,10 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 	};
 	return {
 		harness,
-		failure: host.failure,
 		create: async (input) => {
-			const stored: TaskInput = { input };
 			const root = await harness.root(BACKGROUND_CONTEXT);
 			return root.commit(
-				(tx) => tx.createTask(task, stored, { ownership: { kind: "conversation" } }),
+				(tx) => tx.createTask(task, input, { ownership: { kind: "conversation" } }),
 				BACKGROUND_CONTEXT,
 			);
 		},
@@ -372,8 +345,8 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 }
 
 /**
- * Runs the task to its end and reports it; Ctrl+C and a failed phase close the store with the task still
- * pending.
+ * Runs the task to its end and reports it; Ctrl+C closes the store with the task still pending, and a failed phase
+ * ends the task as failed.
  */
 async function follow(
 	store: Store,

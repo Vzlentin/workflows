@@ -323,7 +323,8 @@ code comes from `meta.exit`. With `--json`, stdout gets one JSON outcome line in
 
 A script that throws, or a call in it that fails, stops the run: the command prints `failed <title>: <error>` and
 `continue with: workflows resume <run-id>` on stderr, and exits 1. `<title>` is the subject of the first `text`
-argument, or else the file name without `.js`, the workflow name, or `stdin`.
+argument, or else the file name without `.js`, the workflow name, or `stdin`. The run's task ends as failed, and its
+saved calls stay in the run's store for the resume.
 
 `workflows/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
 workflows campaign, which give it the start commit`. `run("ship", { repo })` gets its own worktree and `start`, as
@@ -349,9 +350,10 @@ caller continues it. It runs in the same process, and its `phase` and `log` line
 - The child run gets the caller's saved scripts, prompts and profiles.
 
 `run()` returns the child's result, with `runId`, the child run ID, added to an object result. A failed child run
-fails the call with `child run <id> failed: <error>`, and the child run stays pending. A resume of the caller continues
-the same child run, also after a failed call or an interruption, and repeats no call that the child run saved. When a
-caller catches the error of `run()` and ends, its pending child runs are aborted.
+fails the call with `child run <id> failed: <error>`, and the child's task ends as failed. A caller that fails aborts
+its child runs that are still running. A resume of the caller continues the same child run, with the same run ID and
+run directory, also after a failed call, an abort or an interruption, and repeats no call that the child run saved. A
+child run that ended without a result continues in a new task.
 
 ### The script API
 
@@ -399,7 +401,8 @@ later edit of a script, prompt or profile, in the package or in `.workflows/`, c
 Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
 again. A call is known by its name, its arguments and its position among identical calls. A turn that was in progress
 continues in its session. A command that was in progress runs again, so commands must be safe to repeat. A call that
-fails is not saved, so every call that failed runs again, also one that the script caught. `phase` and `log` lines are not saved. A resume prints the
+fails is not saved, so every call that failed runs again, also one that the script caught. The saved results stay in
+the run's store also after the run fails. `phase` and `log` lines are not saved. A resume prints the
 phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
 lines before it, and keeps the last `phase` line waiting for the next call that runs.
 
@@ -424,15 +427,16 @@ item file again, select or clone the repository again, or create another branch.
 model again. A turn that was in progress is sent again.
 
 A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows resume <run-id>`, and
-exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. Resume
-runs the failed step again in the same run: a failed Git step runs again, a failed turn is sent again in the same
-session, saved calls return their results, and child runs continue.
+exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. The run's task ends as
+failed. Resume runs the script again in a new task of the same run: a failed Git step runs again, a failed turn is sent
+again in the same session, saved calls return their results, and child runs continue.
 
 A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
 
 A run saved before every workflow script became a command, such as a run of the earlier `workflows ship`,
 `workflows campaign` or `workflows run`, or before `run()` started child runs, such as an earlier `workflows optimize`
-run, or before a child run became a task in the caller's store, or before a failed run kept its task, cannot resume:
+run, or before a child run became a task in the caller's store, or before a failed run kept its task, or before saved
+calls moved to documents, cannot resume:
 resume prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1.
 `list` does not show these runs.
 

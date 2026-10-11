@@ -1,10 +1,10 @@
 /**
  * Workflow scripts. A script is JavaScript that runs in the pi-codemode sandbox in the phase of the run's task. Each
- * call it makes saves its result as a keyed memo of the task, so when the phase runs again after an interruption, the
- * finished calls return their saved results and only the rest runs. A call that fails saves nothing. A failure of the
- * phase keeps the task pending: the command stops, and a resume runs the script again. `run(name, args)` starts a child run
- * as a child task of the caller in the caller's store, with its own run directory, and a resume of the caller continues
- * that child run.
+ * call it makes saves its result in a document of the store, keyed by the run ID and the call, so when the script runs
+ * again after an interruption or a failure, the finished calls return their saved results and only the rest runs. A call
+ * that fails saves nothing. A failure of the phase ends the task as failed, and a resume runs the script again in a new
+ * task of the same run. `run(name, args)` starts a child run as a child task of the caller in the caller's store, with
+ * its own run directory, and a resume of the caller continues that child run.
  */
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -23,18 +23,16 @@ import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode"
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
 	AssistantEntry,
-	type ConversationHandle,
 	type ConversationId,
 	configure,
 	defineDoc,
+	defineDocFamily,
 	defineExtension,
 	defineTool,
 	type JsonObject,
 	type ModelRef,
-	type SettledTask,
 	section,
 	type TaskId,
-	type Tx,
 } from "@earendil-works/pi-durable";
 import { sessionAgent } from "./agents.ts";
 import { failure, git, run } from "./git.ts";
@@ -62,10 +60,6 @@ export type RunBundle = Bundle & { readonly main: string };
 export type ExtensionHost = {
 	/** Writes one progress line. */
 	log(line: string): void;
-	/** Reports `message` as the resumable failure of `task`, whose task stays pending. */
-	fail(task: TaskId, message: string): void;
-	/** Rejects with the message of the failure of `task`, also of a failure reported before this call. */
-	failure(task: TaskId): Promise<never>;
 };
 
 /** A started child run: its task and its run ID. */
@@ -77,8 +71,10 @@ export type ScriptRun = {
 	readonly runDir: string;
 	readonly bundle: RunBundle;
 	readonly args: JsonObject;
-	/** Starts the child run of the `run` call `key`, or finds the one that an interrupted call started. */
+	/** Starts the child run of the `run` call `key` and saves it as the result of the call. */
 	child(key: string, name: string, args: JsonObject): Promise<Child>;
+	/** Starts a new child task with the input of the ended child task `ended`, and saves it as the result of `key`. */
+	restart(key: string, ended: TaskId<JsonValue>): Promise<Child>;
 };
 
 const PACKAGE = fileURLToPath(new URL("../", import.meta.url));
@@ -253,6 +249,23 @@ const pipeline = (items, ...stages) =>
 `;
 }
 
+/**
+ * The saved result of each finished script call, keyed `<run ID>/<call key>`. The store keeps it after its task ends, so
+ * a new task of the run finds it.
+ */
+export const CallDoc = defineDocFamily<{ value: JsonValue }, JsonValue>({
+	kind: "workflows.call",
+	version: 1,
+	scope: "session",
+	family: true,
+	initial: (value) => ({ value }),
+});
+
+/** The saved result of the call `key`, if it has one. */
+export async function savedCall(runtime: Runtime, key: string, context: Context): Promise<JsonValue | undefined> {
+	return (await runtime.snapshot(CallDoc, key, context))?.value;
+}
+
 /** `<sha256(name + JSON args), 16 hex>.<n>`, n counting identical calls in this execution. */
 function keyOf(name: string, args: JsonObject, counters: Map<string, number>): string {
 	const hash = createHash("sha256")
@@ -282,97 +295,94 @@ function print(progress: Progress): void {
 	for (const line of progress.lines.splice(0)) progress.log(line.text);
 }
 
-/** One conversation with a fixed agent. */
-export type Session = {
-	/** The answer to `content`. A turn answered before returns its saved answer without a model call. */
-	say(requestId: string, content: string): Promise<string>;
-};
-
-/** What turns need from a task runtime or a tool API. */
-export type Turns = {
-	conversation(id: ConversationId, context: Context): Promise<ConversationHandle | undefined>;
-	commit(change: (tx: Tx) => Promise<undefined>, context: Context): Promise<unknown>;
-};
-
 export function textOf(message: AssistantMessage): string {
 	return message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 }
 
-/** A session whose `turn` also gives the whole answer message. */
-export function sessionOf(
-	runtime: Turns,
+/** The answer message to `content` in `conversation`. A turn answered before returns its saved answer. */
+async function turn(
+	runtime: Runtime,
 	conversation: ConversationId,
 	context: Context,
-): Session & { turn(requestId: string, content: string): Promise<AssistantMessage> } {
-	const turn = async (requestId: string, content: string) => {
-		const handle = await runtime.conversation(conversation, context);
-		if (handle === undefined) throw new Error(`Session ${conversation} is missing`);
-		// A turn that failed before is sent again under the next free request ID.
-		let attempt = requestId;
-		await runtime.commit(async (tx) => {
-			for (let n = 2; (await tx.submissionByRequest(conversation, attempt))?.status === "unanswered"; n++) {
-				attempt = `${requestId}#${n}`;
-			}
-			return undefined;
-		}, context);
-		const submission = await handle.submit({ type: "input", content, requestId: attempt }, context);
-		const settled = await submission.wait(context);
-		if (settled.type !== "input" || settled.status !== "done") {
-			const detail = settled.detail === undefined ? "" : ` ${JSON.stringify(settled.detail)}`;
-			throw new Error(`The ${requestId} turn was not answered: ${settled.reason ?? settled.status}${detail}`);
+	requestId: string,
+	content: string,
+): Promise<AssistantMessage> {
+	const handle = await runtime.conversation(conversation, context);
+	if (handle === undefined) throw new Error(`Session ${conversation} is missing`);
+	// A turn that failed before is sent again under the next free request ID.
+	let attempt = requestId;
+	await runtime.commit(async (tx) => {
+		for (let n = 2; (await tx.submissionByRequest(conversation, attempt))?.status === "unanswered"; n++) {
+			attempt = `${requestId}#${n}`;
 		}
-		let answer: AssistantMessage | undefined;
-		await runtime.commit(async (tx) => {
-			answer = (await tx.entry(AssistantEntry, settled.answer))?.model?.[0] as AssistantMessage | undefined;
-			return undefined;
-		}, context);
-		if (answer === undefined) throw new Error(`The ${requestId} answer ${settled.answer} is missing`);
-		return answer;
-	};
-	return { turn, say: async (requestId, content) => textOf(await turn(requestId, content)).trim() };
+		return undefined;
+	}, context);
+	const submission = await handle.submit({ type: "input", content, requestId: attempt }, context);
+	const settled = await submission.wait(context);
+	if (settled.type !== "input" || settled.status !== "done") {
+		const detail = settled.detail === undefined ? "" : ` ${JSON.stringify(settled.detail)}`;
+		throw new Error(`The ${requestId} turn was not answered: ${settled.reason ?? settled.status}${detail}`);
+	}
+	let answer: AssistantMessage | undefined;
+	await runtime.commit(async (tx) => {
+		answer = (await tx.entry(AssistantEntry, settled.answer))?.model?.[0] as AssistantMessage | undefined;
+		return undefined;
+	}, context);
+	if (answer === undefined) throw new Error(`The ${requestId} answer ${settled.answer} is missing`);
+	return answer;
 }
 
 /** What the calls of one script execution share. */
 type Calls = {
+	readonly runId: string;
 	readonly runtime: Runtime;
 	readonly context: Context;
 	readonly counters: Map<string, number>;
 	readonly progress: Progress;
 };
 
+/** The document key of the call `name` with `args` in this execution: `<run ID>/<call key>`. */
+function callKey(calls: Calls, name: string, args: JsonObject): string {
+	return `${calls.runId}/${keyOf(name, args, calls.counters)}`;
+}
+
 /**
- * The result of the call `name` with `args`: its saved memo, or the value of `effect`, which gets the call's key and
- * whose value is saved. A call that throws saves nothing, so it runs again. The waiting lines print when the call runs.
- * A call with a saved result drops the log lines and keeps the phase line, so a resume prints the phase of the first
- * call that runs.
- *
- * Each memo commit rewrites the task record with all its memos, so the saved output costs O(n^2) to write over a run.
- * When that is too slow, save each call as its own doc.
+ * The result of the call `key`: its saved result, or the value of `effect`, which gets the key and whose value is saved
+ * unless the call already has one. A call that throws saves nothing, so it runs again. The waiting lines print when the
+ * call runs. A call with a saved result drops the log lines and keeps the phase line, so a resume prints the phase of the
+ * first call that runs.
  */
-async function memoized(
-	calls: Calls,
-	name: string,
-	args: JsonObject,
-	effect: (key: string) => Promise<JsonValue>,
-): Promise<JsonValue> {
+async function memoized(calls: Calls, key: string, effect: (key: string) => Promise<JsonValue>): Promise<JsonValue> {
 	const { runtime, context, progress } = calls;
-	const key = keyOf(name, args, calls.counters);
-	const saved = await runtime.memo<JsonValue>(key, context);
+	const saved = await savedCall(runtime, key, context);
 	const { lines } = progress;
 	if (saved !== undefined) {
 		lines.splice(0, lines.length, ...lines.filter((line) => line.phase));
 		return saved;
 	}
 	print(progress);
-	return runtime.memo(key, await effect(key), context);
+	const value = await effect(key);
+	await runtime.commit(async (tx) => {
+		await tx.doc(CallDoc, key, value);
+		return undefined;
+	}, context);
+	return (await savedCall(runtime, key, context)) ?? value;
 }
 
-/** Opens a session of the agent profile `name` in `cwd`; the task owns its conversation. */
-async function openSession(calls: Calls, cwd: string, bundle: RunBundle, name: string): Promise<JsonValue> {
+/**
+ * Opens a session of the agent profile `name` in `cwd`, and saves it as the result of the call `key` in the same
+ * commit; the task owns its conversation.
+ */
+async function openSession(
+	calls: Calls,
+	key: string,
+	cwd: string,
+	bundle: RunBundle,
+	name: string,
+): Promise<JsonValue> {
 	const profile = bundle.agents[name];
 	if (profile === undefined) throw new Error(`no agent profile ${name}`);
 	const { runtime, context } = calls;
-	let id: ConversationId | undefined;
 	await runtime.commit(async (tx) => {
 		const created = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });
 		await configure(tx, created.id, {
@@ -381,10 +391,12 @@ async function openSession(calls: Calls, cwd: string, bundle: RunBundle, name: s
 			extensions: { add: [{ name: ANSWER }] },
 			modelTools: { remove: [respond] },
 		});
-		id = created.id;
+		await tx.doc(CallDoc, key, created.id);
 		return undefined;
 	}, context);
-	return id as ConversationId;
+	const id = await savedCall(runtime, key, context);
+	if (id === undefined) throw new Error(`the session of ${key} is missing`);
+	return id;
 }
 
 /** One turn in `conversation`; the call's key is the request ID, so an interrupted ask continues its turn. */
@@ -406,7 +418,7 @@ async function askTurn(
 		});
 		return undefined;
 	}, context);
-	const answer = await sessionOf(runtime, conversation, context).turn(key, prompt);
+	const answer = await turn(runtime, conversation, context, key, prompt);
 	if (schema === null) return textOf(answer).trim();
 	const call = answer.content.findLast((part) => part.type === "toolCall" && part.name === "respond");
 	if (call?.type !== "toolCall") throw new Error("the answer did not call respond");
@@ -427,29 +439,21 @@ async function shell(calls: Calls, cwd: string, cmd: string | string[], check: b
 }
 
 /**
- * The result of the child run of the `run` call: the saved child task, or a new one, run to its end. Throws
+ * The result of the child run of the `run` call: the saved child task, or a new one, run to its end. A saved child task
+ * that ended without completing gets a new child task with the same input and run ID. Throws
  * `child run <id> failed: <error>` when the child run fails.
  */
-async function childResult(
-	calls: Calls,
-	script: ScriptRun,
-	host: ExtensionHost,
-	name: string,
-	args: JsonObject,
-): Promise<JsonValue> {
-	const started = await memoized(calls, "run", { name, args }, (key) => script.child(key, name, args));
-	const { task, runId } = started as Child;
-	const failed = (error: unknown) =>
-		new Error(`child run ${runId} failed: ${error instanceof Error ? error.message : String(error)}`);
-	let settled: SettledTask<JsonValue>;
-	try {
-		settled = await Promise.race([calls.runtime.waitForTask(task, calls.context), host.failure(task)]);
-	} catch (error) {
-		if (calls.runtime.signal.aborted) throw error;
-		throw failed(error);
+async function childResult(calls: Calls, script: ScriptRun, name: string, args: JsonObject): Promise<JsonValue> {
+	const { runtime, context } = calls;
+	const key = callKey(calls, "run", { name, args });
+	const started = (await memoized(calls, key, () => script.child(key, name, args))) as Child;
+	const { state } = (await runtime.getTask(started.task, context)) ?? {};
+	const ended = state?.status === "terminal" && state.outcome.status !== "completed";
+	const { task, runId } = ended ? await script.restart(key, started.task) : started;
+	const { outcome } = (await runtime.waitForTask(task, context)).state;
+	if (outcome.status !== "completed") {
+		throw new Error(`child run ${runId} failed: ${outcome.error?.message ?? outcome.reason ?? outcome.status}`);
 	}
-	const { outcome } = settled.state;
-	if (outcome.status !== "completed") throw failed(outcome.error?.message ?? outcome.reason ?? outcome.status);
 	return { runId, result: outcome.result };
 }
 
@@ -487,25 +491,25 @@ export async function runScript(
 	// A module export is a syntax error in the function body that the script runs as.
 	const source = bundle.main.replace(META, "$1$2");
 	const progress: Progress = { lines: [], log: host.log };
-	const calls: Calls = { runtime, context, counters: new Map(), progress };
+	const calls: Calls = { runId: script.runId, runtime, context, counters: new Map(), progress };
 	const sandbox = new CodemodeSandbox({
 		timeoutMs: Number.POSITIVE_INFINITY,
 		globals: [
 			global("__session", (profile: string) =>
-				memoized(calls, "session", { profile }, () => openSession(calls, cwd, bundle, profile)),
+				memoized(calls, callKey(calls, "session", { profile }), (key) => openSession(calls, key, cwd, bundle, profile)),
 			),
 			// The sandbox sends a missing schema as null.
-			global("__ask", (conversation: number, prompt: string, schema: JsonObject | null) =>
-				memoized(calls, "ask", { conversation, prompt, schema }, (key) =>
-					askTurn(calls, key, conversation as ConversationId, prompt, schema),
+			global("__ask", (conversation: ConversationId, prompt: string, schema: JsonObject | null) =>
+				memoized(calls, callKey(calls, "ask", { conversation, prompt, schema }), (key) =>
+					askTurn(calls, key, conversation, prompt, schema),
 				),
 			),
 			global("__sh", (cmd: string | string[], check: boolean) =>
-				memoized(calls, "sh", { cmd, check }, () => shell(calls, cwd, cmd, check)),
+				memoized(calls, callKey(calls, "sh", { cmd, check }), () => shell(calls, cwd, cmd, check)),
 			),
 			// The name and the args are in the key, so a resume that reorders different `run` calls keeps each child run.
-			// The saved child task is waited for again, also after a failure of the child run.
-			global("__run", (name: string, values: JsonObject) => childResult(calls, script, host, name, values)),
+			// The saved child task is waited for again; a failed one gets a new child task.
+			global("__run", (name: string, values: JsonObject) => childResult(calls, script, name, values)),
 			global("phase", (title: string) => phaseLine(progress, String(title))),
 			global("log", (line: string) => progress.lines.push({ text: String(line), phase: false })),
 			global("__prompt", (name: string, inputs?: Record<string, string> | null) => {

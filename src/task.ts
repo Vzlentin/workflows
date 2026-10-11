@@ -10,28 +10,35 @@ import {
 	type JsonObject,
 	type RunningTask,
 	type Task,
+	type TaskId,
 	type TaskRecord,
 	type TaskRuntime,
 } from "@earendil-works/pi-durable";
 import { ensureWorktree } from "./git.ts";
-import { isObject, prepare, readMeta, type ScriptInput } from "./meta.ts";
-import { instructions } from "./prompts.ts";
-import { newRunId, type Run } from "./run.ts";
-import { type Child, type ExtensionHost, type RunBundle, runScript } from "./script.ts";
-
-/** The checkpoint of a run: its one phase. The saved calls of its script are memos of the task. */
-export type Checkpoint = { readonly phase: "run" };
-
-/** The saved input of a run's task; `call` is the key of the `run` call that started a child run. */
-export type TaskInput = { readonly input: ScriptInput; readonly call?: string };
-
-export type Runtime = TaskRuntime<TaskInput, Checkpoint, JsonValue, object>;
-
-type ScriptTask = Task<TaskInput, Checkpoint, JsonValue, object>;
+import { childInput, type ScriptInput } from "./meta.ts";
+import { newRunId } from "./run.ts";
+import { CallDoc, type Child, type ExtensionHost, runScript, savedCall } from "./script.ts";
 
 /**
- * The child run of the `run` call `key` of the task of `runtime`: the live child task that the call started before an
- * interruption, or a new child task in a new run directory next to `input.runDir`.
+ * The checkpoint of a run: its one phase. The saved calls of its script are documents of the store, so a new task of
+ * the run finds them.
+ */
+export type Checkpoint = { readonly phase: "run" };
+
+export type Runtime = TaskRuntime<ScriptInput, Checkpoint, JsonValue, object>;
+
+type ScriptTask = Task<ScriptInput, Checkpoint, JsonValue, object>;
+
+/** The child run saved as the result of the `run` call `key`. */
+async function savedChild(runtime: Runtime, key: string, context: Context): Promise<Child> {
+	const child = await savedCall(runtime, key, context);
+	if (child === undefined) throw new Error(`the child run of ${key} is missing`);
+	return child as Child;
+}
+
+/**
+ * A new child task of the `run` call `key` of the task of `runtime`, in a new run directory next to `input.runDir`. The
+ * commit that creates it also saves it as the result of the call.
  */
 async function startChild(
 	definition: ScriptTask,
@@ -42,41 +49,59 @@ async function startChild(
 	name: string,
 	args: JsonObject,
 ): Promise<Child> {
-	// The `run` memo is saved after the commit that creates the child task, so an interruption between them leaves
-	// a child task that only its `call` finds.
-	const found = (await runtime.ownedTasks(context)).filter(current).find((owned) => owned.input.call === key);
-	if (found !== undefined) return { task: found.id, runId: found.input.input.runId };
 	const id = newRunId();
 	const directory = join(dirname(caller.input.runDir), id);
 	await mkdir(directory, { recursive: true });
 	try {
 		const input = await childInput({ name, args, bundle: caller.input.bundle }, { id, directory, cwd: caller.cwd });
-		const stored: TaskInput = { input, call: key };
-		let task: Child["task"] | undefined;
 		await runtime.commit(async (tx) => {
-			task = await tx.createTask(definition, stored, { ownership: { kind: "task", taskId: runtime.taskId } });
+			const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
+			await tx.doc(CallDoc, key, { task, runId: id });
 			return undefined;
 		}, context);
-		return { task: task as Child["task"], runId: id };
 	} catch (error) {
 		await rm(directory, { recursive: true, force: true });
 		throw error;
 	}
+	return savedChild(runtime, key, context);
+}
+
+/**
+ * A new child task with the input, so also the run ID and directory, of the ended child task `ended`. The commit that
+ * creates it also saves it as the result of the `run` call `key`.
+ */
+async function restartChild(
+	definition: ScriptTask,
+	runtime: Runtime,
+	context: Context,
+	key: string,
+	ended: TaskId<JsonValue>,
+): Promise<Child> {
+	const record = await runtime.getTask(ended, context);
+	if (record === undefined || !current(record)) throw new Error(`the child task ${ended} is missing`);
+	const { input } = record;
+	await runtime.commit(async (tx) => {
+		const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
+		const doc = await tx.doc(CallDoc, key, null);
+		doc.value = { task, runId: input.runId };
+		return undefined;
+	}, context);
+	return savedChild(runtime, key, context);
 }
 
 /**
  * The one phase: it runs the script, in the run's worktree when it has one. The phase may run again after an
- * interruption or a failure: saved calls do not run again, and Git steps must be safe to repeat. A failed phase, in a
- * root run or a child run, reports the failure to `host` and stays pending, so that it keeps its saved calls.
+ * interruption: saved calls do not run again, and Git steps must be safe to repeat. A failed phase, in a root run or a
+ * child run, ends the task as failed. Its saved calls stay in the store for the next task of the run.
  */
 async function runPhase(
 	definition: ScriptTask,
-	task: RunningTask<TaskInput, Checkpoint, JsonValue>,
+	task: RunningTask<ScriptInput, Checkpoint, JsonValue>,
 	runtime: Runtime,
 	context: Context,
 	host: ExtensionHost,
 ) {
-	const { input } = task.input;
+	const { input } = task;
 	const { worktree } = input;
 	const cwd = worktree?.path ?? input.cwd;
 	try {
@@ -88,33 +113,31 @@ async function runPhase(
 			bundle: input.bundle,
 			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },
 			child: (key, name, args) => startChild(definition, runtime, context, { input, cwd }, key, name, args),
+			restart: (key, ended) => restartChild(definition, runtime, context, key, ended),
 		});
-		// A child run whose failure the script caught is still live, and the task cannot end while it owns live tasks.
-		for (const child of await runtime.ownedTasks(context)) await runtime.abortOwned(child.id, context);
 		await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
 	} catch (error) {
 		// A closing store cancels the phase; it runs again when the run resumes.
 		if (runtime.signal.aborted) throw error;
-		// A failed task would drop the saved calls, so the task stays pending until the store closes.
-		host.fail(runtime.taskId, error instanceof Error ? error.message : String(error));
-		const { signal } = runtime;
-		await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+		// A thrown phase would end the task as faulted, so the phase commits the failure itself.
+		const message = error instanceof Error ? error.message : String(error);
+		await runtime.commit(() => ({ status: "terminal", outcome: { status: "failed", error: { message } } }), context);
 	}
 }
 
 /** The kind and version of the task of every script run. A run saved by an earlier version cannot resume. */
-export const TASK = { name: "workflows.run", version: 7 } as const;
+export const TASK = { name: "workflows.run", version: 8 } as const;
 
 /** Whether the script task can continue the task `latest`. */
 export function current(
 	latest: TaskRecord<JsonValue, JsonValue, JsonValue>,
-): latest is TaskRecord<TaskInput, JsonValue, JsonValue> {
+): latest is TaskRecord<ScriptInput, JsonValue, JsonValue> {
 	return latest.kind === TASK.name && latest.version >= TASK.version;
 }
 
 /** The task of every script run, whose scripts reach the command through `host`; `list` shows the script name. */
 export function scriptTask(host: ExtensionHost): ScriptTask {
-	const definition: ScriptTask = defineTask<TaskInput, Checkpoint, JsonValue>({
+	const definition: ScriptTask = defineTask<ScriptInput, Checkpoint, JsonValue>({
 		...TASK,
 		// No `migrate`: the store does not run a task of an earlier version, and `resume` refuses it.
 		initial: () => ({ phase: "run" }),
@@ -124,34 +147,4 @@ export function scriptTask(host: ExtensionHost): ScriptTask {
 		},
 	});
 	return definition;
-}
-
-/**
- * The input of the child run `run` of a `run(name, args)` call: the script `name` of the caller's `bundle`, with the
- * `meta` defaults and the given args. With `meta.worktree` and `repo`, the child gets its own worktree from `repo` and
- * `base`; otherwise it runs in the caller's directory. `prompts` maps prompt names to texts that replace them in this
- * run only. The args are not checked against `meta`.
- */
-async function childInput(
-	request: { readonly name: string; readonly args: JsonObject; readonly bundle: RunBundle },
-	run: Run,
-): Promise<ScriptInput> {
-	const { name, bundle } = request;
-	const source = Object.hasOwn(bundle.scripts, name) ? bundle.scripts[name] : undefined;
-	if (source === undefined) throw new Error(`no workflow ${name}`);
-	const meta = await readMeta(source, name);
-	const { repo, base = "main", prompts = {}, ...given } = request.args;
-	if (!isObject(prompts)) throw new Error(`run ${name}: prompts is not an object of prompt texts`);
-	const replaced = { ...bundle.prompts };
-	for (const [prompt, value] of Object.entries(prompts)) {
-		if (!Object.hasOwn(bundle.prompts, prompt)) throw new Error(`run ${name}: no prompt ${prompt}`);
-		replaced[prompt] = instructions(String(value));
-	}
-	const defaults = Object.entries(meta.args).flatMap(([arg, spec]) =>
-		spec.default === undefined ? [] : [[arg, spec.default] as const],
-	);
-	const args = { ...Object.fromEntries(defaults), ...given };
-	const input = { name, args, meta, bundle: { ...bundle, prompts: replaced, main: source } };
-	if (repo === undefined || !meta.worktree) return { ...input, runId: run.id, runDir: run.directory, cwd: run.cwd };
-	return prepare({ ...input, repo: String(repo), base: String(base) }, run);
 }

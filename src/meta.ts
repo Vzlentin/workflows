@@ -9,6 +9,7 @@ import { parseArgs } from "node:util";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { selectRepository } from "./git.ts";
+import { instructions } from "./prompts.ts";
 import { type Io, type Run, UsageError } from "./run.ts";
 import { type Bundle, loadBundle, META, type RunBundle } from "./script.ts";
 
@@ -374,4 +375,34 @@ export function report(input: ScriptInput, result: unknown, io: Io): number {
 	else io.stdout(typeof result === "string" ? result : JSON.stringify(result));
 	const status = statusOf(result);
 	return status !== undefined && Object.hasOwn(input.meta.exit, status) ? (input.meta.exit[status] ?? 0) : 0;
+}
+
+/**
+ * The input of the child run `run` of a `run(name, args)` call: the script `name` of the caller's `bundle`, with the
+ * `meta` defaults and the given args. With `meta.worktree` and `repo`, the child gets its own worktree from `repo` and
+ * `base`; otherwise it runs in the caller's directory. `prompts` maps prompt names to texts that replace them in this
+ * run only. The args are not checked against `meta`.
+ */
+export async function childInput(
+	request: { readonly name: string; readonly args: JsonObject; readonly bundle: RunBundle },
+	run: Run,
+): Promise<ScriptInput> {
+	const { name, bundle } = request;
+	const source = Object.hasOwn(bundle.scripts, name) ? bundle.scripts[name] : undefined;
+	if (source === undefined) throw new Error(`no workflow ${name}`);
+	const meta = await readMeta(source, name);
+	const { repo, base = "main", prompts = {}, ...given } = request.args;
+	if (!isObject(prompts)) throw new Error(`run ${name}: prompts is not an object of prompt texts`);
+	const replaced = { ...bundle.prompts };
+	for (const [prompt, value] of Object.entries(prompts)) {
+		if (!Object.hasOwn(bundle.prompts, prompt)) throw new Error(`run ${name}: no prompt ${prompt}`);
+		replaced[prompt] = instructions(String(value));
+	}
+	const defaults = Object.entries(meta.args).flatMap(([arg, spec]) =>
+		spec.default === undefined ? [] : [[arg, spec.default] as const],
+	);
+	const args = { ...Object.fromEntries(defaults), ...given };
+	const input = { name, args, meta, bundle: { ...bundle, prompts: replaced, main: source } };
+	if (repo === undefined || !meta.worktree) return { ...input, runId: run.id, runDir: run.directory, cwd: run.cwd };
+	return prepare({ ...input, repo: String(repo), base: String(base) }, run);
 }
