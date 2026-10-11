@@ -23,11 +23,8 @@ export class UsageError extends Error {
 	}
 }
 
-/**
- * The checkpoint of a run: its one phase, and the runner session, which the phase opens on its first run and commits
- * here.
- */
-export type Checkpoint = { readonly phase: "run"; readonly conversation?: ConversationId };
+/** The checkpoint of a run: its one phase. The saved calls of its script are memos of the task. */
+export type Checkpoint = { readonly phase: "run" };
 
 /** One conversation with a fixed agent. */
 export type Session = {
@@ -46,8 +43,8 @@ export type Io = {
 	readonly stderr: (line: string) => void;
 };
 
-/** The stored task input: the workflow input, and the checkpoint a resume continues from after a failure. */
-export type Stored = { readonly input: JsonValue; readonly from?: Checkpoint };
+/** The stored task input: the workflow input. */
+export type Stored = { readonly input: JsonValue };
 
 /** What turns need from a task runtime or a tool API. */
 export type Turns = {

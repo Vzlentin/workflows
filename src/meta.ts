@@ -11,7 +11,15 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { defineTask, type JsonObject, type RunningTask, type TaskRuntime } from "@earendil-works/pi-durable";
 import { ensureWorktree, selectRepository } from "./git.ts";
 import { instructions } from "./prompts.ts";
-import { type Bundle, type ChildRequest, loadBundle, META, type RunBundle, runScriptPhase } from "./script.ts";
+import {
+	type Bundle,
+	type ChildRequest,
+	type ExtensionHost,
+	loadBundle,
+	META,
+	type RunBundle,
+	runScriptPhase,
+} from "./script.ts";
 import { type Checkpoint, type Io, type Run, type Stored, UsageError } from "./workflow.ts";
 
 /** The first non-empty line of `item`, without leading #. */
@@ -378,48 +386,49 @@ export function report(input: ScriptInput, result: unknown, io: Io): number {
 type Runtime = TaskRuntime<Stored, Checkpoint, JsonValue, object>;
 
 /**
- * The one phase: a runner session runs the script, in the run's worktree when it has one. The phase may run again after
- * an interruption or a failure: answered turns are not sent again, and Git steps must be safe to repeat. A phase that
- * throws fails the run and keeps its checkpoint. A resume starts a new task from that checkpoint, which runs the phase
- * again and sends a failed turn again under a new request ID.
+ * The one phase: it runs the script, in the run's worktree when it has one. The phase may run again after an
+ * interruption or a failure: saved calls do not run again, and Git steps must be safe to repeat. A phase that throws
+ * fails the run. A resume starts a new task, which runs the phase again.
  */
-async function runPhase(task: RunningTask<Stored, Checkpoint, JsonValue>, runtime: Runtime, context: Context) {
-	const { checkpoint } = task.state;
+async function runPhase(
+	task: RunningTask<Stored, Checkpoint, JsonValue>,
+	runtime: Runtime,
+	context: Context,
+	host: ExtensionHost,
+) {
 	const input = task.input.input as ScriptInput;
 	try {
 		const { worktree } = input;
 		if (worktree === undefined) {
-			await runScriptPhase(runtime, checkpoint, context, input.cwd, input.bundle, input.args);
+			await runScriptPhase(runtime, context, input.cwd, input.bundle, input.args, host);
 		} else {
 			await ensureWorktree(worktree.repository, worktree.path, worktree.branch, worktree.start);
 			const args = { ...input.args, start: worktree.start };
-			await runScriptPhase(runtime, checkpoint, context, worktree.path, input.bundle, args);
+			await runScriptPhase(runtime, context, worktree.path, input.bundle, args, host);
 		}
 	} catch (error) {
 		// A closing store cancels the phase; it runs again when the run resumes.
 		if (runtime.signal.aborted) throw error;
 		const message = error instanceof Error ? error.message : String(error);
-		await runtime.commit(
-			(_tx, current) => ({
-				status: "terminal",
-				outcome: { status: "failed", error: { message, detail: { from: current.state.checkpoint } } },
-			}),
-			context,
-		);
+		await runtime.commit(() => ({ status: "terminal", outcome: { status: "failed", error: { message } } }), context);
 	}
 }
 
-/** The task of every script run; `list` shows the script name. A run saved by an earlier version cannot resume. */
-export const scriptTask = defineTask<Stored, Checkpoint, JsonValue>({
-	name: "workflows.run",
-	version: 4,
-	// No `migrate`: the store does not run a task of an earlier version, and `resume` refuses it.
-	initial: (stored) => stored.from ?? { phase: "run" },
-	phases: { run: runPhase },
-	abort: async (_task, runtime, context) => {
-		await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
-	},
-});
+/** The kind and version of the task of every script run. A run saved by an earlier version cannot resume. */
+export const TASK = { name: "workflows.run", version: 5 } as const;
+
+/** The task of every script run, whose scripts reach the command through `host`; `list` shows the script name. */
+export function scriptTask(host: ExtensionHost) {
+	return defineTask<Stored, Checkpoint, JsonValue>({
+		...TASK,
+		// No `migrate`: the store does not run a task of an earlier version, and `resume` refuses it.
+		initial: () => ({ phase: "run" }),
+		phases: { run: (task, runtime, context) => runPhase(task, runtime, context, host) },
+		abort: async (_task, runtime, context) => {
+			await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
+		},
+	});
+}
 
 /**
  * The input of the child run of `request`: the script `request.name` of the caller's bundle, with the `meta` defaults

@@ -1,12 +1,9 @@
 /**
- * Workflow scripts. A script is JavaScript that runs in the pi-codemode sandbox inside one `workflow` tool call. Each
- * call it makes is a keyed nested call of that tool, so when the tool runs again after an interruption, the finished
- * calls return their saved results and only the rest runs. A script failure does not settle the `workflow` call: the
- * command stops, and a resume runs the same call again. `run(name, args)` starts a child run with its own run
- * directory and store, and a resume of the caller continues that child run.
- *
- * The runner conversation holds the run's bundle, and a local runner model starts the root call: it answers the run's
- * input with one `workflow` call, and the tool result with its text.
+ * Workflow scripts. A script is JavaScript that runs in the pi-codemode sandbox in the phase of the run's task. Each
+ * call it makes saves its result as a keyed memo of the task, so when the phase runs again after an interruption, the
+ * finished calls return their saved results and only the rest runs. A call that fails saves nothing. A script failure
+ * keeps the task pending: the command stops, and a resume runs the script again. `run(name, args)` starts a child run
+ * with its own run directory and store, and a resume of the caller continues that child run.
  */
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -14,22 +11,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import {
-	type AssistantMessage,
-	type Message,
 	type ModelThinkingLevel,
 	type TextContent,
 	type TSchema,
 	Type,
 	validateToolArguments,
 } from "@earendil-works/pi-ai";
-import type { Provider } from "@earendil-works/pi-ai/models";
-import {
-	type FauxResponseFactory,
-	fauxAssistantMessage,
-	fauxProvider,
-	fauxToolCall,
-} from "@earendil-works/pi-ai/providers/faux";
-import { type CodemodeJsonSchema, CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
+import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
 	type ConversationId,
@@ -37,16 +25,12 @@ import {
 	defineDoc,
 	defineExtension,
 	defineTool,
-	type Extension,
 	type JsonObject,
 	type ModelRef,
-	NestedCallDoc,
 	section,
 	type TaskRuntime,
-	type ToolExecutionApi,
-	type Tx,
 } from "@earendil-works/pi-durable";
-import { type AgentChoice, sessionAgent } from "./agents.ts";
+import { sessionAgent } from "./agents.ts";
 import { failure, git, run } from "./git.ts";
 import { instructions, render } from "./prompts.ts";
 import { type Checkpoint, newRunId, type Stored, sessionOf, textOf } from "./workflow.ts";
@@ -65,7 +49,7 @@ export type Bundle = {
 	readonly agents: Readonly<Record<string, Profile>>;
 };
 
-/** The bundle of a run and its own script, kept in the runner conversation. */
+/** The bundle of a run and its own script, saved in the run's input. */
 export type RunBundle = Bundle & { readonly main: string };
 
 /** A `run(name, args)` call of a workflow script: its child run ID, and the bundle and directory of the caller. */
@@ -77,7 +61,7 @@ export type ChildRequest = {
 	readonly cwd: string;
 };
 
-/** What the script extensions get from the command. */
+/** What a script run gets from the command. */
 export type ExtensionHost = {
 	/** The run ID, which is the base name of `runDir`. */
 	readonly runId: string;
@@ -91,17 +75,8 @@ export type ExtensionHost = {
 	 * The result of the child run `request.id`. The first call starts the run, and a later call continues it. Throws
 	 * `child run <id> failed: <error>` when the run fails.
 	 */
-	child(request: ChildRequest, signal: AbortSignal | undefined): Promise<JsonValue>;
+	child(request: ChildRequest, signal: AbortSignal): Promise<JsonValue>;
 };
-
-const BundleDoc = defineDoc<RunBundle>({
-	kind: "workflows.bundle",
-	version: 1,
-	scope: "conversation",
-	history: "latest",
-	fork: "current",
-	initial: () => ({ main: "", scripts: {}, prompts: {}, agents: {} }),
-});
 
 const PACKAGE = fileURLToPath(new URL("../", import.meta.url));
 
@@ -175,7 +150,6 @@ export const META = /^((?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*)export\s+(const\s+met
 
 const text = (value: string): TextContent[] => [{ type: "text", text: value }];
 
-const SCRIPT = "workflows-script";
 const ANSWER = "workflows-answer";
 
 /** The JSON Schema of the current ask's answer, per conversation; absent when the ask has no `schema`. */
@@ -187,13 +161,6 @@ const AnswerDoc = defineDoc<{ schema?: JsonObject }>({
 	fork: "current",
 	initial: () => ({}),
 });
-
-/** The bundle of the runner conversation that the calling script runs in. */
-async function bundleOf(api: ToolExecutionApi, context: Context): Promise<RunBundle> {
-	const bundle = await api.snapshot(BundleDoc, api.conversationId, context);
-	if (bundle === undefined) throw new Error("workflow scripts run only in a runner session");
-	return bundle;
-}
 
 /**
  * The answer of `args` checked against `schema`, as `validateToolArguments` returns it. A string answer that does not
@@ -242,111 +209,6 @@ const respond = defineTool({
 		return { output: text("Answer recorded."), control: { terminate: true } };
 	},
 });
-
-/** The `workflow` tool without its runtime, for agent changes that name it. */
-const WORKFLOW = defineTool({
-	name: "workflow",
-	description: "Run the workflow script of the run.",
-	parameters: Type.Object({ args: Type.Record(Type.String(), Type.Unknown()) }),
-	replay: "safe",
-	structuredOutputSchema: Type.Unknown(),
-	outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
-	execute: async () => {
-		throw new Error("the workflow tool is not installed");
-	},
-});
-
-const session = defineTool({
-	name: "session",
-	description: "Open a session of a workflow script.",
-	parameters: Type.Object({ profile: Type.String() }),
-	callers: ["tools"],
-	replay: "safe",
-	structuredOutputSchema: Type.Number(),
-	execute: async (args, api, context) => {
-		const { cwd = "." } = await api.agent(context);
-		const profile = (await bundleOf(api, context)).agents[args.profile];
-		if (profile === undefined) throw new Error(`no agent profile ${args.profile}`);
-		const id = await api.commit(async (tx) => {
-			const created = await tx.createConversation({ ownership: { kind: "ownerless" } });
-			await configure(tx, created.id, {
-				...sessionAgent(profile, cwd),
-				...(profile.instructions === "" ? {} : { instructions: profile.instructions }),
-				extensions: { add: [{ name: ANSWER }] },
-				modelTools: { remove: [respond] },
-			});
-			return created.id;
-		}, context);
-		return { output: text(String(id)), structuredOutput: id };
-	},
-});
-
-const ask = defineTool({
-	name: "ask",
-	description: "One turn in a session of a workflow script.",
-	parameters: Type.Object({
-		conversation: Type.Number(),
-		prompt: Type.String(),
-		schema: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-	}),
-	callers: ["tools"],
-	replay: "safe",
-	structuredOutputSchema: Type.Unknown(),
-	execute: async (args, api, context) => {
-		const conversation = args.conversation as ConversationId;
-		const { schema } = args;
-		await api.commit(async (tx) => {
-			const doc = await tx.doc(AnswerDoc, conversation);
-			if (schema === undefined) delete doc.schema;
-			else doc.schema = schema as JsonObject;
-			await configure(tx, conversation, {
-				extensions: { add: [{ name: ANSWER }], remove: [{ name: SCRIPT }] },
-				modelTools: { remove: schema === undefined ? [respond] : [] },
-			});
-			return undefined;
-		}, context);
-		// The request ID is the nested call ID, so an interrupted ask continues its turn.
-		const answer = await sessionOf(api, conversation, context).turn(api.callId, args.prompt);
-		if (schema === undefined) {
-			const reply = textOf(answer).trim();
-			return { output: text(reply), structuredOutput: reply };
-		}
-		const call = answer.content.findLast((part) => part.type === "toolCall" && part.name === "respond");
-		if (call?.type !== "toolCall") throw new Error("the answer did not call respond");
-		const value = checkedAnswer(schema as JsonObject, call.arguments as JsonObject, call.id);
-		return { output: text(JSON.stringify(value)), structuredOutput: value as JsonObject };
-	},
-});
-
-const sh = defineTool({
-	name: "sh",
-	description: "Run a shell command of a workflow script.",
-	parameters: Type.Object({
-		cmd: Type.Union([Type.String(), Type.Array(Type.String(), { minItems: 1 })]),
-		check: Type.Boolean(),
-	}),
-	callers: ["tools"],
-	replay: "safe",
-	structuredOutputSchema: Type.Object({ code: Type.Number(), stdout: Type.String(), stderr: Type.String() }),
-	execute: async (args, api, context) => {
-		const { cwd = "." } = await api.agent(context);
-		// A string is `sh -c <cmd>`; an array is the program `cmd[0]` with the arguments `cmd.slice(1)` and no shell.
-		const [file = "", ...rest] = typeof args.cmd === "string" ? ["sh", "-c", args.cmd] : args.cmd;
-		const result = await run(file, rest, cwd, context.abortSignal);
-		// A failed check is an error result, so a resume runs the command again.
-		if (args.check && result.code !== 0) {
-			if (typeof args.cmd !== "string") throw new Error(failure(args.cmd, result));
-			const stderr = result.stderr.trim();
-			throw new Error(`sh exited with ${result.code}: ${args.cmd}${stderr === "" ? "" : `\n${stderr}`}`);
-		}
-		return { output: text(`exit ${result.code}`), structuredOutput: result };
-	},
-});
-
-const NEW_RUN = "new_run";
-const CHILD = "child";
-
-const OWN = new Set([WORKFLOW.name, session.name, ask.name, sh.name, NEW_RUN, CHILD]);
 
 /** The sandbox functions that are not host calls. */
 function prelude(args: JsonObject, prompts: readonly string[], host: ExtensionHost): string {
@@ -418,70 +280,163 @@ function print(progress: Progress): void {
 	for (const line of progress.lines.splice(0)) progress.log(line.text);
 }
 
+type Runtime = TaskRuntime<Stored, Checkpoint, JsonValue, object>;
+
+/** What the calls of one script execution share. */
+type Calls = {
+	readonly runtime: Runtime;
+	readonly context: Context;
+	readonly counters: Map<string, number>;
+	readonly progress: Progress;
+};
+
 /**
- * The result of nested call `name`. A call whose saved result is an error runs again, under the next free key
- * `<key>~<n>`. The waiting lines print when the call runs. A call with a saved result drops the log lines and keeps
- * the phase line, so a resume prints the phase of the first call that runs.
+ * The result of the call `name` with `args`: its saved memo, or the value of `effect`, which gets the call's key and
+ * whose value is saved. A call that throws saves nothing, so it runs again. The waiting lines print when the call runs.
+ * A call with a saved result drops the log lines and keeps the phase line, so a resume prints the phase of the first
+ * call that runs.
+ *
+ * Each memo commit rewrites the task record with all its memos, so the saved output costs O(n^2) to write over a run.
+ * When that is too slow, save each call as its own doc.
  */
-async function nested(
-	api: ToolExecutionApi,
-	context: Context,
-	counters: Map<string, number>,
-	progress: Progress,
+async function memoized(
+	calls: Calls,
 	name: string,
 	args: JsonObject,
-): Promise<unknown> {
-	const base = keyOf(name, args, counters);
-	let key = base;
-	let saved = await api.snapshot(NestedCallDoc, api.taskId, key, context);
-	for (let n = 2; saved?.result?.isError === true; n++) {
-		key = `${base}~${n}`;
-		saved = await api.snapshot(NestedCallDoc, api.taskId, key, context);
-	}
+	effect: (key: string) => Promise<JsonValue>,
+): Promise<JsonValue> {
+	const { runtime, context, progress } = calls;
+	const key = keyOf(name, args, calls.counters);
+	const saved = await runtime.memo<JsonValue>(key, context);
 	const { lines } = progress;
-	if (saved?.result === undefined) print(progress);
-	else lines.splice(0, lines.length, ...lines.filter((line) => line.phase));
-	const result = await api.executeTool(name, args, context, { key });
-	if (result.isError) {
-		const output = typeof result.structuredOutput === "string" ? [result.structuredOutput] : [];
-		const reasons = [...output, ...result.diagnostics.map((diagnostic) => diagnostic.message)];
-		throw new Error(reasons.filter((reason) => reason !== "").join("\n") || `${name} failed`);
+	if (saved !== undefined) {
+		lines.splice(0, lines.length, ...lines.filter((line) => line.phase));
+		return saved;
 	}
-	return result.structuredOutput;
+	print(progress);
+	return runtime.memo(key, await effect(key), context);
+}
+
+/** Opens a session of the agent profile `name` in `cwd`; the task owns its conversation. */
+async function openSession(calls: Calls, cwd: string, bundle: RunBundle, name: string): Promise<JsonValue> {
+	const profile = bundle.agents[name];
+	if (profile === undefined) throw new Error(`no agent profile ${name}`);
+	const { runtime, context } = calls;
+	let id: ConversationId | undefined;
+	await runtime.commit(async (tx) => {
+		const created = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });
+		await configure(tx, created.id, {
+			...sessionAgent(profile, cwd),
+			...(profile.instructions === "" ? {} : { instructions: profile.instructions }),
+			extensions: { add: [{ name: ANSWER }] },
+			modelTools: { remove: [respond] },
+		});
+		id = created.id;
+		return undefined;
+	}, context);
+	return id as ConversationId;
+}
+
+/** One turn in `conversation`; the call's key is the request ID, so an interrupted ask continues its turn. */
+async function askTurn(
+	calls: Calls,
+	key: string,
+	conversation: ConversationId,
+	prompt: string,
+	schema: JsonObject | null,
+): Promise<JsonValue> {
+	const { runtime, context } = calls;
+	await runtime.commit(async (tx) => {
+		const doc = await tx.doc(AnswerDoc, conversation);
+		if (schema === null) delete doc.schema;
+		else doc.schema = schema;
+		await configure(tx, conversation, {
+			extensions: { add: [{ name: ANSWER }] },
+			modelTools: { remove: schema === null ? [respond] : [] },
+		});
+		return undefined;
+	}, context);
+	const answer = await sessionOf(runtime, conversation, context).turn(key, prompt);
+	if (schema === null) return textOf(answer).trim();
+	const call = answer.content.findLast((part) => part.type === "toolCall" && part.name === "respond");
+	if (call?.type !== "toolCall") throw new Error("the answer did not call respond");
+	return checkedAnswer(schema, call.arguments as JsonObject, call.id) as JsonValue;
+}
+
+/** The result of a shell command in `cwd`. With `check`, a non-zero exit throws. */
+async function shell(calls: Calls, cwd: string, cmd: string | string[], check: boolean): Promise<JsonValue> {
+	// A string is `sh -c <cmd>`; an array is the program `cmd[0]` with the arguments `cmd.slice(1)` and no shell.
+	const [file = "", ...rest] = typeof cmd === "string" ? ["sh", "-c", cmd] : cmd;
+	const result = await run(file, rest, cwd, calls.runtime.signal);
+	if (check && result.code !== 0) {
+		if (typeof cmd !== "string") throw new Error(failure(cmd, result));
+		const stderr = result.stderr.trim();
+		throw new Error(`sh exited with ${result.code}: ${cmd}${stderr === "" ? "" : `\n${stderr}`}`);
+	}
+	return result;
 }
 
 function global(name: string, execute: (...values: never[]) => unknown): CodemodeTool {
 	return { name, spread: true, execute: (values) => execute(...(values as never[])) };
 }
 
-/** The return value of the run's own script. A script failure is reported to `host` and waits for the store to close. */
-async function runScript(args: JsonObject, api: ToolExecutionApi, context: Context, host: ExtensionHost) {
-	const bundle = await bundleOf(api, context);
+/**
+ * `workflows-answer` is for script sessions: the `respond` tool of a `schema` ask, and the `answer_schema` section that
+ * shows the schema to the model.
+ */
+export const answerExtension = defineExtension({
+	name: ANSWER,
+	tools: [respond],
+	sections: [
+		section("answer_schema", async ({ read, conversationId }, context) => {
+			const schema = (await read.snapshot(AnswerDoc, conversationId, context))?.schema;
+			return schema && `The answer of respond must match this JSON Schema:\n${JSON.stringify(schema)}`;
+		}),
+	],
+});
+
+/**
+ * Runs `bundle.main` with `args` in `cwd`, and commits its value as the run's result. A script failure is reported to
+ * `host`, and the phase waits for the store to close: a failed task would drop the saved calls, so the task stays
+ * pending and a resume runs the script again.
+ */
+export async function runScriptPhase(
+	runtime: Runtime,
+	context: Context,
+	cwd: string,
+	bundle: RunBundle,
+	args: JsonObject,
+	host: ExtensionHost,
+): Promise<void> {
 	// A module export is a syntax error in the function body that the script runs as.
 	const source = bundle.main.replace(META, "$1$2");
-	const counters = new Map<string, number>();
 	const progress: Progress = { lines: [], log: host.log };
-	const call = (name: string, values: JsonObject) => nested(api, context, counters, progress, name, values);
-	const { callable } = await api.agent(context);
+	const calls: Calls = { runtime, context, counters: new Map(), progress };
 	const sandbox = new CodemodeSandbox({
 		timeoutMs: Number.POSITIVE_INFINITY,
-		tools: callable
-			.filter((tool) => !OWN.has(tool.name))
-			.map((tool) => ({
-				name: tool.name,
-				description: tool.description,
-				inputSchema: tool.parameters as CodemodeJsonSchema,
-				execute: (values) => call(tool.name, values as JsonObject),
-			})),
 		globals: [
-			global("__session", (profile: string) => call("session", { profile })),
-			global("__ask", (conversation: number, prompt: string, schema?: JsonObject) =>
-				call("ask", { conversation, prompt, ...(schema === undefined ? {} : { schema }) }),
+			global("__session", (profile: string) =>
+				memoized(calls, "session", { profile }, () => openSession(calls, cwd, bundle, profile)),
 			),
-			global("__sh", (cmd: string | string[], check: boolean) => call("sh", { cmd, check })),
+			// The sandbox sends a missing schema as null.
+			global("__ask", (conversation: number, prompt: string, schema: JsonObject | null) =>
+				memoized(calls, "ask", { conversation, prompt, schema }, (key) =>
+					askTurn(calls, key, conversation as ConversationId, prompt, schema),
+				),
+			),
+			global("__sh", (cmd: string | string[], check: boolean) =>
+				memoized(calls, "sh", { cmd, check }, () => shell(calls, cwd, cmd, check)),
+			),
 			// The name and the args are in the key, so a resume that reorders different `run` calls keeps each child run.
-			global("__newRun", (name: string, values: JsonObject) => call(NEW_RUN, { name, args: values })),
-			global("__child", (id: string, name: string, values: JsonObject) => call(CHILD, { id, name, args: values })),
+			// The saved `new_run` keeps the child's ID, also for a `child` call that fails and runs again.
+			global("__newRun", (name: string, values: JsonObject) =>
+				memoized(calls, "new_run", { name, args: values }, async () => newRunId()),
+			),
+			global("__child", (id: string, name: string, values: JsonObject) =>
+				memoized(calls, "child", { id, name, args: values }, () =>
+					host.child({ id, name, args: values, bundle, cwd }, runtime.signal),
+				),
+			),
 			global("phase", (title: string) => phaseLine(progress, String(title))),
 			global("log", (line: string) => progress.lines.push({ text: String(line), phase: false })),
 			global("__prompt", (name: string, inputs?: Record<string, string> | null) => {
@@ -491,149 +446,21 @@ async function runScript(args: JsonObject, api: ToolExecutionApi, context: Conte
 			}),
 		],
 	});
-	const signal = context.abortSignal;
+	const { signal } = runtime;
 	let result: Awaited<ReturnType<CodemodeSandbox["execute"]>>;
 	try {
 		const wrapped = `${prelude(args, Object.keys(bundle.prompts), host)}\nreturn await (async () => {\n${source}\n})();`;
-		result = await sandbox.execute(wrapped, signal === undefined ? {} : { signal });
+		result = await sandbox.execute(wrapped, { signal });
 	} finally {
 		await sandbox.close();
 		print(progress);
 	}
-	if (result.ok) return result.value ?? null;
-	if (signal?.aborted) throw signal.reason;
-	// A failed task would not do: its resume starts a new task, and the saved nested calls belong to this one. So the
-	// call stays open, the command stops, and a resume runs this call again.
-	host.fail(result.error.message);
-	return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
-}
-
-/**
- * Two extensions, one per consumer. `workflows-script` is for the runner: its `workflow` tool, and the `session`, `ask`
- * and `sh` calls that a script makes inside that call. `workflows-answer` is for script sessions: the `respond` tool of
- * a `schema` ask, and the `answer_schema` section that shows the schema to the model.
- */
-export function scriptExtensions(host: ExtensionHost): Extension[] {
-	const workflow = defineTool({
-		...WORKFLOW,
-		execute: async (args, api, context) => {
-			const value = await runScript(args.args as JsonObject, api, context, host);
-			return { output: text(JSON.stringify(value)), structuredOutput: value as JsonObject };
-		},
-	});
-	// The saved result of `new_run` keeps the child's ID, also for a `child` call that fails and runs again.
-	const newRun = defineTool({
-		name: NEW_RUN,
-		description: "Give a new run ID to a run() call of a workflow script.",
-		parameters: Type.Object({ name: Type.String(), args: Type.Record(Type.String(), Type.Unknown()) }),
-		callers: ["tools"],
-		replay: "safe",
-		structuredOutputSchema: Type.String(),
-		execute: async () => {
-			const id = newRunId();
-			return { output: text(id), structuredOutput: id };
-		},
-	});
-	const child = defineTool({
-		name: CHILD,
-		description: "Run a child run of a workflow script.",
-		parameters: Type.Object({
-			id: Type.String(),
-			name: Type.String(),
-			args: Type.Record(Type.String(), Type.Unknown()),
-		}),
-		callers: ["tools"],
-		replay: "safe",
-		structuredOutputSchema: Type.Unknown(),
-		outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
-		execute: async (args, api, context) => {
-			const { cwd = "." } = await api.agent(context);
-			const bundle = await bundleOf(api, context);
-			const request = { id: args.id, name: args.name, args: args.args as JsonObject, bundle, cwd };
-			const value = await host.child(request, context.abortSignal);
-			return { output: text(JSON.stringify(value)), structuredOutput: value as JsonObject };
-		},
-	});
-	return [
-		defineExtension({ name: SCRIPT, tools: [workflow, session, ask, sh, newRun, child] }),
-		defineExtension({
-			name: ANSWER,
-			tools: [respond],
-			sections: [
-				section("answer_schema", async ({ read, conversationId }, context) => {
-					const schema = (await read.snapshot(AnswerDoc, conversationId, context))?.schema;
-					return schema && `The answer of respond must match this JSON Schema:\n${JSON.stringify(schema)}`;
-				}),
-			],
-		}),
-	];
-}
-
-/**
- * The runner model, which only starts the root `workflow` call. It exists because a pi-durable task cannot call a tool
- * itself: `TaskRuntime` has no `executeTool`.
- */
-const RUNNER: AgentChoice = { model: { provider: "workflows-runner", modelId: "runner" }, thinkingLevel: "off" };
-
-/**
- * Makes `conversation` the runner session of `bundle`: it selects `workflows-script`, offers only `workflow` to the
- * model, and keeps the bundle that its scripts read.
- */
-async function openRunner(tx: Tx, conversation: ConversationId, bundle: RunBundle): Promise<void> {
-	await configure(tx, conversation, { extensions: { add: [{ name: SCRIPT }] }, modelTools: [WORKFLOW] });
-	Object.assign(await tx.doc(BundleDoc, conversation), bundle);
-}
-
-function contentText(message: Message | undefined): string {
-	if (message === undefined || message.role === "system") return "";
-	if (typeof message.content === "string") return message.content;
-	return message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
-}
-
-/**
- * The runner provider. It answers the run's input, the arguments of the root `workflow` call as JSON, with that call,
- * and the tool result with the result's text.
- */
-export function runnerProvider(): Provider {
-	const faux = fauxProvider({ provider: RUNNER.model.provider, models: [{ id: RUNNER.model.modelId }] });
-	const respond: FauxResponseFactory = (context): AssistantMessage => {
-		faux.appendResponses([respond]);
-		const last = context.messages.findLast((message) => message.role !== "system");
-		if (last?.role === "toolResult") {
-			const result = contentText(last);
-			return last.isError
-				? fauxAssistantMessage("", { stopReason: "error", errorMessage: result })
-				: fauxAssistantMessage(result);
-		}
-		return fauxAssistantMessage(fauxToolCall("workflow", JSON.parse(contentText(last))), { stopReason: "toolUse" });
-	};
-	faux.setResponses([respond]);
-	return faux.provider;
-}
-
-/**
- * Runs `bundle.main` with `args` in a runner session in `cwd`. Without a session in `checkpoint`, it opens the session,
- * commits it into the checkpoint, and returns: the phase then runs again with the session. With a session, the
- * script's value is the run's result.
- */
-export async function runScriptPhase(
-	runtime: TaskRuntime<Stored, Checkpoint, JsonValue, object>,
-	checkpoint: Checkpoint,
-	context: Context,
-	cwd: string,
-	bundle: RunBundle,
-	args: JsonObject,
-): Promise<void> {
-	if (checkpoint.conversation === undefined) {
-		await runtime.commit(async (tx) => {
-			const created = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });
-			await configure(tx, created.id, sessionAgent(RUNNER, cwd));
-			await openRunner(tx, created.id, bundle);
-			return { status: "running", checkpoint: { ...checkpoint, conversation: created.id } };
-		}, context);
+	if (result.ok) {
+		const value = (result.value ?? null) as JsonValue;
+		await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: value } }), context);
 		return;
 	}
-	const answer = await sessionOf(runtime, checkpoint.conversation, context).say("run", JSON.stringify({ args }));
-	const result = JSON.parse(answer) as JsonValue;
-	await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
+	if (signal.aborted) throw signal.reason;
+	host.fail(result.error.message);
+	await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
 }

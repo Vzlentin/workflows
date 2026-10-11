@@ -317,7 +317,6 @@ export async function workflows(
 		stdout: (line) => stdout.push(line),
 		stderr: (line) => stderr.push(line),
 		models: model.models,
-		addProvider: (provider) => model.models.setProvider(provider),
 		interrupt: interrupt.signal,
 	});
 	const id = stdout.find((line) => line.startsWith("run "))?.slice(4);

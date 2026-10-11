@@ -357,6 +357,10 @@ return [one.reply, two.reply].join(", ")`,
 			]);
 		}
 
+		await writeFile(join(root, "x.js"), 'await tools.read({ path: "x" })');
+		const tools = await workflows(["x.js"], { cwd: root });
+		expect([tools.code, tools.stderr[0]]).toEqual([1, expect.stringContaining("failed x: tools.read does not exist")]);
+
 		await writeFile(join(root, "ok.js"), "const ok = 1; return ok");
 		await writeFile(join(root, "status.js"), 'return { status: "toString" }');
 		await writeFile(

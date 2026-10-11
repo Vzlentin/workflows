@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineExtension, defineTask, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { scriptTask } from "../src/meta.ts";
+import { TASK } from "../src/meta.ts";
 import { newRunId } from "../src/workflow.ts";
 import { FakeModel, git, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
 
@@ -476,9 +476,9 @@ export default function ({ events }) {
 
 describe("workflows resume of ship runs", () => {
 	it("refuses and does not list a run that the earlier ship or run command saved", async () => {
-		const ship = await saveRun("workflows.ship", scriptTask.definition.version);
+		const ship = await saveRun("workflows.ship", TASK.version);
 		// The script task owns the task kind of the earlier `run` command, so only its version can be earlier.
-		const run = await saveRun("workflows.run", scriptTask.definition.version - 1);
+		const run = await saveRun("workflows.run", TASK.version - 1);
 
 		for (const [id, name] of [
 			[ship, "ship"],

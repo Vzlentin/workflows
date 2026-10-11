@@ -363,7 +363,6 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
 | `ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `run(name, args)` | Runs the script `name` of `workflows/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
-| `tools.<name>(args)` | Any tool that sessions get, such as `tools.read({ path })` |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `parallel(thunks)` | Runs the functions at once and returns their results |
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
@@ -377,7 +376,7 @@ accepted. A string answer to a string schema, such as SHIP or FIX, stays a strin
 schema goes back to the model as an error, and the model tries again.
 
 The script runs in the pi-codemode sandbox, with no time limit. It has no file system, network, modules or timers.
-Effects go through `sh`, `ok` and `tools`. `Date`, `Date.now()` and `Math.random()` throw, so that a script makes
+Effects go through `sh` and `ok`. `Date`, `Date.now()` and `Math.random()` throw, so that a script makes
 the same calls each time it runs.
 
 ### Agent profiles
@@ -394,9 +393,9 @@ of every prompt, every profile, the args and the current directory. Resume and `
 later edit of a script, prompt or profile, in the package or in `.workflows/`, changes only new runs.
 
 Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
-again. A call is known by its tool, its arguments and its position among identical calls. A turn that was in progress
-continues in its session. A command that was in progress runs again, so commands must be safe to repeat. Every call
-that failed runs again, also one that the script caught. `phase` and `log` lines are not saved. A resume prints the
+again. A call is known by its name, its arguments and its position among identical calls. A turn that was in progress
+continues in its session. A command that was in progress runs again, so commands must be safe to repeat. A call that
+fails is not saved, so every call that failed runs again, also one that the script caught. `phase` and `log` lines are not saved. A resume prints the
 phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
 lines before it, and keeps the last `phase` line waiting for the next call that runs.
 
