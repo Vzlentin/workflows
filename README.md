@@ -192,8 +192,7 @@ of PASS answers of the judge, or 0 when the judge failed. A blocked or stopped r
 its worktree and its branch `ship/<run-id>` are removed. Its run directory stays.
 
 Ax gets at most `trials × items` evaluations, and each batch is all the items. An evaluation that Ax asks again counts
-against this limit. Each Ax iteration uses the items three times, for the parent, the new candidate and the full check
-of a better candidate, so a better candidate needs `--trials 4` or more.
+against this limit. The best candidate is the one with the highest mean score among the evaluated candidates.
 
 A new text comes from a turn of the `reflect` prompt in one session with the `default` agent profile, in the current
 directory. The turn gets the prompt name, its current text, and for each item of the last batch the work item, the

@@ -86,7 +86,7 @@ describe("workflows optimize", () => {
 		const installed = [optimizeWith([process.execPath, join(root, "fake.mjs")])];
 		const before = await promptsHash();
 
-		const first = await workflows(["optimize", "ship", "--items", "items", "--trials", "4"], { cwd: root, installed });
+		const first = await workflows(["optimize", "ship", "--items", "items"], { cwd: root, installed });
 
 		expect(first.code).toBe(1);
 		expect(first.stderr).toEqual([

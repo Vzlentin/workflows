@@ -46,6 +46,9 @@ type Evaluation = { readonly runId: string; readonly result?: ShipResult };
 
 type Trajectory = { readonly item: Item; readonly result: ShipResult };
 
+/** A candidate that the adapter evaluated on all the items, and its score on each item in item order. */
+type Evaluated = { readonly candidate: Candidate; readonly scores: readonly number[] };
+
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 /** The candidate's texts in name order, as one JSON text. */
@@ -139,11 +142,12 @@ async function evaluate(cli: readonly string[], input: OptimizeInput, candidate:
 }
 
 /**
- * The Ax adapter. Ax catches adapter errors and goes on with its own fallbacks, so the first error is kept, and every
+ * The Ax adapter, and the list of the candidates that it evaluated, the baseline first. Ax catches adapter errors and goes on with its own fallbacks, so the first error is kept, and every
  * later call throws it at once: no ship run or reflect turn starts after it, and the phase throws it after `compile`.
  */
 function adapterOf(cli: readonly string[], input: OptimizeInput, session: Session) {
 	const state: { error?: unknown } = {};
+	const evaluated: Evaluated[] = [];
 	const guard = <A extends unknown[], R>(method: (...args: A) => R) => {
 		return (...args: A): R => {
 			if ("error" in state) throw state.error;
@@ -166,9 +170,11 @@ function adapterOf(cli: readonly string[], input: OptimizeInput, session: Sessio
 		evaluate: guard(async (batch: readonly Item[], candidate: Candidate) => {
 			const outputs: ShipResult[] = [];
 			for (const item of batch) outputs.push(await evaluate(cli, input, candidate, item));
+			const scores = outputs.map(score);
+			evaluated.push({ candidate, scores });
 			return {
 				outputs,
-				scores: outputs.map(score),
+				scores,
 				trajectories: outputs.map((result, index) => ({ item: batch[index] as Item, result })),
 			};
 		}),
@@ -196,7 +202,7 @@ function adapterOf(cli: readonly string[], input: OptimizeInput, session: Sessio
 			return proposed;
 		}),
 	};
-	return { adapter, error: () => state.error };
+	return { adapter, evaluated, error: () => state.error };
 }
 
 /** Writes `<directory>/prompts.diff`: a score line for each item, then a diff from the package prompts to `best`. */
@@ -273,10 +279,10 @@ export function optimizeWith(cli: readonly string[]) {
 						throw new Error("optimize evaluates only through its adapter");
 					},
 				};
-				const { adapter, error } = adapterOf(cli, input, session);
+				const { adapter, evaluated, error } = adapterOf(cli, input, session);
 				// No seed: Ax would replace the global Math.random, and AxGEPA's own generator has a fixed default seed.
 				const optimizer = new AxGEPA({ studentAI: {} as never, minibatchSize: input.items.length });
-				const result = await optimizer
+				await optimizer
 					.compile(
 						program as never,
 						input.items,
@@ -289,25 +295,18 @@ export function optimizeWith(cli: readonly string[]) {
 						throw error() ?? thrown;
 					});
 				if (error() !== undefined) throw error();
-				const found = (result as { optimizedProgram?: { componentMap?: Candidate } }).optimizedProgram?.componentMap;
-				const best = found ?? baseline;
-				const evaluations = await readEvaluations(input.directory);
-				const scoreOf = (candidate: Candidate, item: Item) => {
-					const saved = evaluations[keyOf(candidate, item)]?.result;
-					if (saved === undefined) throw new Error(`no evaluation of ${item.name}`);
-					return score(saved);
-				};
-				const scores = input.items.map((item) => [scoreOf(baseline, item), scoreOf(best, item)] as const);
+				// Each batch is all the items, so every entry has a score for each item. Ax evaluates the baseline first, and
+				// the strict comparison keeps it on a tie. Ax's own choice can skip a better candidate that its limit did not
+				// let it check again.
+				const [first, ...rest] = evaluated;
+				if (first === undefined) throw new Error("Ax evaluated no candidate");
+				const best = rest.reduce((top, entry) => (mean(entry.scores) > mean(top.scores) ? entry : top), first);
 				const lines = input.items.map(
 					(item, index) =>
-						`${item.name}: baseline ${scores[index]?.[0].toFixed(2)}, best ${scores[index]?.[1].toFixed(2)}`,
+						`${item.name}: baseline ${first.scores[index]?.toFixed(2)}, best ${best.scores[index]?.toFixed(2)}`,
 				);
-				const diff = await writeDiff(input, baseline, best, lines);
-				await step.finish({
-					baseline: mean(scores.map(([value]) => value)),
-					best: mean(scores.map(([, value]) => value)),
-					diff,
-				});
+				const diff = await writeDiff(input, baseline, best.candidate, lines);
+				await step.finish({ baseline: mean(first.scores), best: mean(best.scores), diff });
 			},
 		},
 		report: (_input, result, io) => {
