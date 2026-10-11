@@ -1,10 +1,11 @@
 /**
  * The `workflows` command line. `workflows <workflow> ...` starts a run, and `workflows <workflow> resume <run-id>` or
- * `workflows resume <run-id>` continues one. A run directory holds the durable store, which holds everything a resume
- * needs, and whatever the workflow writes there.
+ * `workflows resume <run-id>` continues one, and `workflows list` prints the runs. A run directory holds the durable
+ * store, which holds everything a resume needs, and whatever the workflow writes there.
  */
 import { randomBytes } from "node:crypto";
-import { access, mkdir, readFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { access, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -59,23 +60,26 @@ export async function main(
 	workflows: readonly AnyWorkflow[],
 ): Promise<number> {
 	const usage = [
-		...workflows.map((workflow) => workflow.usage),
-		...workflows.map((workflow) => `workflows ${workflow.name} resume <run-id>`),
-		"workflows resume <run-id>",
+		...workflows.map((workflow) => `${workflow.usage} [--json]`),
+		...workflows.map((workflow) => `workflows ${workflow.name} resume <run-id> [--json]`),
+		"workflows resume <run-id> [--json]",
+		"workflows list [--json]",
 	]
 		.map((line, index) => `${index === 0 ? "usage: " : "       "}${line}`)
 		.join("\n");
 	for (const provider of new Set(workflows.flatMap((workflow) => workflow.providers ?? [])))
 		terminal.addProvider(provider);
 	try {
-		const [command, ...args] = argv;
-		if (command === "resume") return await resume(args, terminal, workflows, undefined);
+		const json = argv.includes("--json");
+		const [command, ...args] = argv.filter((arg) => arg !== "--json");
+		if (command === "list") return await list(args, terminal, workflows, json);
+		if (command === "resume") return await resume(args, terminal, workflows, undefined, json);
 		const workflow = workflows.find((candidate) => candidate.name === command);
 		if (workflow === undefined) {
 			throw new UsageError(command === undefined ? "missing command" : `unknown command ${command}`);
 		}
-		if (args[0] === "resume") return await resume(args.slice(1), terminal, workflows, workflow);
-		return await start(workflow, args, terminal, workflows);
+		if (args[0] === "resume") return await resume(args.slice(1), terminal, workflows, workflow, json);
+		return await start(workflow, args, terminal, workflows, json);
 	} catch (error) {
 		terminal.stderr(`workflows: ${error instanceof Error ? error.message : String(error)}`);
 		const code = (error as { code?: unknown } | undefined)?.code;
@@ -102,6 +106,7 @@ async function start(
 	args: readonly string[],
 	terminal: Terminal,
 	workflows: readonly AnyWorkflow[],
+	json: boolean,
 ): Promise<number> {
 	const parsed = await workflow.parse(args, terminal);
 	const id = newRunId();
@@ -121,7 +126,7 @@ async function start(
 		throw error;
 	}
 	terminal.stdout(`run ${id}`);
-	return follow(store, workflow, task, input, id, terminal);
+	return follow(store, workflow, task, input, id, terminal, json);
 }
 
 async function resume(
@@ -129,6 +134,7 @@ async function resume(
 	terminal: Terminal,
 	workflows: readonly AnyWorkflow[],
 	expected: AnyWorkflow | undefined,
+	json: boolean,
 ): Promise<number> {
 	const [id, ...rest] = args;
 	if (id === undefined || rest.length > 0 || id.startsWith("-")) throw new UsageError("give one run ID");
@@ -137,9 +143,9 @@ async function resume(
 	await access(join(directory, "durable.sqlite")).catch(() => {
 		throw new Error(`no run ${id} in ${runsDirectory()}`);
 	});
+	const latest = await latestTask(join(directory, "durable.sqlite"), new Set(workflows.map(taskKind)));
 	const store = await openStore(directory, terminal, workflows);
 	try {
-		const latest = await store.latest();
 		if (latest === undefined) throw new Error(`run ${id} has no workflow`);
 		const workflow = workflows.find((candidate) => taskKind(candidate) === latest.kind);
 		if (workflow === undefined) throw new Error(`run ${id} is a ${latest.kind} run, which this command cannot run`);
@@ -153,9 +159,64 @@ async function resume(
 		const from = failedAt(latest);
 		const stored = latest.input as Stored;
 		const task = from === undefined ? latest.id : await store.create(workflow, { input: stored.input, from });
-		return await follow(store, workflow, task, stored.input, id, terminal);
+		return await follow(store, workflow, task, stored.input, id, terminal, json);
 	} finally {
 		await store.close();
+	}
+}
+
+type Listed = { readonly runId: string; readonly workflow: string; readonly title: string; readonly status: string };
+
+/** Prints the runs, newest run ID first. It reads the task records without a harness, so no run continues. */
+async function list(
+	args: readonly string[],
+	terminal: Terminal,
+	workflows: readonly AnyWorkflow[],
+	json: boolean,
+): Promise<number> {
+	if (args.length > 0) throw new UsageError("list takes no arguments");
+	const ids = await readdir(runsDirectory()).catch(() => []);
+	const runs: Listed[] = [];
+	for (const id of ids.sort().reverse()) {
+		const path = join(runsDirectory(), id, "durable.sqlite");
+		if (!existsSync(path)) continue;
+		const latest = await latestTask(path, new Set(workflows.map(taskKind)));
+		const workflow = workflows.find((candidate) => taskKind(candidate) === latest?.kind);
+		if (latest === undefined || workflow === undefined) continue;
+		const { input } = latest.input as Stored;
+		let title = "";
+		try {
+			title = workflow.title(input);
+		} catch {
+			// An input saved by an earlier version can lack what `title` reads.
+		}
+		const { state } = latest;
+		const finished = state.status === "terminal" && state.outcome.status === "completed";
+		const status = finished ? (workflow.status?.(state.outcome.result) ?? "done") : "unfinished";
+		runs.push({ runId: id, workflow: workflow.name, title, status });
+	}
+	if (json) terminal.stdout(JSON.stringify(runs));
+	else for (const run of runs) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
+	return 0;
+}
+
+/** The newest task of `kinds` in the store at `path`, read from the storage only. */
+async function latestTask(
+	path: string,
+	kinds: ReadonlySet<string>,
+): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined> {
+	const storage = await openNodeSqliteStorage(path);
+	try {
+		let latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined;
+		let cursor: Cursor | undefined;
+		do {
+			const page = await storage.scanTasks({}, 256, cursor, BACKGROUND_CONTEXT);
+			for (const task of page.items) if (kinds.has(task.kind)) latest = task;
+			cursor = page.next;
+		} while (cursor !== undefined);
+		return latest;
+	} finally {
+		await storage.close(BACKGROUND_CONTEXT);
 	}
 }
 
@@ -174,8 +235,6 @@ type Store = {
 	 */
 	readonly failed: AbortSignal;
 	create(workflow: AnyWorkflow, stored: Stored): Promise<TaskId<JsonValue>>;
-	/** The newest workflow task of the run. */
-	latest(): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined>;
 	close(): Promise<void>;
 };
 
@@ -300,17 +359,6 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
 				BACKGROUND_CONTEXT,
 			);
 		},
-		latest: async () => {
-			const kinds = new Set(workflows.map(taskKind));
-			let latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined;
-			let cursor: Cursor | undefined;
-			do {
-				const page = await harness.commit((tx) => tx.scanTasks({}, 256, cursor), BACKGROUND_CONTEXT);
-				for (const task of page.items) if (kinds.has(task.kind)) latest = task;
-				cursor = page.next;
-			} while (cursor !== undefined);
-			return latest;
-		},
 		close: () => {
 			closed ??= close();
 			return closed;
@@ -329,6 +377,7 @@ async function follow(
 	input: JsonValue,
 	id: string,
 	terminal: Terminal,
+	json: boolean,
 ): Promise<number> {
 	const failed = (message: unknown, resumable: boolean) => {
 		terminal.stderr(`failed ${workflow.title(input)}: ${message}`);
@@ -348,6 +397,11 @@ async function follow(
 		await store.close();
 	}
 	const { outcome } = settled.state;
-	if (outcome.status === "completed") return workflow.report(input, outcome.result, terminal);
+	if (outcome.status === "completed") {
+		if (!json) return workflow.report(input, outcome.result, terminal);
+		const code = workflow.report(input, outcome.result, { ...terminal, stdout: () => {} });
+		terminal.stdout(JSON.stringify(outcome.result));
+		return code;
+	}
 	return failed(outcome.error?.message ?? outcome.reason ?? outcome.status, outcome.status === "failed");
 }

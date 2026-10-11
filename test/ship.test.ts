@@ -200,6 +200,18 @@ export default function ({ events }) {
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
 	});
 
+	it("prints the result as one JSON line with --json, at the start and at resume", async () => {
+		const run = await workflows(["ship", "--json", "Fix the README typo"], { cwd: repo, script: { edits: [] } });
+		const result = { status: "blocked", rounds: 1, reply: "I found nothing to change." };
+		expect(run.code).toBe(1);
+		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify(result)]);
+
+		const resumed = await workflows(["resume", run.id ?? "", "--json"], { cwd: repo });
+		expect(resumed.code).toBe(1);
+		expect(resumed.stdout).toEqual(run.stdout);
+		expect(resumed.model.calls).toEqual([]);
+	});
+
 	it("stops at the round limit and keeps the implementer's own commits", async () => {
 		const run = await workflows(["ship", "--rounds", "2", "Fix the README typo"], {
 			cwd: repo,
@@ -403,6 +415,34 @@ describe("workflows ship resume", () => {
 		expect(again.code).toBe(0);
 		expect(again.stdout).toEqual(resumed.stdout);
 		expect(again.model.calls).toEqual([]);
+	});
+
+	it("lists finished and unfinished runs without continuing them", async () => {
+		const shipped = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
+		expect(shipped.code).toBe(0);
+		const stopped = await workflows(["ship", "# Second item"], {
+			cwd: repo,
+			script: { interruptAt: { kind: "implement", nth: 1 } },
+		});
+		expect(stopped.code).toBe(130);
+
+		const listed = await workflows(["list", "--json"], { cwd: root });
+		expect(listed.code).toBe(0);
+		expect(listed.stdout).toHaveLength(1);
+		const runs = JSON.parse(listed.stdout[0] ?? "") as { runId: string }[];
+		expect(runs).toEqual(
+			[
+				{ runId: shipped.id, workflow: "ship", title: "Fix the README typo", status: "shipped" },
+				{ runId: stopped.id, workflow: "ship", title: "Second item", status: "unfinished" },
+			].sort((a, b) => (b.runId ?? "").localeCompare(a.runId ?? "")),
+		);
+		const text = await workflows(["list"], { cwd: root });
+		expect(text.stdout).toEqual(runs.map((run) => expect.stringMatching(new RegExp(`^${run.runId} ship `))));
+		expect(text.stdout).toContain(`${shipped.id} ship shipped Fix the README typo`);
+
+		const resumed = await workflows(["ship", "resume", stopped.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
+		expect(resumed.code).toBe(0);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "verdict", "judge"]);
 	});
 
 	it("prints the phase of a session that a later turn interrupted", async () => {

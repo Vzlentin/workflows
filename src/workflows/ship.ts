@@ -115,6 +115,7 @@ export const ship = defineWorkflow<Args, ShipInput, ScriptCheckpoint, ShipResult
 				return 1;
 		}
 	},
+	status: (result) => result.status,
 });
 
 function parseShip(args: readonly string[]) {

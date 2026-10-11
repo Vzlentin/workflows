@@ -148,7 +148,7 @@ given twice is bad usage: the command prints its usage and exits 2.
 The command prints `run <run-id>` on stdout, then each `phase` and `log` line on stderr when the script's next call
 runs, or when the script ends. When the script returns, the
 command prints the return value on stdout and exits 0. A string prints as it is, and any other value prints as JSON.
-With `--json`, the value always prints as JSON.
+With `--json`, the value always prints as JSON. See [JSON output](#json-output).
 
 A script that throws, or a call in it that fails, stops the run: the command prints `failed <name>: <error>` and
 `continue with: workflows run resume <run-id>` on stderr, and exits 1. `<name>` is the file name without `.js`, the
@@ -234,6 +234,80 @@ A ship run saved before `ship` ran `workflows/ship.js` cannot resume: resume pri
 
 Model requests use Pi's retry, stream timeout and compaction settings from its `settings.json`.
 
+## JSON output
+
+```sh
+workflows ship --json plan.md
+workflows resume <run-id> --json
+```
+
+Every form of start and resume accepts `--json`, at any position. After `run <run-id>`, stdout gets the result of a
+finished run as one line of JSON in place of the report lines, for example
+`{"status":"shipped","rounds":1,"head":"1a2b3c4"}` for ship. The stderr lines and the exit codes do not change. A
+failed or interrupted run prints no JSON line.
+
+## List
+
+```sh
+workflows list
+workflows list --json
+```
+
+`workflows list` prints one line for each run in the runs directory, newest run ID first:
+`<run-id> <workflow> <status> <title>`. The title is the subject of the work item for ship, and the script name for
+`run`. A finished ship run has the status of its result: `shipped`, `blocked` or `stopped`. A finished `run` has the
+status `done`. Any other run, also a failed one, is `unfinished`. With `--json`, the command prints one JSON array of
+`{ "runId", "workflow", "title", "status" }`.
+
+`list` only reads the stores. It does not load Pi packages, and no run continues.
+
+## Pi package
+
+The package is also a Pi package. Its `pi` field in `package.json` declares the extension `extensions/workflows.ts`
+and the skill `skills/workflows/SKILL.md`. To add it to Pi from a checkout:
+
+```sh
+npm ci
+npm run build
+pi install /path/to/workflows
+```
+
+Or add the path to `packages` in Pi's `settings.json`. Pi does not install the dependencies of a local package, so
+run `npm ci` and `npm run build` in the checkout first, and again after each update.
+
+The extension runs each workflow as a child process of this package's `node dist/cli.js`, in the session's directory,
+always with `--json`. So a run that starts in Pi is a normal run in the runs directory, and `workflows resume`
+continues it from a terminal.
+
+### The `workflow` tool
+
+The tool takes one of `name`, `script` or `resume`, plus `args`:
+
+- `name: "ship"` runs `workflows ship`. `args.item` is the work item, and `args.repo`, `args.base` and `args.rounds`
+  give `--repo`, `--base` and `--rounds`.
+- Any other `name` runs `workflows run <name>`. Each arg becomes `--arg <key>=<value>`: a string as it is, any other
+  value as its JSON text. The script gets every arg as a string, so `{ depth: 2 }` reaches it as `"2"`.
+- `script` runs `workflows run -` with the script on stdin.
+- `resume` runs `workflows resume <run-id>`.
+
+Each stderr line of the run is a progress update of the tool. Esc sends SIGINT to the run, as Ctrl+C does, so the run
+stays resumable.
+
+The tool declares an `outputSchema`. Its `structuredContent` is `{ runId, status, result?, error? }`:
+
+- `finished`: the run finished, and `result` is its JSON line, such as a `blocked` ship result.
+- `failed`: the run failed, and `error` is its last stderr line before `continue with:`.
+- `interrupted`: Esc stopped the run.
+
+A failed or interrupted result is an error result that keeps `structuredContent`. Thus
+`await tools.workflow({ name: "ship", args: { item } })` in a codemode script gets this object. A call that fails
+before a run exists, such as an unknown workflow name, is a normal tool error with the stderr text.
+
+### `/workflows`
+
+`/workflows` prints the output of `workflows list` in the session. `/workflows resume <run-id>` continues the run,
+and prints its progress lines and its result in the session.
+
 ## Run directory
 
 Runs live in `$XDG_STATE_HOME/workflows/runs/<run-id>`, by default `~/.local/state/workflows/runs/<run-id>`:
@@ -263,5 +337,5 @@ uses the profiles as they were when it started.
 npm run check
 ```
 
-This runs Biome, the TypeScript check and Vitest. The tests use a fake model provider, a fake `gh`, and temporary Git
-repositories. They do not call a real model or open Pi.
+This runs Biome, the TypeScript check and Vitest. The tests use a fake model provider, a fake `gh`, a fake
+`workflows` command for the extension, and temporary Git repositories. They do not call a real model or open Pi.
