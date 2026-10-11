@@ -23,7 +23,15 @@ const progress = /^(plan|judge|round \d: (implement|review))$/;
 const FIXED = "# Demo\n\nHello world\n";
 const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|failed), [0-9a-f]+$/;
 const TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash"];
-const answers = (kind: string) => (kind === "verdict" || kind === "judge" ? ["respond"] : []);
+const answers = (kind: string) => (["verdict", "judge", "implement", "handoff"].includes(kind) ? ["respond"] : []);
+const NOTES = [
+	"#1 planner 0: Handoff 1: one word changes.",
+	"#2 implementer 1: Implement 1: README.md had wrold.",
+	"#3 reviewer 1: Handoff 2: one word changes.",
+	"#4 implementer 2: Implement 2: README.md had wrold.",
+];
+/** The run memory of the first `n` notes of the fake model, as the start of a prompt. */
+const memory = (n: number) => `## memory\n${NOTES.slice(0, n).join("\n")}\n\n`;
 
 describe("workflows ship", () => {
 	it("ships a work item file in two rounds and keeps the checkout", async () => {
@@ -97,7 +105,13 @@ describe("workflows ship", () => {
 			expect(call.sections.project_context).toContain("Run the demo checks.");
 			expect(call.sections.skills).toContain("<name>demo</name>");
 		}
-		const [plan, , , implement, review, verdict, handoff] = calls;
+		const [plan, challenge, planned, implement, review, verdict, handoff] = calls;
+		for (const call of [plan, challenge, planned]) expect(call?.prompt).not.toContain("## memory");
+		expect(implement?.prompt.startsWith(`${memory(1)}Implement this plan`)).toBe(true);
+		for (const call of [review, verdict, handoff]) expect(call?.prompt.startsWith(memory(2))).toBe(true);
+		expect(calls[7]?.prompt.startsWith(`${memory(3)}Implement this plan`)).toBe(true);
+		for (const call of [calls[8], calls[9]]) expect(call?.prompt.startsWith(memory(4))).toBe(true);
+		expect(calls[10]?.prompt.startsWith("## Vocabulary")).toBe(true);
 		expect(plan?.prompt).toMatch(
 			/^Plan this change\.\n[\s\S]*ambiguity\.\n\n## item\n# Fix the README typo\n\nThe README says wrold\.$/,
 		);
@@ -108,7 +122,8 @@ describe("workflows ship", () => {
 		expect(review?.prompt).toContain(`\n\n## change\n${patch}\n\n## reply\nI fixed the typo in README.md.`);
 		expect(await readFile(patch, "utf8")).toContain("-Hello wrold\n+Hello world\n");
 		expect(verdict?.prompt).toMatch(/\n\nAnswer with respond: SHIP if nothing needs to change, FIX otherwise\.$/);
-		expect(handoff?.prompt).toMatch(/^Write a handoff document[\s\S]*information\.$/);
+		expect(planned?.prompt).toMatch(/^Write a handoff document[\s\S]*information\.\n\nAnswer with respond: handoff /);
+		expect(handoff?.prompt).toMatch(/\n\nWrite a handoff document[\s\S]*the findings that you cut and why\./);
 		expect(calls[7]?.prompt).toMatch(/## plan\nHandoff 2: /);
 		expect(calls[8]?.prompt).toContain(
 			`## change\n${patch.replace("round-1", "round-2")}\n${patch.replace("round-1", "round-2-fix")}\n`,
@@ -416,6 +431,7 @@ describe("workflows ship resume", () => {
 		expect(resumed.stderr).toEqual(["round 1: implement", "round 1: review", "judge"]);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "verdict", "judge"]);
 		expect(resumed.model.calls[0]?.prompt).toContain("## plan\nHandoff 1: ");
+		expect(resumed.model.calls[0]?.prompt.startsWith(`${memory(1)}Implement this plan`)).toBe(true);
 		const worktree = worktreeOf(first.id);
 		expect(git(worktree, "rev-parse", "HEAD^")).toBe(start);
 		expect(git(worktree, "log", "-1", "--format=%B")).toMatch(/^Fix the README typo\n\n# Fix the README typo\n\n/);
@@ -492,6 +508,7 @@ describe("workflows ship resume", () => {
 		expect(resumed.code).toBe(0);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "verdict", "judge"]);
 		expect(resumed.model.calls[0]?.prompt).toContain("## reply\nI fixed the typo in README.md.");
+		expect(resumed.model.calls[0]?.prompt.startsWith(`${memory(2)}Perform a deep code quality audit`)).toBe(true);
 		expect(git(worktreeOf(first.id), "log", "--format=%s")).toBe("Fix the README typo\ninitial");
 	});
 });

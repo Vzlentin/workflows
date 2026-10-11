@@ -78,6 +78,15 @@ the run directory: `round-<n>.patch` from the start commit, and from round 2 `ro
 round. Its challenge answers SHIP or FIX through `respond`. On FIX, its handoff gives the next round's instructions. A run that is
 not shipped after `--rounds` rounds prints `stopped <subject> after <n> rounds: <worktree>` and exits 1.
 
+The run keeps a memory of notes, which it only appends to. The planner's handoff, each implement turn and the
+reviewer's handoff answer through `respond` with their text and a list of notes: the planner gives its decisions with
+their reasons, the implementer gives what it tried and what it observed, and the reviewer gives the decisions of its
+challenge, with the findings that it cut and why. The reviewer has no handoff on SHIP or on FIX in the last round, so
+it gives no notes then. Each note becomes one line `#<k> <author> <round>: <note>`, with its whitespace collapsed,
+where the author is `planner`, `implementer` or `reviewer`, and the planner's round is 0. When the memory has notes,
+every prompt of the planner, implement and review sessions starts with a `## memory` section that lists them. The
+judge's prompt has no memory. A resume builds the memory again from the saved answers, so it gives the same prompts.
+
 On SHIP, the judge session reviews the change in the worktree, and the run squashes the work into one commit:
 
 ```text
@@ -393,9 +402,10 @@ A campaign run has `worktree/` on `campaign/<run-id>` and `repository/` in the s
 `prompts/` holds the Pi prompt templates `plan`, `challenge`, `handoff`, `implement`, `review` and `judge`, and
 `split` and `requeue` for `campaign`. Edit the wording there. Keep the frontmatter and the last line `$@`: the run
 removes them, then adds its inputs as `## <name>` sections. `workflows/ship.js` adds the SHIP or FIX answer rule of
-the review challenge itself, so a template edit cannot remove it. In the same way, `workflows/campaign.js` adds the
-`respond` answer rule of `split` and `requeue`. The judge rubric is fixed: its eight answers, in question order, make
-the score. A run uses the templates as they were when it started.
+the review challenge itself, so a template edit cannot remove it. It also adds the `respond` answer rules of the
+handoff and implement turns. In the same way, `workflows/campaign.js` adds the `respond` answer rule of `split` and
+`requeue`. The judge rubric is fixed: its eight answers, in question order, make the score. A run uses the templates
+as they were when it started.
 
 Workflow scripts get every template of `prompts/` as `prompts.<name>`, and the agent profiles of `agents/`. A run
 uses the profiles as they were when it started.

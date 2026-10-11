@@ -14,18 +14,47 @@ const VERDICT = {
 		findings: { type: "array", items: { type: "string" } },
 	},
 }
+const NOTES = { type: "array", items: { type: "string" } }
+const HANDOFF = {
+	type: "object",
+	required: ["handoff", "notes"],
+	properties: { handoff: { type: "string" }, notes: NOTES },
+}
+const IMPLEMENT = {
+	type: "object",
+	required: ["reply", "notes"],
+	properties: { reply: { type: "string" }, notes: NOTES },
+}
+// The respond rules of the note turns. The notes go to the run memory.
+const PLANNER_HANDOFF =
+	"Answer with respond: handoff is the document, and notes are the decisions of this session, each with its reason."
+const REVIEWER_HANDOFF =
+	"Answer with respond: handoff is the document, and notes are the decisions of your challenge, " +
+	"with the findings that you cut and why."
+const IMPLEMENT_RULE =
+	"When you are done, answer with respond: reply is your report, and notes are what you tried and what you observed."
+
+// The run memory: numbered notes of the planner, the implementers and the reviewers, only appended to. It is built
+// from saved answers only, so a resume builds the same memory and the same prompts.
+const memory = []
 
 phase("plan")
-const planner = session("planner")
+const planner = remembering("planner")
 await planner.ask(prompts.plan({ item }))
 await planner.ask(prompts.challenge())
-let plan = await planner.ask(prompts.handoff())
+const planned = await planner.ask(`${await prompts.handoff()}\n\n${PLANNER_HANDOFF}`, { schema: HANDOFF })
+let plan = planned.handoff
+remember("planner", 0, planned.notes)
 
 let before = start
 for (let round = 1; round <= rounds; round++) {
 	phase(`round ${round}: implement`)
-	const implementer = session("implementer")
-	const reply = await implementer.ask(prompts.implement({ plan }))
+	const implementer = remembering("implementer")
+	const implemented = await implementer.ask(`${await prompts.implement({ plan })}\n\n${IMPLEMENT_RULE}`, {
+		schema: IMPLEMENT,
+	})
+	const { reply } = implemented
+	remember("implementer", round, implemented.notes)
 
 	await sh(["git", "add", "-A"])
 	if (await ok(["git", "diff", "--cached", "--quiet", start])) return { status: "blocked", rounds: round, reply }
@@ -37,12 +66,14 @@ for (let round = 1; round <= rounds; round++) {
 	if (round > 1) change.push(await patch(`round-${round}-fix.patch`, before))
 
 	phase(`round ${round}: review`)
-	const reviewer = session("reviewer")
+	const reviewer = remembering("reviewer")
 	await reviewer.ask(prompts.review({ item, plan, change: change.join("\n"), reply }))
 	const challenge = `${await prompts.challenge()}\n\nAnswer with respond: SHIP if nothing needs to change, FIX otherwise.`
 	if ((await reviewer.ask(challenge, { schema: SHIP_OR_FIX })) === "SHIP") return await judgeAndSquash(round)
 	if (round === rounds) return { status: "stopped", rounds: round }
-	plan = await reviewer.ask(prompts.handoff())
+	const handoff = await reviewer.ask(`${await prompts.handoff()}\n\n${REVIEWER_HANDOFF}`, { schema: HANDOFF })
+	plan = handoff.handoff
+	remember("reviewer", round, handoff.notes)
 	before = await sh(["git", "rev-parse", "HEAD"])
 }
 
@@ -67,6 +98,23 @@ async function judgeAndSquash(round) {
 		...(verdict === undefined ? {} : { score: score(verdict.answers) }),
 		...(judgeError === undefined ? {} : { judgeError }),
 	}
+}
+
+function remember(author, round, notes) {
+	for (const note of notes) {
+		const line = note.replace(/\s+/g, " ").trim()
+		if (line !== "") memory.push(`#${memory.length + 1} ${author} ${round}: ${line}`)
+	}
+}
+
+function withMemory(prompt) {
+	return memory.length === 0 ? prompt : `## memory\n${memory.join("\n")}\n\n${prompt}`
+}
+
+// A session whose every prompt starts with the run memory, read when the prompt is sent.
+function remembering(profile) {
+	const s = session(profile)
+	return { ask: async (prompt, options) => s.ask(withMemory(await prompt), options) }
 }
 
 async function patch(name, from) {
