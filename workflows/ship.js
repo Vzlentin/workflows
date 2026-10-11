@@ -51,7 +51,7 @@ for (let round = 1; round <= rounds; round++) {
 	)
 
 	await sh(["git", "add", "-A"])
-	if (await ok(["git", "diff", "--cached", "--quiet", start])) return { status: "blocked", rounds: round, reply }
+	if (await ok(["git", "diff", "--cached", "--quiet", start])) return { status: "blocked", rounds: round, reply, memory }
 	// The check's result is saved, so a commit that succeeded before a stop may run again with nothing staged.
 	if (!(await ok(["git", "diff", "--cached", "--quiet"]))) {
 		await sh(["git", "commit", "--allow-empty", "-m", `round ${round}`])
@@ -65,7 +65,7 @@ for (let round = 1; round <= rounds; round++) {
 	const answer = "Answer with respond: SHIP if nothing needs to change, FIX otherwise."
 	const challenge = `${await prompts.challenge()}\n\n${EVIDENCE}\n\n${answer}`
 	if ((await reviewer.ask(challenge, { schema: SHIP_OR_FIX })) === "SHIP") return await judgeAndSquash(round)
-	if (round === rounds) return { status: "stopped", rounds: round }
+	if (round === rounds) return { status: "stopped", rounds: round, memory }
 	plan = await reviewer.noted(
 		round,
 		prompts.handoff(),
@@ -92,8 +92,9 @@ async function judgeAndSquash(round) {
 		status: "shipped",
 		rounds: round,
 		head: await sh(["git", "rev-parse", "--short", "HEAD"]),
-		...(verdict === undefined ? {} : { score: score(verdict.answers) }),
+		...(verdict === undefined ? {} : { score: score(verdict.answers), answers: verdict.answers, findings: verdict.findings }),
 		...(judgeError === undefined ? {} : { judgeError }),
+		memory,
 	}
 }
 

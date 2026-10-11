@@ -3,7 +3,7 @@ import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { defineWorkflow } from "../src/lib/workflow.ts";
-import { git, PASSING_JUDGE, repository, sandbox, workflows } from "./support.ts";
+import { git, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -49,9 +49,13 @@ describe("workflows ship", () => {
 		git(repo, "add", "notes.txt");
 		await writeFile(join(repo, "README.md"), "# Demo\n\nHello wrold\nunstaged\n");
 
-		const run = await workflows(["ship", "item.md"], {
+		const run = await workflows(["ship", "--json", "item.md"], {
 			cwd: repo,
-			script: { edits: [FIXED, `${FIXED}Thanks.\n`], verdicts: ["FIX", "SHIP"] },
+			script: {
+				edits: [FIXED, `${FIXED}Thanks.\n`],
+				verdicts: ["FIX", "SHIP"],
+				judge: { ...PASSING_JUDGE, status: "blocked", extra: "x" } as Verdict,
+			},
 		});
 
 		expect(run.stderr).toEqual([
@@ -63,8 +67,13 @@ describe("workflows ship", () => {
 			"judge",
 		]);
 		expect(run.code).toBe(0);
-		expect(run.stdout).toEqual([`run ${run.id}`, expect.stringMatching(SHIPPED)]);
-		expect(run.stdout[1]).toContain("in 2 rounds, judge 0.83,");
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(run.stdout).toHaveLength(2);
+		expect(run.stdout[0]).toBe(`run ${run.id}`);
+		expect(report).toEqual([expect.stringMatching(SHIPPED)]);
+		expect(report[0]).toContain("in 2 rounds, judge 0.83,");
+		expect(result).toMatchObject({ ...PASSING_JUDGE, status: "shipped", memory: NOTES });
+		expect(result).not.toHaveProperty("extra");
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-parse", "HEAD^")).toBe(start);
 		expect(git(worktree, "branch", "--show-current")).toBe(`ship/${run.id}`);
@@ -76,7 +85,7 @@ describe("workflows ship", () => {
 				"Rounds: 2\nJudge: 0.83",
 			].join("\n\n"),
 		);
-		expect(run.stdout[1]).toContain(git(worktree, "rev-parse", "--short", "HEAD"));
+		expect(report[0]).toContain(git(worktree, "rev-parse", "--short", "HEAD"));
 		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(`${FIXED}Thanks.\n`);
 
 		expect(git(repo, "branch", "--show-current")).toBe("main");
@@ -228,7 +237,7 @@ export default function ({ events }) {
 		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, status: "interrupted" })]);
 
 		const resumed = await workflows(["resume", run.id ?? "", "--json"], { cwd: repo, script: { edits: [] } });
-		const result = { status: "blocked", rounds: 1, reply: "I found nothing to change." };
+		const result = { status: "blocked", rounds: 1, reply: "I found nothing to change.", memory: NOTES.slice(0, 2) };
 		expect(resumed.code).toBe(1);
 		const report = [`blocked Fix the README typo after 1 rounds: ${worktreeOf(run.id)}`, result.reply];
 		expect(resumed.stdout).toEqual([
@@ -241,13 +250,17 @@ export default function ({ events }) {
 	});
 
 	it("stops at the round limit and keeps the implementer's own commits", async () => {
-		const run = await workflows(["ship", "--rounds", "2", "Fix the README typo"], {
+		const run = await workflows(["ship", "--json", "--rounds", "2", "Fix the README typo"], {
 			cwd: repo,
 			script: { edits: [FIXED, `${FIXED}More.\n`], verdicts: ["FIX", "FIX"], commits: true },
 		});
 
 		expect(run.code).toBe(1);
-		expect(run.stdout).toEqual([`run ${run.id}`, `stopped Fix the README typo after 2 rounds: ${worktreeOf(run.id)}`]);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(run.stdout).toHaveLength(2);
+		expect(run.stdout[0]).toBe(`run ${run.id}`);
+		expect(report).toEqual([`stopped Fix the README typo after 2 rounds: ${worktreeOf(run.id)}`]);
+		expect(result.memory).toEqual(NOTES);
 		expect(run.model.calls.map((call) => call.kind)).toEqual([
 			...["plan", "challenge", "handoff"],
 			...["implement", "review", "verdict", "handoff"],

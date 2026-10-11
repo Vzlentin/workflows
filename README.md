@@ -113,6 +113,11 @@ questions 3 to 8 that pass. If the judge fails or does not answer through `respo
 and the command prints `judge failed on <subject>: <error>` on stderr. The command prints
 `shipped <subject> in <n> rounds, judge <score or failed>, <commit>` and exits 0.
 
+The result of the run, which `--json` prints, has `status` and `rounds`; `head` when shipped; `score`, `answers`, the
+eight answers in question order, and `findings`, the finding lines that the commit message has, when the judge
+answered; `judgeError` when the judge failed; `reply` when blocked; and `memory`, the memory lines in order or `[]` when
+there are no notes, for every status.
+
 Blocked and stopped runs keep their branch, worktree and round commits. Delete them when you no longer need them.
 
 ## Campaign
@@ -295,9 +300,9 @@ workflows resume <run-id> --json
 Every form of start and resume accepts `--json`, at any position before `--`. After `run <run-id>`, stdout gets one
 line of JSON in place of the report lines, `{ "runId", "status", "result"?, "report"?, "error"? }`, for every outcome:
 
-- `finished`: `result` is the result of the run, for example `{"status":"shipped","rounds":1,"head":"1a2b3c4"}` for
-  ship. `report` is the list of report lines that the command prints without `--json`, such as
-  `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4"]`.
+- `finished`: `result` is the result of the run, for example `{"status":"shipped","rounds":1,"head":"1a2b3c4",...}`
+  for ship. The [Ship](#ship) section lists the fields of a ship result. `report` is the list of report lines that
+  the command prints without `--json`, such as `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4"]`.
 - `failed`: `error` is the error message.
 - `interrupted`: Ctrl+C stopped the run.
 
