@@ -175,7 +175,9 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | `phase(title)`, `log(text)` | Write one line on stderr before the script's next call that runs |
 
 With `schema`, a JSON Schema, the session gets a `respond` tool for that turn. The model gives its answer as
-`respond({ answer })`, which ends the turn, and the call returns `answer`. An answer that does not match the schema
+`respond({ answer })`, which ends the turn, and the call returns `answer`. A string answer that does not match the
+schema is parsed as JSON, and the parsed value is checked instead, so an object sent as its JSON text is accepted. A
+string answer to a string schema, such as SHIP or FIX, stays a string. An answer that does not match the schema
 goes back to the model as an error, and the model tries again.
 
 The script runs in the pi-codemode sandbox, with no time limit. It has no file system, network, modules or timers.
@@ -304,6 +306,15 @@ The tool takes one of `name`, `script` or `resume`, plus `args`:
 
 Each stderr line of the run is a progress update of the tool. Esc sends SIGINT to the run, as Ctrl+C does, so the run
 stays resumable.
+
+In Pi, the call line is `workflow ship <slug>`, `workflow <name>`, `workflow script` or `workflow resume <run-id>`,
+with the run ID after it once the run has one. The slug is the file name of a `.md` item without `.md`, or else the
+first 40 characters of the item's subject. Under it, each stderr line is a step: `✓` for a step that is done, `◉` for
+the step that runs now, and `✗` for the step where the run failed or was interrupted. The `failed`, `continue with`,
+`interrupted` and `judge failed on` lines are not steps, and a script `log` line that starts with one of these is not
+shown either. The last line is the outcome, such as `✓ shipped in 2 rounds, judge 1.00, 4dfb5c8`, or the error and the
+run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the same after a
+reload. The text that the model gets does not change.
 
 The tool declares an `outputSchema`. Its `structuredContent` is `{ runId, status, result?, error? }`:
 

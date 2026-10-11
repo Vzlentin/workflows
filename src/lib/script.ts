@@ -147,20 +147,44 @@ async function bundleOf(api: ToolExecutionApi, context: Context): Promise<RunBun
 	return bundle;
 }
 
+/**
+ * The answer of `args` checked against `schema`, as `validateToolArguments` returns it. A string answer that does not
+ * match is parsed as JSON and checked again, because a model can send an object as its JSON text. If that fails too,
+ * this throws the first error.
+ */
+function checkedAnswer(schema: JsonObject, args: JsonObject, id: string): unknown {
+	const parameters = { type: "object", properties: { answer: schema }, required: ["answer"] } as unknown as TSchema;
+	const check = (answer: unknown) =>
+		validateToolArguments(
+			{ name: "respond", description: "", parameters },
+			{ type: "toolCall", id, name: "respond", arguments: { answer } as JsonObject },
+		).answer;
+	try {
+		return check(args.answer);
+	} catch (error) {
+		if (typeof args.answer !== "string") throw error;
+		try {
+			return check(JSON.parse(args.answer));
+		} catch {
+			throw error;
+		}
+	}
+}
+
 const respond = defineTool({
 	name: "respond",
 	description: "Give the answer of this turn in the structured form the prompt asks for. This ends the turn.",
-	parameters: Type.Object({ answer: Type.Unknown() }),
+	parameters: Type.Object({
+		answer: Type.Unknown({
+			description: "The answer value itself, in the form the prompt asks for. Do not give its JSON text as a string.",
+		}),
+	}),
 	callers: ["model"],
 	execute: async (args, api, context) => {
 		const schema = (await api.snapshot(AnswerDoc, api.conversationId, context))?.schema;
 		if (schema === undefined) return { isError: true, output: text("This turn asks for no structured answer.") };
-		const parameters = { type: "object", properties: { answer: schema }, required: ["answer"] } as unknown as TSchema;
 		try {
-			validateToolArguments(
-				{ name: "respond", description: "", parameters },
-				{ type: "toolCall", id: api.callId, name: "respond", arguments: args as JsonObject },
-			);
+			checkedAnswer(schema, args as JsonObject, api.callId);
 		} catch (error) {
 			return { isError: true, output: text(error instanceof Error ? error.message : String(error)) };
 		}
@@ -242,7 +266,7 @@ const ask = defineTool({
 		}
 		const call = answer.content.findLast((part) => part.type === "toolCall" && part.name === "respond");
 		if (call?.type !== "toolCall") throw new Error("the answer did not call respond");
-		const value = (call.arguments as { answer?: unknown }).answer ?? null;
+		const value = checkedAnswer(schema as JsonObject, call.arguments as JsonObject, call.id);
 		return { output: text(JSON.stringify(value)), structuredOutput: value as JsonObject };
 	},
 });

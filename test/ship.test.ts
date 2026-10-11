@@ -307,10 +307,13 @@ export default function ({ events }) {
 
 		const owned = await workflows(["ship", "--repo", "octocat/calibre", "Fix the README typo"], {
 			cwd: root,
-			script: { edits: [FIXED], judge: PASSING_JUDGE },
+			script: { edits: [FIXED], judge: PASSING_JUDGE, judgeJson: true },
 		});
 		expect(owned.code).toBe(0);
-		expect(git(worktreeOf(owned.id), "rev-parse", "HEAD^")).toBe(git(remote, "rev-parse", "main"));
+		expect(owned.stdout[1]).toContain("judge 0.83,");
+		const ownedWorktree = worktreeOf(owned.id);
+		expect(git(ownedWorktree, "rev-parse", "HEAD^")).toBe(git(remote, "rev-parse", "main"));
+		expect(git(ownedWorktree, "log", "-1", "--format=%B")).toContain("Judge: 0.83");
 	});
 
 	it("uses a relative local repository and a piped work item", async () => {

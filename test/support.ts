@@ -104,6 +104,8 @@ export type Script = {
 	readonly verdicts?: readonly ("SHIP" | "FIX")[];
 	/** The judge's `respond` answer, or a text reply without `respond`. */
 	readonly judge?: Verdict | string;
+	/** The judge sends its `respond` answer as JSON text, not as an object. */
+	readonly judgeJson?: boolean;
 	/** The prompt that interrupts the run: Ctrl+C is pressed while it waits for its answer. */
 	readonly interruptAt?: { readonly kind: Kind; readonly nth: number };
 	/** The prompt that the provider answers with an error. */
@@ -229,8 +231,9 @@ export class FakeModel {
 	};
 
 	#judge(): AssistantMessage {
-		const { judge = PASSING_JUDGE } = this.#script;
-		return typeof judge === "string" ? fauxAssistantMessage(judge) : respond(judge);
+		const { judge = PASSING_JUDGE, judgeJson } = this.#script;
+		if (typeof judge === "string") return fauxAssistantMessage(judge);
+		return respond(judgeJson ? JSON.stringify(judge) : judge);
 	}
 }
 
