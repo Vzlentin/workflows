@@ -630,11 +630,14 @@ describe("workflows resume of ship runs", () => {
 		const run = await saveRun("workflows.run", TASK.version - 1);
 		// A script task of an earlier version names its workflow in its input.
 		const script = await saveRun("workflows.run", TASK.version - 1, { name: "ship" });
+		// Some earlier versions wrapped the input as `{ input }`.
+		const wrapped = await saveRun("workflows.run", TASK.version - 1, { input: { name: "campaign" } });
 
 		for (const [id, name] of [
 			[ship, "ship"],
 			[run, "run"],
 			[script, "ship"],
+			[wrapped, "campaign"],
 		] as const) {
 			const resumed = await workflows(["resume", id], { cwd: repo });
 			expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([

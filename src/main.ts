@@ -318,9 +318,11 @@ function checked(
 ): TaskRecord<script.ScriptInput, JsonValue, JsonValue> {
 	if (latest === undefined) throw new Error(`run ${id} has no workflow`);
 	if (current(latest)) return latest;
-	// A script task of an earlier version names its workflow in its input; an earlier task kind names it in the kind.
+	// A script task of an earlier version names its workflow in its input, which some versions wrapped as `{ input }`;
+	// an earlier task kind names it in the kind.
 	const { input } = latest;
-	const name = script.isObject(input) && typeof input.name === "string" ? input.name : latest.kind.slice(PREFIX.length);
+	const saved = script.isObject(input) && script.isObject(input.input) ? input.input : input;
+	const name = script.isObject(saved) && typeof saved.name === "string" ? saved.name : latest.kind.slice(PREFIX.length);
 	throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot ${verb}`);
 }
 
