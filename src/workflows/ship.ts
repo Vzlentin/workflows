@@ -36,10 +36,10 @@ export type ShipResult =
 			readonly judgeError?: string;
 			readonly answers?: readonly ("PASS" | "FAIL")[];
 			readonly findings?: readonly string[];
-			readonly memory?: readonly string[];
+			readonly memory: readonly string[];
 	  }
-	| { readonly status: "blocked"; readonly rounds: number; readonly reply: string; readonly memory?: readonly string[] }
-	| { readonly status: "stopped"; readonly rounds: number; readonly memory?: readonly string[] };
+	| { readonly status: "blocked"; readonly rounds: number; readonly reply: string; readonly memory: readonly string[] }
+	| { readonly status: "stopped"; readonly rounds: number; readonly memory: readonly string[] };
 
 export const ship = defineWorkflow<Args, ShipInput, ScriptCheckpoint, ShipResult>({
 	...scriptWorkflow,

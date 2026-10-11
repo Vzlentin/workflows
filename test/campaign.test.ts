@@ -36,6 +36,7 @@ describe("workflows campaign", () => {
 		expect(run.code).toBe(0);
 		const { result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(run.stdout).toHaveLength(2);
+		expect(run.stdout[0]).toBe(`run ${run.id}`);
 		expect(report).toEqual([expect.stringMatching(/^done Fix the README in 2 items, [0-9a-f]+$/)]);
 		expect(result.items[0].result).toMatchObject({
 			...PASSING_JUDGE,

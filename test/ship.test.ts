@@ -69,6 +69,7 @@ describe("workflows ship", () => {
 		expect(run.code).toBe(0);
 		const { result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(run.stdout).toHaveLength(2);
+		expect(run.stdout[0]).toBe(`run ${run.id}`);
 		expect(report).toEqual([expect.stringMatching(SHIPPED)]);
 		expect(report[0]).toContain("in 2 rounds, judge 0.83,");
 		expect(result).toMatchObject({ ...PASSING_JUDGE, status: "shipped", memory: NOTES });
@@ -257,6 +258,7 @@ export default function ({ events }) {
 		expect(run.code).toBe(1);
 		const { result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(run.stdout).toHaveLength(2);
+		expect(run.stdout[0]).toBe(`run ${run.id}`);
 		expect(report).toEqual([`stopped Fix the README typo after 2 rounds: ${worktreeOf(run.id)}`]);
 		expect(result.memory).toEqual(NOTES);
 		expect(run.model.calls.map((call) => call.kind)).toEqual([
