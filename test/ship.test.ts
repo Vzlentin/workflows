@@ -474,6 +474,68 @@ export default function ({ events }) {
 	});
 });
 
+describe("workflows show", () => {
+	it("prints the phases and calls of a finished ship run, and the same tree as JSON", async () => {
+		const run = await workflows(["ship", "--repo", ".", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED] },
+		});
+		expect(run.code).toBe(0);
+		const id = run.id ?? "";
+		const shown = await workflows(["show", id], { cwd: root });
+		expect([shown.code, shown.stderr]).toEqual([0, []]);
+		const call = (line: string) => expect.stringMatching(new RegExp(`^  ✓ ${line}  \\d+s$`));
+		const asks = (profile: string, n: number) => [call(`session ${profile}`), ...Array(n).fill(call(`ask ${profile}`))];
+		expect(shown.stdout).toEqual([
+			`run ${id} ship shipped Fix the README typo`,
+			"plan",
+			...asks("planner", 3),
+			"round 1: implement",
+			...asks("implementer", 1),
+			call("sh git add -A"),
+			call(`ok git diff --cached --quiet ${start}`),
+			call("ok git diff --cached --quiet"),
+			call("sh git commit --allow-empty -m round 1"),
+			// The command is cut at 80 characters.
+			call("sh git diff --binary --output=.{53}"),
+			"round 1: review",
+			...asks("reviewer", 2),
+			call("sh git rev-parse HEAD"),
+			"judge",
+			...asks("judge", 1),
+			call(`sh sh -c git reset -q --soft "\\$1" && git commit -q -m "\\$2" squash ${start.slice(0, 17)}`),
+			call("sh git rev-parse --short HEAD"),
+			expect.stringMatching(SHIPPED),
+		]);
+
+		const json = await workflows(["show", id, "--json"], { cwd: root });
+		expect([json.code, json.stdout.length]).toEqual([0, 1]);
+		const tree = JSON.parse(json.stdout[0] ?? "");
+		const time = expect.stringMatching(/^\d{4}-\d\d-\d\dT[\d:.]+Z$/);
+		expect(tree).toMatchObject({
+			runId: id,
+			workflow: "ship",
+			title: "Fix the README typo",
+			status: "shipped",
+			report: [shown.stdout.at(-1)],
+		});
+		expect(tree.calls).toHaveLength(shown.stdout.length - 6);
+		expect(tree.calls[0]).toEqual({
+			kind: "session",
+			label: "planner",
+			phase: "plan",
+			args: { profile: "planner" },
+			mark: "✓",
+			startedAt: time,
+			endedAt: time,
+			result: expect.any(Number),
+		});
+		expect(tree.calls[1]).toMatchObject({ kind: "ask", label: "planner", result: "Problem: README.md says wrold." });
+		expect(tree.calls[6]).toMatchObject({ kind: "sh", label: "git add -A", phase: "round 1: implement" });
+		expect(tree.calls[6].args).toEqual({ cmd: ["git", "add", "-A"], check: true });
+	});
+});
+
 describe("workflows resume of ship runs", () => {
 	it("refuses and does not list a run that the earlier ship or run command saved", async () => {
 		const ship = await saveRun("workflows.ship", TASK.version);
@@ -490,9 +552,21 @@ describe("workflows resume of ship runs", () => {
 				[],
 				[`workflows: run ${id} was saved by an earlier version of ${name} and cannot resume`],
 			]);
+			const shown = await workflows(["show", id, "--json"], { cwd: repo });
+			expect([shown.code, shown.stdout, shown.stderr]).toEqual([
+				1,
+				[],
+				[`workflows: run ${id} was saved by an earlier version of ${name} and cannot be shown`],
+			]);
 		}
 		const listed = await workflows(["list"], { cwd: repo });
 		expect(listed.stdout).toEqual([]);
+		const unknown = await workflows(["show", "20990101T000000-00000000"], { cwd: repo });
+		expect([unknown.code, unknown.stdout, unknown.stderr]).toEqual([
+			1,
+			[],
+			[`workflows: no run 20990101T000000-00000000 in ${runs()}`],
+		]);
 	});
 
 	it("continues a turn interrupted by Ctrl+C from the saved inputs", async () => {

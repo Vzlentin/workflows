@@ -56,7 +56,8 @@ async function startChild(
 		const input = await childInput({ name, args, bundle: caller.input.bundle }, { id, directory, cwd: caller.cwd });
 		await runtime.commit(async (tx) => {
 			const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
-			await tx.doc(CallDoc, key, { task, runId: id });
+			const doc = await tx.doc(CallDoc, key, null);
+			doc.result = { task, runId: id };
 			return undefined;
 		}, context);
 	} catch (error) {
@@ -68,7 +69,7 @@ async function startChild(
 
 /**
  * A new child task with the input, so also the run ID and directory, of the ended child task `ended`. The commit that
- * creates it also saves it as the result of the `run` call `key`.
+ * creates it also saves it as the result of the `run` call `key`, and starts the call again.
  */
 async function restartChild(
 	definition: ScriptTask,
@@ -83,7 +84,10 @@ async function restartChild(
 	await runtime.commit(async (tx) => {
 		const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 		const doc = await tx.doc(CallDoc, key, null);
-		doc.value = { task, runId: input.runId };
+		doc.result = { task, runId: input.runId };
+		doc.startedAt = new Date().toISOString();
+		delete doc.endedAt;
+		delete doc.error;
 		return undefined;
 	}, context);
 	return savedChild(runtime, key, context);
@@ -126,7 +130,7 @@ async function runPhase(
 }
 
 /** The kind and version of the task of every script run. A run saved by an earlier version cannot resume. */
-export const TASK = { name: "workflows.run", version: 8 } as const;
+export const TASK = { name: "workflows.run", version: 9 } as const;
 
 /** Whether the script task can continue the task `latest`. */
 export function current(

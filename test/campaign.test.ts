@@ -64,6 +64,22 @@ describe("workflows campaign", () => {
 		expect(existsSync(join(runs(), run.id ?? "", "round-1.patch"))).toBe(false);
 		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
 		expect(git(repo, "branch", "--list", "ship/*")).toBe("");
+
+		const shown = await workflows(["show", run.id ?? ""], { cwd: root });
+		const children = result.items.map((item: { result: { runId: string } }) => item.result.runId);
+		const lines = shown.stdout.map((line) => line.replace(/ {2}\d+s$/, ""));
+		for (const [n, child] of children.entries()) {
+			const at = lines.indexOf(`  ✓ run ship ${child}`);
+			expect(lines[at - 3], child).toBe(`item ${n + 1}: ${n === 0 ? "Fix the README typo" : "Add a thanks line"}`);
+			expect(lines.slice(at + 1, at + 4)).toEqual(["    plan", "      ✓ session planner", "      ✓ ask planner"]);
+		}
+		expect(lines.at(-1)).toBe(report[0]);
+		const { calls } = JSON.parse((await workflows(["show", run.id ?? "", "--json"], { cwd: root })).stdout[0] ?? "");
+		const shipped = calls.filter((call: { kind: string }) => call.kind === "run");
+		expect(shipped.map((call: { label: string }) => call.label)).toEqual(
+			children.map((child: string) => `ship ${child}`),
+		);
+		expect(shipped[0].calls[0]).toMatchObject({ kind: "session", label: "planner", phase: "plan", mark: "✓" });
 	});
 
 	it("stops at an item that is blocked", async () => {

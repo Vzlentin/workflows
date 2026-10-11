@@ -259,7 +259,7 @@ workflows check review
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `list` and `check` are commands, so no script of these names can run.
+`resume`, `list`, `show` and `check` are commands, so no script of these names can run.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
@@ -324,7 +324,7 @@ code comes from `meta.exit`. With `--json`, stdout gets one JSON outcome line in
 A script that throws, or a call in it that fails, stops the run: the command prints `failed <title>: <error>` and
 `continue with: workflows resume <run-id>` on stderr, and exits 1. `<title>` is the subject of the first `text`
 argument, or else the file name without `.js`, the workflow name, or `stdin`. The run's task ends as failed, and its
-saved calls stay in the run's store for the resume.
+saved calls stay in the run's store for the resume. `workflows show <run-id>` shows the failed call. See [Show](#show).
 
 `workflows/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
 workflows campaign, which give it the start commit`. `run("ship", { repo })` gets its own worktree and `start`, as
@@ -400,9 +400,10 @@ later edit of a script, prompt or profile, in the package or in `.workflows/`, c
 
 Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
 again. A call is known by its name, its arguments and its position among identical calls. A turn that was in progress
-continues in its session. A command that was in progress runs again, so commands must be safe to repeat. A call that
-fails is not saved, so every call that failed runs again, also one that the script caught. The saved results stay in
-the run's store also after the run fails. `phase` and `log` lines are not saved. A resume prints the
+continues in its session. A command that was in progress runs again, so commands must be safe to repeat. Each call
+records its kind, arguments, phase and start time when it starts, and its end time with its result or its error when
+it ends. A call that fails saves no result, so every call that failed runs again, also one that the script caught. The
+saved results stay in the run's store also after the run fails. `phase` and `log` lines are not saved. A resume prints the
 phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
 lines before it, and keeps the last `phase` line waiting for the next call that runs.
 
@@ -436,7 +437,7 @@ A shipped, blocked or stopped run is final: resume prints the same result and ex
 A run saved before every workflow script became a command, such as a run of the earlier `workflows ship`,
 `workflows campaign` or `workflows run`, or before `run()` started child runs, such as an earlier `workflows optimize`
 run, or before a child run became a task in the caller's store, or before a failed run kept its task, or before saved
-calls moved to documents, cannot resume:
+calls moved to documents, or before calls recorded their start and end, cannot resume:
 resume prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1.
 `list` does not show these runs.
 
@@ -476,6 +477,47 @@ argument, such as the work item for ship and the goal for campaign, or else the 
 `done` when the result has no `status`. Any other run, also a failed one, is `unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
 
 `list` only reads the stores. It does not load Pi packages, and no run continues.
+
+## Show
+
+```sh
+workflows show <run-id>
+workflows show <run-id> --json
+```
+
+`workflows show` prints one run as a tree of its phases and calls, from its store:
+
+```text
+run <run-id> <workflow> <status> <title>
+<phase line>
+  ✓ <kind> <label>  <duration>
+<report lines, or the failed and continue with lines>
+```
+
+- The first line has the fields of `workflows list`, but a run whose task failed has the status `failed`.
+- The calls are in the order they started. Each call is under the phase line that was current when it started, and is
+  indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `agent`,
+  `sh`, `ok` or `run`.
+- The mark is `✓` for a finished call, `✗` for a failed call, and `◉` for a call that started and did not end: it
+  runs now, or a stop interrupted it.
+- The label is the profile for `session`, `ask` and `agent`, and the command on one line, cut at 80 characters, for
+  `sh` and `ok`. For `run`, it is the workflow name and the child run ID. The phase lines and calls of the child run
+  are indented by 2 more under the `run` line.
+- The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, it is the time since the call
+  started.
+- A finished run ends with its report lines. A failed run ends with `failed <title>: <error>` and `continue with:
+  workflows resume <run-id>`. Any other run ends after its calls.
+
+When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
+object with the same tree: `{ "runId", "workflow", "title", "status", "report"?, "error"?, "calls" }`. Each call is
+`{ "kind", "label", "phase", "args", "mark", "startedAt", "endedAt"?, "result"?, "error"?, "calls"? }`, with ISO
+times. `phase` is `null` before the first phase line. The `calls` of a `run` call are the calls of its child run.
+
+`show` exits 0 for every run it can show. It only reads the store, through pi-durable's storage functions, as `list`
+does: it does not load Pi packages and writes nothing, so it is safe while the run goes on in another process. An
+unknown run ID prints the `no run` error of `resume`. A run saved by an earlier version prints `workflows: run
+<run-id> was saved by an earlier version of <workflow> and cannot be shown`. Both exit 1. Bad usage, such as no run
+ID, exits 2.
 
 ## Pi package
 
@@ -541,7 +583,8 @@ before a run exists, such as an unknown workflow name, is a normal tool error wi
 
 ### `/workflows`
 
-`/workflows` prints the output of `workflows list` in the session. `/workflows resume <run-id>` does not run the
+`/workflows` prints the output of `workflows list` in the session, and `/workflows show <run-id>` prints the output
+of `workflows show <run-id>`, or its error. `/workflows resume <run-id>` does not run the
 command. It sends a user message that asks the agent to continue the run with the `workflow` tool, so that Esc and the
 progress updates work as for any tool call. When the agent is busy, the message waits as a follow-up.
 
@@ -594,7 +637,7 @@ This runs Biome, the TypeScript check and Vitest. The tests use a fake model pro
 The engine files in `src/`:
 
 - `cli.ts`: the `workflows` command entry point.
-- `main.ts`: the commands `start`, `resume` and `list`, the run directory and the durable store.
+- `main.ts`: the commands `start`, `resume`, `list` and `show`, the run directory and the durable store.
 - `meta.ts`: the `meta` of a workflow script, its arguments, its usage, and the report lines and exit code of a run.
 - `task.ts`: the task of every script run, its saved input and checkpoint, its phase, and child runs.
 - `script.ts`: the workflow script calls, agent profiles, prompts for scripts, and sessions.

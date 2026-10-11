@@ -1,6 +1,7 @@
 /**
  * The `workflows` command line. `workflows <workflow> ...` starts a run of a workflow script,
- * `workflows resume <run-id>` continues one, and `workflows list` prints the runs. A run directory holds the durable
+ * `workflows resume <run-id>` continues one, `workflows list` prints the runs, and `workflows show <run-id>` prints the
+ * calls of one run. A run directory holds the durable
  * store, which holds everything a resume needs, and whatever the workflow writes there.
  */
 import { existsSync } from "node:fs";
@@ -36,7 +37,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Sessions } from "./agents.ts";
 import * as script from "./meta.ts";
 import { type Io, newRunId, UsageError } from "./run.ts";
-import { answerExtension } from "./script.ts";
+import { answerExtension, CALL_KIND, type CallRecord, type Child } from "./script.ts";
 import { current, scriptTask } from "./task.ts";
 
 export type Terminal = Io & {
@@ -52,6 +53,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		"workflows <workflow> --help",
 		"workflows resume <run-id> [--json]",
 		"workflows list [--json]",
+		"workflows show <run-id> [--json]",
 		"workflows check <workflow>",
 		"workflows",
 	]
@@ -68,6 +70,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		}
 		if (command === "list") return await list(args, terminal, json);
 		if (command === "resume") return await resume(args, terminal, json);
+		if (command === "show") return await show(args, terminal, json);
 		if (command === "check") return await script.check(args, terminal);
 		const flags = args.indexOf("--");
 		if (args.slice(0, flags === -1 ? args.length : flags).includes("--help")) {
@@ -102,7 +105,8 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 	return follow(store, task, input, id, terminal, json);
 }
 
-async function resume(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
+/** The ID and the directory of the one saved run that `args` names. */
+async function savedRun(args: readonly string[]): Promise<{ id: string; directory: string }> {
 	const [id, ...rest] = args;
 	if (id === undefined || rest.length > 0 || id.startsWith("-")) throw new UsageError("give one run ID");
 	if (id.includes("/") || id.includes("\\") || id === "." || id === "..") throw new UsageError(`${id} is not a run ID`);
@@ -110,6 +114,11 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 	await access(join(directory, "durable.sqlite")).catch(() => {
 		throw new Error(`no run ${id} in ${runsDirectory()}`);
 	});
+	return { id, directory };
+}
+
+async function resume(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
+	const { id, directory } = await savedRun(args);
 	const { store, task, input } = await openRun(directory, terminal);
 	terminal.stdout(`run ${id}`);
 	return follow(store, task, input, id, terminal, json);
@@ -131,11 +140,7 @@ async function openRun(
 	const path = join(directory, "durable.sqlite");
 	const latest = existsSync(path) ? await latestTask(path) : undefined;
 	if (latest !== undefined) {
-		if (!current(latest)) {
-			const name = latest.kind.slice(PREFIX.length);
-			throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot resume`);
-		}
-		const { input, state } = latest;
+		const { input, state } = checked(latest, id, "resume");
 		const store = await openStore(directory, terminal);
 		const failed = state.status === "terminal" && state.outcome.status === "failed";
 		return { store, task: failed ? await store.create(input) : latest.id, input };
@@ -199,6 +204,130 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 	if (json) terminal.stdout(JSON.stringify(runs));
 	else for (const run of runs) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
 	return 0;
+}
+
+/** One call of `workflows show`, with the calls of its child run when it is a `run` call. */
+type Shown = Omit<CallRecord, "conversation"> & {
+	readonly label: string;
+	readonly mark: "✓" | "✗" | "◉";
+	readonly calls?: Shown[];
+};
+
+/**
+ * Prints the phases and calls of a run as a tree, then its report lines, or its error. It reads the task record and the
+ * call records without a harness, so it changes nothing and the run can go on in another process.
+ */
+async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
+	const { id, directory } = await savedRun(args);
+	const path = join(directory, "durable.sqlite");
+	const { input, state } = checked(await latestTask(path), id, "be shown");
+	const outcome = state.status === "terminal" ? state.outcome : undefined;
+	const status =
+		outcome?.status === "completed"
+			? (script.statusOf(outcome.result) ?? "done")
+			: outcome?.status === "failed"
+				? "failed"
+				: "unfinished";
+	const calls = callTree(await callRecords(path), id);
+	const title = script.title(input);
+	const footer: string[] = [];
+	let end: { report: string[] } | { error: string } | undefined;
+	if (outcome?.status === "completed") {
+		script.report(input, outcome.result, { ...terminal, stdout: (line) => footer.push(line) });
+		end = { report: footer };
+	} else if (outcome?.status === "failed") {
+		footer.push(`failed ${title}: ${outcome.error.message}`, `continue with: workflows resume ${id}`);
+		end = { error: outcome.error.message };
+	}
+	if (json) {
+		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, calls }));
+		return 0;
+	}
+	terminal.stdout(`run ${id} ${input.name} ${status} ${title}`);
+	for (const line of treeLines(calls, "", Date.now())) terminal.stdout(line);
+	for (const line of footer) terminal.stdout(line);
+	return 0;
+}
+
+/** Every call record in the store at `path` by key, read from the storage only. */
+async function callRecords(path: string): Promise<Map<string, CallRecord>> {
+	const storage = await openNodeSqliteStorage(path);
+	try {
+		const records = new Map<string, CallRecord>();
+		let cursor: Cursor | undefined;
+		do {
+			const query = { scope: { kind: "session" as const }, at: "current" as const, kind: CALL_KIND };
+			const page = await storage.scanDocuments(query, 256, cursor, BACKGROUND_CONTEXT);
+			for (const record of page.items) {
+				const stored = await storage.document(record.id, "current", BACKGROUND_CONTEXT);
+				if (record.key !== undefined && stored !== undefined) records.set(record.key, stored.value as CallRecord);
+			}
+			cursor = page.next;
+		} while (cursor !== undefined);
+		return records;
+	} finally {
+		await storage.close(BACKGROUND_CONTEXT);
+	}
+}
+
+/** The calls of the run `runId` in the order they started, each `run` call with the calls of its child run. */
+function callTree(records: Map<string, CallRecord>, runId: string): Shown[] {
+	const own = [...records].filter(([key]) => key.startsWith(`${runId}/`)).map(([, record]) => record);
+	return own
+		.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+		.map(({ conversation: _, ...record }) => {
+			const mark = record.error !== undefined ? "✗" : record.endedAt !== undefined ? "✓" : "◉";
+			// A `run` call that failed before its child run started has no result.
+			const child = record.kind === "run" ? (record.result as Child | undefined)?.runId : undefined;
+			const shown = { ...record, label: labelOf(record, child), mark } as const;
+			return child === undefined ? shown : { ...shown, calls: callTree(records, child) };
+		});
+}
+
+/** The profile of a session, the command on one line for `sh` and `ok`, and the workflow and child run ID for `run`. */
+function labelOf({ kind, args }: Pick<CallRecord, "kind" | "args">, child: string | undefined): string {
+	if (kind === "sh" || kind === "ok") {
+		const { cmd } = args;
+		return (Array.isArray(cmd) ? cmd.join(" ") : String(cmd)).replace(/\s+/g, " ").trim().slice(0, 80);
+	}
+	if (kind === "run") return [args.name, child].filter((value) => value !== undefined).join(" ");
+	return String(args.profile);
+}
+
+/** The task `latest` of the run `id`. It throws when there is none, or when an earlier version saved it. */
+function checked(
+	latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined,
+	id: string,
+	verb: string,
+): TaskRecord<script.ScriptInput, JsonValue, JsonValue> {
+	if (latest === undefined) throw new Error(`run ${id} has no workflow`);
+	if (current(latest)) return latest;
+	const name = latest.kind.slice(PREFIX.length);
+	throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot ${verb}`);
+}
+
+/** `12s`, `3m05s` or `1h02m`. */
+function duration(ms: number): string {
+	const seconds = Math.max(0, Math.floor(ms / 1000));
+	const pad = (n: number) => String(n).padStart(2, "0");
+	if (seconds < 60) return `${seconds}s`;
+	if (seconds < 3600) return `${Math.floor(seconds / 60)}m${pad(seconds % 60)}s`;
+	return `${Math.floor(seconds / 3600)}h${pad(Math.floor(seconds / 60) % 60)}m`;
+}
+
+/** The phase lines at `indent` and the calls under them, the calls of a child run under its `run` line. */
+function treeLines(calls: readonly Shown[], indent: string, now: number): string[] {
+	const lines: string[] = [];
+	let phase: string | null = null;
+	for (const call of calls) {
+		if (call.phase !== null && call.phase !== phase) lines.push(`${indent}${call.phase}`);
+		phase = call.phase;
+		const end = call.endedAt === undefined ? now : Date.parse(call.endedAt);
+		const time = duration(end - Date.parse(call.startedAt));
+		lines.push(`${indent}  ${call.mark} ${call.kind} ${call.label}  ${time}`);
+		if (call.calls !== undefined) lines.push(...treeLines(call.calls, `${indent}    `, now));
+	}
+	return lines;
 }
 
 const PREFIX = "workflows.";
