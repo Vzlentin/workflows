@@ -8,7 +8,7 @@
  * input with one `workflow` call, and the tool result with its text.
  */
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/chord";
@@ -78,7 +78,7 @@ const BundleDoc = defineDoc<RunBundle>({
 const PACKAGE = fileURLToPath(new URL("../../", import.meta.url));
 
 /** `<base>/<folder>/*<extension>` by name; a missing folder has none. */
-async function readFolder(base: string, folder: string, extension: string): Promise<Record<string, string>> {
+export async function readFolder(base: string, folder: string, extension: string): Promise<Record<string, string>> {
 	const directory = join(base, folder);
 	const files = (await readdir(directory).catch(() => [])).filter((file) => file.endsWith(extension)).sort();
 	const entries = await Promise.all(
@@ -96,6 +96,20 @@ async function readMerged(project: string, folder: string, extension: string): P
 	return { ...own, ...local };
 }
 
+/** The `<name>.md` files of `folder`, each of which must replace a template of `templates`. */
+async function overrides(folder: string, templates: Record<string, string>): Promise<Record<string, string>> {
+	const found = await stat(folder).then(
+		(entry) => entry.isDirectory(),
+		() => false,
+	);
+	if (!found) throw new Error(`no prompts folder ${folder}`);
+	const own = await readFolder(folder, ".", ".md");
+	for (const name of Object.keys(own)) {
+		if (templates[name] === undefined) throw new Error(`${folder}/${name}.md replaces no prompt of the package`);
+	}
+	return own;
+}
+
 function profileOf(name: string, text: string): Profile {
 	const { frontmatter, body } = parseFrontmatter<{ model?: string; thinking?: ModelThinkingLevel }>(text);
 	const [provider = "", ...id] = (frontmatter.model ?? "").split("/");
@@ -109,16 +123,18 @@ function profileOf(name: string, text: string): Profile {
 
 /**
  * The `workflows/*.js`, `prompts/*.md` and `agents/*.md` of the package and of `.workflows/` in the Git repository of
- * `cwd`, or in `cwd` outside a repository, read now. Without `cwd`, only the package files.
+ * `cwd`, or in `cwd` outside a repository, read now. Without `cwd`, only the package files. Each `<name>.md` of the
+ * folder `prompts` replaces the template of that name.
  */
-export async function loadBundle(cwd?: string): Promise<Bundle> {
+export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle> {
 	const root = cwd === undefined ? undefined : await git(cwd, "rev-parse", "--show-toplevel").catch(() => cwd);
 	const project = root === undefined ? PACKAGE : join(root, ".workflows");
-	const [scripts, templates, profiles] = await Promise.all([
+	const [scripts, merged, profiles] = await Promise.all([
 		readMerged(project, "workflows", ".js"),
 		readMerged(project, "prompts", ".md"),
 		readMerged(project, "agents", ".md"),
 	]);
+	const templates = prompts === undefined ? merged : { ...merged, ...(await overrides(prompts, merged)) };
 	return {
 		scripts,
 		prompts: Object.fromEntries(Object.entries(templates).map(([name, text]) => [name, instructions(text)])),

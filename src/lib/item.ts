@@ -33,29 +33,38 @@ export async function readItem(argument: string | undefined, io: Io, noun: strin
 	return text;
 }
 
-/** `--repo`, `--base` (default `main`), `--rounds` (default 3) and at most one positional, the `noun`. */
+/**
+ * `--repo`, `--base` (default `main`), `--rounds` (default 3), `--prompts`, a folder of prompts for the run, and at most
+ * one positional, the `noun`.
+ */
 export function parseItemArgs(args: readonly string[], noun: string) {
 	const { values, positionals } = parseArgs({
 		args: [...args],
-		options: { repo: { type: "string" }, base: { type: "string" }, rounds: { type: "string" } },
+		options: {
+			repo: { type: "string" },
+			base: { type: "string" },
+			rounds: { type: "string" },
+			prompts: { type: "string" },
+		},
 		allowPositionals: true,
 	});
 	if (positionals.length > 1) throw new UsageError(`give the ${noun} as one argument`);
 	const rounds = Number(values.rounds ?? "3");
 	if (!Number.isInteger(rounds) || rounds < 1) throw new UsageError("--rounds must be a positive integer");
-	return { repo: values.repo, base: values.base ?? "main", rounds, item: positionals[0] };
+	return { repo: values.repo, base: values.base ?? "main", rounds, prompts: values.prompts, item: positionals[0] };
 }
 
 /**
  * The package's bundle with `workflows/<scriptName>.js` as the run's own script, the selected repository and its start
- * commit, and the worktree path of `run` on the branch `<scriptName>/<run-id>`.
+ * commit, and the worktree path of `run` on the branch `<scriptName>/<run-id>`. The prompts of the folder `prompts`,
+ * relative to `run.cwd`, replace the package prompts of their name.
  */
 export async function prepareWorktree(
 	scriptName: string,
-	args: { readonly repo: string | undefined; readonly base: string },
+	args: { readonly repo: string | undefined; readonly base: string; readonly prompts: string | undefined },
 	run: Run,
 ): Promise<{ bundle: RunBundle; repository: string; start: string; branch: string; worktree: string }> {
-	const bundle = await loadBundle();
+	const bundle = await loadBundle(undefined, args.prompts === undefined ? undefined : resolve(run.cwd, args.prompts));
 	const main = bundle.scripts[scriptName];
 	if (main === undefined) throw new Error(`the package has no workflows/${scriptName}.js`);
 	const repository = await selectRepository(run.cwd, args.repo, args.base, join(run.directory, "repository"));

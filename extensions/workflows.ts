@@ -42,6 +42,7 @@ const text = (value: unknown) => (typeof value === "string" ? value : JSON.strin
 const POSITIONAL: ReadonlyMap<string, string> = new Map([
 	["ship", "item"],
 	["campaign", "goal"],
+	["optimize", "workflow"],
 ]);
 
 /** The `workflows` arguments of a tool call, always with `--json`. */
@@ -124,8 +125,8 @@ function resultOf(outcome: WorkflowOutcome, steps: readonly string[]): AgentTool
 }
 
 /**
- * `ship <slug>`, `campaign <slug>`, `<name>`, `script` or `resume <run-id>`. The arguments can be partial while the
- * call streams.
+ * `ship <slug>`, `campaign <slug>`, `optimize <workflow>`, `<name>`, `script` or `resume <run-id>`. The arguments can
+ * be partial while the call streams.
  */
 function callLabel({ name, script, resume, args }: WorkflowCall): string {
 	if (resume !== undefined) return `resume ${resume}`;
@@ -158,13 +159,17 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 		name: "workflow",
 		label: "Workflow",
 		description:
-			"Run a durable workflow and wait for its result. Give exactly one of: `name` (`ship`, `campaign`, or a saved " +
-			"workflow script), `script` (the body of an inline workflow script), or `resume` (a run ID). `args` are the " +
-			"workflow's arguments; for `ship`: `item` (the work item), and optional `repo`, `base` and `rounds`. For " +
-			"`campaign`, which splits a goal into work items and ships each one as a commit on one branch: `goal`, and " +
-			"optional `repo`, `base` and `rounds`. A failed or interrupted run stays resumable.",
+			"Run a durable workflow and wait for its result. Give exactly one of: `name` (`ship`, `campaign`, `optimize`, " +
+			"or a saved workflow script), `script` (the body of an inline workflow script), or `resume` (a run ID). `args` " +
+			"are the workflow's arguments; for `ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and " +
+			"`prompts`. For `campaign`, which splits a goal into work items and ships each one as a commit on one branch: " +
+			"`goal`, and optional `repo`, `base`, `rounds` and `prompts`. For `optimize`, which searches for better ship " +
+			"prompts over a folder of work items: `workflow` (`ship`) and `items`, and optional `prompts` and `trials`. A " +
+			"failed or interrupted run stays resumable.",
 		parameters: Type.Object({
-			name: Type.Optional(Type.String({ description: "`ship`, `campaign`, or the name of a workflow script" })),
+			name: Type.Optional(
+				Type.String({ description: "`ship`, `campaign`, `optimize`, or the name of a workflow script" }),
+			),
 			script: Type.Optional(Type.String({ description: "An inline workflow script" })),
 			resume: Type.Optional(Type.String({ description: "The ID of a run to continue" })),
 			args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),

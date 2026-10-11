@@ -362,6 +362,20 @@ export default function ({ events }) {
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD^")).toBe(start);
 	});
 
+	it("replaces package prompts with the prompts of a --prompts folder", async () => {
+		await mkdir(join(root, "prompts"));
+		await writeFile(join(root, "prompts", "plan.md"), "---\ndescription: x\n---\nPlan this change. MARKER\n\n$@\n");
+
+		const run = await workflows(["ship", "--prompts", "prompts", "--repo", "repo", "Fix the README typo"], {
+			cwd: root,
+			script: { edits: [FIXED] },
+		});
+
+		expect(run.code).toBe(0);
+		expect(run.model.calls[0]?.prompt).toMatch(/^Plan this change\. MARKER\n\n## item\nFix the README typo$/);
+		expect(run.model.calls[1]?.prompt).toMatch(/^Challenge the plan/);
+	});
+
 	it("does not run ship.js without the start commit of workflows ship", async () => {
 		const run = await workflows(["run", "ship", "--arg", "item=Fix the README typo"], { cwd: repo });
 
@@ -383,6 +397,8 @@ export default function ({ events }) {
 			[["ship", "--rounds", "0", "Fix it"], "workflows: --rounds must be a positive integer", 2],
 			[["ship", "Fix", "it"], "workflows: give the work item as one argument", 2],
 			[["ship", "--pi", "pi", "Fix it"], "workflows: Unknown option '--pi'", 2],
+			[["ship", "--prompts", "none", "Fix it"], `workflows: no prompts folder ${join(repo, "none")}`, 1],
+			[["ship", "--prompts=.", "Fix it"], `workflows: ${repo}/README.md replaces no prompt of the package`, 1],
 			[["ship", "resume", "/tmp/run"], "workflows: /tmp/run is not a run ID", 2],
 			[["ship", "resume", "nothing"], `workflows: no run nothing in ${runs()}`, 1],
 			[["resume", "nothing"], `workflows: no run nothing in ${runs()}`, 1],

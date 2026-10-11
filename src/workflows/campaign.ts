@@ -13,6 +13,8 @@ type Args = {
 	readonly repo: string | undefined;
 	readonly base: string;
 	readonly rounds: number;
+	/** A folder whose `<name>.md` files replace the package prompts of that name. */
+	readonly prompts: string | undefined;
 };
 
 /** Everything a run needs, saved before execution starts. */
@@ -37,7 +39,8 @@ type CampaignItem = { readonly item: string; readonly result: ShipResult };
 export const campaign = defineWorkflow<Args, CampaignInput, ScriptCheckpoint, CampaignResult>({
 	...scriptWorkflow,
 	name: "campaign",
-	usage: "workflows campaign [--repo <repository>] [--base <branch>] [--rounds <n>] [<goal.md> | <text>]",
+	usage:
+		"workflows campaign [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<goal.md> | <text>]",
 	version: 1,
 	parse: async (args, io) => {
 		const { item, ...parsed } = parseItemArgs(args, "goal");

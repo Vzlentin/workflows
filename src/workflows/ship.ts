@@ -12,6 +12,8 @@ type Args = {
 	readonly repo: string | undefined;
 	readonly base: string;
 	readonly rounds: number;
+	/** A folder whose `<name>.md` files replace the package prompts of that name. */
+	readonly prompts: string | undefined;
 };
 
 /** Everything a run needs, saved before execution starts. */
@@ -44,7 +46,8 @@ export type ShipResult =
 export const ship = defineWorkflow<Args, ShipInput, ScriptCheckpoint, ShipResult>({
 	...scriptWorkflow,
 	name: "ship",
-	usage: "workflows ship [--repo <repository>] [--base <branch>] [--rounds <n>] [<item.md> | <text>]",
+	usage:
+		"workflows ship [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<item.md> | <text>]",
 	version: 3,
 	parse: async (args, io) => {
 		const parsed = parseItemArgs(args, "work item");

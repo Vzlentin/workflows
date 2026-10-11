@@ -4,6 +4,7 @@ import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { main } from "./lib/main.ts";
 import { campaign } from "./workflows/campaign.ts";
+import { optimizeWith } from "./workflows/optimize.ts";
 import { run } from "./workflows/run.ts";
 import { ship } from "./workflows/ship.ts";
 
@@ -26,5 +27,5 @@ process.exitCode = await main(
 		addProvider: (provider) => modelRuntime.registerNativeProvider(provider),
 		interrupt: interrupt.signal,
 	},
-	[ship, campaign, run],
+	[ship, campaign, run, optimizeWith([process.execPath, process.argv[1] ?? ""])],
 );

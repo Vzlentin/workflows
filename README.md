@@ -1,13 +1,14 @@
 # workflows
 
 `workflows ship` ships one work item onto a new branch through [Pi](https://github.com/earendil-works/pi) sessions.
-`workflows campaign` splits a goal into work items and ships them one after another onto one branch. The run is
+`workflows campaign` splits a goal into work items and ships them one after another onto one branch.
+`workflows optimize ship` searches for better ship prompts over a set of work items. The run is
 headless and resumable. [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) runs the sessions,
 model calls and tool calls, and stores the progress of the run.
 
 `src/lib/` is the library that runs workflows: run directories, the durable store, sessions, retries, resume and
-workflow scripts. `src/workflows/` holds the workflows built on it: `ship`, `campaign`, and `run`, which runs a
-JavaScript workflow script. `ship` selects the repository and creates the worktree, then runs the workflow script
+workflow scripts. `src/workflows/` holds the workflows built on it: `ship`, `campaign`, `optimize`, and `run`, which runs
+a JavaScript workflow script. `ship` selects the repository and creates the worktree, then runs the workflow script
 `workflows/ship.js` in the worktree for the sessions, the Git steps and the squash. `campaign` does the same with
 `workflows/campaign.js`, which runs `workflows/ship.js` once for each work item.
 
@@ -52,6 +53,11 @@ The work item comes from one argument or from stdin:
 
 A work item without a non-empty line fails before the run starts. `--base` defaults to `main` and `--rounds`
 defaults to 3.
+
+`--prompts <folder>`, relative to the current directory, gives prompts for this run: each `<name>.md` in the folder
+replaces the package prompt `prompts/<name>.md`, in the same template format. A missing folder, or a file with no
+package prompt of that name, fails before the run starts. The run saves the prompts that it used, as any run does.
+`campaign` takes the same option, and `workflows optimize` uses it.
 
 Without `--repo`, the run uses the Git repository that contains the current directory. With `--repo`, the value is
 first a path, relative to the current directory. If that path is the top level of a local Git repository, the run
@@ -127,8 +133,8 @@ workflows campaign goal.md
 workflows campaign --repo calibre --base develop --rounds 2 "Make the docs complete"
 ```
 
-The goal comes from one argument or from stdin, as the work item of `ship` does, and `--repo`, `--base` and `--rounds`
-work as for `ship`. `--rounds` applies to each work item. Errors name the goal, such as `the goal is empty`.
+The goal comes from one argument or from stdin, as the work item of `ship` does, and `--repo`, `--base`, `--rounds`
+and `--prompts` work as for `ship`. `--rounds` applies to each work item. Errors name the goal, such as `the goal is empty`.
 
 A planner session splits the goal into work items with the `split` prompt, and answers through `respond`. Then each
 work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the plan, the rounds, the review, the
@@ -150,6 +156,61 @@ resume can print the line of the item it continues after the first lines of that
 `<subject>` is the first non-empty line of the goal without leading `#`. The result is
 `{ "status": "done", "head", "items": [{ "item", "result" }] }` or `{ "status": "stopped", "items" }`, with the `ship`
 result of each item that ran. `head` is the commit of the last item.
+
+## Optimize
+
+```sh
+workflows optimize ship --items items/
+workflows optimize ship --items items/ --prompts review,handoff --trials 5
+```
+
+`workflows optimize ship` searches for better texts of some ship prompts with a reflective loop. It never changes
+`prompts/`: the result is a diff to apply by hand.
+
+The items folder, relative to the current directory, holds at least 2 work items as `<name>.md` files. Each file has
+the frontmatter `repo`, the path of a local Git repository, relative to the items folder, and `start`, the commit that
+ship starts from. Quote a commit that YAML can read as a number. The body is the work item.
+
+```text
+---
+repo: ../calibre
+start: "4dfb5c8"
+---
+# Fix the README typo
+
+The README says wrold.
+```
+
+`--prompts` lists the prompts to optimize, separated by commas: any of `plan`, `challenge`, `handoff`, `implement` and
+`review`. The default is `review,challenge,handoff`. `judge` gives the score, so it is never a candidate. `--trials`
+is the number of candidates that the run evaluates, the baseline included, and defaults to 3. An unknown prompt name, fewer than 2 items, or an item without `repo` or `start` is bad usage.
+
+A candidate is one text for each listed prompt, and the package texts are the baseline. Each evaluation runs
+`workflows ship --repo <repo> --base <start> --prompts <candidate folder> --json -- <item body>` as a child process.
+Evaluations run one at a time. The score of a shipped run is `passes/8 - 0.1*(rounds-1)`, where `passes` is the number
+of PASS answers of the judge, or 0 when the judge failed. A blocked or stopped run scores 0. After a ship run finishes,
+its worktree and its branch `ship/<run-id>` are removed. Its run directory stays.
+
+The run evaluates the baseline on every item first. Each later trial changes one prompt of the best candidate so far,
+the listed prompts in turn, and evaluates the new candidate on every item. So the run makes `trials × items` ship
+runs. A new candidate becomes the best one only when its mean score is higher, so the baseline stays on a tie.
+
+A new text comes from a turn of the `reflect` prompt in one session with the `default` agent profile, in the current
+directory. The turn gets the prompt name, its text in the best candidate, and for each item the work item, the score,
+the judge findings and the memory lines of the ship result of the best candidate. An empty reply, or a reply equal to the current
+text, stops the optimization with an error.
+
+The command prints `run <run-id>`, then `optimized ship: baseline <mean>, best <mean>, <path>` and exits 0. The means
+are over the items, and `<path>` is `prompts.diff` in the run directory. That file starts with one line
+`<item>: baseline <score>, best <score>` for each item, then the `git diff` from the package prompts to the best
+candidate, which `git apply` takes in the checkout. When no candidate is better, the diff part is empty.
+
+A ship run that does not finish, such as a failed or interrupted one, stops the optimization. The command prints
+`failed ship: ship run <id> failed on <item>: <error>; continue with: workflows resume <id>` and
+`continue with: workflows optimize resume <run-id>`, and exits 1. `workflows optimize resume <run-id>` runs the loop
+again from the start. A finished evaluation of the same texts and item returns its saved result and starts no ship run, and
+an unfinished one resumes its ship run. A reflect turn with the same prompt returns its saved answer. A hard kill of the
+command while a ship run runs loses that ship run's ID, and the resume runs that item again in a new ship run.
 
 ## Sessions
 
@@ -356,6 +417,8 @@ The tool takes one of `name`, `script` or `resume`, plus `args`:
 - `name: "ship"` runs `workflows ship`. `args.item` is the work item, and each other arg becomes `--<key>=<value>`,
   such as `--rounds=2`. An arg that `ship` does not know is bad usage, so no run starts.
 - `name: "campaign"` runs `workflows campaign` in the same way, with `args.goal` as the goal.
+- `name: "optimize"` runs `workflows optimize` in the same way, with `args.workflow` as the workflow to optimize, such
+  as `{ workflow: "ship", items: "items/", trials: 5 }`.
 - Any other `name` runs `workflows run <name>`. Each arg becomes `--arg <key>=<value>`: a string as it is, any other
   value as its JSON text. The script gets every arg as a string, so `{ depth: 2 }` reaches it as `"2"`.
 - `script` runs `workflows run -` with the script on stdin.
@@ -364,8 +427,8 @@ The tool takes one of `name`, `script` or `resume`, plus `args`:
 Each stderr line of the run is a progress update of the tool. Esc sends SIGINT to the run, as Ctrl+C does, so the run
 stays resumable.
 
-In Pi, the call line is `workflow ship <slug>`, `workflow campaign <slug>`, `workflow <name>`, `workflow script` or
-`workflow resume <run-id>`. The slug is the file name of a `.md` item or goal without `.md`, or else the first 40
+In Pi, the call line is `workflow ship <slug>`, `workflow campaign <slug>`, `workflow optimize <workflow>`,
+`workflow <name>`, `workflow script` or `workflow resume <run-id>`. The slug is the file name of a `.md` item or goal without `.md`, or else the first 40
 characters of its subject. Under it, each stderr line is a step: `✓` for a step that is done, `◉` for the step that
 runs now, and `✗` for the step where the run failed or was interrupted. A finished run ends with its `report` lines,
 such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8`. A failed or interrupted run ends with the
@@ -407,10 +470,18 @@ A campaign run has `worktree/` on `campaign/<run-id>` and `repository/` in the s
 
 - `item-<n>/`: the `round-<n>.patch` and `round-<n>-fix.patch` files of item `n`
 
+An optimize run has:
+
+- `evaluations.json`: each evaluation by the hash of the candidate texts and the item, with its ship run ID and, once
+  it finished, its result
+- `candidates/<hash>/`: the `<name>.md` files of each candidate, which ship gets as `--prompts`
+- `diff/`: the package templates (`a/prompts/`) and the best candidate (`b/prompts/`) that `prompts.diff` compares
+- `prompts.diff`: the score lines and the diff
+
 ## Prompts
 
-`prompts/` holds the Pi prompt templates `plan`, `challenge`, `handoff`, `implement`, `review` and `judge`, and
-`split` and `requeue` for `campaign`. Edit the wording there. Keep the frontmatter and the last line `$@`: the run
+`prompts/` holds the Pi prompt templates `plan`, `challenge`, `handoff`, `implement`, `review` and `judge`,
+`split` and `requeue` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the frontmatter and the last line `$@`: the run
 removes them, then adds its inputs as `## <name>` sections. `workflows/ship.js` adds the evidence rule and the SHIP or
 FIX answer rule of the review challenge itself, so a template edit cannot remove them. It also adds the `respond`
 answer rules of the handoff and implement turns. In the same way, `workflows/campaign.js` adds the `respond` answer rule of `split` and
