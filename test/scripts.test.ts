@@ -126,6 +126,20 @@ function rows(id: string) {
 	}
 }
 
+describe("workflows/script.d.ts", () => {
+	it("declares only globals that a script has", async () => {
+		const declarations = await readFile("workflows/script.d.ts", "utf8");
+		const names = [...declarations.matchAll(/^declare (?:const|function) (\w+)/gm)].map((match) => match[1] ?? "");
+		const types = names.map((name) => `${name}: typeof ${name}`).join(", ");
+		await writeFile(join(root, "x.js"), `return { ${types} }`);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(0);
+		const found = JSON.parse(run.stdout.at(-1) ?? "{}");
+		expect(Object.keys(found)).toEqual(names);
+		expect(Object.entries(found).filter(([, type]) => type === "undefined")).toEqual([]);
+	});
+});
+
 describe("workflows show", () => {
 	it("shows the failed call and the error of a failed run", async () => {
 		await writeFile(join(root, "x.js"), `phase("check")\nawait sh("echo a")\nawait ok("false")\nawait sh("exit 3")`);

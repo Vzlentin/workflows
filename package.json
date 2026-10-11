@@ -29,7 +29,7 @@
 	},
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
-		"check": "biome check . && tsc -p tsconfig.json && vitest --run",
+		"check": "biome check . && tsc -p tsconfig.json && tsc -p workflows/jsconfig.json && vitest --run",
 		"test": "vitest --run"
 	},
 	"dependencies": {
