@@ -87,6 +87,10 @@ where the author is `planner`, `implementer` or `reviewer`, and the planner's ro
 every prompt of the planner, implement and review sessions starts with a `## memory` section that lists them. The
 judge's prompt has no memory. A resume builds the memory again from the saved answers, so it gives the same prompts.
 
+The review challenge has an evidence rule: a finding that reverses a note, or a choice that the implementer explained,
+stays only with a defect that the review showed, written as `reverses #k: <defect>`. `workflows/ship.js` adds this
+rule next to the SHIP or FIX rule, and not in a template. The planner's challenge does not get it.
+
 On SHIP, the judge session reviews the change in the worktree, and the run squashes the work into one commit:
 
 ```text
@@ -401,9 +405,9 @@ A campaign run has `worktree/` on `campaign/<run-id>` and `repository/` in the s
 
 `prompts/` holds the Pi prompt templates `plan`, `challenge`, `handoff`, `implement`, `review` and `judge`, and
 `split` and `requeue` for `campaign`. Edit the wording there. Keep the frontmatter and the last line `$@`: the run
-removes them, then adds its inputs as `## <name>` sections. `workflows/ship.js` adds the SHIP or FIX answer rule of
-the review challenge itself, so a template edit cannot remove it. It also adds the `respond` answer rules of the
-handoff and implement turns. In the same way, `workflows/campaign.js` adds the `respond` answer rule of `split` and
+removes them, then adds its inputs as `## <name>` sections. `workflows/ship.js` adds the evidence rule and the SHIP or
+FIX answer rule of the review challenge itself, so a template edit cannot remove them. It also adds the `respond`
+answer rules of the handoff and implement turns. In the same way, `workflows/campaign.js` adds the `respond` answer rule of `split` and
 `requeue`. The judge rubric is fixed: its eight answers, in question order, make the score. A run uses the templates
 as they were when it started.
 

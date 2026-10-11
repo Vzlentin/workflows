@@ -32,10 +32,6 @@ The ladder is a reflex, not a research project — but it runs *after* you under
 - Two stdlib options, same size? Take the one that's correct on edge cases. Lazy means writing less code, not picking the flimsier algorithm.
 - Mark deliberate simplifications that cut a real corner with a known ceiling (global lock, O(n²) scan, naive heuristic) with a comment naming the ceiling and upgrade path (`# global lock, per-account locks if throughput matters`).
 
-## Evidence
-
-A reversal of a memory note, or of a choice that the implementer explained, stays only with a defect that this review showed: a reproduced bug, a failing check, or a quoted rule of the work item that the choice breaks. Write it as `reverses #k: <defect>`. A preference, less code, a stricter check, or a claim from a few observations is not a defect.
-
 ## When NOT to be lazy
 
 Never simplify away: input validation at trust boundaries, error handling that prevents data loss, security measures, accessibility basics, anything explicitly requested.

@@ -122,7 +122,11 @@ describe("workflows ship", () => {
 		expect(review?.prompt).toContain(`\n\n## change\n${patch}\n\n## reply\nI fixed the typo in README.md.`);
 		expect(await readFile(patch, "utf8")).toContain("-Hello wrold\n+Hello world\n");
 		expect(verdict?.prompt).toMatch(/\n\nAnswer with respond: SHIP if nothing needs to change, FIX otherwise\.$/);
-		expect(planned?.prompt).toMatch(/^Write a handoff document[\s\S]*information\.\n\nAnswer with respond: handoff /);
+		expect(verdict?.prompt).toContain("\n\nA reversal of a memory note");
+		expect(challenge?.prompt).not.toContain("A reversal of a memory note");
+		expect(planned?.prompt).toMatch(
+			/^Write a handoff document[\s\S]*information\.\n\nWhen you are done, answer with respond: text /,
+		);
 		expect(handoff?.prompt).toMatch(/\n\nWrite a handoff document[\s\S]*the findings that you cut and why\./);
 		expect(calls[7]?.prompt).toMatch(/## plan\nHandoff 2: /);
 		expect(calls[8]?.prompt).toContain(

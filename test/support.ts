@@ -225,7 +225,7 @@ export class FakeModel {
 				return fauxAssistantMessage("Keep: one word changes.");
 			case "handoff":
 				return respond({
-					handoff: `Handoff ${nth}: replace wrold with world in README.md.`,
+					text: `Handoff ${nth}: replace wrold with world in README.md.`,
 					notes: [`Handoff ${nth}: one word\n changes.`, " "],
 				});
 			case "implement": {
@@ -269,7 +269,7 @@ function respond(answer: ToolCall["arguments"][string]): AssistantMessage {
 
 /** The `respond` answer of the nth implement turn. */
 function implemented(nth: number, reply: string): AssistantMessage {
-	return respond({ reply, notes: [`Implement ${nth}: README.md had wrold.`] });
+	return respond({ text: reply, notes: [`Implement ${nth}: README.md had wrold.`] });
 }
 
 export type Outcome = {
