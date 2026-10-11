@@ -270,20 +270,26 @@ status `done`. Any other run, also a failed one, is `unfinished`. With `--json`,
 ## Pi package
 
 The package is also a Pi package. Its `pi` field in `package.json` declares the extension `extensions/workflows.ts`
-and the skill `skills/workflows/SKILL.md`. To add it to Pi from a checkout:
+and the skill `skills/workflows/SKILL.md`. Add it to Pi from its Git URL, like other Pi packages:
 
 ```sh
-npm ci
-npm run build
-pi install /path/to/workflows
+pi install https://github.com/Vzlentin/workflows
 ```
 
-Or add the path to `packages` in Pi's `settings.json`. Pi does not install the dependencies of a local package, so
-run `npm ci` and `npm run build` in the checkout first, and again after each update.
+Update it with:
 
-The extension runs each workflow as a child process of this package's `node dist/cli.js`, in the session's directory,
+```sh
+pi update --extension https://github.com/Vzlentin/workflows
+```
+
+The Pi package needs no build. Pi installs the dependencies, and the extension runs the CLI from its TypeScript
+source. Node strips the types, because a git package is not under `node_modules`. The `workflows` command on the
+PATH still needs `npm run build` in a checkout, because its `bin` is `dist/cli.js`. See [Setup](#setup).
+
+The extension runs each workflow as a child process of this package's `node src/cli.ts`, in the session's directory,
 always with `--json`. So a run that starts in Pi is a normal run in the runs directory, and `workflows resume`
-continues it from a terminal.
+continues it from a terminal. The child process runs outside Pi, so the package has its own copies of `pi-ai` and
+`pi-coding-agent` as optional dependencies, which Pi's git install keeps.
 
 ### The `workflow` tool
 

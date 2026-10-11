@@ -23,7 +23,7 @@ type WorkflowOutcome =
 	| { readonly runId: string; readonly status: "failed"; readonly error: string }
 	| { readonly runId: string; readonly status: "interrupted" };
 
-const CLI = [process.execPath, fileURLToPath(new URL("../dist/cli.js", import.meta.url))];
+const CLI = [process.execPath, fileURLToPath(new URL("../src/cli.ts", import.meta.url))];
 
 const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
 
