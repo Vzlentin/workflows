@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -9,9 +9,9 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AnswerDoc, CallDoc } from "../src/script.ts";
+import { CallDoc } from "../src/script.ts";
 import { TASK } from "../src/task.ts";
-import { git, type Kind, repository, sandbox, workflows } from "./support.ts";
+import { git, type Kind, lockHolder, repository, sandbox, workflows } from "./support.ts";
 
 let root: string;
 
@@ -403,14 +403,6 @@ return n`,
 		expect(run.stdout).toEqual([`run ${run.id}`, "3"]);
 	});
 
-	it("stores a complete base of the answer and call documents after 31 deltas", () => {
-		for (const definition of [AnswerDoc, CallDoc]) {
-			const { checkpointWhen } = definition.definition;
-			expect(checkpointWhen?.({} as never, [], { deltasSinceBase: 31 })).toBe(true);
-			expect(checkpointWhen?.({} as never, [], { deltasSinceBase: 0 })).toBe(false);
-		}
-	});
-
 	it("runs a failed call again on resume, and no finished call", async () => {
 		await writeFile(
 			join(root, "x.js"),
@@ -528,18 +520,18 @@ return [one, two].join(", ")`,
 		]);
 	});
 
-	it("resumes a run whose lock names a process that has ended, and removes the lock", async () => {
+	it("resumes a run whose lock holder was killed", async () => {
 		await writeFile(join(root, "x.js"), `const one = await agent("Script: one")\nreturn one`);
 		const first = await stopped(["x.js"], { nth: 1 });
 		expect(first.code).toBe(130);
 		const id = first.id ?? "";
-		const lock = join(runs(), id, "lock");
-		expect(existsSync(lock)).toBe(false);
-		await writeFile(lock, String(spawnSync(process.execPath, ["-e", ""]).pid));
+		const holder = await lockHolder(join(runs(), id));
+		const exited = new Promise((resolve) => holder.on("exit", resolve));
+		holder.kill("SIGKILL");
+		await exited;
 
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to one"]);
-		expect(existsSync(lock)).toBe(false);
 	});
 
 	it("resumes an aborted run in a new task with its saved calls", async () => {

@@ -5,7 +5,7 @@
  * store, which holds everything a resume needs, and whatever the workflow writes there.
  */
 import { existsSync } from "node:fs";
-import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -35,6 +35,7 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Sessions } from "./agents.ts";
+import { takeLock } from "./lock.ts";
 import * as script from "./meta.ts";
 import { type Io, newRunId, UsageError } from "./run.ts";
 import { answerExtension, CALL_KIND, type CallRecord } from "./script.ts";
@@ -157,72 +158,19 @@ async function openRun(
 	}
 }
 
-/**
- * The open store of `directory` with `task`, or with a new task of `input`, under the lock of the run: it throws when
- * another process runs the run. The store and the lock close together, and they close when the task cannot be created.
- */
+/** The open store of `directory` with `task`, or with a new task of `input`. It closes when the task cannot be created. */
 async function openTask(
 	directory: string,
 	terminal: Terminal,
 	input: script.ScriptInput,
 	task?: TaskId<JsonValue>,
 ): Promise<{ store: Store; task: TaskId<JsonValue>; input: script.ScriptInput }> {
-	const lock = join(directory, "lock");
-	await takeLock(lock, basename(directory));
-	let store: Store | undefined;
+	const store = await openStore(directory, terminal);
 	try {
-		const opened = await openStore(directory, terminal);
-		store = opened;
-		const close = async () => {
-			await opened.close();
-			await rm(lock, { force: true });
-		};
-		return { store: { ...opened, close }, task: task ?? (await opened.create(input)), input };
+		return { store, task: task ?? (await store.create(input)), input };
 	} catch (error) {
-		await store?.close();
-		await rm(lock, { force: true });
+		await store.close();
 		throw error;
-	}
-}
-
-/** Writes the process ID to `lock`. It replaces a lock whose process has ended, and throws when the process lives. */
-async function takeLock(lock: string, id: string): Promise<void> {
-	if (await tryLock(lock)) return;
-	const content = await readFile(lock, "utf8").catch(() => "");
-	const pid = Number(content);
-	// A PID that the system gave again to a new process makes an old lock look live; the user deletes the lock then.
-	if (Number.isInteger(pid) && pid > 0 && alive(pid)) throw new Error(`run ${id} is running`);
-	// Only the process that creates the guard replaces the old lock, so that no process removes a new lock. A process
-	// that stops while it holds the guard leaves it, and the user deletes it then.
-	const guard = `${lock}.replace`;
-	if (!(await tryLock(guard))) throw new Error(`run ${id} is running`);
-	try {
-		if ((await readFile(lock, "utf8").catch(() => "")) !== content) throw new Error(`run ${id} is running`);
-		await rm(lock, { force: true });
-		if (!(await tryLock(lock))) throw new Error(`run ${id} is running`);
-	} finally {
-		await rm(guard, { force: true });
-	}
-}
-
-/** Whether `lock` was created with the process ID; false when it exists. */
-async function tryLock(lock: string): Promise<boolean> {
-	try {
-		await writeFile(lock, String(process.pid), { flag: "wx" });
-		return true;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
-		throw error;
-	}
-}
-
-/** Whether the process `pid` lives. */
-function alive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
 	}
 }
 
@@ -511,9 +459,11 @@ async function loadEntries(
 
 /**
  * The run's durable store, open with the session tools, the package tools and the script task selected by default,
- * and `workflows-answer` installed. Sessions select it only by name.
+ * and `workflows-answer` installed. Sessions select it only by name. It holds the lock of the run until it closes, and
+ * throws when another process runs the run.
  */
 async function openStore(directory: string, terminal: Terminal): Promise<Store> {
+	const lock = takeLock(directory, basename(directory));
 	const task = scriptTask({ log: terminal.stderr });
 	const registry = createRegistry();
 	const agentDir = getAgentDir();
@@ -523,7 +473,10 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 	});
 	const warn = (error: unknown) =>
 		terminal.stderr(`warning: ${error instanceof Error ? error.message : String(error)}`);
-	const entries = await loadEntries(terminal.cwd, agentDir, settings, warn);
+	const entries = await loadEntries(terminal.cwd, agentDir, settings, warn).catch((error: unknown) => {
+		lock.close();
+		throw error;
+	});
 	const envs = new Map<string, NodeExecutionEnv>();
 	let harness: Harness;
 	try {
@@ -549,14 +502,19 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 		);
 	} catch (error) {
 		await entries.close();
+		lock.close();
 		throw error;
 	}
 	let closed: Promise<void> | undefined;
 	const close = async () => {
 		// Entries close first: an entry may still need the open harness.
-		await entries.close();
-		await harness.close(BACKGROUND_CONTEXT);
-		for (const env of envs.values()) await env.cleanup(BACKGROUND_CONTEXT);
+		try {
+			await entries.close();
+			await harness.close(BACKGROUND_CONTEXT);
+			for (const env of envs.values()) await env.cleanup(BACKGROUND_CONTEXT);
+		} finally {
+			lock.close();
+		}
 	};
 	return {
 		harness,

@@ -30,10 +30,12 @@ import {
 	defineDocFamily,
 	defineExtension,
 	defineTool,
+	type EntryId,
 	type JsonObject,
 	type ModelRef,
 	section,
 	type TaskId,
+	type Tx,
 } from "@earendil-works/pi-durable";
 import { sessionAgent } from "./agents.ts";
 import { failure, git, run } from "./git.ts";
@@ -160,7 +162,7 @@ const checkpointWhen = (_value: unknown, _ops: unknown, info: { readonly deltasS
  * The JSON Schema of the current ask's answer, per conversation, and the answer that `respond` checked and saved. The
  * schema is absent when the ask has no `schema`, and the answer is absent until `respond` accepts one.
  */
-export const AnswerDoc = defineDoc<{ schema?: JsonObject; answer?: JsonValue }>({
+const AnswerDoc = defineDoc<{ schema?: JsonObject; answer?: JsonValue }>({
 	kind: "workflows.answer-schema",
 	// No `migrate`: only a task at `TASK.version` runs, and `show` does not read this document.
 	version: 2,
@@ -346,20 +348,40 @@ function cut(message: AssistantMessage): boolean {
 	return message.stopReason !== "stop" && message.stopReason !== "toolUse";
 }
 
+/** The assistant message of the entry `id`, if it has one. */
+async function answerMessage(tx: Tx, id: EntryId): Promise<AssistantMessage | undefined> {
+	return (await tx.entry(AssistantEntry, id))?.model?.[0] as AssistantMessage | undefined;
+}
+
 /**
- * The answer message to `content` in `conversation`, sent under the request ID `attempt` of the turn `requestId`. A
- * turn answered before returns its saved answer. A cut answer throws.
+ * The answer message to `content` in `conversation`. A turn answered before returns its saved answer. A turn that
+ * failed before, or whose answer was cut, is sent again under the next free request ID, and a cut answer throws.
+ * `start` runs in the transaction that picks the request ID, with whether that ID is new.
  */
 async function turn(
 	runtime: Runtime,
 	conversation: ConversationId,
 	context: Context,
 	requestId: string,
-	attempt: string,
 	content: string,
+	start: (tx: Tx, fresh: boolean) => Promise<void>,
 ): Promise<AssistantMessage> {
 	const handle = await runtime.conversation(conversation, context);
 	if (handle === undefined) throw new Error(`Session ${conversation} is missing`);
+	let attempt = requestId;
+	await runtime.commit(async (tx) => {
+		let record = await tx.submissionByRequest(conversation, attempt);
+		for (let n = 2; ; n++) {
+			if (record?.status === "done") {
+				const answer = record.answer === undefined ? undefined : await answerMessage(tx, record.answer);
+				if (answer === undefined || !cut(answer)) break;
+			} else if (record?.status !== "unanswered") break;
+			attempt = `${requestId}#${n}`;
+			record = await tx.submissionByRequest(conversation, attempt);
+		}
+		await start(tx, record === undefined);
+		return undefined;
+	}, context);
 	const submission = await handle.submit({ type: "input", content, requestId: attempt }, context);
 	const settled = await submission.wait(context);
 	if (settled.type !== "input" || settled.status !== "done") {
@@ -368,7 +390,7 @@ async function turn(
 	}
 	let answer: AssistantMessage | undefined;
 	await runtime.commit(async (tx) => {
-		answer = (await tx.entry(AssistantEntry, settled.answer))?.model?.[0] as AssistantMessage | undefined;
+		answer = await answerMessage(tx, settled.answer);
 		return undefined;
 	}, context);
 	if (answer === undefined) throw new Error(`The ${requestId} answer ${settled.answer} is missing`);
@@ -484,31 +506,17 @@ async function askTurn(
 	schema: JsonObject | null,
 ): Promise<JsonValue> {
 	const { runtime, context } = calls;
-	// A turn that failed before, or whose answer was cut, is sent again under the next free request ID.
-	let attempt = key;
-	await runtime.commit(async (tx) => {
-		let record = await tx.submissionByRequest(conversation, attempt);
-		for (let n = 2; ; n++) {
-			if (record?.status === "done") {
-				if (record.answer === undefined) break;
-				const answer = (await tx.entry(AssistantEntry, record.answer))?.model?.[0] as AssistantMessage | undefined;
-				if (answer === undefined || !cut(answer)) break;
-			} else if (record?.status !== "unanswered") break;
-			attempt = `${key}#${n}`;
-			record = await tx.submissionByRequest(conversation, attempt);
-		}
+	const answer = await turn(runtime, conversation, context, key, prompt, async (tx, fresh) => {
 		const doc = await tx.doc(AnswerDoc, conversation);
 		if (schema === null) delete doc.schema;
 		else doc.schema = schema;
 		// A new turn drops the answer of an earlier one. A turn sent before keeps the answer `respond` saved in it.
-		if (record === undefined) delete doc.answer;
+		if (fresh) delete doc.answer;
 		await configure(tx, conversation, {
 			extensions: { add: [{ name: ANSWER }] },
 			modelTools: { remove: schema === null ? [respond] : [] },
 		});
-		return undefined;
-	}, context);
-	const answer = await turn(runtime, conversation, context, key, attempt, prompt);
+	});
 	if (schema === null) return textOf(answer).trim();
 	const doc = await runtime.snapshot(AnswerDoc, conversation, context);
 	if (doc === undefined || !("answer" in doc)) throw new Error("the answer did not call respond");

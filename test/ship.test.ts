@@ -9,7 +9,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
-import { FakeModel, git, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
+import { FakeModel, git, lockHolder, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -688,14 +688,16 @@ describe("workflows resume of ship runs", () => {
 
 	it("refuses a run that a live process runs, and does not open its store", async () => {
 		const id = await saveRun("workflows.run", TASK.version, { name: "ship" });
-		const lock = join(runs(), id, "lock");
-		await writeFile(lock, String(process.pid));
+		const holder = await lockHolder(join(runs(), id));
 		const marker = await closingPackage("[]");
 
-		const resumed = await workflows(["resume", id], { cwd: repo });
-		expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([1, [], [`workflows: run ${id} is running`]]);
-		expect(existsSync(marker)).toBe(false);
-		expect(await readFile(lock, "utf8")).toBe(String(process.pid));
+		try {
+			const resumed = await workflows(["resume", id], { cwd: repo });
+			expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([1, [], [`workflows: run ${id} is running`]]);
+			expect(existsSync(marker)).toBe(false);
+		} finally {
+			holder.kill();
+		}
 	});
 
 	it("continues a turn interrupted by Ctrl+C from the saved inputs", async () => {

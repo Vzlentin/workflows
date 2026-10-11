@@ -450,12 +450,9 @@ resume prints `workflows: run <run-id> was saved by an earlier version of <workf
 `list` does not show these runs. A run saved by a later version cannot resume either: resume prints `workflows: run
 <run-id> was saved by a later version of <workflow> and cannot resume` and exits 1.
 
-Only one process runs a run at a time. When another live process runs the run, `resume` prints `workflows: run
-<run-id> is running` and exits 1, and does not open the run's store. A lock whose process has ended is replaced. When
-the system gave the process ID of an ended run to a new process, the lock looks live: delete the `lock` file of the
-run directory by hand. Only the process that creates the `lock.replace` file replaces an ended lock, and it removes the
-file again. If that process stops before it removes the file, `resume` prints `is running`: delete `lock.replace` by
-hand.
+Only one process runs a run at a time. When another process runs the run, `resume` prints `workflows: run <run-id>
+is running` and exits 1, and does not open the run's store. The lock ends with the process that holds it, also when
+that process is killed.
 
 Model requests use Pi's retry, stream timeout and compaction settings from its `settings.json`. The project's
 `.pi/settings.json`, with its packages and these settings, counts only when Pi trusts the project.
@@ -614,8 +611,7 @@ progress updates work as for any tool call. When the agent is busy, the message 
 Runs live in `$XDG_STATE_HOME/workflows/runs/<run-id>`, by default `~/.local/state/workflows/runs/<run-id>`:
 
 - `durable.sqlite`: the pi-durable store with the saved inputs, the sessions and the progress of the run
-- `lock`: the process ID of the process that runs the run, present only while it runs
-- `lock.replace`: present only while a process replaces a lock whose process has ended
+- `lock.sqlite`: the lock of the run, which the process that runs the run holds as an exclusive SQLite transaction
 
 A ship run also has:
 

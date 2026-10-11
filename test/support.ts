@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,19 @@ import { main } from "../src/main.ts";
 
 export function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trimEnd();
+}
+
+/** A process that holds the lock of the run in `directory` until it is killed. */
+export async function lockHolder(directory: string): Promise<ChildProcess> {
+	const code = [
+		'const { DatabaseSync } = require("node:sqlite");',
+		'new DatabaseSync(process.argv[1]).exec("BEGIN EXCLUSIVE");',
+		'process.stdout.write("locked\\n");',
+		"setInterval(() => {}, 1000);",
+	].join("\n");
+	const holder = spawn(process.execPath, ["-e", code, join(directory, "lock.sqlite")]);
+	await new Promise((resolve) => holder.stdout?.once("data", resolve));
+	return holder;
 }
 
 const ENVIRONMENT = { ...process.env };
