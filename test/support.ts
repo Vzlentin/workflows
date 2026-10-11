@@ -181,6 +181,12 @@ export class FakeModel {
 		if (last?.role === "toolResult") {
 			const after = messages.slice(messages.findLastIndex((message) => message.role === "assistant") + 1);
 			for (const message of after) if (message.role === "toolResult") this.results.push(textOf(message));
+			const user = messages.findLastIndex((message) => message.role === "user");
+			const answers = user < 0 ? undefined : scriptAnswers(textOf(messages[user] as Message));
+			if (answers !== undefined) {
+				const tried = messages.slice(user).filter((message) => message.role === "toolResult").length;
+				return respond(JSON.parse(answers[tried] ?? "null"));
+			}
 			if (tools.includes("respond")) return this.#judge();
 			return fauxAssistantMessage("I fixed the typo in README.md.");
 		}
@@ -241,10 +247,9 @@ export class FakeModel {
 			case "requeue":
 				return respond({ items: [...(this.#script.queues?.[nth - 1] ?? [])] });
 			case "script": {
-				// `Script respond: <json>` answers with `respond`, any other `Script: <text>` with `Reply to <text>`.
-				const answer = /^Script respond: (.*)$/s.exec(prompt)?.[1];
-				if (answer === undefined) return fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
-				return respond(JSON.parse(answer));
+				const answers = scriptAnswers(prompt);
+				if (answers === undefined) return fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
+				return respond(JSON.parse(answers[0] ?? "null"));
 			}
 		}
 	};
@@ -253,6 +258,14 @@ export class FakeModel {
 		const { judge = PASSING_JUDGE } = this.#script;
 		return typeof judge === "string" ? fauxAssistantMessage(judge) : respond(judge);
 	}
+}
+
+/**
+ * The answers of a `Script respond: <json>` prompt, one JSON text per line up to the first blank line: attempt n
+ * answers with line n. Any other `Script: <text>` prompt has none, and its reply is `Reply to <text>`.
+ */
+function scriptAnswers(prompt: string): string[] | undefined {
+	return /^Script respond: (.*?)(?:\n\n|$)/s.exec(prompt)?.[1]?.split("\n");
 }
 
 function respond(answer: ToolCall["arguments"][string]): AssistantMessage {

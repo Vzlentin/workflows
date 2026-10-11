@@ -65,7 +65,11 @@ return [one, two, n, args.word].join(", ")`,
 
 		expect(last.code).toBe(0);
 		expect(last.stdout).toEqual([`run ${first.id}`, "Reply to one, Reply to two, 3, done"]);
-		expect(answered.map((call) => call.prompt)).toEqual(["Script: one", "Script: two", 'Script respond: {"n": 3}']);
+		expect(answered.map((call) => call.prompt)).toEqual([
+			"Script: one",
+			"Script: two",
+			'Script respond: {"n": 3}\n\nThe answer of respond must match this JSON Schema:\n{"type":"object","properties":{"n":{"type":"number"}},"required":["n"]}',
+		]);
 		expect(await log()).toBe("a\nb\n");
 		const tools = ["read", "grep", "find", "ls", "write", "edit", "bash"];
 		expect(answered.map((call) => [call.model, call.thinking, call.tools])).toEqual([
@@ -119,6 +123,31 @@ return [n, typeof n, verdict].join(", ")`,
 		const run = await workflows(["run", "x.js"], { cwd: root });
 		expect(run.stderr).toEqual([]);
 		expect(run.stdout).toEqual([`run ${run.id}`, "3, number, SHIP"]);
+	});
+
+	it("shows the schema in the prompt and sends back the error of a parsed JSON text answer", async () => {
+		const schema = {
+			type: "object",
+			properties: {
+				findings: {
+					type: "array",
+					items: { type: "object", properties: { finding: { type: "string" } }, required: ["finding"] },
+				},
+			},
+			required: ["findings"],
+		};
+		const wrong = JSON.stringify(JSON.stringify({ findings: [{ title: "x" }] }));
+		const right = JSON.stringify({ findings: [{ finding: "y" }] });
+		await writeFile(
+			join(root, "x.js"),
+			`const { findings } = await agent(${JSON.stringify(`Script respond: ${wrong}\n${right}`)}, { schema: ${JSON.stringify(schema)} })
+return findings[0].finding`,
+		);
+		const run = await workflows(["run", "x.js"], { cwd: root });
+		expect(run.stderr).toEqual([]);
+		expect(run.stdout).toEqual([`run ${run.id}`, "y"]);
+		expect(run.model.results[0]).toContain("must have required properties finding");
+		expect(run.model.calls[0]?.prompt).toContain(JSON.stringify(schema));
 	});
 
 	it("runs a failed call again on resume, and no finished call", async () => {

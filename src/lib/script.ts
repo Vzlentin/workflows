@@ -149,7 +149,7 @@ async function bundleOf(api: ToolExecutionApi, context: Context): Promise<RunBun
 
 /**
  * The answer of `args` checked against `schema`, as `validateToolArguments` returns it. A string answer that does not
- * match is parsed as JSON and checked again, because a model can send an object as its JSON text. If that fails too,
+ * match is parsed as JSON and checked again, because a model can send an object as its JSON text. If it does not parse,
  * this throws the first error.
  */
 function checkedAnswer(schema: JsonObject, args: JsonObject, id: string): unknown {
@@ -163,11 +163,13 @@ function checkedAnswer(schema: JsonObject, args: JsonObject, id: string): unknow
 		return check(args.answer);
 	} catch (error) {
 		if (typeof args.answer !== "string") throw error;
+		let parsed: unknown;
 		try {
-			return check(JSON.parse(args.answer));
+			parsed = JSON.parse(args.answer);
 		} catch {
 			throw error;
 		}
+		return check(parsed);
 	}
 }
 
@@ -259,7 +261,11 @@ const ask = defineTool({
 			return undefined;
 		}, context);
 		// The request ID is the nested call ID, so an interrupted ask continues its turn.
-		const answer = await sessionOf(api, conversation, context).turn(api.callId, args.prompt);
+		const prompt =
+			schema === undefined
+				? args.prompt
+				: `${args.prompt}\n\nThe answer of respond must match this JSON Schema:\n${JSON.stringify(schema)}`;
+		const answer = await sessionOf(api, conversation, context).turn(api.callId, prompt);
 		if (schema === undefined) {
 			const reply = textOf(answer).trim();
 			return { output: text(reply), structuredOutput: reply };

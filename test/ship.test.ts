@@ -107,13 +107,15 @@ describe("workflows ship", () => {
 		const patch = join(runs(), run.id ?? "", "round-1.patch");
 		expect(review?.prompt).toContain(`\n\n## change\n${patch}\n\n## reply\nI fixed the typo in README.md.`);
 		expect(await readFile(patch, "utf8")).toContain("-Hello wrold\n+Hello world\n");
-		expect(verdict?.prompt).toMatch(/\n\nAnswer with respond: SHIP if nothing needs to change, FIX otherwise\.$/);
+		expect(verdict?.prompt).toContain(
+			"\n\nAnswer with respond: SHIP if nothing needs to change, FIX otherwise.\n\nThe answer of respond must match this JSON Schema:\n",
+		);
 		expect(handoff?.prompt).toMatch(/^Write a handoff document[\s\S]*information\.$/);
 		expect(calls[7]?.prompt).toMatch(/## plan\nHandoff 2: /);
 		expect(calls[8]?.prompt).toContain(
 			`## change\n${patch.replace("round-1", "round-2")}\n${patch.replace("round-1", "round-2-fix")}\n`,
 		);
-		expect(calls[10]?.prompt).toMatch(new RegExp(`## base\\n${start}\\n\\n## head\\n[0-9a-f]{40}$`));
+		expect(calls[10]?.prompt).toMatch(new RegExp(`## base\\n${start}\\n\\n## head\\n[0-9a-f]{40}\\n\\n`));
 	});
 
 	it("gives every session the tools of the piDurable entries in Pi's packages and closes them", async () => {
