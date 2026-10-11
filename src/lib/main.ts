@@ -93,7 +93,7 @@ export async function main(
 	}
 }
 
-export function runsDirectory(): string {
+function runsDirectory(): string {
 	const state = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
 	return join(state, "workflows", "runs");
 }

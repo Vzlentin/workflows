@@ -1,18 +1,16 @@
 /**
- * `workflows optimize ship`: AxGEPA searches for better texts of some ship prompts. Each evaluation is a `workflows
- * ship` child run of one item with a candidate's prompts, and each new text comes from a reflect turn in a saved
- * session. The result is a diff from the package prompts to the best candidate; `prompts/` stays unchanged.
+ * `workflows optimize ship`: a reflective loop searches for better texts of some ship prompts. Each evaluation is a
+ * `workflows ship` child run of one item with a candidate's prompts, and each new text comes from a reflect turn in a
+ * saved session. The result is a diff from the package prompts to the best candidate; `prompts/` stays unchanged.
  */
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { AxGEPA, type AxGEPAAdapter } from "@ax-llm/ax";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { failure, git, gitSucceeds, run } from "../lib/git.ts";
-import { runsDirectory } from "../lib/main.ts";
-import { render } from "../lib/prompts.ts";
-import { type Bundle, loadBundle, readFolder } from "../lib/script.ts";
+import { instructions, render } from "../lib/prompts.ts";
+import { loadBundle, type Profile, readFolder } from "../lib/script.ts";
 import { defineWorkflow, type Session, type SessionCheckpoint, UsageError } from "../lib/workflow.ts";
 import type { ShipResult } from "./ship.ts";
 
@@ -28,9 +26,11 @@ type Args = { readonly items: readonly Item[]; readonly prompts: readonly string
 export type OptimizeInput = Args & {
 	readonly cwd: string;
 	readonly directory: string;
-	/** The package's bundle: the baseline texts, `reflect`, and the `default` profile. */
-	readonly bundle: Bundle;
-	/** The package template `prompts/<name>.md` of each optimized prompt, for the diff. */
+	/** The package's `default` profile, for the reflect session. */
+	readonly profile: Profile;
+	/** The instructions of the package prompt `reflect`. */
+	readonly reflect: string;
+	/** The package template `prompts/<name>.md` of each optimized prompt, in `prompts` order. */
 	readonly templates: Readonly<Record<string, string>>;
 };
 
@@ -39,15 +39,18 @@ type OptimizeCheckpoint = { readonly phase: "run" } & SessionCheckpoint;
 /** The mean scores of the baseline and of the best candidate over the items, and the path of `prompts.diff`. */
 export type OptimizeResult = { readonly baseline: number; readonly best: number; readonly diff: string };
 
+/** One text for each optimized prompt, by prompt name. */
 type Candidate = Readonly<Record<string, string>>;
 
 /** A saved evaluation: the ship run, and its result once it finished. */
 type Evaluation = { readonly runId: string; readonly result?: ShipResult };
 
-type Trajectory = { readonly item: Item; readonly result: ShipResult };
-
-/** A candidate that the adapter evaluated on all the items, and its score on each item by item name. */
-type Evaluated = { readonly candidate: Candidate; readonly scores: ReadonlyMap<string, number> };
+/** A candidate with its ship result and score on each item, in item order. */
+type Evaluated = {
+	readonly candidate: Candidate;
+	readonly results: readonly ShipResult[];
+	readonly scores: readonly number[];
+};
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -86,17 +89,24 @@ async function readEvaluations(directory: string): Promise<Record<string, Evalua
 	return JSON.parse(text);
 }
 
+/** Saves `evaluation` under `key`. The file is replaced in one rename, so a kill never leaves it half written. */
 async function saveEvaluation(directory: string, key: string, evaluation: Evaluation): Promise<void> {
 	const evaluations = await readEvaluations(directory);
 	evaluations[key] = evaluation;
-	await writeFile(join(directory, "evaluations.json"), `${JSON.stringify(evaluations, null, "\t")}\n`);
+	const path = join(directory, "evaluations.json");
+	await writeFile(`${path}.tmp`, `${JSON.stringify(evaluations, null, "\t")}\n`);
+	await rename(`${path}.tmp`, path);
 }
 
 /** Removes the worktree and the branch of the ship run `id` in `repo`. Its run directory stays. */
 async function cleanUp(repo: string, id: string): Promise<void> {
-	await rm(join(runsDirectory(), id, "worktree"), { recursive: true, force: true });
-	await git(repo, "worktree", "prune");
 	const branch = `refs/heads/ship/${id}`;
+	for (const entry of (await git(repo, "worktree", "list", "--porcelain")).split("\n\n")) {
+		const lines = entry.split("\n");
+		const path = lines[0]?.replace(/^worktree /, "");
+		if (path !== undefined && lines.includes(`branch ${branch}`))
+			await git(repo, "worktree", "remove", "--force", path);
+	}
 	if (await gitSucceeds(repo, "rev-parse", "--verify", "--quiet", branch))
 		await git(repo, "branch", "-D", `ship/${id}`);
 }
@@ -142,83 +152,42 @@ async function evaluate(cli: readonly string[], input: OptimizeInput, candidate:
 	return outcome.result;
 }
 
-/**
- * The Ax adapter, and the list of the candidates that it evaluated, the baseline first. Ax catches adapter errors and goes on with its own fallbacks, so the first error is kept, and every
- * later call throws it at once: no ship run or reflect turn starts after it, and the phase throws it after `compile`.
- */
-function adapterOf(cli: readonly string[], input: OptimizeInput, session: Session) {
-	const state: { error?: unknown } = {};
-	const evaluated: Evaluated[] = [];
-	const guard = <A extends unknown[], R>(method: (...args: A) => R) => {
-		return (...args: A): R => {
-			if ("error" in state) throw state.error;
-			try {
-				const value = method(...args);
-				if (value instanceof Promise) {
-					return value.catch((error: unknown) => {
-						state.error ??= error;
-						throw error;
-					}) as R;
-				}
-				return value;
-			} catch (error) {
-				state.error ??= error;
-				throw error;
-			}
-		};
-	};
-	const adapter: AxGEPAAdapter<Item, Trajectory, ShipResult> = {
-		evaluate: guard(async (batch: readonly Item[], candidate: Candidate) => {
-			const outputs: ShipResult[] = [];
-			for (const item of batch) outputs.push(await evaluate(cli, input, candidate, item));
-			const scores = outputs.map(score);
-			evaluated.push({ candidate, scores: new Map(batch.map((item, index) => [item.name, scores[index] ?? 0])) });
-			return {
-				outputs,
-				scores,
-				trajectories: outputs.map((result, index) => ({ item: batch[index] as Item, result })),
-			};
-		}),
-		make_reflective_dataset: guard((_candidate, evalBatch, components: readonly string[]) => {
-			const records = (evalBatch.trajectories ?? []).map(({ item, result }, index) => ({
-				item: item.body,
-				score: evalBatch.scores[index] ?? 0,
-				findings: result.status === "shipped" ? (result.findings ?? []) : [],
-				memory: result.memory,
-			}));
-			return Object.fromEntries(components.map((name) => [name, records]));
-		}),
-		propose_new_texts: guard(async (candidate: Candidate, dataset, components: readonly string[]) => {
-			const reflect = input.bundle.prompts.reflect ?? "";
-			const proposed: Record<string, string> = {};
-			for (const name of components) {
-				const current = candidate[name] ?? "";
-				const records = JSON.stringify(dataset[name] ?? [], null, 2);
-				const prompt = render(reflect, { prompt: name, current, records });
-				// The request ID is the prompt's hash, so a restart gets the saved answer to the same prompt.
-				const reply = await session.say(`reflect-${sha256(prompt).slice(0, 16)}`, prompt);
-				if (reply === "" || reply === current.trim()) throw new Error(`the reflect turn for ${name} gave no new text`);
-				proposed[name] = reply;
-			}
-			return proposed;
-		}),
-	};
-	return { adapter, evaluated, error: () => state.error };
+/** `candidate` evaluated on every item, one ship run at a time. */
+async function evaluateAll(cli: readonly string[], input: OptimizeInput, candidate: Candidate): Promise<Evaluated> {
+	const results: ShipResult[] = [];
+	for (const item of input.items) results.push(await evaluate(cli, input, candidate, item));
+	return { candidate, results, scores: results.map(score) };
+}
+
+/** A new text of the prompt `name` from a reflect turn on the ship results of `best`. */
+async function reflect(session: Session, input: OptimizeInput, name: string, best: Evaluated): Promise<string> {
+	const current = best.candidate[name];
+	if (current === undefined) throw new Error(`the candidate has no ${name} text`);
+	const records = best.results.map((result, index) => ({
+		item: input.items[index]?.body,
+		score: best.scores[index],
+		findings: result.status === "shipped" ? (result.findings ?? []) : [],
+		memory: result.memory,
+	}));
+	const prompt = render(input.reflect, { prompt: name, current, records: JSON.stringify(records, null, 2) });
+	// The request ID is the prompt's hash, so a restart gets the saved answer to the same prompt.
+	const reply = await session.say(`reflect-${sha256(prompt).slice(0, 16)}`, prompt);
+	if (reply === "" || reply === current.trim()) throw new Error(`the reflect turn for ${name} gave no new text`);
+	return reply;
 }
 
 /** Writes `<directory>/prompts.diff`: a score line for each item, then a diff from the package prompts to `best`. */
-async function writeDiff(input: OptimizeInput, baseline: Candidate, best: Candidate, lines: string[]): Promise<string> {
+async function writeDiff(input: OptimizeInput, best: Candidate, lines: readonly string[]): Promise<string> {
 	const root = join(input.directory, "diff");
-	for (const [side, candidate] of [
-		["a", baseline],
-		["b", best],
-	] as const) {
-		await mkdir(join(root, side, "prompts"), { recursive: true });
-		for (const name of input.prompts) {
-			const template = input.templates[name] ?? "";
-			const text = template.replace(baseline[name] ?? "", () => candidate[name] ?? "");
-			await writeFile(join(root, side, "prompts", `${name}.md`), text);
-		}
+	await mkdir(join(root, "a", "prompts"), { recursive: true });
+	await mkdir(join(root, "b", "prompts"), { recursive: true });
+	for (const [name, template] of Object.entries(input.templates)) {
+		const text = instructions(template);
+		await writeFile(join(root, "a", "prompts", `${name}.md`), template);
+		await writeFile(
+			join(root, "b", "prompts", `${name}.md`),
+			template.replace(text, () => best[name] ?? text),
+		);
 	}
 	const diff = await run("git", ["diff", "--no-index", "--no-prefix", "a/prompts", "b/prompts"], root);
 	// git diff --no-index exits 1 when the files differ.
@@ -254,61 +223,42 @@ export function optimizeWith(cli: readonly string[]) {
 		},
 		prepare: async (args, run) => {
 			const bundle = await loadBundle();
+			const profile = bundle.agents.default;
+			if (profile === undefined) throw new Error("the package has no agents/default.md");
+			const reflect = bundle.prompts.reflect;
+			if (reflect === undefined) throw new Error("the package has no prompts/reflect.md");
 			const folder = new URL("../../prompts/", import.meta.url);
 			const templates = Object.fromEntries(
 				await Promise.all(
 					args.prompts.map(async (name) => [name, await readFile(new URL(`${name}.md`, folder), "utf8")] as const),
 				),
 			);
-			return { ...args, cwd: run.cwd, directory: run.directory, bundle, templates };
+			return { ...args, cwd: run.cwd, directory: run.directory, profile, reflect, templates };
 		},
 		title: () => "ship",
 		initial: () => ({ phase: "run" }),
 		phases: {
 			run: async (step) => {
 				const { input } = step;
-				const profile = input.bundle.agents.default;
-				if (profile === undefined) throw new Error("the package has no agents/default.md");
-				const session = await step.session(profile, input.cwd);
+				const session = await step.session(input.profile, input.cwd);
 				if (session === undefined) return;
-				const baseline = Object.fromEntries(input.prompts.map((name) => [name, input.bundle.prompts[name] ?? ""]));
-				const program = {
-					getOptimizableComponents: () =>
-						input.prompts.map((name) => ({ key: name, kind: "prompt", current: baseline[name] ?? "" })),
-					applyOptimizedComponents: () => {},
-					forward: () => {
-						throw new Error("optimize evaluates only through its adapter");
-					},
-				};
-				const { adapter, evaluated, error } = adapterOf(cli, input, session);
-				// No seed: Ax would replace the global Math.random, and AxGEPA's own generator has a fixed default seed.
-				const optimizer = new AxGEPA({ studentAI: {} as never, minibatchSize: input.items.length });
-				await optimizer
-					.compile(
-						program as never,
-						input.items,
-						() => {
-							throw new Error("optimize scores only through its adapter");
-						},
-						{ gepaAdapter: adapter, maxMetricCalls: input.trials * input.items.length },
-					)
-					.catch((thrown: unknown) => {
-						throw error() ?? thrown;
-					});
-				if (error() !== undefined) throw error();
-				// Each batch has every item once, in an order that Ax shuffles, so the scores are read by item name. Ax
-				// evaluates the baseline first, and the strict comparison keeps it on a tie. Ax's own choice can skip a better
-				// candidate that its limit did not let it check again.
-				const [first, ...rest] = evaluated;
-				if (first === undefined) throw new Error("Ax evaluated no candidate");
-				const total = (entry: Evaluated) => mean([...entry.scores.values()]);
-				const best = rest.reduce((top, entry) => (total(entry) > total(top) ? entry : top), first);
+				const texts = Object.entries(input.templates).map(([name, template]) => [name, instructions(template)]);
+				const baseline = await evaluateAll(cli, input, Object.fromEntries(texts));
+				// Each trial after the baseline changes the next prompt in turn. A candidate replaces the best one only when its
+				// mean is higher, so the baseline stays on a tie.
+				let best = baseline;
+				for (let trial = 1; trial < input.trials; trial++) {
+					const name = input.prompts[(trial - 1) % input.prompts.length] as string;
+					const text = await reflect(session, input, name, best);
+					const next = await evaluateAll(cli, input, { ...best.candidate, [name]: text });
+					if (mean(next.scores) > mean(best.scores)) best = next;
+				}
 				const lines = input.items.map(
-					(item) =>
-						`${item.name}: baseline ${first.scores.get(item.name)?.toFixed(2)}, best ${best.scores.get(item.name)?.toFixed(2)}`,
+					(item, index) =>
+						`${item.name}: baseline ${baseline.scores[index]?.toFixed(2)}, best ${best.scores[index]?.toFixed(2)}`,
 				);
-				const diff = await writeDiff(input, baseline, best.candidate, lines);
-				await step.finish({ baseline: total(first), best: total(best), diff });
+				const diff = await writeDiff(input, best.candidate, lines);
+				await step.finish({ baseline: mean(baseline.scores), best: mean(best.scores), diff });
 			},
 		},
 		report: (_input, result, io) => {

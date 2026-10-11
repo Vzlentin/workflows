@@ -33,7 +33,6 @@
 		"test": "vitest --run"
 	},
 	"dependencies": {
-		"@ax-llm/ax": "25.3.0",
 		"@earendil-works/chord": "1.1.0",
 		"@earendil-works/pi-codemode": "1.1.0",
 		"@earendil-works/pi-durable": "https://github.com/Vzlentin/workflows/releases/download/pi-durable-1.2.0-pre.4ac0bd8c/earendil-works-pi-durable-1.2.0-pre.4ac0bd8c.tgz"

@@ -17,9 +17,10 @@ beforeEach(async () => {
 afterEach(() => rm(root, { recursive: true, force: true }));
 
 /**
- * A fake `workflows` command that logs its arguments. A ship run creates its branch and passes 6 of 8 judge questions.
- * When a prompt of its `--prompts` folder has a reflected text, it passes 7 for the third item and 8 for the others. The
- * first such run of the second item fails, and its resume passes 8.
+ * A fake `workflows` command that logs its arguments. A ship run adds its worktree and branch and passes 6 of 8 judge
+ * questions.
+ * When a prompt of its `--prompts` folder has a reflected text, it passes 7 for the third item and 8 for the others.
+ * The first such run of the second item fails, and its resume passes 8.
  */
 const fake = (root: string) => `
 import { execFileSync } from "node:child_process";
@@ -50,7 +51,7 @@ if (args[0] === "resume") {
 	}
 	const option = (name) => args[args.indexOf(name) + 1];
 	const id = "fake-" + n;
-	execFileSync("git", ["branch", "ship/" + id, option("--base")], { cwd: option("--repo") });
+	execFileSync("git", ["worktree", "add", "-b", "ship/" + id, join(root, id), option("--base")], { cwd: option("--repo") });
 	console.log("run " + id);
 	const folder = option("--prompts");
 	const improved = readdirSync(folder).some((file) => readFileSync(join(folder, file), "utf8").includes("Improved"));
@@ -79,7 +80,7 @@ describe("workflows optimize", () => {
 		expect(score({ status: "stopped", rounds: 3, memory: [] })).toBe(0);
 	});
 
-	it("stops at a failed ship run, resumes it and reuses every finished evaluation and reflect turn", async () => {
+	it("evaluates the baseline and one candidate per trial, and resumes a failed ship run without running a finished one again", async () => {
 		const items = join(root, "items");
 		await mkdir(items);
 		for (const name of ["First", "Second", "Third"]) {
@@ -94,11 +95,13 @@ describe("workflows optimize", () => {
 
 		expect(first.code).toBe(1);
 		expect(first.stderr).toEqual([
-			"failed ship: ship run fake-6 failed on second: boom; continue with: workflows resume fake-6",
+			"failed ship: ship run fake-5 failed on second: boom; continue with: workflows resume fake-5",
 			`continue with: workflows optimize resume ${first.id}`,
 		]);
 		expect(first.model.calls.map((call) => call.kind)).toEqual(["reflect"]);
-		expect(first.model.calls[0]?.prompt).toMatch(/^Improve this prompt[\s\S]*\n\n## records\n\[\n/);
+		expect(first.model.calls[0]?.prompt).toMatch(
+			/^Improve this prompt[\s\S]*\n\n## prompt\nreview\n[\s\S]*\n\n## records\n\[\n/,
+		);
 
 		const resumed = await workflows(["optimize", "resume", first.id ?? ""], { cwd: root, installed });
 
@@ -106,10 +109,11 @@ describe("workflows optimize", () => {
 		const diff = join(directory, "prompts.diff");
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout).toEqual([`run ${first.id}`, `optimized ship: baseline 0.75, best 0.96, ${diff}`]);
-		expect(resumed.model.calls).toEqual([]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["reflect"]);
+		expect(resumed.model.calls[0]?.prompt).toContain("\n\n## prompt\nchallenge\n");
 		const log = (await readFile(join(root, "cli.log"), "utf8")).trim().split("\n");
 		const commands = log.map((line) => JSON.parse(line).slice(0, 2).join(" "));
-		expect(commands).toEqual([...Array(6).fill("ship --repo"), "resume fake-6"]);
+		expect(commands).toEqual([...Array(5).fill("ship --repo"), "resume fake-5", ...Array(4).fill("ship --repo")]);
 		const text = await readFile(diff, "utf8");
 		expect(text).toMatch(
 			/^first: baseline 0\.75, best 1\.00\nsecond: baseline 0\.75, best 1\.00\nthird: baseline 0\.75, best 0\.88\ndiff --git /,
@@ -117,6 +121,7 @@ describe("workflows optimize", () => {
 		expect(text).toMatch(/\n--- a\/prompts\/\w+\.md\n\+\+\+ b\/prompts\/\w+\.md\n/);
 		expect(text).toContain("\n+Improved prompt 1.\n");
 		expect(git(join(root, "repo"), "branch", "--list", "ship/*")).toBe("");
+		expect(git(join(root, "repo"), "worktree", "list", "--porcelain").split("\n\n")).toHaveLength(1);
 		expect(await promptsHash()).toBe(before);
 	});
 });

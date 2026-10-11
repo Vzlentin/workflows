@@ -40,6 +40,9 @@ case "$1 $2" in
 "campaign --base=develop")
 	echo "run r6"
 	echo '{"runId":"r6","status":"finished","result":{"status":"done","items":[]},"report":["done Fix the docs in 2 items, abc"]}' ;;
+"optimize --items=items")
+	echo "run r7"
+	echo '{"runId":"r7","status":"finished","result":{"baseline":0.5,"best":0.75,"diff":"prompts.diff"},"report":["optimized ship: baseline 0.50, best 0.75, prompts.diff"]}' ;;
 "list ") echo "r5 ship shipped Fix the README typo"; echo "r4 run unfinished slow" ;;
 *) exit 9 ;;
 esac
@@ -105,7 +108,7 @@ describe("the workflow tool", () => {
 		expect(await readFile(join(root, "args.log"), "utf8")).toBe("run ok --arg=path=src --arg=depth=2 --json\n");
 	});
 
-	it("sends a script on stdin and maps ship arguments to its flags", async () => {
+	it("sends a script on stdin and maps ship, campaign and optimize arguments to their flags", async () => {
 		const script = await call({ script: "return 'hi'" });
 		expect(script.result.structuredContent).toEqual({
 			runId: "r2",
@@ -130,10 +133,18 @@ describe("the workflow tool", () => {
 			result: { status: "done", items: [] },
 			report: ["done Fix the docs in 2 items, abc"],
 		});
+		const optimize = await call({ name: "optimize", args: { workflow: "ship", items: "items", trials: 4 } });
+		expect(optimize.result.structuredContent).toEqual({
+			runId: "r7",
+			status: "finished",
+			result: { baseline: 0.5, best: 0.75, diff: "prompts.diff" },
+			report: ["optimized ship: baseline 0.50, best 0.75, prompts.diff"],
+		});
 		expect((await readFile(join(root, "args.log"), "utf8")).split("\n")).toEqual([
 			"run - --json",
 			"ship --rounds=2 --json -- Fix the README typo",
 			"campaign --base=develop --json -- goal.md",
+			"optimize --items=items --trials=4 --json -- ship",
 			"",
 		]);
 	});
@@ -174,6 +185,7 @@ describe("the workflow tool", () => {
 		]);
 		expect(draw({ name: "campaign", args: { goal: "goals/docs.md" } })).toEqual(["workflow campaign docs"]);
 		expect(draw({ name: "campaign" })).toEqual(["workflow campaign"]);
+		expect(draw({ name: "optimize", args: { workflow: "ship", items: "items" } })).toEqual(["workflow optimize ship"]);
 		expect(draw({ name: "ok" })).toEqual(["workflow ok"]);
 		expect(draw({ name: "toString" })).toEqual(["workflow toString"]);
 		expect(draw({ script: "return 1" })).toEqual(["workflow script"]);

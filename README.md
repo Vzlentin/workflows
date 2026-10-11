@@ -57,7 +57,7 @@ defaults to 3.
 `--prompts <folder>`, relative to the current directory, gives prompts for this run: each `<name>.md` in the folder
 replaces the package prompt `prompts/<name>.md`, in the same template format. A missing folder, or a file with no
 package prompt of that name, fails before the run starts. The run saves the prompts that it used, as any run does.
-`workflows optimize` uses this option. `campaign` does not take it.
+`campaign` takes the same option, and `workflows optimize` uses it.
 
 Without `--repo`, the run uses the Git repository that contains the current directory. With `--repo`, the value is
 first a path, relative to the current directory. If that path is the top level of a local Git repository, the run
@@ -133,8 +133,8 @@ workflows campaign goal.md
 workflows campaign --repo calibre --base develop --rounds 2 "Make the docs complete"
 ```
 
-The goal comes from one argument or from stdin, as the work item of `ship` does, and `--repo`, `--base` and `--rounds`
-work as for `ship`. `--rounds` applies to each work item. Errors name the goal, such as `the goal is empty`.
+The goal comes from one argument or from stdin, as the work item of `ship` does, and `--repo`, `--base`, `--rounds`
+and `--prompts` work as for `ship`. `--rounds` applies to each work item. Errors name the goal, such as `the goal is empty`.
 
 A planner session splits the goal into work items with the `split` prompt, and answers through `respond`. Then each
 work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the plan, the rounds, the review, the
@@ -164,8 +164,8 @@ workflows optimize ship --items items/
 workflows optimize ship --items items/ --prompts review,handoff --trials 5
 ```
 
-`workflows optimize ship` searches for better texts of some ship prompts with AxGEPA from
-[Ax](https://github.com/ax-llm/ax). It never changes `prompts/`: the result is a diff to apply by hand.
+`workflows optimize ship` searches for better texts of some ship prompts with a reflective loop. It never changes
+`prompts/`: the result is a diff to apply by hand.
 
 The items folder, relative to the current directory, holds at least 2 work items as `<name>.md` files. Each file has
 the frontmatter `repo`, the path of a local Git repository, relative to the items folder, and `start`, the commit that
@@ -183,7 +183,7 @@ The README says wrold.
 
 `--prompts` lists the prompts to optimize, separated by commas: any of `plan`, `challenge`, `handoff`, `implement` and
 `review`. The default is `review,challenge,handoff`. `judge` gives the score, so it is never a candidate. `--trials`
-defaults to 3. An unknown prompt name, fewer than 2 items, or an item without `repo` or `start` is bad usage.
+is the number of candidates that the run evaluates, the baseline included, and defaults to 3. An unknown prompt name, fewer than 2 items, or an item without `repo` or `start` is bad usage.
 
 A candidate is one text for each listed prompt, and the package texts are the baseline. Each evaluation runs
 `workflows ship --repo <repo> --base <start> --prompts <candidate folder> --json -- <item body>` as a child process.
@@ -191,12 +191,13 @@ Evaluations run one at a time. The score of a shipped run is `passes/8 - 0.1*(ro
 of PASS answers of the judge, or 0 when the judge failed. A blocked or stopped run scores 0. After a ship run finishes,
 its worktree and its branch `ship/<run-id>` are removed. Its run directory stays.
 
-Ax gets at most `trials × items` evaluations, and each batch is all the items. An evaluation that Ax asks again counts
-against this limit. The best candidate is the one with the highest mean score among the evaluated candidates.
+The run evaluates the baseline on every item first. Each later trial changes one prompt of the best candidate so far,
+the listed prompts in turn, and evaluates the new candidate on every item. So the run makes `trials × items` ship
+runs. A new candidate becomes the best one only when its mean score is higher, so the baseline stays on a tie.
 
 A new text comes from a turn of the `reflect` prompt in one session with the `default` agent profile, in the current
-directory. The turn gets the prompt name, its current text, and for each item of the last batch the work item, the
-score, the judge findings and the memory lines of the ship result. An empty reply, or a reply equal to the current
+directory. The turn gets the prompt name, its text in the best candidate, and for each item the work item, the score,
+the judge findings and the memory lines of the ship result of the best candidate. An empty reply, or a reply equal to the current
 text, stops the optimization with an error.
 
 The command prints `run <run-id>`, then `optimized ship: baseline <mean>, best <mean>, <path>` and exits 0. The means
@@ -206,8 +207,8 @@ candidate, which `git apply` takes in the checkout. When no candidate is better,
 
 A ship run that does not finish, such as a failed or interrupted one, stops the optimization. The command prints
 `failed ship: ship run <id> failed on <item>: <error>; continue with: workflows resume <id>` and
-`continue with: workflows optimize resume <run-id>`, and exits 1. `workflows optimize resume <run-id>` runs Ax again
-from the start. A finished evaluation of the same texts and item returns its saved result and starts no ship run, and
+`continue with: workflows optimize resume <run-id>`, and exits 1. `workflows optimize resume <run-id>` runs the loop
+again from the start. A finished evaluation of the same texts and item returns its saved result and starts no ship run, and
 an unfinished one resumes its ship run. A reflect turn with the same prompt returns its saved answer. A hard kill of the
 command while a ship run runs loses that ship run's ID, and the resume runs that item again in a new ship run.
 
@@ -416,6 +417,8 @@ The tool takes one of `name`, `script` or `resume`, plus `args`:
 - `name: "ship"` runs `workflows ship`. `args.item` is the work item, and each other arg becomes `--<key>=<value>`,
   such as `--rounds=2`. An arg that `ship` does not know is bad usage, so no run starts.
 - `name: "campaign"` runs `workflows campaign` in the same way, with `args.goal` as the goal.
+- `name: "optimize"` runs `workflows optimize` in the same way, with `args.workflow` as the workflow to optimize, such
+  as `{ workflow: "ship", items: "items/", trials: 5 }`.
 - Any other `name` runs `workflows run <name>`. Each arg becomes `--arg <key>=<value>`: a string as it is, any other
   value as its JSON text. The script gets every arg as a string, so `{ depth: 2 }` reaches it as `"2"`.
 - `script` runs `workflows run -` with the script on stdin.
@@ -424,8 +427,8 @@ The tool takes one of `name`, `script` or `resume`, plus `args`:
 Each stderr line of the run is a progress update of the tool. Esc sends SIGINT to the run, as Ctrl+C does, so the run
 stays resumable.
 
-In Pi, the call line is `workflow ship <slug>`, `workflow campaign <slug>`, `workflow <name>`, `workflow script` or
-`workflow resume <run-id>`. The slug is the file name of a `.md` item or goal without `.md`, or else the first 40
+In Pi, the call line is `workflow ship <slug>`, `workflow campaign <slug>`, `workflow optimize <workflow>`,
+`workflow <name>`, `workflow script` or `workflow resume <run-id>`. The slug is the file name of a `.md` item or goal without `.md`, or else the first 40
 characters of its subject. Under it, each stderr line is a step: `✓` for a step that is done, `◉` for the step that
 runs now, and `✗` for the step where the run failed or was interrupted. A finished run ends with its `report` lines,
 such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8`. A failed or interrupted run ends with the

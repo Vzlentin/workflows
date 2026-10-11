@@ -1,6 +1,6 @@
 ---
 name: workflows
-description: Start, follow and resume durable workflow runs, such as shipping a work item onto a new branch with `ship`, shipping a goal as a queue of work items with `campaign`, or running a workflow script of agent turns and commands. Use when a task needs several sessions, review rounds, or a long run that must survive an interruption.
+description: Start, follow and resume durable workflow runs, such as shipping a work item onto a new branch with `ship`, shipping a goal as a queue of work items with `campaign`, searching for better ship prompts with `optimize`, or running a workflow script of agent turns and commands. Use when a task needs several sessions, review rounds, or a long run that must survive an interruption.
 ---
 
 # Workflows
@@ -16,16 +16,21 @@ Give exactly one of `name`, `script` or `resume`, plus `args`:
 ```js
 await tools.workflow({ name: "ship", args: { item: "Fix the README typo", repo: "calibre", rounds: 2 } })
 await tools.workflow({ name: "campaign", args: { goal: "goals/docs.md", rounds: 2 } })
+await tools.workflow({ name: "optimize", args: { workflow: "ship", items: "items/", trials: 5 } })
 await tools.workflow({ name: "review", args: { path: "src/lib" } })
 await tools.workflow({ script: "return await agent('List the modules under src/')" })
 await tools.workflow({ resume: "20261010T234930-3a93e88c" })
 ```
 
-- `name: "ship"` ships `args.item` onto the branch `ship/<run-id>`. `repo`, `base` and `rounds` are optional, and
-  any other arg is an error.
+- `name: "ship"` ships `args.item` onto the branch `ship/<run-id>`. `repo`, `base`, `rounds` and `prompts`, a
+  folder of prompts that replace the package prompts of their name, are optional, and any other arg is an error.
 - `name: "campaign"` splits `args.goal` into work items and ships each one as a commit on the branch
-  `campaign/<run-id>`. After each item, a planner updates the queue. `repo`, `base` and `rounds` are optional. The
-  result is `{ status: "done", head, items: [{ item, result }] }` or `{ status: "stopped", items }`.
+  `campaign/<run-id>`. After each item, a planner updates the queue. `repo`, `base`, `rounds` and `prompts` are
+  optional. The result is `{ status: "done", head, items: [{ item, result }] }` or `{ status: "stopped", items }`.
+- `name: "optimize"` searches for better texts of the prompts of `args.workflow`, which is `ship`, over the work items
+  of the folder `args.items`. `prompts`, the prompt names separated by commas, and `trials`, the number of candidates
+  with the baseline, are optional. The result is `{ baseline, best, diff }`: the mean scores and the path of a diff to
+  apply by hand.
 - Any other `name` is a script in `workflows/` of the package or of the project's `.workflows/`. Each arg reaches
   the script as the string `args.<key>`: a string as it is, any other value as its JSON text, so `{ depth: 2 }` gives
   `"2"`.
@@ -53,7 +58,8 @@ Sandbox rules:
 
 ```sh
 workflows ship [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<item.md> | <text>] [--json]
-workflows campaign [--repo <repository>] [--base <branch>] [--rounds <n>] [<goal.md> | <text>] [--json]
+workflows campaign [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<goal.md> | <text>] [--json]
+workflows optimize ship --items <folder> [--prompts <name,...>] [--trials <n>] [--json]
 workflows run <name | file.js | -> [--arg <key>=<value>]... [--json]
 workflows resume <run-id> [--json]
 workflows list [--json]
