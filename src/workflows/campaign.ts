@@ -38,7 +38,7 @@ export const campaign = defineWorkflow<Args, CampaignInput, ScriptCheckpoint, Ca
 	...scriptWorkflow,
 	name: "campaign",
 	usage: "workflows campaign [--repo <repository>] [--base <branch>] [--rounds <n>] [<goal.md> | <text>]",
-	version: 2,
+	version: 1,
 	parse: async (args, io) => {
 		const { item, ...parsed } = parseItemArgs(args, "goal");
 		return { ...parsed, goal: await readItem(item, io, "goal") };

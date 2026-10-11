@@ -49,7 +49,7 @@ function cliArgs({ name, script, resume, args = {} }: WorkflowCall): string[] {
 	const given = [name, script, resume].filter((value) => value !== undefined).length;
 	if (given !== 1) throw new Error("give exactly one of name, script or resume");
 	if (resume !== undefined) return ["resume", resume, "--json"];
-	const positional = name === undefined ? undefined : POSITIONAL.get(name);
+	const positional = POSITIONAL.get(name ?? "");
 	if (name !== undefined && positional !== undefined) {
 		// The command rejects a flag it does not know, so a mistyped arg fails before a run exists.
 		const { [positional]: value, ...flags } = args;
@@ -130,7 +130,7 @@ function resultOf(outcome: WorkflowOutcome, steps: readonly string[]): AgentTool
 function callLabel({ name, script, resume, args }: WorkflowCall): string {
 	if (resume !== undefined) return `resume ${resume}`;
 	if (script !== undefined) return "script";
-	const positional = name === undefined ? undefined : POSITIONAL.get(name);
+	const positional = POSITIONAL.get(name ?? "");
 	if (positional === undefined) return name ?? "";
 	const item = args?.[positional];
 	if (typeof item !== "string") return name ?? "";
