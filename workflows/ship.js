@@ -3,7 +3,7 @@
 export const meta = {
 	description: "Ship one work item onto a new branch: plan, implement and review rounds, judge, and one squashed commit.",
 	args: {
-		item: { type: "text", positional: true, label: "work item" },
+		item: { type: "text", positional: true, label: "work item", required: true },
 		rounds: { type: "number", default: 3 },
 	},
 	worktree: true,

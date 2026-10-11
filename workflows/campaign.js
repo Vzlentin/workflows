@@ -4,7 +4,7 @@
 export const meta = {
 	description: "Split a goal into work items and ship each one as a commit on one branch.",
 	args: {
-		goal: { type: "text", positional: true, label: "goal" },
+		goal: { type: "text", positional: true, label: "goal", required: true },
 		rounds: { type: "number", default: 3 },
 	},
 	worktree: true,
