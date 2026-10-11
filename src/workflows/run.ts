@@ -18,7 +18,6 @@ import { defineWorkflow, type Io, UsageError } from "../lib/workflow.ts";
 
 type Args = {
 	readonly name: string;
-	readonly json: boolean;
 	readonly args: JsonObject;
 	readonly bundle: RunBundle;
 };
@@ -48,7 +47,7 @@ async function readScript(argument: string, bundle: Bundle, io: Io): Promise<{ n
 function parseRun(args: readonly string[]) {
 	const { values, positionals } = parseArgs({
 		args: [...args],
-		options: { arg: { type: "string", multiple: true }, json: { type: "boolean" } },
+		options: { arg: { type: "string", multiple: true } },
 		allowPositionals: true,
 	});
 	const [script, ...rest] = positionals;
@@ -61,25 +60,25 @@ function parseRun(args: readonly string[]) {
 		if (Object.hasOwn(parsed, key)) throw new UsageError(`--arg ${key} is given more than once`);
 		parsed[key] = pair.slice(at + 1);
 	}
-	return { script, args: parsed, json: values.json ?? false };
+	return { script, args: parsed };
 }
 
 export const run = defineWorkflow<Args, RunInput, ScriptCheckpoint, unknown>({
 	...scriptWorkflow,
 	name: "run",
-	usage: "workflows run <name | file.js | -> [--arg <key>=<value>]... [--json]",
+	usage: "workflows run <name | file.js | -> [--arg <key>=<value>]...",
 	version: 2,
 	parse: async (args, io) => {
 		const parsed = parseRun(args);
 		const bundle = await loadBundle(io.cwd);
 		const { name, source } = await readScript(parsed.script, bundle, io);
-		return { name, json: parsed.json, args: parsed.args, bundle: { ...bundle, main: source } };
+		return { name, args: parsed.args, bundle: { ...bundle, main: source } };
 	},
 	prepare: async (args, run) => ({ ...args, cwd: run.cwd }),
 	title: (input) => input.name,
 	phases: { run: (step) => scriptPhase(step, step.input.cwd, step.input.bundle, step.input.args) },
-	report: (input, result, io) => {
-		io.stdout(typeof result === "string" && !input.json ? result : JSON.stringify(result));
+	report: (_input, result, io) => {
+		io.stdout(typeof result === "string" ? result : JSON.stringify(result));
 		return 0;
 	},
 });
