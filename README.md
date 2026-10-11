@@ -1,13 +1,15 @@
 # workflows
 
 `workflows ship` ships one work item onto a new branch through [Pi](https://github.com/earendil-works/pi) sessions.
-The run is headless and resumable. [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) runs the
-sessions, model calls and tool calls, and stores the progress of the run.
+`workflows campaign` splits a goal into work items and ships them one after another onto one branch. The run is
+headless and resumable. [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) runs the sessions,
+model calls and tool calls, and stores the progress of the run.
 
 `src/lib/` is the library that runs workflows: run directories, the durable store, sessions, retries, resume and
-workflow scripts. `src/workflows/` holds the workflows built on it: `ship`, and `run`, which runs a JavaScript workflow
-script. `ship` selects the repository and creates the worktree, then runs the workflow script `workflows/ship.js` in
-the worktree for the sessions, the Git steps and the squash.
+workflow scripts. `src/workflows/` holds the workflows built on it: `ship`, `campaign`, and `run`, which runs a
+JavaScript workflow script. `ship` selects the repository and creates the worktree, then runs the workflow script
+`workflows/ship.js` in the worktree for the sessions, the Git steps and the squash. `campaign` does the same with
+`workflows/campaign.js`, which runs `workflows/ship.js` once for each work item.
 
 ```text
 plan session:       plan  ->  challenge  ->  handoff
@@ -100,6 +102,37 @@ and the command prints `judge failed on <subject>: <error>` on stderr. The comma
 
 Blocked and stopped runs keep their branch, worktree and round commits. Delete them when you no longer need them.
 
+## Campaign
+
+```sh
+workflows campaign goal.md
+workflows campaign --repo calibre --base develop --rounds 2 "Make the docs complete"
+```
+
+The goal comes from one argument or from stdin, as the work item of `ship` does, and `--repo`, `--base` and `--rounds`
+work as for `ship`. `--rounds` applies to each work item. Errors name the goal, such as `the goal is empty`.
+
+A planner session splits the goal into work items with the `split` prompt, and answers through `respond`. Then each
+work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the plan, the rounds, the review, the
+judge and the squash of `workflows/ship.js`, from the commit that the item before it made. So each shipped item is one
+commit, with the commit message of `ship`. No `ship/<run-id>` branch is made, and nothing is merged or pushed.
+
+After each shipped item, also the last one, a new planner session gets the goal, the shipped item and the remaining
+items with the `requeue` prompt. Its answer through `respond` is the new queue, which can be empty. The campaign ends
+when the queue is empty. The queue has no length limit: a requeue can add items each time.
+
+The command prints `run <run-id>`, then `item <n>: <subject>` on stderr before the progress lines of each item. A
+resume can print the line of the item it continues after the first lines of that item.
+
+- When the queue is empty, the command prints `done <subject> in <n> items, <commit>` with the commit of the last item,
+  and exits 0.
+- When an item is blocked or stopped, or ships with a judge score of 0, the campaign stops. The command prints
+  `stopped <subject> at item <n>: <worktree>` and exits 1. A missing score, when the judge failed, does not stop it.
+
+`<subject>` is the first non-empty line of the goal without leading `#`. The result is
+`{ "status": "done", "head", "items": [{ "item", "result" }] }` or `{ "status": "stopped", "items" }`, with the `ship`
+result of each item that ran. `head` is the commit of the last item.
+
 ## Sessions
 
 The plan, implement, review and judge sessions use the agent profiles `agents/planner.md`, `agents/implementer.md`,
@@ -134,9 +167,10 @@ cat fix.js | workflows run - --json
 - Any other argument is a name in the `workflows/` folder of the package or of the project. An unknown name fails
   with `workflows: no workflow <name>` and exits 1.
 
-`workflows/ship.js` stops with an error when it gets no `start` argument. Thus `workflows run ship` and `run("ship")`
-without `start` fail before they change anything. The script does not check where `start` comes from: with
-`--arg start=<commit>`, it runs in the current directory and can commit there.
+`workflows/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
+workflows campaign, which give it the start commit`. Thus `workflows run ship` and `run("ship")` without `start` fail
+before they change anything. The script does not check where `start` comes from: with `--arg start=<commit>`, it runs
+in the current directory and can commit there.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
@@ -220,10 +254,11 @@ resume <run-id>` and exits 130. Ctrl+C also stops a Git step that is running, an
 second Ctrl+C exits at once.
 
 Resume opens the run's store and continues the pending work. For `run`, see [Saved inputs and
-resume](#saved-inputs-and-resume). For `ship`, it uses the work item, repository, start commit,
-`workflows/ship.js`, prompts, profiles and round limit that the run saved before it started. It does not read the work item file again,
-select or clone the repository again, or create another branch. Answered turns are not sent to the model again. A
-turn that was in progress is sent again.
+resume](#saved-inputs-and-resume). For `ship`, it uses the work item, repository, start commit, `workflows/ship.js`,
+prompts, profiles and round limit that the run saved before it started. `campaign` does the same with its goal and
+`workflows/campaign.js`: the split, the shipped items and the requeues are not run again. It does not read the work
+item file again, select or clone the repository again, or create another branch. Answered turns are not sent to the
+model again. A turn that was in progress is sent again.
 
 A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows ship resume
 <run-id>`, and exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. Resume
@@ -263,11 +298,11 @@ workflows list
 workflows list --json
 ```
 
-`workflows list` prints one line for each run in the runs directory, newest run ID first:
-`<run-id> <workflow> <status> <title>`. The title is the subject of the work item for ship, and the script name for
-`run`. A finished ship run has the status of its result: `shipped`, `blocked` or `stopped`. A finished `run` has the
-status `done`. Any other run, also a failed one, is `unfinished`. With `--json`, the command prints one JSON array of
-`{ "runId", "workflow", "title", "status" }`.
+`workflows list` prints one line for each run in the runs directory, newest run ID first: `<run-id> <workflow>
+<status> <title>`. The title is the subject of the work item for ship, the subject of the goal for campaign, and the
+script name for `run`. A finished ship run has the status of its result: `shipped`, `blocked` or `stopped`. A finished
+campaign has `done` or `stopped`. A finished `run` has the status `done`. Any other run, also a failed one, is
+`unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
 
 `list` only reads the stores. It does not load Pi packages, and no run continues.
 
@@ -301,6 +336,7 @@ The tool takes one of `name`, `script` or `resume`, plus `args`:
 
 - `name: "ship"` runs `workflows ship`. `args.item` is the work item, and each other arg becomes `--<key>=<value>`,
   such as `--rounds=2`. An arg that `ship` does not know is bad usage, so no run starts.
+- `name: "campaign"` runs `workflows campaign` in the same way, with `args.goal` as the goal.
 - Any other `name` runs `workflows run <name>`. Each arg becomes `--arg <key>=<value>`: a string as it is, any other
   value as its JSON text. The script gets every arg as a string, so `{ depth: 2 }` reaches it as `"2"`.
 - `script` runs `workflows run -` with the script on stdin.
@@ -309,13 +345,13 @@ The tool takes one of `name`, `script` or `resume`, plus `args`:
 Each stderr line of the run is a progress update of the tool. Esc sends SIGINT to the run, as Ctrl+C does, so the run
 stays resumable.
 
-In Pi, the call line is `workflow ship <slug>`, `workflow <name>`, `workflow script` or `workflow resume <run-id>`.
-The slug is the file name of a `.md` item without `.md`, or else the first 40 characters of the item's subject. Under
-it, each stderr line is a step: `✓` for a step that is done, `◉` for the step that runs now, and `✗` for the step where
-the run failed or was interrupted. A finished run ends with its `report` lines, such as
-`shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8`. A failed or interrupted run ends with the error and
-the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the same
-after a reload. The model gets the same result text as before.
+In Pi, the call line is `workflow ship <slug>`, `workflow campaign <slug>`, `workflow <name>`, `workflow script` or
+`workflow resume <run-id>`. The slug is the file name of a `.md` item or goal without `.md`, or else the first 40
+characters of its subject. Under it, each stderr line is a step: `✓` for a step that is done, `◉` for the step that
+runs now, and `✗` for the step where the run failed or was interrupted. A finished run ends with its `report` lines,
+such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8`. A failed or interrupted run ends with the
+error and the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the
+same after a reload. The model gets the same result text as before.
 
 The tool declares an `outputSchema`. Its `structuredContent` is `{ runId, status, result?, report?, error? }`:
 
@@ -348,13 +384,18 @@ A ship run also has:
 - `repository/`: the clone, for a GitHub repository only
 - `round-<n>.patch`, `round-<n>-fix.patch`: the patches each review got
 
+A campaign run has `worktree/` on `campaign/<run-id>` and `repository/` in the same way, plus:
+
+- `item-<n>/`: the `round-<n>.patch` and `round-<n>-fix.patch` files of item `n`
+
 ## Prompts
 
-`prompts/` holds the Pi prompt templates `plan`, `challenge`, `handoff`, `implement`, `review` and `judge`. Edit the
-wording there. Keep the frontmatter and the last line `$@`: the run removes them, then adds its inputs as
-`## <name>` sections. `workflows/ship.js` adds the SHIP or FIX answer rule of the review challenge itself, so a template
-edit cannot remove it. The judge rubric is fixed: its eight answers, in question order, make the score. A run uses the templates as they were
-when it started.
+`prompts/` holds the Pi prompt templates `plan`, `challenge`, `handoff`, `implement`, `review` and `judge`, and
+`split` and `requeue` for `campaign`. Edit the wording there. Keep the frontmatter and the last line `$@`: the run
+removes them, then adds its inputs as `## <name>` sections. `workflows/ship.js` adds the SHIP or FIX answer rule of
+the review challenge itself, so a template edit cannot remove it. In the same way, `workflows/campaign.js` adds the
+`respond` answer rule of `split` and `requeue`. The judge rubric is fixed: its eight answers, in question order, make
+the score. A run uses the templates as they were when it started.
 
 Workflow scripts get every template of `prompts/` as `prompts.<name>`, and the agent profiles of `agents/`. A run
 uses the profiles as they were when it started.

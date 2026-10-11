@@ -1,7 +1,9 @@
-// The plan, the rounds, the review, the judge and the squash of `workflows ship`, in its worktree. Every Git step is
-// safe to repeat: a resume runs a step again when its result was not saved.
-const { item, rounds, start, subject } = args
-if (typeof start !== "string") throw new Error("ship runs only through workflows ship, which gives it the start commit")
+// The plan, the rounds, the review, the judge and the squash of `workflows ship` and of each `workflows campaign`
+// item, in its worktree. Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
+const { item, rounds, start, subject, patches = runDir } = args
+if (typeof start !== "string") {
+	throw new Error("ship runs only through workflows ship or workflows campaign, which give it the start commit")
+}
 
 const SHIP_OR_FIX = { enum: ["SHIP", "FIX"] }
 const VERDICT = {
@@ -68,7 +70,7 @@ async function judgeAndSquash(round) {
 }
 
 async function patch(name, from) {
-	const path = `${runDir}/${name}`
+	const path = `${patches}/${name}`
 	await sh(["git", "diff", "--binary", `--output=${path}`, from, "HEAD"])
 	return path
 }

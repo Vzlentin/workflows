@@ -334,7 +334,9 @@ export default function ({ events }) {
 		const run = await workflows(["run", "ship", "--arg", "item=Fix the README typo"], { cwd: repo });
 
 		expect(run.code).toBe(1);
-		expect(run.stderr[0]).toBe("failed ship: ship runs only through workflows ship, which gives it the start commit");
+		expect(run.stderr[0]).toBe(
+			"failed ship: ship runs only through workflows ship or workflows campaign, which give it the start commit",
+		);
 		expect(run.model.calls).toEqual([]);
 		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
 		expect(git(repo, "status", "--porcelain")).toBe("");
@@ -352,7 +354,7 @@ export default function ({ events }) {
 			[["ship", "resume", "/tmp/run"], "workflows: /tmp/run is not a run ID", 2],
 			[["ship", "resume", "nothing"], `workflows: no run nothing in ${runs()}`, 1],
 			[["resume", "nothing"], `workflows: no run nothing in ${runs()}`, 1],
-			[["campaign", "goal.md"], "workflows: unknown command campaign", 2],
+			[["nope", "goal.md"], "workflows: unknown command nope", 2],
 		];
 		for (const [argv, error, code, stdin] of cases) {
 			const run = await workflows(argv, { cwd: repo, ...(stdin === undefined ? {} : { stdin }) });

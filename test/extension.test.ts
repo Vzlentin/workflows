@@ -37,6 +37,9 @@ case "$1 $2" in
 "ship --rounds=2")
 	echo "run r5"
 	echo '{"runId":"r5","status":"finished","result":{"status":"shipped","rounds":1,"head":"abc"},"report":["shipped Fix the README typo in 1 rounds, judge failed, abc"]}' ;;
+"campaign --base=develop")
+	echo "run r6"
+	echo '{"runId":"r6","status":"finished","result":{"status":"done","items":[]},"report":["done Fix the docs in 2 items, abc"]}' ;;
 "list ") echo "r5 ship shipped Fix the README typo"; echo "r4 run unfinished slow" ;;
 *) exit 9 ;;
 esac
@@ -119,9 +122,18 @@ describe("the workflow tool", () => {
 			result: { status: "shipped", rounds: 1, head: "abc" },
 			report: ["shipped Fix the README typo in 1 rounds, judge failed, abc"],
 		});
+
+		const campaign = await call({ name: "campaign", args: { base: "develop", goal: "goal.md" } });
+		expect(campaign.result.structuredContent).toEqual({
+			runId: "r6",
+			status: "finished",
+			result: { status: "done", items: [] },
+			report: ["done Fix the docs in 2 items, abc"],
+		});
 		expect((await readFile(join(root, "args.log"), "utf8")).split("\n")).toEqual([
 			"run - --json",
 			"ship --rounds=2 --json -- Fix the README typo",
+			"campaign --base=develop --json -- goal.md",
 			"",
 		]);
 	});
@@ -157,7 +169,13 @@ describe("the workflow tool", () => {
 			"workflow ship Fix the README typo",
 		]);
 		expect(draw({ name: "ship", args: { item: "notes/fix-readme.md" } })).toEqual(["workflow ship fix-readme"]);
+		expect(draw({ name: "campaign", args: { goal: "## Fix the docs\n\nAll of them" } })).toEqual([
+			"workflow campaign Fix the docs",
+		]);
+		expect(draw({ name: "campaign", args: { goal: "goals/docs.md" } })).toEqual(["workflow campaign docs"]);
+		expect(draw({ name: "campaign" })).toEqual(["workflow campaign"]);
 		expect(draw({ name: "ok" })).toEqual(["workflow ok"]);
+		expect(draw({ name: "toString" })).toEqual(["workflow toString"]);
 		expect(draw({ script: "return 1" })).toEqual(["workflow script"]);
 		expect(draw({ resume: "r4" })).toEqual(["workflow resume r4"]);
 	});
