@@ -39,7 +39,8 @@ await tools.workflow({ resume: "20261010T234930-3a93e88c" })
 
 The run starts in the session's directory. The result is `{ runId, status, result?, error? }`. `status` is
 `finished`, `failed` or `interrupted`. A failed or interrupted run is an error result that keeps this data, and it
-stays resumable: call the tool again with `resume: runId`. Esc stops the run as Ctrl+C does.
+stays resumable: call the tool again with `resume: runId`. Esc stops the run as Ctrl+C does. A run that another
+process runs is refused, and every ended run that did not complete resumes.
 
 ## Workflow scripts
 
@@ -56,7 +57,8 @@ Sandbox rules:
 - No file system, network, modules or timers. Effects go through `sh` and `ok`.
 - `Date`, `Date.now()` and `Math.random()` throw, so that a script makes the same calls each time it runs.
 - A resume runs the script again from the top. Calls that succeeded return their saved results. Commands in `sh`
-  and `ok` must be safe to repeat. A call that fails saves no result, so it runs again.
+  and `ok` must be safe to repeat. A call that fails saves no result, so it runs again. An ask whose answer was cut,
+  for example at its length limit, fails, and a resume asks again.
 
 ## Command line
 
@@ -74,7 +76,7 @@ workflows show <run-id> [--json]
 ```
 
 `workflows show <run-id>` prints the phases and calls of a run as a tree, with a mark for each call: `✓` finished, `✗`
-failed, `◉` running or stopped. It only reads the store, so it is safe while the run goes on.
+failed, `◉` running or stopped. It takes short write locks on the store: a live run waits up to 60 seconds for them, and `show` waits for the run the same way.
 
 In Pi, `/workflows` lists the runs, `/workflows show <run-id>` shows one, and `/workflows resume <run-id>` asks the
 agent to continue one with the tool.

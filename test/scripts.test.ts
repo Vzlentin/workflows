@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -9,7 +10,8 @@ import { createRegistry, defineExtension, defineTask, Harness, type TaskId } fro
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CallDoc } from "../src/script.ts";
-import { git, type Kind, repository, sandbox, workflows } from "./support.ts";
+import { TASK } from "../src/task.ts";
+import { git, type Kind, lockHolder, repository, sandbox, workflows } from "./support.ts";
 
 let root: string;
 
@@ -52,6 +54,37 @@ async function childTasks(id: string) {
 	return (await runTasks(id))
 		.filter((task) => task.owner !== undefined)
 		.map((task) => ({ runId: (task.input as { runId: string }).runId, ...stateOf(task) }));
+}
+
+/** A task of the script task's kind and version whose phase ends the task as aborted. */
+const aborting = defineTask<JsonValue, { phase: "run" }, JsonValue>({
+	...TASK,
+	initial: () => ({ phase: "run" }),
+	phases: {
+		run: async (_task, runtime, context) => {
+			await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
+		},
+	},
+	abort: async () => undefined,
+});
+
+/** Opens the store of run `id` with `aborting`, which ends its pending root task as aborted, and closes it. */
+async function abortRun(id: string) {
+	const extension = defineExtension({ name: "workflows", tasks: [aborting] });
+	const registry = createRegistry();
+	registry.install(extension);
+	const path = join(runs(), id, "durable.sqlite");
+	const [pending] = (await runTasks(id)).filter((task) => task.owner === undefined);
+	const harness = await Harness.open(
+		await openNodeSqliteStorage(path),
+		{ models: createModels(), registry, settings: { extensions: [extension] } },
+		BACKGROUND_CONTEXT,
+	);
+	try {
+		await harness.waitForTask(pending?.id as TaskId<JsonValue>, BACKGROUND_CONTEXT);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
 }
 
 /** Runs `argv` in `cwd` and presses Ctrl+C at the `nth` script prompt, or once the `gate` command is reached. */
@@ -193,6 +226,26 @@ describe("workflows show", () => {
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
 	});
+
+	it("waits for a write lock that another process holds for longer than 5 seconds", async () => {
+		await writeFile(join(root, "x.js"), `phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")`);
+		const first = await stopped(["x.js"], { nth: 2 });
+		const id = first.id ?? "";
+		const lock = [
+			'const { DatabaseSync } = require("node:sqlite");',
+			"const database = new DatabaseSync(process.argv[1]);",
+			'database.exec("BEGIN IMMEDIATE");',
+			'process.stdout.write("locked\\n");',
+			'setTimeout(() => { database.exec("COMMIT"); database.close(); }, 5500);',
+		].join("\n");
+		const holder = spawn(process.execPath, ["-e", lock, join(runs(), id, "durable.sqlite")]);
+		const exited = new Promise((resolve) => holder.on("exit", resolve));
+		await new Promise((resolve) => holder.stdout.once("data", resolve));
+		const shown = await workflows(["show", id], { cwd: root });
+		expect(await exited).toBe(0);
+		expect(shown.code).toBe(0);
+		expect(shown.stdout[0]).toBe(`run ${id} x unfinished x`);
+	}, 20_000);
 });
 
 describe("saved calls", () => {
@@ -323,6 +376,33 @@ return findings[0].finding`,
 		expect(run.model.calls[0]?.sections.answer_schema).toContain(JSON.stringify(schema));
 	});
 
+	it("fails an ask whose answer was cut, and asks again on resume", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'const one = await agent("Script: one")\nreturn await agent("Script: two") + ", " + one',
+		);
+		const run = await workflows(["x.js"], {
+			cwd: root,
+			script: { failAt: { kind: "script", nth: 2, stopReason: "length" } },
+		});
+		expect(run.code).toBe(1);
+		expect(run.stderr[0]).toMatch(/^failed x: The \S+ turn stopped: length$/);
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${run.id}`, "Reply to two, Reply to one"]]);
+		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
+	});
+
+	it("returns the respond answer of a message that also calls another tool", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const { n } = await agent('Script respond and ls: {"n": 3}', { schema: { type: "object", properties: { n: { type: "number" } }, required: ["n"] } })
+return n`,
+		);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.stderr).toEqual([]);
+		expect(run.stdout).toEqual([`run ${run.id}`, "3"]);
+	});
+
 	it("runs a failed call again on resume, and no finished call", async () => {
 		await writeFile(
 			join(root, "x.js"),
@@ -436,6 +516,40 @@ return [one, two].join(", ")`,
 		expect(sent).toEqual(["Script: two"]);
 		expect(await rootTasks(id)).toEqual([
 			{ status: "terminal", outcome: "failed" },
+			{ status: "terminal", outcome: "completed" },
+		]);
+	});
+
+	it("resumes a run whose lock holder was killed", async () => {
+		await writeFile(join(root, "x.js"), `const one = await agent("Script: one")\nreturn one`);
+		const first = await stopped(["x.js"], { nth: 1 });
+		expect(first.code).toBe(130);
+		const id = first.id ?? "";
+		const holder = await lockHolder(join(runs(), id));
+		const exited = new Promise((resolve) => holder.on("exit", resolve));
+		holder.kill("SIGKILL");
+		await exited;
+
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to one"]);
+	});
+
+	it("resumes an aborted run in a new task with its saved calls", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const one = await agent("Script: one")\nconst two = await agent("Script: two")\nreturn [one, two].join(", ")`,
+		);
+		const first = await stopped(["x.js"], { nth: 2 });
+		expect(first.code).toBe(130);
+		const id = first.id ?? "";
+		await abortRun(id);
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
+
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to one, Reply to two"]);
+		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
+		expect(await rootTasks(id)).toEqual([
+			{ status: "terminal", outcome: "aborted" },
 			{ status: "terminal", outcome: "completed" },
 		]);
 	});

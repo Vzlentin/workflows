@@ -9,7 +9,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
-import { FakeModel, git, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
+import { FakeModel, git, lockHolder, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -653,24 +653,27 @@ describe("workflows resume of ship runs", () => {
 		const script = await saveRun("workflows.run", TASK.version - 1, { name: "ship" });
 		// Some earlier versions wrapped the input as `{ input }`.
 		const wrapped = await saveRun("workflows.run", TASK.version - 1, { input: { name: "campaign" } });
+		// A script task of a later version is refused too.
+		const later = await saveRun("workflows.run", TASK.version + 1, { name: "ship" });
 
-		for (const [id, name] of [
-			[ship, "ship"],
-			[run, "run"],
-			[script, "ship"],
-			[wrapped, "campaign"],
+		for (const [id, name, word] of [
+			[ship, "ship", "an earlier"],
+			[run, "run", "an earlier"],
+			[script, "ship", "an earlier"],
+			[wrapped, "campaign", "an earlier"],
+			[later, "ship", "a later"],
 		] as const) {
 			const resumed = await workflows(["resume", id], { cwd: repo });
 			expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([
 				1,
 				[],
-				[`workflows: run ${id} was saved by an earlier version of ${name} and cannot resume`],
+				[`workflows: run ${id} was saved by ${word} version of ${name} and cannot resume`],
 			]);
 			const shown = await workflows(["show", id, "--json"], { cwd: repo });
 			expect([shown.code, shown.stdout, shown.stderr]).toEqual([
 				1,
 				[],
-				[`workflows: run ${id} was saved by an earlier version of ${name} and cannot be shown`],
+				[`workflows: run ${id} was saved by ${word} version of ${name} and cannot be shown`],
 			]);
 		}
 		const listed = await workflows(["list"], { cwd: repo });
@@ -681,6 +684,20 @@ describe("workflows resume of ship runs", () => {
 			[],
 			[`workflows: no run 20990101T000000-00000000 in ${runs()}`],
 		]);
+	});
+
+	it("refuses a run that a live process runs, and does not open its store", async () => {
+		const id = await saveRun("workflows.run", TASK.version, { name: "ship" });
+		const holder = await lockHolder(join(runs(), id));
+		const marker = await closingPackage("[]");
+
+		try {
+			const resumed = await workflows(["resume", id], { cwd: repo });
+			expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([1, [], [`workflows: run ${id} is running`]]);
+			expect(existsSync(marker)).toBe(false);
+		} finally {
+			holder.kill();
+		}
 	});
 
 	it("continues a turn interrupted by Ctrl+C from the saved inputs", async () => {

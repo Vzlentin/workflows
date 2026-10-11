@@ -126,14 +126,14 @@ async function runPhase(
 	}
 }
 
-/** The kind and version of the task of every script run. A run saved by an earlier version cannot resume. */
-export const TASK = { name: "workflows.run", version: 9 } as const;
+/** The kind and version of the task of every script run. A run saved by another version cannot resume. */
+export const TASK = { name: "workflows.run", version: 10 } as const;
 
 /** Whether the script task can continue the task `latest`. */
 export function current(
 	latest: TaskRecord<JsonValue, JsonValue, JsonValue>,
 ): latest is TaskRecord<ScriptInput, JsonValue, JsonValue> {
-	return latest.kind === TASK.name && latest.version >= TASK.version;
+	return latest.kind === TASK.name && latest.version === TASK.version;
 }
 
 /** The task of every script run, whose scripts reach the command through `host`; `list` shows the script name. */

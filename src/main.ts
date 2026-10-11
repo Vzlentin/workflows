@@ -35,10 +35,14 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Sessions } from "./agents.ts";
+import { takeLock } from "./lock.ts";
 import * as script from "./meta.ts";
 import { type Io, newRunId, UsageError } from "./run.ts";
 import { answerExtension, CALL_KIND, type CallRecord } from "./script.ts";
-import { current, scriptTask } from "./task.ts";
+import { current, scriptTask, TASK } from "./task.ts";
+
+/** `list` and `show` take short write locks while a run goes on in another process, so wait longer than the 5 s default. */
+const STORAGE = { busyTimeoutMs: 60_000 };
 
 export type Terminal = Io & {
 	readonly models: Models;
@@ -126,10 +130,10 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 
 /**
  * The open store, the task and the input of the run in `directory`. When the store holds a workflow task, this is that
- * task, or a new task with its input when it failed, so that the script runs again with its saved calls; it throws for
- * a task that an earlier version saved. When the new task cannot be created, the store closes and the run stays.
- * Otherwise `source` gives the input of a new run, and without `source` it throws. When the new run fails to start,
- * the store closes and the directory is removed.
+ * task, or a new task with its input when it ended without completing, so that the script runs again with its saved
+ * calls; it throws for a task that another version saved. When the new task cannot be created, the store closes and
+ * the run stays. Otherwise `source` gives the input of a new run, and without `source` it throws. When the new run fails
+ * to start, the store closes and the directory is removed.
  */
 async function openRun(
 	directory: string,
@@ -141,8 +145,8 @@ async function openRun(
 	const latest = existsSync(path) ? await latestTask(path) : undefined;
 	if (latest !== undefined) {
 		const { input, state } = checked(latest, id, "resume");
-		const failed = state.status === "terminal" && state.outcome.status === "failed";
-		return openTask(directory, terminal, input, failed ? undefined : latest.id);
+		const ended = state.status === "terminal" && state.outcome.status !== "completed";
+		return openTask(directory, terminal, input, ended ? undefined : latest.id);
 	}
 	if (source === undefined) throw new Error(`run ${id} has no workflow`);
 	await mkdir(directory, { recursive: true });
@@ -177,7 +181,8 @@ type Outcome =
 
 /**
  * Runs `task` to its end and closes the store. `interrupt` stops it and leaves the task pending. Any other error of the
- * wait propagates, and so does a task that ends neither completed nor failed, which only an abort can do.
+ * wait propagates, and so does a task that ends neither completed nor failed, with any other terminal outcome.
+ * Resume continues such a task in a new task, as a failed one.
  */
 async function wait(store: Store, task: TaskId<JsonValue>, interrupt: AbortSignal): Promise<Outcome> {
 	let settled: SettledTask<JsonValue>;
@@ -226,7 +231,8 @@ type Shown = Omit<CallRecord, "conversation" | "child"> & {
 
 /**
  * Prints the phases and calls of a run as a tree, then its report lines, or its error. It reads the task record and the
- * call records without a harness, so it changes nothing and the run can go on in another process.
+ * call records without a harness. It takes short write locks on the store, which a run in another process waits for
+ * (see `STORAGE`).
  */
 async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const { id, directory } = await savedRun(args);
@@ -262,7 +268,7 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 
 /** Every call record in the store at `path` by key, read from the storage only. */
 async function callRecords(path: string): Promise<Map<string, CallRecord>> {
-	const storage = await openNodeSqliteStorage(path);
+	const storage = await openNodeSqliteStorage(path, STORAGE);
 	try {
 		const records = new Map<string, CallRecord>();
 		let cursor: Cursor | undefined;
@@ -315,7 +321,7 @@ function labelOf(
 	return String(session?.args.profile);
 }
 
-/** The task `latest` of the run `id`. It throws when there is none, or when an earlier version saved it. */
+/** The task `latest` of the run `id`. It throws when there is none, or when another version saved it. */
 function checked(
 	latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined,
 	id: string,
@@ -328,7 +334,8 @@ function checked(
 	const { input } = latest;
 	const saved = script.isObject(input) && script.isObject(input.input) ? input.input : input;
 	const name = script.isObject(saved) && typeof saved.name === "string" ? saved.name : latest.kind.slice(PREFIX.length);
-	throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot ${verb}`);
+	const word = latest.kind === TASK.name && latest.version > TASK.version ? "a later" : "an earlier";
+	throw new Error(`run ${id} was saved by ${word} version of ${name} and cannot ${verb}`);
 }
 
 /** `12s`, `3m05s` or `1h02m`. */
@@ -362,7 +369,7 @@ const PREFIX = "workflows.";
  * storage only. Its kind can be one that no installed workflow has, such as a workflow of an earlier version.
  */
 async function latestTask(path: string): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined> {
-	const storage = await openNodeSqliteStorage(path);
+	const storage = await openNodeSqliteStorage(path, STORAGE);
 	try {
 		let latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined;
 		let cursor: Cursor | undefined;
@@ -452,9 +459,11 @@ async function loadEntries(
 
 /**
  * The run's durable store, open with the session tools, the package tools and the script task selected by default,
- * and `workflows-answer` installed. Sessions select it only by name.
+ * and `workflows-answer` installed. Sessions select it only by name. It holds the lock of the run until it closes, and
+ * throws when another process runs the run.
  */
 async function openStore(directory: string, terminal: Terminal): Promise<Store> {
+	const lock = takeLock(directory, basename(directory));
 	const task = scriptTask({ log: terminal.stderr });
 	const registry = createRegistry();
 	const agentDir = getAgentDir();
@@ -464,7 +473,10 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 	});
 	const warn = (error: unknown) =>
 		terminal.stderr(`warning: ${error instanceof Error ? error.message : String(error)}`);
-	const entries = await loadEntries(terminal.cwd, agentDir, settings, warn);
+	const entries = await loadEntries(terminal.cwd, agentDir, settings, warn).catch((error: unknown) => {
+		lock.close();
+		throw error;
+	});
 	const envs = new Map<string, NodeExecutionEnv>();
 	let harness: Harness;
 	try {
@@ -473,7 +485,7 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 		registry.install(answerExtension);
 		// When its open fails, the harness closes the storage itself.
 		harness = await Harness.open(
-			await openNodeSqliteStorage(join(directory, "durable.sqlite")),
+			await openNodeSqliteStorage(join(directory, "durable.sqlite"), STORAGE),
 			{
 				models: terminal.models,
 				registry,
@@ -490,14 +502,19 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 		);
 	} catch (error) {
 		await entries.close();
+		lock.close();
 		throw error;
 	}
 	let closed: Promise<void> | undefined;
 	const close = async () => {
 		// Entries close first: an entry may still need the open harness.
-		await entries.close();
-		await harness.close(BACKGROUND_CONTEXT);
-		for (const env of envs.values()) await env.cleanup(BACKGROUND_CONTEXT);
+		try {
+			await entries.close();
+			await harness.close(BACKGROUND_CONTEXT);
+			for (const env of envs.values()) await env.cleanup(BACKGROUND_CONTEXT);
+		} finally {
+			lock.close();
+		}
 	};
 	return {
 		harness,

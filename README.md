@@ -435,16 +435,24 @@ model again. A turn that was in progress is sent again.
 A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows resume <run-id>`, and
 exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. The run's task ends as
 failed. Resume runs the script again in a new task of the same run: a failed Git step runs again, a failed turn is sent
-again in the same session, saved calls return their results, and child runs continue.
+again in the same session, saved calls return their results, and child runs continue. A run whose task ended in
+another way, such as an aborted, faulted or orphaned task, resumes in the same way. An ask whose answer stopped for a
+reason other than its end, such as its length, fails its call, and a resume asks again.
 
 A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
 
 A run saved before every workflow script became a command, such as a run of the earlier `workflows ship`,
 `workflows campaign` or `workflows run`, or before `run()` started child runs, such as an earlier `workflows optimize`
 run, or before a child run became a task in the caller's store, or before a failed run kept its task, or before saved
-calls moved to documents, or before calls recorded their start and end, cannot resume:
+calls moved to documents, or before calls recorded their start and end, or before `respond` saved its answer, cannot
+resume:
 resume prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1.
-`list` does not show these runs.
+`list` does not show these runs. A run saved by a later version cannot resume either: resume prints `workflows: run
+<run-id> was saved by a later version of <workflow> and cannot resume` and exits 1.
+
+Only one process runs a run at a time. When another process runs the run, `resume` prints `workflows: run <run-id>
+is running` and exits 1, and does not open the run's store. The lock ends with the process that holds it, also when
+that process is killed.
 
 Model requests use Pi's retry, stream timeout and compaction settings from its `settings.json`. The project's
 `.pi/settings.json`, with its packages and these settings, counts only when Pi trusts the project.
@@ -482,7 +490,8 @@ argument, such as the work item for ship and the goal for campaign, or else the 
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
 `done` when the result has no `status`. Any other run, also a failed one, is `unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
 
-`list` only reads the stores. It does not load Pi packages, and no run continues.
+`list` does not load Pi packages, and no run continues. It takes short write locks on the stores: a live run waits up
+to 60 seconds for them, and `list` waits for the run the same way.
 
 ## Show
 
@@ -520,11 +529,13 @@ object with the same tree: `{ "runId", "workflow", "title", "status", "report"?,
 times. `phase` is `null` before the first phase line. The `result` of a `run` call is `{ "runId", "result" }`, with the
 result of its child run, and its `calls` are the calls of the child run.
 
-`show` exits 0 for every run it can show. It only reads the store, through pi-durable's storage functions, as `list`
-does: it does not load Pi packages and writes nothing, so it is safe while the run goes on in another process. An
+`show` exits 0 for every run it can show. It reads the store through pi-durable's storage functions, as `list` does,
+and does not load Pi packages. It takes short write locks on the store: a run that goes on in another process waits up
+to 60 seconds for them, and `show` waits for the run the same way. An
 unknown run ID prints the `no run` error of `resume`. A run saved by an earlier version prints `workflows: run
-<run-id> was saved by an earlier version of <workflow> and cannot be shown`. Both exit 1. Bad usage, such as no run
-ID, exits 2.
+<run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
+`workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
+as no run ID, exits 2.
 
 ## Pi package
 
@@ -600,6 +611,7 @@ progress updates work as for any tool call. When the agent is busy, the message 
 Runs live in `$XDG_STATE_HOME/workflows/runs/<run-id>`, by default `~/.local/state/workflows/runs/<run-id>`:
 
 - `durable.sqlite`: the pi-durable store with the saved inputs, the sessions and the progress of the run
+- `lock.sqlite`: the lock of the run, which the process that runs the run holds as an exclusive SQLite transaction
 
 A ship run also has:
 
