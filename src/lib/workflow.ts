@@ -93,13 +93,11 @@ export type ExtensionHost = {
 	log(line: string): void;
 	/** Stops the command with `message` as a resumable failure; the run's task stays pending. */
 	fail(message: string): void;
-	/** A new run ID. */
-	newRunId(): string;
 	/**
-	 * The result of the child run `request.id`, with `runId` added to an object result. The first call starts the run,
-	 * and a later call continues it. Throws `child run <id> failed: <error>` when the run fails.
+	 * The result of the child run `request.id`. The first call starts the run, and a later call continues it. Throws
+	 * `child run <id> failed: <error>` when the run fails.
 	 */
-	child(request: ChildRequest, signal: AbortSignal | undefined): Promise<unknown>;
+	child(request: ChildRequest, signal: AbortSignal | undefined): Promise<JsonValue>;
 };
 
 /** A `run(name, args)` call of a workflow script: its child run ID, and the bundle and directory of the caller. */

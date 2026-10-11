@@ -45,7 +45,8 @@ stays resumable: call the tool again with `resume: runId`. Esc stops the run as 
 
 A script is the body of an async function, so top-level `await` and `return` work. It runs in the codemode sandbox,
 with `agent`, `session`, `sh`, `ok`, `run`, `tools`, `prompts`, `parallel`, `pipeline`, `phase` and `log`. `run` starts a
-child run with its own run ID, which its result has as `runId`. For the
+child run with its own run ID, which its result has as `runId`. With `args.repo`, the child gets its own worktree;
+without it, the child runs in the caller's directory. For the
 meaning of each function, see [the script API](../../README.md#the-script-api).
 
 Sandbox rules:

@@ -1,9 +1,8 @@
 /**
- * The `workflows` command line. `workflows <workflow> ...` starts a run of a workflow script or of a built-in workflow,
+ * The `workflows` command line. `workflows <workflow> ...` starts a run of a workflow script,
  * `workflows resume <run-id>` continues one, and `workflows list` prints the runs. A run directory holds the durable
  * store, which holds everything a resume needs, and whatever the workflow writes there.
  */
-import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { access, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -35,9 +34,9 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Sessions } from "./agents.ts";
-import { check, childInput, help, listScripts, script } from "./meta.ts";
+import { check, childInput, help, listScripts, type ScriptInput, script } from "./meta.ts";
+import { newRunId } from "./run-id.ts";
 import {
-	type AnyWorkflow,
 	type Checkpoint,
 	type ChildRequest,
 	type Io,
@@ -55,20 +54,11 @@ export type Terminal = Io & {
 	readonly interrupt: AbortSignal;
 };
 
-/**
- * The exit code: 0 for a successful result, 1 for any other result or error, 2 for bad usage, 130 when interrupted.
- * `builtins` are workflows with their own command; any other word runs a workflow script.
- */
-export async function main(
-	argv: readonly string[],
-	terminal: Terminal,
-	builtins: readonly AnyWorkflow[] = [],
-): Promise<number> {
-	const workflows = [...builtins, script];
+/** The exit code: 0 for a successful result, 1 for any other result or error, 2 for bad usage, 130 when interrupted. */
+export async function main(argv: readonly string[], terminal: Terminal): Promise<number> {
 	const usage = [
 		`${script.usage} [--json]`,
 		"workflows <workflow> --help",
-		...builtins.map((workflow) => `${workflow.usage} [--json]`),
 		"workflows resume <run-id> [--json]",
 		"workflows list [--json]",
 		"workflows check <workflow>",
@@ -76,8 +66,7 @@ export async function main(
 	]
 		.map((line, index) => `${index === 0 ? "usage: " : "       "}${line}`)
 		.join("\n");
-	for (const provider of new Set(workflows.flatMap((workflow) => workflow.providers ?? [])))
-		terminal.addProvider(provider);
+	for (const provider of script.providers ?? []) terminal.addProvider(provider);
 	try {
 		const dashes = argv.indexOf("--");
 		const options = dashes === -1 ? argv.length : dashes;
@@ -85,20 +74,17 @@ export async function main(
 		const [command, ...args] = argv.filter((arg, index) => index >= options || arg !== "--json");
 		if (command === undefined) {
 			for (const line of await listScripts(terminal)) terminal.stdout(line);
-			for (const workflow of builtins) terminal.stdout(`${workflow.name}: ${workflow.usage}`);
 			return 0;
 		}
-		if (command === "list") return await list(args, terminal, workflows, json);
-		if (command === "resume") return await resume(args, terminal, workflows, json);
+		if (command === "list") return await list(args, terminal, json);
+		if (command === "resume") return await resume(args, terminal, json);
 		if (command === "check") return await check(args, terminal);
-		const workflow = builtins.find((candidate) => candidate.name === command);
-		if (workflow !== undefined) return await start(workflow, args, terminal, workflows, json);
 		const flags = args.indexOf("--");
 		if (args.slice(0, flags === -1 ? args.length : flags).includes("--help")) {
 			for (const line of await help(command, terminal)) terminal.stdout(line);
 			return 0;
 		}
-		return await start(script, [command, ...args], terminal, workflows, json);
+		return await start([command, ...args], terminal, json);
 	} catch (error) {
 		terminal.stderr(`workflows: ${error instanceof Error ? error.message : String(error)}`);
 		const code = (error as { code?: unknown } | undefined)?.code;
@@ -115,45 +101,29 @@ function runsDirectory(): string {
 	return join(state, "workflows", "runs");
 }
 
-function newRunId(): string {
-	const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
-	return `${stamp}-${randomBytes(4).toString("hex")}`;
-}
-
-async function start(
-	workflow: AnyWorkflow,
-	args: readonly string[],
-	terminal: Terminal,
-	workflows: readonly AnyWorkflow[],
-	json: boolean,
-): Promise<number> {
-	const parsed = await workflow.parse(args, terminal);
+async function start(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
+	const parsed = await script.parse(args, terminal);
 	const id = newRunId();
 	const directory = join(runsDirectory(), id);
 	await mkdir(directory, { recursive: true });
 	let store: Store | undefined;
 	let task: TaskId<JsonValue>;
-	let input: JsonValue;
+	let input: ScriptInput;
 	try {
-		input = await workflow.prepare(parsed, { id, directory, cwd: terminal.cwd });
-		const opened = await openStore(directory, terminal, workflows);
+		input = await script.prepare(parsed, { id, directory, cwd: terminal.cwd });
+		const opened = await openStore(directory, terminal);
 		store = opened;
-		task = await opened.create(workflow, { input });
+		task = await opened.create(input);
 	} catch (error) {
 		await store?.close();
 		await rm(directory, { recursive: true, force: true });
 		throw error;
 	}
 	terminal.stdout(`run ${id}`);
-	return follow(store, workflow, task, input, id, terminal, json);
+	return follow(store, task, input, id, terminal, json);
 }
 
-async function resume(
-	args: readonly string[],
-	terminal: Terminal,
-	workflows: readonly AnyWorkflow[],
-	json: boolean,
-): Promise<number> {
+async function resume(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const [id, ...rest] = args;
 	if (id === undefined || rest.length > 0 || id.startsWith("-")) throw new UsageError("give one run ID");
 	if (id.includes("/") || id.includes("\\") || id === "." || id === "..") throw new UsageError(`${id} is not a run ID`);
@@ -162,11 +132,11 @@ async function resume(
 		throw new Error(`no run ${id} in ${runsDirectory()}`);
 	});
 	const latest = await latestTask(join(directory, "durable.sqlite"));
-	const store = await openStore(directory, terminal, workflows);
+	const store = await openStore(directory, terminal);
 	try {
-		const { workflow, task, input } = await continueRun(store, latest, id, workflows);
+		const { task, input } = await continueRun(store, latest, id);
 		terminal.stdout(`run ${id}`);
-		return await follow(store, workflow, task, input, id, terminal, json);
+		return await follow(store, task, input, id, terminal, json);
 	} finally {
 		await store.close();
 	}
@@ -180,28 +150,27 @@ async function continueRun(
 	store: Store,
 	latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined,
 	id: string,
-	workflows: readonly AnyWorkflow[],
-): Promise<{ workflow: AnyWorkflow; task: TaskId<JsonValue>; input: JsonValue }> {
+): Promise<{ task: TaskId<JsonValue>; input: ScriptInput }> {
 	if (latest === undefined) throw new Error(`run ${id} has no workflow`);
-	const workflow = workflows.find((candidate) => taskKind(candidate) === latest.kind);
-	if (workflow === undefined) {
+	if (!current(latest)) {
 		const name = latest.kind.slice(PREFIX.length);
 		throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot resume`);
 	}
-	if (latest.version < workflow.version) {
-		throw new Error(`run ${id} was saved by an earlier version of ${workflow.name} and cannot resume`);
-	}
 	const from = failedAt(latest);
-	const stored = latest.input as Stored;
-	const task = from === undefined ? latest.id : await store.create(workflow, { input: stored.input, from });
-	return { workflow, task, input: stored.input };
+	const input = (latest.input as Stored).input as ScriptInput;
+	const task = from === undefined ? latest.id : await store.create(input, from);
+	return { task, input };
+}
+
+/** Whether the current script workflow can continue the task `latest`. */
+function current(latest: TaskRecord<JsonValue, JsonValue, JsonValue>): boolean {
+	return latest.kind === taskKind(script) && latest.version >= script.version;
 }
 
 /** The open store and the task of the child run of `request`: a new run, or the run that an earlier call started. */
 async function openChild(
 	request: ChildRequest,
 	terminal: Terminal,
-	workflows: readonly AnyWorkflow[],
 ): Promise<{ store: Store; task: TaskId<JsonValue> }> {
 	const { id } = request;
 	const directory = join(runsDirectory(), id);
@@ -210,13 +179,13 @@ async function openChild(
 	let store: Store | undefined;
 	try {
 		if (latest !== undefined) {
-			store = await openStore(directory, terminal, workflows);
-			return { store, task: (await continueRun(store, latest, id, workflows)).task };
+			store = await openStore(directory, terminal);
+			return { store, task: (await continueRun(store, latest, id)).task };
 		}
 		await mkdir(directory, { recursive: true });
 		const input = await childInput(request, { id, directory, cwd: request.cwd });
-		store = await openStore(directory, terminal, workflows);
-		return { store, task: await store.create(script, { input }) };
+		store = await openStore(directory, terminal);
+		return { store, task: await store.create(input) };
 	} catch (error) {
 		await store?.close();
 		if (latest === undefined) await rm(directory, { recursive: true, force: true });
@@ -229,9 +198,8 @@ async function runChild(
 	request: ChildRequest,
 	signal: AbortSignal | undefined,
 	terminal: Terminal,
-	workflows: readonly AnyWorkflow[],
-): Promise<unknown> {
-	const { store, task } = await openChild(request, terminal, workflows);
+): Promise<JsonValue> {
+	const { store, task } = await openChild(request, terminal);
 	const failed = (reason: unknown) => new Error(`child run ${request.id} failed: ${reason}`);
 	let settled: SettledTask<JsonValue>;
 	try {
@@ -245,21 +213,13 @@ async function runChild(
 	}
 	const { outcome } = settled.state;
 	if (outcome.status !== "completed") throw failed(outcome.error?.message ?? outcome.reason ?? outcome.status);
-	const { result } = outcome;
-	return typeof result === "object" && result !== null && !Array.isArray(result)
-		? { ...result, runId: request.id }
-		: result;
+	return outcome.result;
 }
 
 type Listed = { readonly runId: string; readonly workflow: string; readonly title: string; readonly status: string };
 
 /** Prints the runs, newest run ID first. It reads the task records without a harness, so no run continues. */
-async function list(
-	args: readonly string[],
-	terminal: Terminal,
-	workflows: readonly AnyWorkflow[],
-	json: boolean,
-): Promise<number> {
+async function list(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	if (args.length > 0) throw new UsageError("list takes no arguments");
 	const ids = await readdir(runsDirectory()).catch(() => []);
 	const runs: Listed[] = [];
@@ -267,20 +227,19 @@ async function list(
 		const path = join(runsDirectory(), id, "durable.sqlite");
 		if (!existsSync(path)) continue;
 		const latest = await latestTask(path);
-		const workflow = workflows.find((candidate) => taskKind(candidate) === latest?.kind);
-		if (latest === undefined || workflow === undefined || latest.version < workflow.version) continue;
-		const { input } = latest.input as Stored;
+		if (latest === undefined || !current(latest)) continue;
+		const input = (latest.input as Stored).input as ScriptInput;
 		let title = "";
-		let name = workflow.name;
+		let name = script.name;
 		try {
-			title = workflow.title(input);
-			name = workflow.label?.(input) ?? name;
+			title = script.title(input);
+			name = script.label?.(input) ?? name;
 		} catch {
 			// An input saved by an earlier version can lack what `title` and `label` read.
 		}
 		const { state } = latest;
 		const finished = state.status === "terminal" && state.outcome.status === "completed";
-		const status = finished ? (workflow.status?.(state.outcome.result) ?? "done") : "unfinished";
+		const status = finished ? (script.status?.(state.outcome.result) ?? "done") : "unfinished";
 		runs.push({ runId: id, workflow: name, title, status });
 	}
 	if (json) terminal.stdout(JSON.stringify(runs));
@@ -324,7 +283,8 @@ type Store = {
 	 * task starts a new task, and work saved under the old one would run again.
 	 */
 	readonly failed: AbortSignal;
-	create(workflow: AnyWorkflow, stored: Stored): Promise<TaskId<JsonValue>>;
+	/** A new task of the script workflow; `from` is the checkpoint of a failed phase. */
+	create(input: ScriptInput, from?: Checkpoint): Promise<TaskId<JsonValue>>;
 	close(): Promise<void>;
 };
 
@@ -384,17 +344,17 @@ async function loadEntries(cwd: string): Promise<Entry[]> {
 }
 
 /**
- * The run's durable store, open with the session tools, the package tools and every workflow task selected by default,
- * and the extensions of every workflow installed. Sessions select those only by name.
+ * The run's durable store, open with the session tools, the package tools and the script task selected by default,
+ * and the extensions of the script workflow installed. Sessions select those only by name.
  */
-async function openStore(directory: string, terminal: Terminal, workflows: readonly AnyWorkflow[]): Promise<Store> {
+async function openStore(directory: string, terminal: Terminal): Promise<Store> {
 	const registry = createRegistry();
 	const entries = await loadEntries(terminal.cwd);
-	const tasks = workflows.map((workflow) => workflowTask(workflow, terminal.stderr));
+	const task = workflowTask(script, terminal.stderr);
 	const selected = [
 		Sessions,
 		...entries.flatMap((entry) => entry.extensions),
-		defineExtension({ name: "workflows", tasks }),
+		defineExtension({ name: "workflows", tasks: [task] }),
 	];
 	for (const extension of selected) registry.install(extension);
 	const failure = new AbortController();
@@ -403,14 +363,9 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
 		runDir: directory,
 		log: terminal.stderr,
 		fail: (message: string) => failure.abort(message),
-		newRunId,
-		child: (request: ChildRequest, signal: AbortSignal | undefined) => runChild(request, signal, terminal, workflows),
+		child: (request: ChildRequest, signal: AbortSignal | undefined) => runChild(request, signal, terminal),
 	};
-	// Workflows that share a runtime declare the same `extensions`, which runs once.
-	const runtimes = new Set(
-		workflows.flatMap((workflow) => (workflow.extensions === undefined ? [] : [workflow.extensions])),
-	);
-	for (const extension of [...runtimes].flatMap((extensions) => extensions(host))) registry.install(extension);
+	for (const extension of script.extensions?.(host) ?? []) registry.install(extension);
 	const envs = new Map<string, NodeExecutionEnv>();
 	const warn = (error: unknown) =>
 		terminal.stderr(`warning: ${error instanceof Error ? error.message : String(error)}`);
@@ -442,9 +397,8 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
 	return {
 		harness,
 		failed: failure.signal,
-		create: async (workflow, stored) => {
-			const task = tasks[workflows.indexOf(workflow)];
-			if (task === undefined) throw new Error(`${workflow.name} is not installed`);
+		create: async (input, from) => {
+			const stored: Stored = { input, ...(from === undefined ? {} : { from }) };
 			const root = await harness.root(BACKGROUND_CONTEXT);
 			return root.commit(
 				(tx) => tx.createTask(task, stored, { ownership: { kind: "conversation" } }),
@@ -464,9 +418,8 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
  */
 async function follow(
 	store: Store,
-	workflow: AnyWorkflow,
 	task: TaskId<JsonValue>,
-	input: JsonValue,
+	input: ScriptInput,
 	id: string,
 	terminal: Terminal,
 	json: boolean,
@@ -481,7 +434,7 @@ async function follow(
 		else for (const line of footer) terminal.stderr(line);
 	};
 	const failed = (message: unknown, resumable: boolean) => {
-		const footer = [`failed ${workflow.title(input)}: ${message}`];
+		const footer = [`failed ${script.title(input)}: ${message}`];
 		if (resumable) footer.push(`continue with: workflows resume ${id}`);
 		end("failed", { error: String(message) }, ...footer);
 		return 1;
@@ -503,9 +456,9 @@ async function follow(
 	}
 	const { outcome } = settled.state;
 	if (outcome.status === "completed") {
-		if (!json) return workflow.report(input, outcome.result, terminal);
+		if (!json) return script.report(input, outcome.result, terminal);
 		const report: string[] = [];
-		const code = workflow.report(input, outcome.result, { ...terminal, stdout: (line) => report.push(line) });
+		const code = script.report(input, outcome.result, { ...terminal, stdout: (line) => report.push(line) });
 		end("finished", { result: outcome.result, report });
 		return code;
 	}

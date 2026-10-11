@@ -121,9 +121,9 @@ export async function readMeta(source: string, name: string): Promise<Meta> {
 const unique = (matches: Iterable<RegExpMatchArray>, group: number) =>
 	[...new Set([...matches].map((match) => match[group] ?? ""))].filter((value) => value !== "");
 
-/** The first prompt `prompts.<name>` of `source` without a template, or agent profile when `profiles` is set. */
+/** The first prompt call `prompts.<name>(` of `source` without a template, or agent profile when `profiles` is set. */
 function problem(source: string, name: string, bundle: Bundle, profiles: boolean): string | undefined {
-	const prompt = unique(source.matchAll(/\bprompts\.([A-Za-z_$][\w$]*)/g), 1).find(
+	const prompt = unique(source.matchAll(/\bprompts\.([A-Za-z_$][\w$]*)\s*\(/g), 1).find(
 		(p) => !Object.hasOwn(bundle.prompts, p),
 	);
 	if (prompt !== undefined) return `${name} uses prompts.${prompt}, which has no template`;
@@ -353,9 +353,9 @@ export const script = defineWorkflow<Args, ScriptInput, ScriptCheckpoint, unknow
 
 /**
  * The input of the child run of `request`: the script `request.name` of the caller's bundle, with the `meta` defaults
- * and the given args. `repo` and `base` select the repository of a new worktree, and `prompts` maps prompt names to
- * texts that replace them in this run only. With `start`, or without `meta.worktree`, the child runs in the caller's
- * directory. The args are not checked against `meta`.
+ * and the given args. With `meta.worktree` and `repo`, the child gets its own worktree from `repo` and `base`; otherwise
+ * it runs in the caller's directory. `prompts` maps prompt names to texts that replace them in this run only. The args
+ * are not checked against `meta`.
  */
 export async function childInput(request: ChildRequest, run: Run): Promise<ScriptInput> {
 	const { name, bundle } = request;
@@ -374,6 +374,6 @@ export async function childInput(request: ChildRequest, run: Run): Promise<Scrip
 	);
 	const args = { ...Object.fromEntries(defaults), ...given };
 	const input = { name, args, meta, bundle: { ...bundle, prompts: replaced, main: source } };
-	if (given.start !== undefined || !meta.worktree) return { ...input, cwd: run.cwd };
-	return script.prepare({ ...input, repo: repo === undefined ? undefined : String(repo), base: String(base) }, run);
+	if (repo === undefined || !meta.worktree) return { ...input, cwd: run.cwd };
+	return script.prepare({ ...input, repo: String(repo), base: String(base) }, run);
 }

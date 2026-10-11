@@ -150,13 +150,13 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 		label: "Workflow",
 		description:
 			"Run a durable workflow and wait for its result. Give exactly one of: `name` (a workflow script such as " +
-			"`ship` or `campaign`, or `optimize`), `script` (the body of an inline workflow script), or `resume` (a run " +
+			"`ship`, `campaign` or `optimize`), `script` (the body of an inline workflow script), or `resume` (a run " +
 			"ID). `args` are the workflow's arguments, each passed as `--<key>`; a script's `meta` declares them. For " +
 			"`ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and `prompts`. For `campaign`, which " +
 			"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
 			"`base`, `rounds` and `prompts`. For `optimize`, which searches for better ship prompts over a folder of work " +
-			"items: `workflow` (`ship`) and `items`, and optional `improve` and `trials`. A failed or interrupted run " +
-			"stays resumable.",
+			"items: `workflow` (`ship`) and `items`, and optional `improve` and `trials`. Each `run()` call of a " +
+			"script starts a child run, which `workflows list` shows. A failed or interrupted run stays resumable.",
 		parameters: Type.Object({
 			name: Type.Optional(
 				Type.String({ description: "`ship`, `campaign`, `optimize`, or the name of a workflow script" }),

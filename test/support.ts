@@ -12,7 +12,6 @@ import type {
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { main } from "../src/lib/main.ts";
-import type { AnyWorkflow } from "../src/lib/workflow.ts";
 
 export function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trimEnd();
@@ -306,27 +305,21 @@ export async function workflows(
 		readonly stdin?: string;
 		readonly script?: Omit<Script, "interrupt">;
 		readonly interrupt?: AbortController;
-		/** The built-in workflows; none by default. */
-		readonly installed?: readonly AnyWorkflow[];
 	},
 ): Promise<Outcome> {
 	const interrupt = options.interrupt ?? new AbortController();
 	const model = new FakeModel({ ...options.script, interrupt });
 	const stdout: string[] = [];
 	const stderr: string[] = [];
-	const code = await main(
-		argv,
-		{
-			cwd: options.cwd,
-			stdin: async () => options.stdin,
-			stdout: (line) => stdout.push(line),
-			stderr: (line) => stderr.push(line),
-			models: model.models,
-			addProvider: (provider) => model.models.setProvider(provider),
-			interrupt: interrupt.signal,
-		},
-		options.installed ?? [],
-	);
+	const code = await main(argv, {
+		cwd: options.cwd,
+		stdin: async () => options.stdin,
+		stdout: (line) => stdout.push(line),
+		stderr: (line) => stderr.push(line),
+		models: model.models,
+		addProvider: (provider) => model.models.setProvider(provider),
+		interrupt: interrupt.signal,
+	});
 	const id = stdout.find((line) => line.startsWith("run "))?.slice(4);
 	return { code, stdout, stderr, model, id };
 }

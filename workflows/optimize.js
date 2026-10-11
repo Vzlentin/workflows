@@ -43,13 +43,15 @@ function score(result) {
 	return passes / 8 - 0.1 * (result.rounds - 1)
 }
 const mean = (values) => values.reduce((sum, value) => sum + value, 0) / values.length
-const runs = runDir.slice(0, runDir.lastIndexOf("/"))
 
 // Known ceiling: no evaluation cache. A reflect turn that gives back an earlier text ships that candidate again.
 async function evaluate(candidate) {
 	const results = []
 	for (const item of items) {
 		const result = await run("ship", { item: item.body, repo: item.repo, base: item.start, prompts: candidate })
+		// Known ceiling: the worktree path and the branch name copy the run layout and ship's branch name. Use paths from
+		// the child's result if that layout changes.
+		const runs = runDir.slice(0, runDir.lastIndexOf("/"))
 		await ok(["git", "-C", item.repo, "worktree", "remove", "--force", `${runs}/${result.runId}/worktree`])
 		await ok(["git", "-C", item.repo, "branch", "-D", `ship/${result.runId}`])
 		results.push(result)
@@ -90,13 +92,11 @@ for (const name of names) {
 const lines = items.map(
 	(item, index) => `${item.name}: baseline ${baseline.scores[index].toFixed(2)}, best ${best.scores[index].toFixed(2)}`,
 )
-// The name is in parts, because the run's start reads each `prompts.<name>` of a script as a prompt.
-const file = ["prompts", "diff"].join(".")
-const diff = `${runDir}/${file}`
+const diff = `${runDir}/prompts.diff`
 // git diff --no-index exits 1 when the files differ.
 const compare =
 	'cd "$1" && printf "%s\\n" "$2" > "$3" && { git diff --no-index --no-prefix baseline best >> "$3"; test $? -le 1; }'
-await sh(["sh", "-c", compare, "diff", runDir, lines.join("\n"), file])
+await sh(["sh", "-c", compare, "diff", runDir, lines.join("\n"), "prompts.diff"])
 const means = { baseline: mean(baseline.scores), best: mean(best.scores) }
 const line = `optimized ship: baseline ${means.baseline.toFixed(2)}, best ${means.best.toFixed(2)}, ${diff}`
 return { ...means, diff, report: [line] }

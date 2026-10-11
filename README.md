@@ -304,8 +304,9 @@ the usage line, built from `meta`, and `meta.description` when the script has on
 `workflows: <error>` and the usage line of the script, and exits 2. A bad `meta` fails with
 `workflows: <name>: <problem>` and exits 1.
 
-Before the run starts, the command scans the script for `prompts.<name>`. A name without a template fails with
-`<name> uses prompts.<prompt>, which has no template`.
+Before the run starts, the command scans the script for prompt calls, `prompts.<name>(`. A name without a template
+fails with `<name> uses prompts.<prompt>, which has no template`. Other text such as `prompts.diff` in a path is not a
+call, and a dynamic call such as `prompts[name]()` is not scanned.
 
 `workflows check <wf>` reads and checks `meta`, the scanned prompts, and the agent profiles of each literal
 `session("<profile>")` and `as: "<profile>"`. It prints `ok <name>` and exits 0, or prints the first problem and exits
@@ -324,9 +325,10 @@ A script that throws, or a call in it that fails, stops the run: the command pri
 argument, or else the file name without `.js`, the workflow name, or `stdin`.
 
 `workflows/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
-workflows campaign, which give it the start commit`. `run("ship")` without `start` gets its own worktree and `start`,
-as `workflows ship` does. The script does not check where `start` comes from: with `start` from another script, it
-runs in that script's directory and can commit there.
+workflows campaign, which give it the start commit`. `run("ship", { repo })` gets its own worktree and `start`, as
+`workflows ship` does. `run("ship")` without `repo` runs in the caller's directory and needs `start` from the caller.
+The script does not check where `start` comes from: with `start` from another script, it runs in that script's
+directory and can commit there.
 
 ### Child runs
 
@@ -336,9 +338,9 @@ the same process, and its `phase` and `log` lines go to the same stderr. It prin
 
 - The child's args are the defaults of its `meta.args`, then `args`, without `repo`, `base` and `prompts`. They are not
   checked against `meta`, so an undeclared arg reaches the script.
-- With `meta.worktree` and no `args.start`, the child gets a new worktree on `<name>/<child-id>` in its run directory,
-  in the repository of `args.repo` from the caller's directory, at `args.base` (default `main`), and `args.start`.
-  With `args.start`, or without `meta.worktree`, the child runs in the caller's directory.
+- With `meta.worktree` and `args.repo`, the child gets a new worktree on `<name>/<child-id>` in its run directory, in
+  the repository of `args.repo` from the caller's directory, at `args.base` (default `main`), and `args.start`. Without
+  `args.repo`, or without `meta.worktree`, the child runs in the caller's directory, and `start` is an ordinary arg.
 - `args.prompts` maps prompt names to template texts. Each text, without frontmatter and the last `$@`, replaces that
   prompt in the child run only. A name with no prompt fails the call.
 - The child run gets the caller's saved scripts, prompts and profiles.

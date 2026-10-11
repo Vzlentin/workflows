@@ -238,7 +238,7 @@ return "done"`,
 		await mkdir(scripts, { recursive: true });
 		await writeFile(
 			join(scripts, "parent.js"),
-			`const child = await run("child", { prompts: { plan: "---\\ndescription: x\\n---\\nChild plan.\\n$@" } })
+			`const child = await run("child", { repo: ".", prompts: { plan: "---\\ndescription: x\\n---\\nChild plan.\\n$@" } })
 return { child, runId, plan: await prompts.plan() }`,
 		);
 		await writeFile(
@@ -268,7 +268,7 @@ return { runId, runDir, branch, start: args.start, plan: await prompts.plan() }`
 		);
 	});
 
-	it("runs a child run with start in the directory of the caller", async () => {
+	it("runs a child run without repo in the directory of the caller", async () => {
 		const repo = join(root, "repo");
 		const start = await repository(repo);
 		const scripts = join(repo, ".workflows", "workflows");

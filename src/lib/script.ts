@@ -48,6 +48,7 @@ import {
 import { type AgentChoice, sessionAgent } from "./agents.ts";
 import { failure, git, run } from "./git.ts";
 import { instructions, render } from "./prompts.ts";
+import { newRunId } from "./run-id.ts";
 import { type ExtensionHost, type SessionCheckpoint, type Step, sessionOf, textOf } from "./workflow.ts";
 
 /** An agent profile from `agents/<name>.md`. */
@@ -345,7 +346,11 @@ function session(profile = "default") {
 const agent = (prompt, options = {}) => session(options.as ?? "default").ask(prompt, options);
 const sh = async (cmd) => (await __sh(cmd, true)).stdout.replace(/\\n$/, "");
 const ok = async (cmd) => (await __sh(cmd, false)).code === 0;
-const run = async (name, args = {}) => __child(await __newRun(name, args), name, args);
+const run = async (name, args = {}) => {
+	const id = await __newRun(name, args);
+	const result = await __child(id, name, args);
+	return result !== null && typeof result === "object" && !Array.isArray(result) ? { ...result, runId: id } : result;
+};
 const parallel = (thunks) => Promise.all(thunks.map((thunk) => thunk()));
 const pipeline = (items, ...stages) =>
 	Promise.all(
@@ -499,7 +504,7 @@ function scriptExtensions(host: ExtensionHost): Extension[] {
 		replay: "safe",
 		structuredOutputSchema: Type.String(),
 		execute: async () => {
-			const id = host.newRunId();
+			const id = newRunId();
 			return { output: text(id), structuredOutput: id };
 		},
 	});
