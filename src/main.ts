@@ -35,11 +35,11 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Sessions } from "./agents.ts";
 import { check, childInput, help, listScripts, type ScriptInput, script } from "./meta.ts";
-import { newRunId } from "./run-id.ts";
 import {
 	type Checkpoint,
 	type ChildRequest,
 	type Io,
+	newRunId,
 	type Stored,
 	taskKind,
 	UsageError,

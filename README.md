@@ -6,7 +6,7 @@
 headless and resumable. [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) runs the sessions,
 model calls and tool calls, and stores the progress of the run.
 
-`src/lib/` is the library that runs workflows: run directories, the durable store, sessions, retries, resume and
+`src/` is the engine that runs workflows: run directories, the durable store, sessions, retries, resume and
 workflow scripts. Every workflow script is a command: `workflows <wf>` runs `workflows/<wf>.js`, and the `meta` at
 the top of the script declares its arguments. See [Workflow scripts](#workflow-scripts). `workflows/ship.js` and
 `workflows/campaign.js` are scripts of the package. `ship` selects the repository and creates the worktree, through its
@@ -242,7 +242,7 @@ entry's `close()` runs when the command ends, also after Ctrl+C, and an error fr
 
 ```sh
 workflows                                  # lists the workflows
-workflows review --path src/lib
+workflows review --path src
 workflows ship --help
 workflows ./fix.js "Fix the README typo"
 cat fix.js | workflows - --json

@@ -48,8 +48,7 @@ import {
 import { type AgentChoice, sessionAgent } from "./agents.ts";
 import { failure, git, run } from "./git.ts";
 import { instructions, render } from "./prompts.ts";
-import { newRunId } from "./run-id.ts";
-import { type ExtensionHost, type SessionCheckpoint, type Step, sessionOf, textOf } from "./workflow.ts";
+import { type ExtensionHost, newRunId, type SessionCheckpoint, type Step, sessionOf, textOf } from "./workflow.ts";
 
 /** An agent profile from `agents/<name>.md`. */
 export type Profile = {
@@ -77,7 +76,7 @@ const BundleDoc = defineDoc<RunBundle>({
 	initial: () => ({ main: "", scripts: {}, prompts: {}, agents: {} }),
 });
 
-const PACKAGE = fileURLToPath(new URL("../../", import.meta.url));
+const PACKAGE = fileURLToPath(new URL("../", import.meta.url));
 
 /** `<base>/<folder>/*<extension>` by name; a missing folder has none. */
 export async function readFolder(base: string, folder: string, extension: string): Promise<Record<string, string>> {

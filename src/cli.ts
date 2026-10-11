@@ -2,7 +2,7 @@
 /** The `workflows` executable: Pi's providers and credentials, the terminal, and Ctrl+C. */
 import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
-import { main } from "./lib/main.ts";
+import { main } from "./main.ts";
 
 const interrupt = new AbortController();
 process.on("SIGINT", () => {

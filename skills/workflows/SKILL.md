@@ -17,7 +17,7 @@ Give exactly one of `name`, `script` or `resume`, plus `args`:
 await tools.workflow({ name: "ship", args: { item: "Fix the README typo", repo: "calibre", rounds: 2 } })
 await tools.workflow({ name: "campaign", args: { goal: "goals/docs.md", rounds: 2 } })
 await tools.workflow({ name: "optimize", args: { workflow: "ship", items: "items/", trials: 5 } })
-await tools.workflow({ name: "review", args: { path: "src/lib" } })
+await tools.workflow({ name: "review", args: { path: "src" } })
 await tools.workflow({ script: "return await agent('List the modules under src/')" })
 await tools.workflow({ resume: "20261010T234930-3a93e88c" })
 ```

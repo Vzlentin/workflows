@@ -5,9 +5,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineExtension, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { script } from "../src/lib/meta.ts";
-import { newRunId } from "../src/lib/run-id.ts";
-import { type AnyWorkflow, workflowTask } from "../src/lib/workflow.ts";
+import { script } from "../src/meta.ts";
+import { type AnyWorkflow, newRunId, workflowTask } from "../src/workflow.ts";
 import { FakeModel, git, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
 
 let root: string;
