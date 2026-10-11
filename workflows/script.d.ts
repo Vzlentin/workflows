@@ -54,7 +54,7 @@ declare function ok(cmd: string | string[]): Promise<boolean>;
 declare function run(name: string, args?: Record<string, unknown>): Promise<any>;
 
 /** Runs the functions at once and returns their results. */
-declare function parallel<T>(thunks: Array<() => T | Promise<T>>): Promise<T[]>;
+declare function parallel<const T extends readonly (() => unknown)[]>(thunks: T): Promise<{ -readonly [K in keyof T]: Awaited<ReturnType<T[K]>> }>;
 
 /** Sends each item through the stages in order, and the items at once. */
 declare function pipeline(items: unknown[], ...stages: Array<(value: any) => unknown>): Promise<any[]>;

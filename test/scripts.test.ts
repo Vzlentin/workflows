@@ -138,7 +138,7 @@ describe("workflows/script.d.ts", () => {
 
 	it("compiles", () => {
 		const tsc = ["--ignoreConfig", "--noEmit", "--strict", "--lib", "es2024", "workflows/script.d.ts"];
-		execFileSync("node_modules/.bin/tsc", tsc);
+		execFileSync("node_modules/.bin/tsc", tsc, { stdio: "inherit" });
 	});
 
 	it("declares the script globals of the runtime", () => {
