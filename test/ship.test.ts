@@ -376,6 +376,25 @@ export default function ({ events }) {
 		expect(run.model.calls[1]?.prompt).toMatch(/^Challenge the plan/);
 	});
 
+	it("uses the profiles and prompts of the project folder", async () => {
+		const project = join(repo, ".workflows");
+		await mkdir(join(project, "agents"), { recursive: true });
+		await mkdir(join(project, "prompts"));
+		await writeFile(
+			join(project, "agents", "planner.md"),
+			"---\nmodel: anthropic/claude-opus-5-5\nthinking: high\n---\nProject planner.\n",
+		);
+		await writeFile(join(project, "prompts", "plan.md"), "---\ndescription: x\n---\nPlan this change. PROJECT\n\n$@\n");
+
+		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
+
+		expect(run.code).toBe(0);
+		const [plan] = run.model.calls;
+		expect([plan?.kind, plan?.thinking]).toEqual(["plan", "high"]);
+		expect(plan?.sections.instructions).toContain("Project planner.");
+		expect(plan?.prompt).toMatch(/^Plan this change\. PROJECT\n\n## item\nFix the README typo$/);
+	});
+
 	it("does not run ship.js without the start commit of workflows ship", async () => {
 		const run = await workflows(["run", "ship", "--arg", "item=Fix the README typo"], { cwd: repo });
 

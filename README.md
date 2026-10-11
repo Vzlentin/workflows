@@ -216,8 +216,9 @@ command while a ship run runs loses that ship run's ID, and the resume runs that
 
 The plan, implement, review and judge sessions use the agent profiles `agents/planner.md`, `agents/implementer.md`,
 `agents/reviewer.md` and `agents/judge.md`. Each uses `anthropic/claude-opus-5-5` with thinking `medium`, and every
-session gets the same tools. `ship` reads `workflows/ship.js`, the prompts and the profiles of the package only, not
-the `.workflows/` folder of the project.
+session gets the same tools. Like `workflows run`, `ship` and `campaign` read the scripts, prompts and profiles of the
+package and of the project folder `.workflows/` of the current directory, also when `--repo` selects another
+repository. See [Run](#run). A project `agents/planner.md`, for example, gives the planner another model.
 
 Sessions use Pi's providers and credentials from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers
 that Pi extension packages register, such as `cursor`. Their system prompt has the `AGENTS.md` instructions and skills

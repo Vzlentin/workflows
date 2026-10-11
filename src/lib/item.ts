@@ -55,16 +55,16 @@ export function parseItemArgs(args: readonly string[], noun: string) {
 }
 
 /**
- * The package's bundle with `workflows/<scriptName>.js` as the run's own script, the selected repository and its start
- * commit, and the worktree path of `run` on the branch `<scriptName>/<run-id>`. The prompts of the folder `prompts`,
- * relative to `run.cwd`, replace the package prompts of their name.
+ * The bundle of `run.cwd` with `workflows/<scriptName>.js` as the run's own script, the selected repository and its
+ * start commit, and the worktree path of `run` on the branch `<scriptName>/<run-id>`. The prompts of the folder
+ * `prompts`, relative to `run.cwd`, replace the prompts of their name.
  */
 export async function prepareWorktree(
 	scriptName: string,
 	args: { readonly repo: string | undefined; readonly base: string; readonly prompts: string | undefined },
 	run: Run,
 ): Promise<{ bundle: RunBundle; repository: string; start: string; branch: string; worktree: string }> {
-	const bundle = await loadBundle(undefined, args.prompts === undefined ? undefined : resolve(run.cwd, args.prompts));
+	const bundle = await loadBundle(run.cwd, args.prompts === undefined ? undefined : resolve(run.cwd, args.prompts));
 	const main = bundle.scripts[scriptName];
 	if (main === undefined) throw new Error(`the package has no workflows/${scriptName}.js`);
 	const repository = await selectRepository(run.cwd, args.repo, args.base, join(run.directory, "repository"));
