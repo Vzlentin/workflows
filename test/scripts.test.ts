@@ -168,12 +168,14 @@ describe("workflows show", () => {
 		expect(shown.stdout).toEqual([
 			`run ${id} x unfinished x`,
 			"talk",
-			expect.stringMatching(/^ {2}✓ agent default {2}\d+s$/),
-			expect.stringMatching(/^ {2}◉ agent default {2}\d+s$/),
+			expect.stringMatching(/^ {2}✓ session default {2}\d+s$/),
+			expect.stringMatching(/^ {2}✓ ask default {2}\d+s$/),
+			expect.stringMatching(/^ {2}✓ session default {2}\d+s$/),
+			expect.stringMatching(/^ {2}◉ ask default {2}\d+s$/),
 		]);
 		const { calls } = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
-		expect(calls[1]).toMatchObject({ kind: "agent", mark: "◉", args: { profile: "default", prompt: "Script: two" } });
-		expect(calls[1].endedAt).toBeUndefined();
+		expect(calls[3]).toMatchObject({ kind: "ask", label: "default", mark: "◉", args: { prompt: "Script: two" } });
+		expect(calls[3].endedAt).toBeUndefined();
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
 	});

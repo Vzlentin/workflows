@@ -229,9 +229,9 @@ const prompts = Object.fromEntries(
 );
 function session(profile = "default") {
 	const id = __session(profile);
-	return { ask: async (prompt, options = {}) => __ask(await id, await prompt, options.schema, profile) };
+	return { ask: async (prompt, options = {}) => __ask(await id, await prompt, options.schema) };
 }
-const agent = async (prompt, options = {}) => __agent(options.as ?? "default", await prompt, options.schema);
+const agent = (prompt, options = {}) => session(options.as ?? "default").ask(prompt, options);
 const sh = async (cmd) => (await __sh(cmd, true)).stdout.replace(/\\n$/, "");
 const ok = async (cmd) => (await __sh(cmd, false)).code === 0;
 const run = async (name, args = {}) => {
@@ -253,7 +253,7 @@ const pipeline = (items, ...stages) =>
 /**
  * One script call: its kind, its args, the phase line that was current when it started, its start and end times as ISO
  * strings, and its result or its error. A call that started and did not end has no `endedAt`. The `conversation` of a
- * `session` or `agent` call is its session, so a stopped call reuses it and a stopped `agent` call continues its turn.
+ * `session` call is its session, and the `child` of a `run` call is its child run, so a stopped call reuses them.
  */
 export type CallRecord = {
 	kind: CallKind;
@@ -264,10 +264,11 @@ export type CallRecord = {
 	result?: JsonValue;
 	error?: string;
 	conversation?: ConversationId;
+	child?: Child;
 };
 
 /** The kinds of script calls. */
-export type CallKind = "session" | "ask" | "agent" | "sh" | "ok" | "run";
+export type CallKind = "session" | "ask" | "sh" | "ok" | "run";
 
 /** The document kind of the call records. */
 export const CALL_KIND = "workflows.call";
@@ -376,17 +377,15 @@ type Start = { readonly kind: CallKind; readonly args: JsonObject };
 
 /**
  * The result of the call `key`: its saved result, or the value of `effect`, which gets the key. The call records its
- * start before `effect`, and its end with the value or the error after it. With `ends` false, `effect` saves the value
- * itself and the caller records the end. A stopped call records no end, and a call that throws saves no result, so both
- * run again. The waiting lines print when the call runs. A call with a saved result drops the log lines and keeps the
- * phase line, so a resume prints the phase of the first call that runs.
+ * start before `effect`, and its end with the value or the error after it. A stopped call records no end, and a call
+ * that throws saves no result, so both run again. The waiting lines print when the call runs. A call with a saved
+ * result drops the log lines and keeps the phase line, so a resume prints the phase of the first call that runs.
  */
 async function memoized(
 	calls: Calls,
 	key: string,
 	start: Start,
 	effect: (key: string) => Promise<JsonValue>,
-	ends = true,
 ): Promise<JsonValue> {
 	const { runtime, context, progress } = calls;
 	const saved = await savedCall(runtime, key, context);
@@ -411,12 +410,12 @@ async function memoized(
 		if (!runtime.signal.aborted) await endCall(calls, key, { error: message });
 		throw error;
 	}
-	if (ends) await endCall(calls, key, { result: value });
+	await endCall(calls, key, { result: value });
 	return (await savedCall(runtime, key, context)) ?? value;
 }
 
 /** Records the end of the call `key`, with its result, or its error when it failed. */
-async function endCall(calls: Calls, key: string, end: { result?: JsonValue; error?: string }): Promise<void> {
+async function endCall(calls: Calls, key: string, end: { result: JsonValue } | { error: string }): Promise<void> {
 	await calls.runtime.commit(async (tx) => {
 		const doc = await tx.doc(CallDoc, key, null);
 		Object.assign(doc, end);
@@ -498,27 +497,27 @@ async function shell(calls: Calls, cwd: string, cmd: string | string[], check: b
 }
 
 /**
- * The result of the child run of the `run` call: the saved child task, or a new one, run to its end. A saved child task
- * that ended without completing gets a new child task with the same input and run ID. Throws
+ * The result of the child run of the `run` call `key`: the `child` of its record, or a new child task, run to its end.
+ * A saved child task that ended without completing gets a new child task with the same input and run ID. Throws
  * `child run <id> failed: <error>` when the child run fails.
  */
-async function childResult(calls: Calls, script: ScriptRun, name: string, args: JsonObject): Promise<JsonValue> {
+async function childResult(
+	calls: Calls,
+	key: string,
+	script: ScriptRun,
+	name: string,
+	args: JsonObject,
+): Promise<JsonValue> {
 	const { runtime, context } = calls;
-	const key = callKey(calls, "run", { name, args });
-	const start = { kind: "run" as const, args: { name, args } };
-	// The child task is the result of the call; the call ends when the child run ends.
-	const started = (await memoized(calls, key, start, () => script.child(key, name, args), false)) as Child;
+	const saved = (await runtime.snapshot(CallDoc, key, context))?.child;
+	const started = saved ?? (await script.child(key, name, args));
 	const { state } = (await runtime.getTask(started.task, context)) ?? {};
 	const ended = state?.status === "terminal" && state.outcome.status !== "completed";
 	const { task, runId } = ended ? await script.restart(key, started.task) : started;
 	const { outcome } = (await runtime.waitForTask(task, context)).state;
-	const ending = (await runtime.snapshot(CallDoc, key, context))?.endedAt === undefined;
 	if (outcome.status !== "completed") {
-		const error = new Error(`child run ${runId} failed: ${outcome.error?.message ?? outcome.reason ?? outcome.status}`);
-		if (ending) await endCall(calls, key, { error: error.message });
-		throw error;
+		throw new Error(`child run ${runId} failed: ${outcome.error?.message ?? outcome.reason ?? outcome.status}`);
 	}
-	if (ending) await endCall(calls, key, {});
 	return { runId, result: outcome.result };
 }
 
@@ -567,16 +566,10 @@ export async function runScript(
 				);
 			}),
 			// The sandbox sends a missing schema as null.
-			global("__ask", (conversation: ConversationId, prompt: string, schema: JsonObject | null, profile: string) => {
-				const args = { conversation, prompt, schema, profile };
+			global("__ask", (conversation: ConversationId, prompt: string, schema: JsonObject | null) => {
+				const args = { conversation, prompt, schema };
 				return memoized(calls, callKey(calls, "ask", args), { kind: "ask", args }, (key) =>
 					askTurn(calls, key, conversation, prompt, schema),
-				);
-			}),
-			global("__agent", (profile: string, prompt: string, schema: JsonObject | null) => {
-				const args = { profile, prompt, schema };
-				return memoized(calls, callKey(calls, "agent", args), { kind: "agent", args }, async (key) =>
-					askTurn(calls, key, await sessionOf(calls, key, cwd, bundle, profile), prompt, schema),
 				);
 			}),
 			global("__sh", (cmd: string | string[], check: boolean) => {
@@ -586,8 +579,13 @@ export async function runScript(
 				);
 			}),
 			// The name and the args are in the key, so a resume that reorders different `run` calls keeps each child run.
-			// The saved child task is waited for again; a failed one gets a new child task.
-			global("__run", (name: string, values: JsonObject) => childResult(calls, script, name, values)),
+			// An unfinished saved child task is waited for again; a failed one gets a new child task.
+			global("__run", (name: string, values: JsonObject) => {
+				const args = { name, args: values };
+				return memoized(calls, callKey(calls, "run", args), { kind: "run", args }, (key) =>
+					childResult(calls, key, script, name, values),
+				);
+			}),
 			global("phase", (title: string) => phaseLine(progress, String(title))),
 			global("log", (line: string) => progress.lines.push({ text: String(line), phase: false })),
 			global("__prompt", (name: string, inputs?: Record<string, string> | null) => {

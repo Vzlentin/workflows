@@ -17,7 +17,7 @@ import {
 import { ensureWorktree } from "./git.ts";
 import { childInput, type ScriptInput } from "./meta.ts";
 import { newRunId } from "./run.ts";
-import { CallDoc, type Child, type ExtensionHost, runScript, savedCall } from "./script.ts";
+import { CallDoc, type Child, type ExtensionHost, runScript } from "./script.ts";
 
 /**
  * The checkpoint of a run: its one phase. The saved calls of its script are documents of the store, so a new task of
@@ -29,16 +29,16 @@ export type Runtime = TaskRuntime<ScriptInput, Checkpoint, JsonValue, object>;
 
 type ScriptTask = Task<ScriptInput, Checkpoint, JsonValue, object>;
 
-/** The child run saved as the result of the `run` call `key`. */
+/** The child run saved in the record of the `run` call `key`. */
 async function savedChild(runtime: Runtime, key: string, context: Context): Promise<Child> {
-	const child = await savedCall(runtime, key, context);
+	const child = (await runtime.snapshot(CallDoc, key, context))?.child;
 	if (child === undefined) throw new Error(`the child run of ${key} is missing`);
-	return child as Child;
+	return child;
 }
 
 /**
  * A new child task of the `run` call `key` of the task of `runtime`, in a new run directory next to `input.runDir`. The
- * commit that creates it also saves it as the result of the call.
+ * commit that creates it also saves it in the record of the call.
  */
 async function startChild(
 	definition: ScriptTask,
@@ -57,7 +57,7 @@ async function startChild(
 		await runtime.commit(async (tx) => {
 			const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 			const doc = await tx.doc(CallDoc, key, null);
-			doc.result = { task, runId: id };
+			doc.child = { task, runId: id };
 			return undefined;
 		}, context);
 	} catch (error) {
@@ -69,7 +69,7 @@ async function startChild(
 
 /**
  * A new child task with the input, so also the run ID and directory, of the ended child task `ended`. The commit that
- * creates it also saves it as the result of the `run` call `key`, and starts the call again.
+ * creates it also saves it in the record of the `run` call `key`.
  */
 async function restartChild(
 	definition: ScriptTask,
@@ -84,10 +84,7 @@ async function restartChild(
 	await runtime.commit(async (tx) => {
 		const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 		const doc = await tx.doc(CallDoc, key, null);
-		doc.result = { task, runId: input.runId };
-		doc.startedAt = new Date().toISOString();
-		delete doc.endedAt;
-		delete doc.error;
+		doc.child = { task, runId: input.runId };
 		return undefined;
 	}, context);
 	return savedChild(runtime, key, context);

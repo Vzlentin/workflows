@@ -496,12 +496,12 @@ run <run-id> <workflow> <status> <title>
 
 - The first line has the fields of `workflows list`, but a run whose task failed has the status `failed`.
 - The calls are in the order they started. Each call is under the phase line that was current when it started, and is
-  indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `agent`,
-  `sh`, `ok` or `run`.
+  indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `sh`, `ok`
+  or `run`. An `agent` call is a `session` call and an `ask` call.
 - The mark is `✓` for a finished call, `✗` for a failed call, and `◉` for a call that started and did not end: it
   runs now, or a stop interrupted it.
-- The label is the profile for `session`, `ask` and `agent`, and the command on one line, cut at 80 characters, for
-  `sh` and `ok`. For `run`, it is the workflow name and the child run ID. The phase lines and calls of the child run
+- The label is the profile of the session for `session` and `ask`, and the command on one line, cut at 80 characters,
+  for `sh` and `ok`. For `run`, it is the workflow name and the child run ID. The phase lines and calls of the child run
   are indented by 2 more under the `run` line.
 - The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, it is the time since the call
   started.
@@ -511,7 +511,8 @@ run <run-id> <workflow> <status> <title>
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
 object with the same tree: `{ "runId", "workflow", "title", "status", "report"?, "error"?, "calls" }`. Each call is
 `{ "kind", "label", "phase", "args", "mark", "startedAt", "endedAt"?, "result"?, "error"?, "calls"? }`, with ISO
-times. `phase` is `null` before the first phase line. The `calls` of a `run` call are the calls of its child run.
+times. `phase` is `null` before the first phase line. The `result` of a `run` call is `{ "runId", "result" }`, with the
+result of its child run, and its `calls` are the calls of the child run.
 
 `show` exits 0 for every run it can show. It only reads the store, through pi-durable's storage functions, as `list`
 does: it does not load Pi packages and writes nothing, so it is safe while the run goes on in another process. An

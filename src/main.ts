@@ -37,7 +37,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Sessions } from "./agents.ts";
 import * as script from "./meta.ts";
 import { type Io, newRunId, UsageError } from "./run.ts";
-import { answerExtension, CALL_KIND, type CallRecord, type Child } from "./script.ts";
+import { answerExtension, CALL_KIND, type CallRecord } from "./script.ts";
 import { current, scriptTask } from "./task.ts";
 
 export type Terminal = Io & {
@@ -207,7 +207,7 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 }
 
 /** One call of `workflows show`, with the calls of its child run when it is a `run` call. */
-type Shown = Omit<CallRecord, "conversation"> & {
+type Shown = Omit<CallRecord, "conversation" | "child"> & {
 	readonly label: string;
 	readonly mark: "✓" | "✗" | "◉";
 	readonly calls?: Shown[];
@@ -275,23 +275,33 @@ function callTree(records: Map<string, CallRecord>, runId: string): Shown[] {
 	const own = [...records].filter(([key]) => key.startsWith(`${runId}/`)).map(([, record]) => record);
 	return own
 		.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-		.map(({ conversation: _, ...record }) => {
+		.map(({ conversation: _, child: started, ...record }) => {
 			const mark = record.error !== undefined ? "✗" : record.endedAt !== undefined ? "✓" : "◉";
-			// A `run` call that failed before its child run started has no result.
-			const child = record.kind === "run" ? (record.result as Child | undefined)?.runId : undefined;
-			const shown = { ...record, label: labelOf(record, child), mark } as const;
+			// A `run` call that failed before its child run started has no `child`.
+			const child = started?.runId;
+			const shown = { ...record, label: labelOf(record, child, records), mark } as const;
 			return child === undefined ? shown : { ...shown, calls: callTree(records, child) };
 		});
 }
 
-/** The profile of a session, the command on one line for `sh` and `ok`, and the workflow and child run ID for `run`. */
-function labelOf({ kind, args }: Pick<CallRecord, "kind" | "args">, child: string | undefined): string {
+/**
+ * The profile of a session, also for an ask in it, the command on one line for `sh` and `ok`, and the workflow and child
+ * run ID for `run`.
+ */
+function labelOf(
+	{ kind, args }: Pick<CallRecord, "kind" | "args">,
+	child: string | undefined,
+	records: Map<string, CallRecord>,
+): string {
 	if (kind === "sh" || kind === "ok") {
 		const { cmd } = args;
 		return (Array.isArray(cmd) ? cmd.join(" ") : String(cmd)).replace(/\s+/g, " ").trim().slice(0, 80);
 	}
 	if (kind === "run") return [args.name, child].filter((value) => value !== undefined).join(" ");
-	return String(args.profile);
+	if (kind === "session") return String(args.profile);
+	// A linear scan for each ask; an index by conversation if runs get thousands of calls.
+	const session = [...records.values()].find((record) => record.conversation === args.conversation);
+	return String(session?.args.profile);
 }
 
 /** The task `latest` of the run `id`. It throws when there is none, or when an earlier version saved it. */

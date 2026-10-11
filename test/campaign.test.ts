@@ -80,6 +80,9 @@ describe("workflows campaign", () => {
 			children.map((child: string) => `ship ${child}`),
 		);
 		expect(shipped[0].calls[0]).toMatchObject({ kind: "session", label: "planner", phase: "plan", mark: "✓" });
+		const { runId: _, ...first } = result.items[0].result;
+		expect(shipped[0].result).toMatchObject({ runId: children[0], result: first });
+		expect(shipped[0]).not.toHaveProperty("child");
 	});
 
 	it("stops at an item that is blocked", async () => {
