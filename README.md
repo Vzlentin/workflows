@@ -6,12 +6,13 @@
 headless and resumable. [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) runs the sessions,
 model calls and tool calls, and stores the progress of the run.
 
-`src/lib/` is the library that runs workflows: run directories, the durable store, sessions, retries, resume and
+`src/` is the engine that runs workflows: run directories, the durable store, sessions, retries, resume and
 workflow scripts. Every workflow script is a command: `workflows <wf>` runs `workflows/<wf>.js`, and the `meta` at
 the top of the script declares its arguments. See [Workflow scripts](#workflow-scripts). `workflows/ship.js` and
 `workflows/campaign.js` are scripts of the package. `ship` selects the repository and creates the worktree, through its
 `meta`, then runs in the worktree for the sessions, the Git steps and the squash. `campaign` does the same, and runs
-`workflows/ship.js` once for each work item. `src/workflows/` holds `optimize`, the only built-in command.
+`workflows/ship.js` once for each work item. `workflows/optimize.js` runs `workflows/ship.js` once for each candidate
+and work item.
 
 ```text
 plan session:       plan  ->  challenge  ->  handoff
@@ -58,7 +59,7 @@ defaults to 3.
 `--prompts <folder>`, relative to the current directory, gives prompts for this run: each `<name>.md` in the folder
 replaces the package prompt `prompts/<name>.md`, in the same template format. A missing folder, or a file with no
 package prompt of that name, fails before the run starts. The run saves the prompts that it used, as any run does.
-`campaign` takes the same option, and `workflows optimize` uses it.
+`campaign` and `optimize` take the same option.
 
 Without `--repo`, the run uses the Git repository that contains the current directory. With `--repo`, the value is
 first a path, relative to the current directory. If that path is the top level of a local Git repository, the run
@@ -141,7 +142,8 @@ When the judge of an item fails, the command prints `judge failed on <item subje
 A planner session splits the goal into work items with the `split` prompt, and answers through `respond`. Then each
 work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the plan, the rounds, the review, the
 judge and the squash of `workflows/ship.js`, from the commit that the item before it made. So each shipped item is one
-commit, with the commit message of `ship`. No `ship/<run-id>` branch is made, and nothing is merged or pushed.
+commit, with the commit message of `ship`. No `ship/<run-id>` branch is made, and nothing is merged or pushed. Each
+item is a ship child run, with its own run ID and run directory: see `run` in [the script API](#the-script-api).
 
 After each shipped item, also the last one, a new planner session gets the goal, the shipped item and the remaining
 items with the `requeue` prompt. Its answer through `respond` is the new queue, which can be empty. The campaign ends
@@ -157,21 +159,22 @@ resume can print the line of the item it continues after the first lines of that
 
 `<subject>` is the first non-empty line of the goal without leading `#`. The result is
 `{ "status": "done", "head", "items": [{ "item", "result" }] }` or `{ "status": "stopped", "items" }`, with the `ship`
-result of each item that ran. `head` is the commit of the last item.
+result of each item that ran, and its child run ID as `result.runId`. `head` is the commit of the last item.
 
 ## Optimize
 
 ```sh
 workflows optimize ship --items items/
-workflows optimize --workflow ship --items items/ --prompts review,handoff --trials 5
+workflows optimize --workflow ship --items items/ --improve review,handoff --trials 5
 ```
 
 `workflows optimize ship` searches for better texts of some ship prompts with a reflective loop. It never changes
-`prompts/`: the result is a diff to apply by hand. The workflow to optimize, `ship`, is one argument or `--workflow`.
+`prompts/`: the result is a diff to apply by hand. It is the package script `workflows/optimize.js`. The workflow to
+optimize, `ship`, is one argument or `--workflow`, and defaults to `ship`.
 
 The items folder, relative to the current directory, holds at least 2 work items as `<name>.md` files. Each file has
-the frontmatter `repo`, the path of a local Git repository, relative to the items folder, and `start`, the commit that
-ship starts from. Quote a commit that YAML can read as a number. The body is the work item.
+the frontmatter `repo`, the path of a local Git repository, relative to the items folder unless it is absolute, and
+`start`, the commit that ship starts from. Quotes around a value are removed. The body is the work item.
 
 ```text
 ---
@@ -183,36 +186,37 @@ start: "4dfb5c8"
 The README says wrold.
 ```
 
-`--prompts` lists the prompts to optimize, separated by commas: any of `plan`, `challenge`, `handoff`, `implement` and
+`--improve` lists the prompts to optimize, separated by commas: any of `plan`, `challenge`, `handoff`, `implement` and
 `review`. The default is `review,challenge,handoff`. `judge` gives the score, so it is never a candidate. `--trials`
-is the number of candidates that the run evaluates, the baseline included, and defaults to 3. An unknown prompt name, fewer than 2 items, or an item without `repo` or `start` is bad usage.
+is the number of candidates that the run evaluates, the baseline included, and defaults to 3. A workflow other than
+`ship`, an unknown prompt name, fewer than 2 items, or an item without `repo` or `start` fails the run after
+`run <run-id>`, with `failed optimize: <error>`, and exits 1, because the script checks them when it runs.
 
-A candidate is one text for each listed prompt, and the package texts are the baseline. Each evaluation runs
-`workflows ship --repo <repo> --base <start> --prompts <candidate folder> --json -- <item body>` as a child process.
-Evaluations run one at a time. The score of a shipped run is `passes/8 - 0.1*(rounds-1)`, where `passes` is the number
-of PASS answers of the judge, or 0 when the judge failed. A blocked or stopped run scores 0. After a ship run finishes,
-its worktree and its branch `ship/<run-id>` are removed. Its run directory stays.
+A candidate is one text for each listed prompt. The baseline is the texts of the run's prompts, so `--prompts
+<folder>` sets it. Each evaluation is the child run
+`run("ship", { item, repo, base: start, prompts: candidate })`, one at a time. The score of a shipped run is
+`passes/8 - 0.1*(rounds-1)`, where `passes` is the number of PASS answers of the judge, or 0 when the judge failed. A
+blocked or stopped run scores 0. After a ship run finishes, its worktree and its branch `ship/<run-id>` are removed.
+Its run directory stays. There is no evaluation cache: a reflect text equal to an earlier candidate's text ships again.
 
 The run evaluates the baseline on every item first. Each later trial changes one prompt of the best candidate so far,
 the listed prompts in turn, and evaluates the new candidate on every item. So the run makes `trials × items` ship
 runs. A new candidate becomes the best one only when its mean score is higher, so the baseline stays on a tie.
 
-A new text comes from a turn of the `reflect` prompt in one session with the `default` agent profile, in the current
+A new text comes from a turn of the `reflect` prompt in a new session with the `default` agent profile, in the current
 directory. The turn gets the prompt name, its text in the best candidate, and for each item the work item, the score,
-the judge findings and the memory lines of the ship result of the best candidate. An empty reply, or a reply equal to the current
-text, stops the optimization with an error.
+the judge findings and the memory lines of the ship result of the best candidate. An empty reply, or a reply equal to
+the current text, stops the optimization with an error.
 
 The command prints `run <run-id>`, then `optimized ship: baseline <mean>, best <mean>, <path>` and exits 0. The means
 are over the items, and `<path>` is `prompts.diff` in the run directory. That file starts with one line
-`<item>: baseline <score>, best <score>` for each item, then the `git diff` from the package prompts to the best
-candidate, which `git apply` takes in the checkout. When no candidate is better, the diff part is empty.
+`<item>: baseline <score>, best <score>` for each item, then `git diff --no-index --no-prefix baseline best` of the
+run directory. When no candidate is better, the diff part is empty. The result is `{ baseline, best, diff }`: the two
+means and the path.
 
-A ship run that does not finish, such as a failed or interrupted one, stops the optimization. The command prints
-`failed ship: ship run <id> failed on <item>: <error>; continue with: workflows resume <id>` and
-`continue with: workflows resume <run-id>`, and exits 1. `workflows resume <run-id>` runs the loop
-again from the start. A finished evaluation of the same texts and item returns its saved result and starts no ship run, and
-an unfinished one resumes its ship run. A reflect turn with the same prompt returns its saved answer. A hard kill of the
-command while a ship run runs loses that ship run's ID, and the resume runs that item again in a new ship run.
+A ship child run that fails stops the optimization with `failed optimize: child run <id> failed: <error>`, as any
+failed `run()` call does. `workflows resume <run-id>` runs the script again: the finished ship runs and reflect turns
+return their saved results, and the failed ship run continues.
 
 ## Sessions
 
@@ -238,7 +242,7 @@ entry's `close()` runs when the command ends, also after Ctrl+C, and an error fr
 
 ```sh
 workflows                                  # lists the workflows
-workflows review --path src/lib
+workflows review --path src
 workflows ship --help
 workflows ./fix.js "Fix the README typo"
 cat fix.js | workflows - --json
@@ -254,14 +258,14 @@ workflows check review
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `list`, `check` and `optimize` are commands, so no script of these names can run.
+`resume`, `list` and `check` are commands, so no script of these names can run.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
 project file adds to the package files, and replaces the package file of the same name in the same folder.
 
 `workflows` without arguments prints one line `<name>: <description>` for each script, or `<name>` for a script
-without `meta.description`, then one line for each built-in command.
+without `meta.description`.
 
 ### `meta`
 
@@ -300,8 +304,9 @@ the usage line, built from `meta`, and `meta.description` when the script has on
 `workflows: <error>` and the usage line of the script, and exits 2. A bad `meta` fails with
 `workflows: <name>: <problem>` and exits 1.
 
-Before the run starts, the command scans the script for `prompts.<name>`. A name without a template fails with
-`<name> uses prompts.<prompt>, which has no template`.
+Before the run starts, the command scans the script for prompt calls, `prompts.<name>(`. A name without a template
+fails with `<name> uses prompts.<prompt>, which has no template`. Other text such as `prompts.diff` in a path is not a
+call, and a dynamic call such as `prompts[name]()` is not scanned.
 
 `workflows check <wf>` reads and checks `meta`, the scanned prompts, and the agent profiles of each literal
 `session("<profile>")` and `as: "<profile>"`. It prints `ok <name>` and exits 0, or prints the first problem and exits
@@ -320,9 +325,29 @@ A script that throws, or a call in it that fails, stops the run: the command pri
 argument, or else the file name without `.js`, the workflow name, or `stdin`.
 
 `workflows/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
-workflows campaign, which give it the start commit`. Thus `run("ship")` without `start` fails before it changes
-anything. The script does not check where `start` comes from: with `start` from another script, it runs in that
-script's directory and can commit there.
+workflows campaign, which give it the start commit`. `run("ship", { repo })` gets its own worktree and `start`, as
+`workflows ship` does. `run("ship")` without `repo` runs in the caller's directory and needs `start` from the caller.
+The script does not check where `start` comes from: with `start` from another script, it runs in that script's
+directory and can commit there.
+
+### Child runs
+
+`run(name, args)` starts a child run of the script `name` of the caller's saved scripts. The child run has its own run
+ID, run directory and store, so `workflows list` shows it and `workflows resume <child-id>` continues it. It runs in
+the same process, and its `phase` and `log` lines go to the same stderr. It prints no `run` or report line.
+
+- The child's args are the defaults of its `meta.args`, then `args`, without `repo`, `base` and `prompts`. They are not
+  checked against `meta`, so an undeclared arg reaches the script.
+- With `meta.worktree` and `args.repo`, the child gets a new worktree on `<name>/<child-id>` in its run directory, in
+  the repository of `args.repo` from the caller's directory, at `args.base` (default `main`), and `args.start`. Without
+  `args.repo`, or without `meta.worktree`, the child runs in the caller's directory, and `start` is an ordinary arg.
+- `args.prompts` maps prompt names to template texts. Each text, without frontmatter and the last `$@`, replaces that
+  prompt in the child run only. A name with no prompt fails the call.
+- The child run gets the caller's saved scripts, prompts and profiles.
+
+`run()` returns the child's result, with `runId`, the child run ID, added to an object result. A failed child run
+fails the call with `child run <id> failed: <error>`. A resume of the caller continues the same child run, also after
+a failed call: the child ID is saved before the child starts.
 
 ### The script API
 
@@ -332,12 +357,12 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | Global | Meaning |
 |---|---|
 | `args` | The argument values of `meta.args`, and `start` with `worktree: true` |
-| `runId`, `runDir` | The run ID and the run directory. A script that `run()` starts gets the same values |
+| `runId`, `runDir` | The run ID and the run directory. A script that `run()` starts gets its own values |
 | `agent(prompt, { as, schema })` | One turn in a new session of profile `as` (default `default`). Returns the reply text, or the answer with `schema` |
 | `session(profile)` | A new session of `profile` (default `default`). `.ask(prompt, { schema })` is one turn in it |
 | `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
 | `ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
-| `run(name, args)` | Runs the script `name` of `workflows/` in the package or the project and returns its result |
+| `run(name, args)` | Runs the script `name` of `workflows/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
 | `tools.<name>(args)` | Any tool that sessions get, such as `tools.read({ path })` |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `parallel(thunks)` | Runs the functions at once and returns their results |
@@ -402,7 +427,8 @@ runs the failed step again: a failed Git step runs again, and a failed turn is s
 A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
 
 A run saved before every workflow script became a command, such as a run of the earlier `workflows ship`,
-`workflows campaign` or `workflows run`, cannot resume: resume prints
+`workflows campaign` or `workflows run`, or before `run()` started child runs, such as an earlier `workflows optimize`
+run, cannot resume: resume prints
 `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1. `list` does not
 show these runs.
 
@@ -436,7 +462,7 @@ workflows list --json
 ```
 
 `workflows list` prints one line for each run in the runs directory, newest run ID first: `<run-id> <workflow>
-<status> <title>`. `<workflow>` is the script name, or `optimize`. The title is the subject of the first `text`
+<status> <title>`. `<workflow>` is the script name. Child runs are listed as runs of their own. The title is the subject of the first `text`
 argument, such as the work item for ship and the goal for campaign, or else the script name. A finished run has the
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
 `done` when the result has no `status`. Any other run, also a failed one, is `unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
@@ -476,7 +502,7 @@ The tool takes one of `name`, `script` or `resume`, plus `args`:
   `{ name: "ship", args: { item: "Fix the README typo", rounds: 2 } }` runs
   `workflows ship --item=Fix the README typo --rounds=2 --json`. An arg that the script's `meta` does not declare is
   bad usage, so no run starts.
-- `name: "optimize"` runs `workflows optimize` in the same way, such as `{ workflow: "ship", items: "items/" }` for
+  `{ name: "optimize", args: { workflow: "ship", items: "items/" } }` runs
   `workflows optimize --workflow=ship --items=items/ --json`.
 - `script` runs `workflows - --json` with the script on stdin.
 - `resume` runs `workflows resume <run-id>`.
@@ -529,11 +555,10 @@ A campaign run has `worktree/` on `campaign/<run-id>` and `repository/` in the s
 
 An optimize run has:
 
-- `evaluations.json`: each evaluation by the hash of the candidate texts and the item, with its ship run ID and, once
-  it finished, its result
-- `candidates/<hash>/`: the `<name>.md` files of each candidate, which ship gets as `--prompts`
-- `diff/`: the package templates (`a/prompts/`) and the best candidate (`b/prompts/`) that `prompts.diff` compares
+- `baseline/<name>.md` and `best/<name>.md`: the baseline texts and the texts of the best candidate
 - `prompts.diff`: the score lines and the diff
+
+A child run that `run()` starts is a run directory of its own, next to the caller's.
 
 ## Prompts
 

@@ -2,7 +2,8 @@
  * Workflow scripts. A script is JavaScript that runs in the pi-codemode sandbox inside one `workflow` tool call. Each
  * call it makes is a keyed nested call of that tool, so when the tool runs again after an interruption, the finished
  * calls return their saved results and only the rest runs. A script failure does not settle the `workflow` call: the
- * command stops, and a resume runs the same call again.
+ * command stops, and a resume runs the same call again. `run(name, args)` starts a child run with its own run
+ * directory and store, and a resume of the caller continues that child run.
  *
  * The runner conversation holds the run's bundle, and a local runner model starts the root call: it answers the run's
  * input with one `workflow` call, and the tool result with its text.
@@ -47,7 +48,7 @@ import {
 import { type AgentChoice, sessionAgent } from "./agents.ts";
 import { failure, git, run } from "./git.ts";
 import { instructions, render } from "./prompts.ts";
-import { type ExtensionHost, type SessionCheckpoint, type Step, sessionOf, textOf } from "./workflow.ts";
+import { type ExtensionHost, newRunId, type SessionCheckpoint, type Step, sessionOf, textOf } from "./workflow.ts";
 
 /** An agent profile from `agents/<name>.md`. */
 export type Profile = {
@@ -75,7 +76,7 @@ const BundleDoc = defineDoc<RunBundle>({
 	initial: () => ({ main: "", scripts: {}, prompts: {}, agents: {} }),
 });
 
-const PACKAGE = fileURLToPath(new URL("../../", import.meta.url));
+const PACKAGE = fileURLToPath(new URL("../", import.meta.url));
 
 /** `<base>/<folder>/*<extension>` by name; a missing folder has none. */
 export async function readFolder(base: string, folder: string, extension: string): Promise<Record<string, string>> {
@@ -218,12 +219,8 @@ const respond = defineTool({
 /** The `workflow` tool without its runtime, for agent changes that name it. */
 const WORKFLOW = defineTool({
 	name: "workflow",
-	description: "Run a workflow script.",
-	parameters: Type.Object({
-		/** A script of the bundle; absent for the run's own script. */
-		script: Type.Optional(Type.String()),
-		args: Type.Record(Type.String(), Type.Unknown()),
-	}),
+	description: "Run the workflow script of the run.",
+	parameters: Type.Object({ args: Type.Record(Type.String(), Type.Unknown()) }),
 	replay: "safe",
 	structuredOutputSchema: Type.Unknown(),
 	outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
@@ -319,7 +316,10 @@ const sh = defineTool({
 	},
 });
 
-const OWN = new Set([WORKFLOW.name, session.name, ask.name, sh.name]);
+const NEW_RUN = "new_run";
+const CHILD = "child";
+
+const OWN = new Set([WORKFLOW.name, session.name, ask.name, sh.name, NEW_RUN, CHILD]);
 
 /** The sandbox functions that are not host calls. */
 function prelude(args: JsonObject, prompts: readonly string[], host: ExtensionHost): string {
@@ -345,6 +345,11 @@ function session(profile = "default") {
 const agent = (prompt, options = {}) => session(options.as ?? "default").ask(prompt, options);
 const sh = async (cmd) => (await __sh(cmd, true)).stdout.replace(/\\n$/, "");
 const ok = async (cmd) => (await __sh(cmd, false)).code === 0;
+const run = async (name, args = {}) => {
+	const id = await __newRun(name, args);
+	const result = await __child(id, name, args);
+	return result !== null && typeof result === "object" && !Array.isArray(result) ? { ...result, runId: id } : result;
+};
 const parallel = (thunks) => Promise.all(thunks.map((thunk) => thunk()));
 const pipeline = (items, ...stages) =>
 	Promise.all(
@@ -422,23 +427,11 @@ function global(name: string, execute: (...values: never[]) => unknown): Codemod
 	return { name, spread: true, execute: (values) => execute(...(values as never[])) };
 }
 
-/**
- * The return value of the script `script` of the bundle, or of the run's own script. A script failure is reported to
- * `host` and waits for the store to close.
- */
-async function runScript(
-	script: string | undefined,
-	args: JsonObject,
-	api: ToolExecutionApi,
-	context: Context,
-	host: ExtensionHost,
-): Promise<unknown> {
+/** The return value of the run's own script. A script failure is reported to `host` and waits for the store to close. */
+async function runScript(args: JsonObject, api: ToolExecutionApi, context: Context, host: ExtensionHost) {
 	const bundle = await bundleOf(api, context);
-	const found =
-		script === undefined ? bundle.main : Object.hasOwn(bundle.scripts, script) ? bundle.scripts[script] : undefined;
-	if (found === undefined) throw new Error(`no workflow ${script}`);
 	// A module export is a syntax error in the function body that the script runs as.
-	const source = found.replace(META, "$1$2");
+	const source = bundle.main.replace(META, "$1$2");
 	const counters = new Map<string, number>();
 	const progress: Progress = { lines: [], log: host.log };
 	const call = (name: string, values: JsonObject) => nested(api, context, counters, progress, name, values);
@@ -459,7 +452,9 @@ async function runScript(
 				call("ask", { conversation, prompt, ...(schema === undefined ? {} : { schema }) }),
 			),
 			global("__sh", (cmd: string | string[], check: boolean) => call("sh", { cmd, check })),
-			global("run", (name: string, values?: JsonObject) => call("workflow", { script: name, args: values ?? {} })),
+			// The name and the args are in the key, so a resume that reorders different `run` calls keeps each child run.
+			global("__newRun", (name: string, values: JsonObject) => call(NEW_RUN, { name, args: values })),
+			global("__child", (id: string, name: string, values: JsonObject) => call(CHILD, { id, name, args: values })),
 			global("phase", (title: string) => phaseLine(progress, String(title))),
 			global("log", (line: string) => progress.lines.push({ text: String(line), phase: false })),
 			global("__prompt", (name: string, inputs?: Record<string, string> | null) => {
@@ -495,12 +490,45 @@ function scriptExtensions(host: ExtensionHost): Extension[] {
 	const workflow = defineTool({
 		...WORKFLOW,
 		execute: async (args, api, context) => {
-			const value = await runScript(args.script, args.args as JsonObject, api, context, host);
+			const value = await runScript(args.args as JsonObject, api, context, host);
+			return { output: text(JSON.stringify(value)), structuredOutput: value as JsonObject };
+		},
+	});
+	// The saved result of `new_run` keeps the child's ID, also for a `child` call that fails and runs again.
+	const newRun = defineTool({
+		name: NEW_RUN,
+		description: "Give a new run ID to a run() call of a workflow script.",
+		parameters: Type.Object({ name: Type.String(), args: Type.Record(Type.String(), Type.Unknown()) }),
+		callers: ["tools"],
+		replay: "safe",
+		structuredOutputSchema: Type.String(),
+		execute: async () => {
+			const id = newRunId();
+			return { output: text(id), structuredOutput: id };
+		},
+	});
+	const child = defineTool({
+		name: CHILD,
+		description: "Run a child run of a workflow script.",
+		parameters: Type.Object({
+			id: Type.String(),
+			name: Type.String(),
+			args: Type.Record(Type.String(), Type.Unknown()),
+		}),
+		callers: ["tools"],
+		replay: "safe",
+		structuredOutputSchema: Type.Unknown(),
+		outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
+		execute: async (args, api, context) => {
+			const { cwd = "." } = await api.agent(context);
+			const bundle = await bundleOf(api, context);
+			const request = { id: args.id, name: args.name, args: args.args as JsonObject, bundle, cwd };
+			const value = await host.child(request, context.abortSignal);
 			return { output: text(JSON.stringify(value)), structuredOutput: value as JsonObject };
 		},
 	});
 	return [
-		defineExtension({ name: SCRIPT, tools: [workflow, session, ask, sh] }),
+		defineExtension({ name: SCRIPT, tools: [workflow, session, ask, sh, newRun, child] }),
 		defineExtension({
 			name: ANSWER,
 			tools: [respond],

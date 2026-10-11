@@ -4,12 +4,12 @@
  * only that literal, in the sandbox, and never runs the script.
  */
 import { readFile } from "node:fs/promises";
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import type { JsonObject } from "@earendil-works/pi-durable";
-import { ensureWorktree } from "./git.ts";
-import { prepareWorktree, readItem, subject } from "./item.ts";
+import { ensureWorktree, selectRepository } from "./git.ts";
+import { instructions } from "./prompts.ts";
 import {
 	type Bundle,
 	loadBundle,
@@ -19,7 +19,51 @@ import {
 	scriptPhase,
 	scriptWorkflow,
 } from "./script.ts";
-import { defineWorkflow, type Io, UsageError } from "./workflow.ts";
+import { type ChildRequest, defineWorkflow, type Io, type Run, UsageError } from "./workflow.ts";
+
+/** The first non-empty line of `item`, without leading #. */
+function subject(item: string): string {
+	const line = item.split("\n").find((candidate) => candidate.trim() !== "") ?? "";
+	return line.replace(/^#+/, "").trim();
+}
+
+/**
+ * The text that `noun` names, such as `work item`: a `.md` file, inline text, or piped stdin. Throws when it has no
+ * non-empty line.
+ */
+async function readItem(argument: string | undefined, io: Io, noun: string): Promise<string> {
+	let text: string | undefined;
+	if (argument === undefined) {
+		text = await io.stdin();
+		if (text === undefined) throw new UsageError(`missing ${noun}`);
+	} else if (argument.endsWith(".md")) {
+		const path = resolve(io.cwd, argument);
+		text = await readFile(path, "utf8").catch(() => {
+			throw new Error(`cannot read ${noun} ${path}`);
+		});
+	} else {
+		text = argument;
+	}
+	if (text.trim() === "") throw new Error(`the ${noun} is empty`);
+	return text;
+}
+
+/**
+ * The selected repository and its start commit, and the worktree path of `run` on the branch `<scriptName>/<run-id>`.
+ */
+async function prepareWorktree(
+	scriptName: string,
+	args: { readonly repo: string | undefined; readonly base: string },
+	run: Run,
+): Promise<{ repository: string; start: string; branch: string; worktree: string }> {
+	const repository = await selectRepository(run.cwd, args.repo, args.base, join(run.directory, "repository"));
+	return {
+		repository: repository.path,
+		start: repository.start,
+		branch: `${scriptName}/${run.id}`,
+		worktree: join(run.directory, "worktree"),
+	};
+}
 
 const TYPES = ["string", "number", "boolean", "text"] as const;
 
@@ -120,9 +164,9 @@ export async function readMeta(source: string, name: string): Promise<Meta> {
 const unique = (matches: Iterable<RegExpMatchArray>, group: number) =>
 	[...new Set([...matches].map((match) => match[group] ?? ""))].filter((value) => value !== "");
 
-/** The first prompt `prompts.<name>` of `source` without a template, or agent profile when `profiles` is set. */
+/** The first prompt call `prompts.<name>(` of `source` without a template, or agent profile when `profiles` is set. */
 function problem(source: string, name: string, bundle: Bundle, profiles: boolean): string | undefined {
-	const prompt = unique(source.matchAll(/\bprompts\.([A-Za-z_$][\w$]*)/g), 1).find(
+	const prompt = unique(source.matchAll(/\bprompts\.([A-Za-z_$][\w$]*)\s*\(/g), 1).find(
 		(p) => !Object.hasOwn(bundle.prompts, p),
 	);
 	if (prompt !== undefined) return `${name} uses prompts.${prompt}, which has no template`;
@@ -311,7 +355,7 @@ export const script = defineWorkflow<Args, ScriptInput, ScriptCheckpoint, unknow
 	...scriptWorkflow,
 	name: "run",
 	usage: "workflows <workflow | file.js | -> [<text>] [--<arg> <value>]...",
-	version: 3,
+	version: 4,
 	parse: async ([word = "", ...argv], io) => {
 		const found = await findScript(word, io);
 		const meta = await readMeta(found.source, found.name);
@@ -349,3 +393,30 @@ export const script = defineWorkflow<Args, ScriptInput, ScriptCheckpoint, unknow
 	},
 	status: (result) => statusOf(result) ?? "done",
 });
+
+/**
+ * The input of the child run of `request`: the script `request.name` of the caller's bundle, with the `meta` defaults
+ * and the given args. With `meta.worktree` and `repo`, the child gets its own worktree from `repo` and `base`; otherwise
+ * it runs in the caller's directory. `prompts` maps prompt names to texts that replace them in this run only. The args
+ * are not checked against `meta`.
+ */
+export async function childInput(request: ChildRequest, run: Run): Promise<ScriptInput> {
+	const { name, bundle } = request;
+	const source = Object.hasOwn(bundle.scripts, name) ? bundle.scripts[name] : undefined;
+	if (source === undefined) throw new Error(`no workflow ${name}`);
+	const meta = await readMeta(source, name);
+	const { repo, base = "main", prompts = {}, ...given } = request.args;
+	if (!isObject(prompts)) throw new Error(`run ${name}: prompts is not an object of prompt texts`);
+	const replaced = { ...bundle.prompts };
+	for (const [prompt, value] of Object.entries(prompts)) {
+		if (!Object.hasOwn(bundle.prompts, prompt)) throw new Error(`run ${name}: no prompt ${prompt}`);
+		replaced[prompt] = instructions(String(value));
+	}
+	const defaults = Object.entries(meta.args).flatMap(([arg, spec]) =>
+		spec.default === undefined ? [] : [[arg, spec.default] as const],
+	);
+	const args = { ...Object.fromEntries(defaults), ...given };
+	const input = { name, args, meta, bundle: { ...bundle, prompts: replaced, main: source } };
+	if (repo === undefined || !meta.worktree) return { ...input, cwd: run.cwd };
+	return script.prepare({ ...input, repo: String(repo), base: String(base) }, run);
+}

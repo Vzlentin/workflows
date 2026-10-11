@@ -1,10 +1,13 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createRegistry, defineExtension, Harness } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { script } from "../src/lib/meta.ts";
-import { defineWorkflow } from "../src/lib/workflow.ts";
-import { git, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
+import { script } from "../src/meta.ts";
+import { type AnyWorkflow, newRunId, workflowTask } from "../src/workflow.ts";
+import { FakeModel, git, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -19,6 +22,29 @@ beforeEach(async () => {
 afterEach(() => rm(root, { recursive: true, force: true }));
 
 const runs = () => join(root, "state", "workflows", "runs");
+
+/** The ID of a new run that holds one pending task of `workflow`, as a run that an earlier version saved. */
+async function saveRun(workflow: AnyWorkflow): Promise<string> {
+	const id = newRunId();
+	const directory = join(runs(), id);
+	await mkdir(directory, { recursive: true });
+	const task = workflowTask(workflow, () => {});
+	const registry = createRegistry();
+	registry.install(defineExtension({ name: "workflows", tasks: [task] }));
+	const models = new FakeModel({ interrupt: new AbortController() }).models;
+	const storage = await openNodeSqliteStorage(join(directory, "durable.sqlite"));
+	const harness = await Harness.open(storage, { models, registry }, BACKGROUND_CONTEXT);
+	try {
+		const conversation = await harness.root(BACKGROUND_CONTEXT);
+		await conversation.commit(
+			(tx) => tx.createTask(task, { input: {} }, { ownership: { kind: "conversation" } }),
+			BACKGROUND_CONTEXT,
+		);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
+	return id;
+}
 const worktreeOf = (id: string | undefined) => join(runs(), id ?? "missing", "worktree");
 const progress = /^(plan|judge|round \d: (implement|review))$/;
 const FIXED = "# Demo\n\nHello world\n";
@@ -396,20 +422,20 @@ export default function ({ events }) {
 		expect(plan?.prompt).toMatch(/^Plan this change\. PROJECT\n\n## item\nFix the README typo$/);
 	});
 
-	it("does not run ship.js without the start commit of workflows ship", async () => {
+	it("runs ship.js from another script in a new worktree, and leaves the checkout of the caller unchanged", async () => {
 		const scripts = join(repo, ".workflows", "workflows");
 		await mkdir(scripts, { recursive: true });
-		await writeFile(join(scripts, "guard.js"), 'return await run("ship", { item: "Fix the README typo" })');
+		await writeFile(join(scripts, "caller.js"), 'return await run("ship", { item: "Fix the README typo", repo: "." })');
 		git(repo, "add", ".workflows");
-		git(repo, "commit", "-qm", "guard");
+		git(repo, "commit", "-qm", "caller");
 		start = git(repo, "rev-parse", "HEAD");
-		const run = await workflows(["guard"], { cwd: repo });
+		const run = await workflows(["caller", "--json"], { cwd: repo, script: { edits: [FIXED] } });
 
-		expect(run.code).toBe(1);
-		expect(run.stderr[0]).toBe(
-			"failed guard: ship runs only through workflows ship or workflows campaign, which give it the start commit",
-		);
-		expect(run.model.calls).toEqual([]);
+		expect(run.code).toBe(0);
+		const { result } = JSON.parse(run.stdout[1] ?? "");
+		expect(result).toMatchObject({ status: "shipped", rounds: 1, runId: expect.any(String) });
+		expect(git(worktreeOf(result.runId), "branch", "--show-current")).toBe(`ship/${result.runId}`);
+		expect(git(worktreeOf(result.runId), "rev-parse", "HEAD~1")).toBe(start);
 		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
 		expect(git(repo, "status", "--porcelain")).toBe("");
 	});
@@ -444,38 +470,19 @@ export default function ({ events }) {
 
 describe("workflows resume of ship runs", () => {
 	it("refuses and does not list a run that the earlier ship or run command saved", async () => {
-		const earlier = defineWorkflow<object, object, { readonly phase: "done" }, object>({
-			name: "ship",
-			usage: "workflows ship",
-			version: 2,
-			parse: async () => ({}),
-			prepare: async () => ({ item: "Fix the README typo" }),
-			title: () => "Fix the README typo",
-			initial: () => ({ phase: "done" }),
-			phases: { done: ({ finish }) => finish({}) },
-			report: () => 0,
-		});
-		const ship = await workflows(["ship"], { cwd: repo, installed: [earlier] });
-		expect(ship.code).toBe(0);
+		const ship = await saveRun({ ...script, name: "ship" });
 		// The script workflow owns the task kind of the earlier `run` command, so only its version can be earlier.
-		const current = script.version;
-		const mutable = script as { version: number };
-		mutable.version = current - 1;
-		await writeFile(join(root, "old.js"), "return 1");
-		const run = await workflows(["old.js"], { cwd: root }).finally(() => {
-			mutable.version = current;
-		});
-		expect(run.code).toBe(0);
+		const run = await saveRun({ ...script, version: script.version - 1 });
 
-		for (const [old, name] of [
+		for (const [id, name] of [
 			[ship, "ship"],
 			[run, "run"],
 		] as const) {
-			const resumed = await workflows(["resume", old.id ?? ""], { cwd: repo });
+			const resumed = await workflows(["resume", id], { cwd: repo });
 			expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([
 				1,
 				[],
-				[`workflows: run ${old.id} was saved by an earlier version of ${name} and cannot resume`],
+				[`workflows: run ${id} was saved by an earlier version of ${name} and cannot resume`],
 			]);
 		}
 		const listed = await workflows(["list"], { cwd: repo });

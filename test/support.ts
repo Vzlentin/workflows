@@ -11,8 +11,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { main } from "../src/lib/main.ts";
-import type { AnyWorkflow } from "../src/lib/workflow.ts";
+import { main } from "../src/main.ts";
 
 export function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trimEnd();
@@ -117,8 +116,8 @@ export type Script = {
 	readonly edits?: readonly (string | undefined)[];
 	/** The review verdict of each round. */
 	readonly verdicts?: readonly ("SHIP" | "FIX")[];
-	/** The judge's `respond` answer, or a text reply without `respond`. */
-	readonly judge?: Verdict | string;
+	/** The judge's `respond` answer, or a text reply without `respond`; a list gives one for each judge call. */
+	readonly judge?: Verdict | string | readonly (Verdict | string)[];
 	/** The work items of the split answer. */
 	readonly items?: readonly string[];
 	/** The queue of each requeue answer; a missing answer is an empty queue. */
@@ -249,16 +248,20 @@ export class FakeModel {
 				return respond({ items: [...(this.#script.items ?? [])] });
 			case "requeue":
 				return respond({ items: [...(this.#script.queues?.[nth - 1] ?? [])] });
-			case "reflect":
-				return fauxAssistantMessage(`Improved prompt ${nth}.`);
+			case "reflect": {
+				// The reply keeps the current text first, so that the prompt keeps its kind.
+				const current = /\n## current\n([\s\S]*?)\n\n## records\n/.exec(prompt)?.[1] ?? "";
+				return fauxAssistantMessage(`${current}\nImproved prompt ${nth}.`);
+			}
 			case "script":
 				return scriptAttempt(messages) ?? fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
 		}
 	};
 
 	#judge(): AssistantMessage {
-		const { judge = PASSING_JUDGE } = this.#script;
-		return typeof judge === "string" ? fauxAssistantMessage(judge) : respond(judge);
+		const { judge: scripted = PASSING_JUDGE } = this.#script;
+		const judge = Array.isArray(scripted) ? (scripted[this.count("judge") - 1] ?? PASSING_JUDGE) : scripted;
+		return typeof judge === "string" ? fauxAssistantMessage(judge) : respond(judge as Verdict);
 	}
 }
 
@@ -302,27 +305,21 @@ export async function workflows(
 		readonly stdin?: string;
 		readonly script?: Omit<Script, "interrupt">;
 		readonly interrupt?: AbortController;
-		/** The built-in workflows; none by default. */
-		readonly installed?: readonly AnyWorkflow[];
 	},
 ): Promise<Outcome> {
 	const interrupt = options.interrupt ?? new AbortController();
 	const model = new FakeModel({ ...options.script, interrupt });
 	const stdout: string[] = [];
 	const stderr: string[] = [];
-	const code = await main(
-		argv,
-		{
-			cwd: options.cwd,
-			stdin: async () => options.stdin,
-			stdout: (line) => stdout.push(line),
-			stderr: (line) => stderr.push(line),
-			models: model.models,
-			addProvider: (provider) => model.models.setProvider(provider),
-			interrupt: interrupt.signal,
-		},
-		options.installed ?? [],
-	);
+	const code = await main(argv, {
+		cwd: options.cwd,
+		stdin: async () => options.stdin,
+		stdout: (line) => stdout.push(line),
+		stderr: (line) => stderr.push(line),
+		models: model.models,
+		addProvider: (provider) => model.models.setProvider(provider),
+		interrupt: interrupt.signal,
+	});
 	const id = stdout.find((line) => line.startsWith("run "))?.slice(4);
 	return { code, stdout, stderr, model, id };
 }

@@ -6,6 +6,7 @@
  * A phase that throws fails the run and keeps its checkpoint. A resume starts a new task from that checkpoint, which
  * runs the failed phase again and sends a failed turn again under a new request ID.
  */
+import { randomBytes } from "node:crypto";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai/models";
@@ -16,6 +17,7 @@ import {
 	configure,
 	defineTask,
 	type Extension,
+	type JsonObject,
 	type NextTaskState,
 	type RunningTask,
 	type Task,
@@ -23,6 +25,13 @@ import {
 	type Tx,
 } from "@earendil-works/pi-durable";
 import { type AgentChoice, sessionAgent } from "./agents.ts";
+import type { RunBundle } from "./script.ts";
+
+/** A run ID, `<UTC timestamp>-<8 hex>`, so a sort by name is a sort by start time. */
+export function newRunId(): string {
+	const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
+	return `${stamp}-${randomBytes(4).toString("hex")}`;
+}
 
 /** Bad command-line usage: the command prints `usage`, or its own usage, and exits 2. */
 export class UsageError extends Error {
@@ -91,6 +100,20 @@ export type ExtensionHost = {
 	log(line: string): void;
 	/** Stops the command with `message` as a resumable failure; the run's task stays pending. */
 	fail(message: string): void;
+	/**
+	 * The result of the child run `request.id`. The first call starts the run, and a later call continues it. Throws
+	 * `child run <id> failed: <error>` when the run fails.
+	 */
+	child(request: ChildRequest, signal: AbortSignal | undefined): Promise<JsonValue>;
+};
+
+/** A `run(name, args)` call of a workflow script: its child run ID, and the bundle and directory of the caller. */
+export type ChildRequest = {
+	readonly id: string;
+	readonly name: string;
+	readonly args: JsonObject;
+	readonly bundle: RunBundle;
+	readonly cwd: string;
 };
 
 export type Workflow<A, I, S extends Checkpoint, R> = {
