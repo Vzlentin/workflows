@@ -14,18 +14,41 @@ const VERDICT = {
 		findings: { type: "array", items: { type: "string" } },
 	},
 }
+const NOTED = {
+	type: "object",
+	required: ["text", "notes"],
+	properties: { text: { type: "string" }, notes: { type: "array", items: { type: "string" } } },
+}
+// With the SHIP or FIX rule, and not in a template, so that a template edit cannot remove it.
+const EVIDENCE =
+	"A reversal of a memory note, or of a choice that the implementer explained, stays only with a defect that this " +
+	"review showed: a reproduced bug, a failing check, or a quoted rule of the work item that the choice breaks. Write " +
+	"it as `reverses #k: <defect>`. A preference, less code, a stricter check, or a claim from a few observations is " +
+	"not a defect."
+
+// The run memory: numbered notes of the planner, the implementers and the reviewers, only appended to. It is built
+// from saved answers only, so a resume builds the same memory and the same prompts.
+const memory = []
 
 phase("plan")
-const planner = session("planner")
+const planner = remembering("planner")
 await planner.ask(prompts.plan({ item }))
 await planner.ask(prompts.challenge())
-let plan = await planner.ask(prompts.handoff())
+let plan = await planner.noted(
+	0,
+	prompts.handoff(),
+	"the document, and notes are the decisions of this session, each with its reason.",
+)
 
 let before = start
 for (let round = 1; round <= rounds; round++) {
 	phase(`round ${round}: implement`)
-	const implementer = session("implementer")
-	const reply = await implementer.ask(prompts.implement({ plan }))
+	const implementer = remembering("implementer")
+	const reply = await implementer.noted(
+		round,
+		prompts.implement({ plan }),
+		"your report, and notes are what you tried and what you observed.",
+	)
 
 	await sh(["git", "add", "-A"])
 	if (await ok(["git", "diff", "--cached", "--quiet", start])) return { status: "blocked", rounds: round, reply }
@@ -37,12 +60,17 @@ for (let round = 1; round <= rounds; round++) {
 	if (round > 1) change.push(await patch(`round-${round}-fix.patch`, before))
 
 	phase(`round ${round}: review`)
-	const reviewer = session("reviewer")
+	const reviewer = remembering("reviewer")
 	await reviewer.ask(prompts.review({ item, plan, change: change.join("\n"), reply }))
-	const challenge = `${await prompts.challenge()}\n\nAnswer with respond: SHIP if nothing needs to change, FIX otherwise.`
+	const answer = "Answer with respond: SHIP if nothing needs to change, FIX otherwise."
+	const challenge = `${await prompts.challenge()}\n\n${EVIDENCE}\n\n${answer}`
 	if ((await reviewer.ask(challenge, { schema: SHIP_OR_FIX })) === "SHIP") return await judgeAndSquash(round)
 	if (round === rounds) return { status: "stopped", rounds: round }
-	plan = await reviewer.ask(prompts.handoff())
+	plan = await reviewer.noted(
+		round,
+		prompts.handoff(),
+		"the document, and notes are the decisions of your challenge, with the findings that you cut and why.",
+	)
 	before = await sh(["git", "rev-parse", "HEAD"])
 }
 
@@ -67,6 +95,31 @@ async function judgeAndSquash(round) {
 		...(verdict === undefined ? {} : { score: score(verdict.answers) }),
 		...(judgeError === undefined ? {} : { judgeError }),
 	}
+}
+
+function remember(author, round, notes) {
+	for (const note of notes) {
+		const line = note.replace(/\s+/g, " ").trim()
+		if (line !== "") memory.push(`#${memory.length + 1} ${author} ${round}: ${line}`)
+	}
+}
+
+function withMemory(prompt) {
+	return memory.length === 0 ? prompt : `## memory\n${memory.join("\n")}\n\n${prompt}`
+}
+
+// A session whose every prompt starts with the run memory, read when the prompt is sent. `noted` asks for a text and
+// notes, adds the notes to the memory under the profile as author, and returns the text.
+function remembering(profile) {
+	const s = session(profile)
+	const ask = async (prompt, options) => s.ask(withMemory(await prompt), options)
+	const noted = async (round, prompt, rule) => {
+		const rules = `When you are done, answer with respond: text is ${rule}`
+		const { text, notes } = await ask(`${await prompt}\n\n${rules}`, { schema: NOTED })
+		remember(profile, round, notes)
+		return text
+	}
+	return { ask, noted }
 }
 
 async function patch(name, from) {

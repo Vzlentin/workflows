@@ -89,6 +89,9 @@ export type Call = {
 	readonly prompt: string;
 };
 
+/** The leading run memory of a ship prompt. */
+const MEMORY = /^## memory\n[\s\S]*?\n\n/;
+
 const KINDS: readonly (readonly [string, Kind])[] = [
 	["Plan this change.", "plan"],
 	["Challenge the plan", "challenge"],
@@ -177,19 +180,21 @@ export class FakeModel {
 			tools.splice(0, tools.length, ...tools.filter((name) => !removed.has(name)));
 			tools.push(...(message.toolsAdded ?? []).map((tool) => tool.name));
 		}
+		const user = messages.findLast((message) => message.role === "user");
+		const prompt = user === undefined ? "" : textOf(user);
+		const found = KINDS.find(([start]) => prompt.replace(MEMORY, "").startsWith(start))?.[1];
+		if (found === undefined) throw new Error(`unexpected prompt: ${prompt}`);
+		const kind = found === "challenge" && tools.includes("respond") ? "verdict" : found;
 		const last = messages.findLast((message) => message.role !== "system");
 		if (last?.role === "toolResult") {
 			const after = messages.slice(messages.findLastIndex((message) => message.role === "assistant") + 1);
 			for (const message of after) if (message.role === "toolResult") this.results.push(textOf(message));
 			const scripted = scriptAttempt(messages);
 			if (scripted !== undefined) return scripted;
-			if (tools.includes("respond")) return this.#judge();
+			if (kind === "judge") return this.#judge();
+			if (kind === "implement") return implemented(this.count(kind), "I fixed the typo in README.md.");
 			return fauxAssistantMessage("I fixed the typo in README.md.");
 		}
-		const prompt = last === undefined ? "" : textOf(last);
-		const found = KINDS.find(([start]) => prompt.startsWith(start))?.[1];
-		if (found === undefined) throw new Error(`unexpected prompt: ${prompt}`);
-		const kind = found === "challenge" && tools.includes("respond") ? "verdict" : found;
 		const nth = this.count(kind) + 1;
 		const { interruptAt, interrupt } = this.#script;
 		if (interruptAt?.kind === kind && interruptAt.nth === nth) interrupt.abort();
@@ -221,10 +226,13 @@ export class FakeModel {
 			case "challenge":
 				return fauxAssistantMessage("Keep: one word changes.");
 			case "handoff":
-				return fauxAssistantMessage(`Handoff ${this.count("handoff")}: replace wrold with world in README.md.`);
+				return respond({
+					text: `Handoff ${nth}: replace wrold with world in README.md.`,
+					notes: [`Handoff ${nth}: one word\n changes.`, " "],
+				});
 			case "implement": {
 				const edit = this.#script.edits?.[nth - 1];
-				if (edit === undefined) return fauxAssistantMessage("I found nothing to change.");
+				if (edit === undefined) return implemented(nth, "I found nothing to change.");
 				const call = this.#script.commits
 					? fauxToolCall("bash", {
 							command: `printf '%s' '${edit}' > README.md && git commit -qam 'implementer ${nth}'`,
@@ -270,6 +278,11 @@ function scriptAttempt(messages: readonly Message[]): AssistantMessage | undefin
 
 function respond(answer: ToolCall["arguments"][string]): AssistantMessage {
 	return fauxAssistantMessage(fauxToolCall("respond", { answer }), { stopReason: "toolUse" });
+}
+
+/** The `respond` answer of the nth implement turn. */
+function implemented(nth: number, reply: string): AssistantMessage {
+	return respond({ text: reply, notes: [`Implement ${nth}: README.md had wrold.`] });
 }
 
 export type Outcome = {

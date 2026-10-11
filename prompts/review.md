@@ -4,7 +4,7 @@ argument-hint: "[scope]"
 ---
 Perform a deep code quality audit of this change.
 
-Report reproduced correctness bugs first. The plan is what this round implemented. After round 1, the decisions in that plan are settled: only unfinished fixes or regressions since the previous round can block.
+Report reproduced correctness bugs first. The plan is what this round implemented. From round 1, the decisions in the memory are settled: only the evidence rule of the challenge can reopen one. Unfinished fixes and regressions since the previous round can still block.
 
 Rethink how to structure / implement the change to meaningfully improve code quality without impacting behavior. Improve abstractions and modularity, reduce spaghetti code, improve succinctness and legibility. Be ambitious: if there is a clear path to improving the implementation that involves restructuring some of the codebase, go for it. Be extremely thorough and rigorous. Measure twice, cut once.
 
