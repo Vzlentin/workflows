@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -78,12 +79,13 @@ const probe = defineTask<{ key: string; value?: string }, { phase: "run" }, Json
 		run: async ({ input }, runtime, context) => {
 			const { key, value } = input;
 			if (value === undefined) {
-				const result = (await runtime.snapshot(CallDoc, key, context))?.value ?? null;
+				const result = (await runtime.snapshot(CallDoc, key, context))?.result ?? null;
 				await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
 				return;
 			}
 			await runtime.commit(async (tx) => {
-				await tx.doc(CallDoc, key, value);
+				const doc = await tx.doc(CallDoc, key, null);
+				Object.assign(doc, { kind: "sh", args: { cmd: "true" }, startedAt: "2026-01-01T00:00:00.000Z", result: value });
 				return { status: "terminal", outcome: { status: "failed", error: { message: "no" } } };
 			}, context);
 		},
@@ -112,6 +114,72 @@ async function runProbe(path: string, input: { key: string; value?: string }) {
 		await harness.close(BACKGROUND_CONTEXT);
 	}
 }
+
+/** Every row of every table in the store of run `id`, read with `node:sqlite`. */
+function rows(id: string) {
+	const database = new DatabaseSync(join(runs(), id, "durable.sqlite"), { readOnly: true });
+	try {
+		const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all();
+		return tables.map(({ name }) => [name, database.prepare(`SELECT * FROM "${String(name)}"`).all()]);
+	} finally {
+		database.close();
+	}
+}
+
+describe("workflows show", () => {
+	it("shows the failed call and the error of a failed run", async () => {
+		await writeFile(join(root, "x.js"), `phase("check")\nawait sh("echo a")\nawait ok("false")\nawait sh("exit 3")`);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(1);
+		const id = run.id ?? "";
+		const shown = await workflows(["show", id], { cwd: root });
+		expect([shown.code, shown.stderr]).toEqual([0, []]);
+		expect(shown.stdout).toEqual([
+			`run ${id} x failed x`,
+			"check",
+			expect.stringMatching(/^ {2}✓ sh echo a {2}\d+s$/),
+			expect.stringMatching(/^ {2}✓ ok false {2}\d+s$/),
+			expect.stringMatching(/^ {2}✗ sh exit 3 {2}\d+s$/),
+			"failed x: sh exited with 3: exit 3",
+			`continue with: workflows resume ${id}`,
+		]);
+		const { calls, ...tree } = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(tree).toEqual({ runId: id, workflow: "x", title: "x", status: "failed", error: "sh exited with 3: exit 3" });
+		expect(
+			calls.map((call: { mark: string; result?: unknown; error?: string }) => [call.mark, call.result, call.error]),
+		).toEqual([
+			["✓", { code: 0, stdout: "a\n", stderr: "" }, undefined],
+			["✓", { code: 1, stdout: "", stderr: "" }, undefined],
+			["✗", undefined, "sh exited with 3: exit 3"],
+		]);
+	});
+
+	it("shows the call that a stop interrupted, and does not change the store", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`phase("talk")\nawait agent("Script: one")\nawait agent("Script: two", { as: "default" })`,
+		);
+		const first = await stopped(["x.js"], { nth: 2 });
+		expect(first.code).toBe(130);
+		const id = first.id ?? "";
+		const before = rows(id);
+		const shown = await workflows(["show", id], { cwd: root });
+		expect(rows(id)).toEqual(before);
+		expect(shown.stdout).toEqual([
+			`run ${id} x unfinished x`,
+			"talk",
+			expect.stringMatching(/^ {2}✓ session default {2}\d+s$/),
+			expect.stringMatching(/^ {2}✓ ask default {2}\d+s$/),
+			expect.stringMatching(/^ {2}✓ session default {2}\d+s$/),
+			expect.stringMatching(/^ {2}◉ ask default {2}\d+s$/),
+		]);
+		const { calls } = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(calls[3]).toMatchObject({ kind: "ask", label: "default", mark: "◉", args: { prompt: "Script: two" } });
+		expect(calls[3].endedAt).toBeUndefined();
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
+	});
+});
 
 describe("saved calls", () => {
 	it("keeps a saved call of a failed task for a new task after a reopen", async () => {

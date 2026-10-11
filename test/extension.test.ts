@@ -44,6 +44,7 @@ optimize)
 	echo "run r7"
 	echo '{"runId":"r7","status":"finished","result":{"baseline":0.5,"best":0.75,"diff":"prompts.diff"},"report":["optimized ship: baseline 0.50, best 0.75, prompts.diff"]}' ;;
 list) echo "r5 ship shipped Fix the README typo"; echo "r4 run unfinished slow" ;;
+show) [ "$2" = r5 ] || { echo "workflows: no run $2" >&2; exit 1; }; echo "run r5 ship shipped Fix"; echo "  ✓ sh git status  0s" ;;
 *) exit 9 ;;
 esac
 `;
@@ -233,6 +234,17 @@ describe("/workflows", () => {
 		await command("", ctx());
 		expect(messages.map((message) => message.content)).toEqual([
 			"r5 ship shipped Fix the README typo\nr4 run unfinished slow",
+		]);
+	});
+
+	it("shows a run, or the error of the command", async () => {
+		await command("show r5", ctx());
+		await command("show r9", ctx());
+		await command("show", ctx());
+		expect(messages.map((message) => message.content)).toEqual([
+			"run r5 ship shipped Fix\n  ✓ sh git status  0s",
+			"workflows: no run r9",
+			"usage: /workflows [show <run-id> | resume <run-id>]",
 		]);
 	});
 

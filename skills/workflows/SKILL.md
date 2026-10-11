@@ -55,7 +55,7 @@ Sandbox rules:
 - No file system, network, modules or timers. Effects go through `sh` and `ok`.
 - `Date`, `Date.now()` and `Math.random()` throw, so that a script makes the same calls each time it runs.
 - A resume runs the script again from the top. Calls that succeeded return their saved results. Commands in `sh`
-  and `ok` must be safe to repeat. A call that fails is not saved, so it runs again.
+  and `ok` must be safe to repeat. A call that fails saves no result, so it runs again.
 
 ## Command line
 
@@ -69,6 +69,11 @@ workflows check <name>
 workflows
 workflows resume <run-id> [--json]
 workflows list [--json]
+workflows show <run-id> [--json]
 ```
 
-In Pi, `/workflows` lists the runs, and `/workflows resume <run-id>` asks the agent to continue one with the tool.
+`workflows show <run-id>` prints the phases and calls of a run as a tree, with a mark for each call: `✓` finished, `✗`
+failed, `◉` running or stopped. It only reads the store, so it is safe while the run goes on.
+
+In Pi, `/workflows` lists the runs, `/workflows show <run-id>` shows one, and `/workflows resume <run-id>` asks the
+agent to continue one with the tool.
