@@ -31,9 +31,9 @@ await tools.workflow({ resume: "20261010T234930-3a93e88c" })
   of the folder `args.items`. `prompts`, the prompt names separated by commas, and `trials`, the number of candidates
   with the baseline, are optional. The result is `{ baseline, best, diff }`: the mean scores and the path of a diff to
   apply by hand.
-- Any other `name` is a script in `workflows/` of the package or of the project's `.workflows/`. Each arg reaches
-  the script as the string `args.<key>`: a string as it is, any other value as its JSON text, so `{ depth: 2 }` gives
-  `"2"`.
+- Any other `name` is a script in `workflows/` of the project's `.workflows/` or of the package. Each arg becomes the
+  flag `--<key>`, and the script's `meta` declares the args it takes, with their types. An undeclared arg is an error.
+  `workflows` lists the scripts with their `meta.description`.
 - `script` is an inline workflow script.
 - `resume` continues a run by its ID.
 
@@ -59,8 +59,11 @@ Sandbox rules:
 ```sh
 workflows ship [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<item.md> | <text>] [--json]
 workflows campaign [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<goal.md> | <text>] [--json]
-workflows optimize ship --items <folder> [--prompts <name,...>] [--trials <n>] [--json]
-workflows run <name | file.js | -> [--arg <key>=<value>]... [--json]
+workflows optimize <ship | --workflow ship> --items <folder> [--prompts <name,...>] [--trials <n>] [--json]
+workflows <name | file.js | -> [<text>] [--<arg> <value>]... [--json]
+workflows <name> --help
+workflows check <name>
+workflows
 workflows resume <run-id> [--json]
 workflows list [--json]
 ```

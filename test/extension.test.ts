@@ -20,30 +20,30 @@ let prompts: unknown[][];
 /** A fake `workflows` command: its behavior comes from its arguments, which it appends to `args.log`. */
 const FAKE = `#!/bin/sh
 echo "$@" >> args.log
-case "$1 $2" in
-"run ok")
+case "$1" in
+ok)
 	echo "run r1"; echo "phase one" >&2; echo "log two" >&2
 	echo '{"runId":"r1","status":"finished","result":{"answer":42},"report":["{\\"answer\\":42}"]}' ;;
-"run -")
+-)
 	echo "run r2"; cat > stdin.js
 	echo '{"runId":"r2","status":"finished","result":"from stdin","report":["from stdin"]}' ;;
-"run bad") echo "run r3"; echo "phase one" >&2; echo '{"runId":"r3","status":"failed","error":"boom"}'; exit 1 ;;
-"run slow")
+bad) echo "run r3"; echo "phase one" >&2; echo '{"runId":"r3","status":"failed","error":"boom"}'; exit 1 ;;
+slow)
 	echo "run r4"
 	trap 'echo '"'"'{"runId":"r4","status":"interrupted"}'"'"'; exit 130' INT
 	echo "started" >&2
 	while :; do sleep 0.02; done ;;
-"run usage") echo "workflows: unknown flag" >&2; exit 2 ;;
-"ship --rounds=2")
+usage) echo "workflows: unknown flag" >&2; exit 2 ;;
+ship)
 	echo "run r5"
 	echo '{"runId":"r5","status":"finished","result":{"status":"shipped","rounds":1,"head":"abc"},"report":["shipped Fix the README typo in 1 rounds, judge failed, abc"]}' ;;
-"campaign --base=develop")
+campaign)
 	echo "run r6"
 	echo '{"runId":"r6","status":"finished","result":{"status":"done","items":[]},"report":["done Fix the docs in 2 items, abc"]}' ;;
-"optimize --items=items")
+optimize)
 	echo "run r7"
 	echo '{"runId":"r7","status":"finished","result":{"baseline":0.5,"best":0.75,"diff":"prompts.diff"},"report":["optimized ship: baseline 0.50, best 0.75, prompts.diff"]}' ;;
-"list ") echo "r5 ship shipped Fix the README typo"; echo "r4 run unfinished slow" ;;
+list) echo "r5 ship shipped Fix the README typo"; echo "r4 run unfinished slow" ;;
 *) exit 9 ;;
 esac
 `;
@@ -96,7 +96,8 @@ function draw(args: object, result?: AgentToolResult<unknown>, isPartial = false
 
 describe("the workflow tool", () => {
 	it("returns the structured result of a finished run, with each stderr line as progress", async () => {
-		const { result, updates } = await call({ name: "ok", args: { path: "src", depth: 2 } });
+		const args = { path: "src", depth: 2, all: true, dry: false, tags: ["a"] };
+		const { result, updates } = await call({ name: "ok", args });
 		expect(result.structuredContent).toEqual({
 			runId: "r1",
 			status: "finished",
@@ -105,10 +106,10 @@ describe("the workflow tool", () => {
 		});
 		expect(result.isError).toBeUndefined();
 		expect(updates).toEqual(["phase one", "log two"]);
-		expect(await readFile(join(root, "args.log"), "utf8")).toBe("run ok --arg=path=src --arg=depth=2 --json\n");
+		expect(await readFile(join(root, "args.log"), "utf8")).toBe('ok --path=src --depth=2 --all --tags=["a"] --json\n');
 	});
 
-	it("sends a script on stdin and maps ship, campaign and optimize arguments to their flags", async () => {
+	it("sends a script on stdin, passes every argument as a flag", async () => {
 		const script = await call({ script: "return 'hi'" });
 		expect(script.result.structuredContent).toEqual({
 			runId: "r2",
@@ -141,10 +142,10 @@ describe("the workflow tool", () => {
 			report: ["optimized ship: baseline 0.50, best 0.75, prompts.diff"],
 		});
 		expect((await readFile(join(root, "args.log"), "utf8")).split("\n")).toEqual([
-			"run - --json",
-			"ship --rounds=2 --json -- Fix the README typo",
-			"campaign --base=develop --json -- goal.md",
-			"optimize --items=items --trials=4 --json -- ship",
+			"- --json",
+			"ship --item=Fix the README typo --rounds=2 --json",
+			"campaign --base=develop --goal=goal.md --json",
+			"optimize --workflow=ship --items=items --trials=4 --json",
 			"",
 		]);
 	});
@@ -187,6 +188,7 @@ describe("the workflow tool", () => {
 		expect(draw({ name: "campaign" })).toEqual(["workflow campaign"]);
 		expect(draw({ name: "optimize", args: { workflow: "ship", items: "items" } })).toEqual(["workflow optimize ship"]);
 		expect(draw({ name: "ok" })).toEqual(["workflow ok"]);
+		expect(draw({ name: "fix", args: { depth: 2, path: "src/lib" } })).toEqual(["workflow fix src/lib"]);
 		expect(draw({ name: "toString" })).toEqual(["workflow toString"]);
 		expect(draw({ script: "return 1" })).toEqual(["workflow script"]);
 		expect(draw({ resume: "r4" })).toEqual(["workflow resume r4"]);

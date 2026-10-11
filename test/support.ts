@@ -13,9 +13,6 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { main } from "../src/lib/main.ts";
 import type { AnyWorkflow } from "../src/lib/workflow.ts";
-import { campaign } from "../src/workflows/campaign.ts";
-import { run } from "../src/workflows/run.ts";
-import { ship } from "../src/workflows/ship.ts";
 
 export function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trimEnd();
@@ -305,7 +302,7 @@ export async function workflows(
 		readonly stdin?: string;
 		readonly script?: Omit<Script, "interrupt">;
 		readonly interrupt?: AbortController;
-		/** The installed workflows; `ship`, `campaign` and `run` by default. */
+		/** The built-in workflows; none by default. */
 		readonly installed?: readonly AnyWorkflow[];
 	},
 ): Promise<Outcome> {
@@ -324,7 +321,7 @@ export async function workflows(
 			addProvider: (provider) => model.models.setProvider(provider),
 			interrupt: interrupt.signal,
 		},
-		options.installed ?? [ship, campaign, run],
+		options.installed ?? [],
 	);
 	const id = stdout.find((line) => line.startsWith("run "))?.slice(4);
 	return { code, stdout, stderr, model, id };

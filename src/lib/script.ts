@@ -142,6 +142,9 @@ export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle
 	};
 }
 
+/** The leading comments and `export const meta =` of a script that declares its `meta`. */
+export const META = /^((?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*)export\s+(const\s+meta\s*=\s*)/;
+
 const text = (value: string): TextContent[] => [{ type: "text", text: value }];
 
 const SCRIPT = "workflows-script";
@@ -431,8 +434,11 @@ async function runScript(
 	host: ExtensionHost,
 ): Promise<unknown> {
 	const bundle = await bundleOf(api, context);
-	const source = script === undefined ? bundle.main : bundle.scripts[script];
-	if (source === undefined) throw new Error(`no workflow ${script}`);
+	const found =
+		script === undefined ? bundle.main : Object.hasOwn(bundle.scripts, script) ? bundle.scripts[script] : undefined;
+	if (found === undefined) throw new Error(`no workflow ${script}`);
+	// A module export is a syntax error in the function body that the script runs as.
+	const source = found.replace(META, "$1$2");
 	const counters = new Map<string, number>();
 	const progress: Progress = { lines: [], log: host.log };
 	const call = (name: string, values: JsonObject) => nested(api, context, counters, progress, name, values);

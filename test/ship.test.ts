@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { script } from "../src/lib/meta.ts";
 import { defineWorkflow } from "../src/lib/workflow.ts";
 import { git, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
 
@@ -242,7 +243,7 @@ export default function ({ events }) {
 		const report = [`blocked Fix the README typo after 1 rounds: ${worktreeOf(run.id)}`, result.reply];
 		expect(resumed.stdout).toEqual([
 			`run ${run.id}`,
-			JSON.stringify({ runId: run.id, status: "finished", result, report }),
+			JSON.stringify({ runId: run.id, status: "finished", result: { ...result, report }, report }),
 		]);
 
 		const item = await workflows(["ship", "--", "--json"], { cwd: repo, script: { edits: [] } });
@@ -279,17 +280,17 @@ export default function ({ events }) {
 		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
 		const failed = [
 			"failed Fix the README typo: git commit failed: lint failed",
-			`continue with: workflows ship resume ${run.id}`,
+			`continue with: workflows resume ${run.id}`,
 		];
 		expect(run.code).toBe(1);
 		expect(run.stdout).toEqual([`run ${run.id}`]);
 		expect(run.stderr.slice(-2)).toEqual(failed);
 
-		const again = await workflows(["ship", "resume", run.id ?? ""], { cwd: repo });
+		const again = await workflows(["resume", run.id ?? ""], { cwd: repo });
 		expect([again.code, again.stderr, again.model.calls]).toEqual([1, ["round 1: implement", ...failed], []]);
 
 		await rm(hook);
-		const resumed = await workflows(["ship", "resume", run.id ?? ""], { cwd: repo });
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: repo });
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout[1]).toMatch(SHIPPED);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "verdict", "judge"]);
@@ -396,11 +397,17 @@ export default function ({ events }) {
 	});
 
 	it("does not run ship.js without the start commit of workflows ship", async () => {
-		const run = await workflows(["run", "ship", "--arg", "item=Fix the README typo"], { cwd: repo });
+		const scripts = join(repo, ".workflows", "workflows");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "guard.js"), 'return await run("ship", { item: "Fix the README typo" })');
+		git(repo, "add", ".workflows");
+		git(repo, "commit", "-qm", "guard");
+		start = git(repo, "rev-parse", "HEAD");
+		const run = await workflows(["guard"], { cwd: repo });
 
 		expect(run.code).toBe(1);
 		expect(run.stderr[0]).toBe(
-			"failed ship: ship runs only through workflows ship or workflows campaign, which give it the start commit",
+			"failed guard: ship runs only through workflows ship or workflows campaign, which give it the start commit",
 		);
 		expect(run.model.calls).toEqual([]);
 		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
@@ -418,8 +425,7 @@ export default function ({ events }) {
 			[["ship", "--pi", "pi", "Fix it"], "workflows: Unknown option '--pi'", 2],
 			[["ship", "--prompts", "none", "Fix it"], `workflows: no prompts folder ${join(repo, "none")}`, 1],
 			[["ship", "--prompts=.", "Fix it"], `workflows: ${repo}/README.md replaces no prompt of the package`, 1],
-			[["ship", "resume", "/tmp/run"], "workflows: /tmp/run is not a run ID", 2],
-			[["ship", "resume", "nothing"], `workflows: no run nothing in ${runs()}`, 1],
+			[["resume", "/tmp/run"], "workflows: /tmp/run is not a run ID", 2],
 			[["resume", "nothing"], `workflows: no run nothing in ${runs()}`, 1],
 			[["nope", "goal.md"], "workflows: unknown command nope", 2],
 		];
@@ -436,8 +442,8 @@ export default function ({ events }) {
 	});
 });
 
-describe("workflows ship resume", () => {
-	it("refuses a run that an earlier version of ship saved", async () => {
+describe("workflows resume of ship runs", () => {
+	it("refuses and does not list a run that the earlier ship or run command saved", async () => {
 		const earlier = defineWorkflow<object, object, { readonly phase: "done" }, object>({
 			name: "ship",
 			usage: "workflows ship",
@@ -449,15 +455,31 @@ describe("workflows ship resume", () => {
 			phases: { done: ({ finish }) => finish({}) },
 			report: () => 0,
 		});
-		const old = await workflows(["ship"], { cwd: repo, installed: [earlier] });
-		expect(old.code).toBe(0);
+		const ship = await workflows(["ship"], { cwd: repo, installed: [earlier] });
+		expect(ship.code).toBe(0);
+		// The script workflow owns the task kind of the earlier `run` command, so only its version can be earlier.
+		const current = script.version;
+		const mutable = script as { version: number };
+		mutable.version = current - 1;
+		await writeFile(join(root, "old.js"), "return 1");
+		const run = await workflows(["old.js"], { cwd: root }).finally(() => {
+			mutable.version = current;
+		});
+		expect(run.code).toBe(0);
 
-		const resumed = await workflows(["ship", "resume", old.id ?? ""], { cwd: repo });
-		expect(resumed.code).toBe(1);
-		expect(resumed.stdout).toEqual([]);
-		expect(resumed.stderr).toEqual([
-			`workflows: run ${old.id} was saved by an earlier version of ship and cannot resume`,
-		]);
+		for (const [old, name] of [
+			[ship, "ship"],
+			[run, "run"],
+		] as const) {
+			const resumed = await workflows(["resume", old.id ?? ""], { cwd: repo });
+			expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([
+				1,
+				[],
+				[`workflows: run ${old.id} was saved by an earlier version of ${name} and cannot resume`],
+			]);
+		}
+		const listed = await workflows(["list"], { cwd: repo });
+		expect(listed.stdout).toEqual([]);
 	});
 
 	it("continues a turn interrupted by Ctrl+C from the saved inputs", async () => {
@@ -467,14 +489,14 @@ describe("workflows ship resume", () => {
 			script: { interruptAt: { kind: "implement", nth: 1 } },
 		});
 		expect(first.code).toBe(130);
-		expect(first.stderr.at(-1)).toBe(`interrupted; continue with: workflows ship resume ${first.id}`);
+		expect(first.stderr.at(-1)).toBe(`interrupted; continue with: workflows resume ${first.id}`);
 		expect(first.model.calls.map((call) => call.kind)).toEqual(["plan", "challenge", "handoff"]);
 
 		await writeFile(join(repo, "item.md"), "# Something else\n");
 		await writeFile(join(repo, "README.md"), "changed on main\n");
 		git(repo, "commit", "-qam", "later");
 
-		const resumed = await workflows(["ship", "resume", first.id ?? ""], {
+		const resumed = await workflows(["resume", first.id ?? ""], {
 			cwd: root,
 			script: { edits: [FIXED] },
 		});
@@ -490,7 +512,7 @@ describe("workflows ship resume", () => {
 		expect(git(repo, "branch", "--list", "ship/*").split("\n")).toHaveLength(1);
 		expect(git(repo, "worktree", "list").split("\n")).toHaveLength(2);
 
-		const again = await workflows(["ship", "resume", first.id ?? ""], { cwd: root });
+		const again = await workflows(["resume", first.id ?? ""], { cwd: root });
 		expect(again.code).toBe(0);
 		expect(again.stdout).toEqual(resumed.stdout);
 		expect(again.model.calls).toEqual([]);
@@ -519,7 +541,7 @@ describe("workflows ship resume", () => {
 		expect(text.stdout).toEqual(runs.map((run) => expect.stringMatching(new RegExp(`^${run.runId} ship `))));
 		expect(text.stdout).toContain(`${shipped.id} ship shipped Fix the README typo`);
 
-		const resumed = await workflows(["ship", "resume", stopped.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
+		const resumed = await workflows(["resume", stopped.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
 		expect(resumed.code).toBe(0);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "verdict", "judge"]);
 	});
@@ -532,7 +554,7 @@ describe("workflows ship resume", () => {
 		});
 		expect(first.code).toBe(130);
 
-		const resumed = await workflows(["ship", "resume", first.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
 		expect(resumed.code).toBe(0);
 		expect(resumed.stderr).toEqual(["plan", "round 1: implement", "round 1: review", "judge"]);
 	});
@@ -556,7 +578,7 @@ describe("workflows ship resume", () => {
 		expect(first.model.calls.map((call) => call.kind)).toEqual(["plan", "challenge", "handoff", "implement"]);
 		expect(git(worktreeOf(first.id), "log", "--format=%s")).toBe("initial");
 
-		const resumed = await workflows(["ship", "resume", first.id ?? ""], { cwd: repo });
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: repo });
 		expect(resumed.code).toBe(0);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "verdict", "judge"]);
 		expect(resumed.model.calls[0]?.prompt).toContain("## reply\nI fixed the typo in README.md.");

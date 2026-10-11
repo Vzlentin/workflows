@@ -12,7 +12,21 @@ import { failure, git, gitSucceeds, run } from "../lib/git.ts";
 import { instructions, render } from "../lib/prompts.ts";
 import { loadBundle, type Profile, readFolder } from "../lib/script.ts";
 import { defineWorkflow, type Session, type SessionCheckpoint, UsageError } from "../lib/workflow.ts";
-import type { ShipResult } from "./ship.ts";
+
+/** The return value of `workflows/ship.js`, without its report lines. */
+export type ShipResult =
+	| {
+			readonly status: "shipped";
+			readonly rounds: number;
+			readonly head: string;
+			readonly score?: number;
+			readonly judgeError?: string;
+			readonly answers?: readonly ("PASS" | "FAIL")[];
+			readonly findings?: readonly string[];
+			readonly memory: readonly string[];
+	  }
+	| { readonly status: "blocked"; readonly rounds: number; readonly reply: string; readonly memory: readonly string[] }
+	| { readonly status: "stopped"; readonly rounds: number; readonly memory: readonly string[] };
 
 /** The prompts that a candidate can change. `judge` is not one: it gives the score. */
 const CANDIDATES = ["plan", "challenge", "handoff", "implement", "review"];
@@ -201,15 +215,21 @@ async function writeDiff(input: OptimizeInput, best: Candidate, lines: readonly 
 export function optimizeWith(cli: readonly string[]) {
 	return defineWorkflow<Args, OptimizeInput, OptimizeCheckpoint, OptimizeResult>({
 		name: "optimize",
-		usage: "workflows optimize ship --items <folder> [--prompts <name,...>] [--trials <n>]",
+		usage: "workflows optimize <ship | --workflow ship> --items <folder> [--prompts <name,...>] [--trials <n>]",
 		version: 1,
 		parse: async (args, io) => {
 			const { values, positionals } = parseArgs({
 				args: [...args],
-				options: { items: { type: "string" }, prompts: { type: "string" }, trials: { type: "string" } },
+				options: {
+					workflow: { type: "string" },
+					items: { type: "string" },
+					prompts: { type: "string" },
+					trials: { type: "string" },
+				},
 				allowPositionals: true,
 			});
-			if (positionals.length !== 1 || positionals[0] !== "ship") throw new UsageError("optimize takes ship only");
+			const workflows = [...positionals, ...(values.workflow === undefined ? [] : [values.workflow])];
+			if (workflows.length !== 1 || workflows[0] !== "ship") throw new UsageError("optimize takes ship only");
 			if (values.items === undefined) throw new UsageError("missing --items");
 			const items = await readItems(resolve(io.cwd, values.items));
 			if (items.length < 2) throw new UsageError("--items needs at least 2 items");
