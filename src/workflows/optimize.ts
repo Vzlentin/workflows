@@ -114,7 +114,8 @@ async function evaluate(cli: readonly string[], input: OptimizeInput, candidate:
 		const folder = join(input.directory, "candidates", sha256(textsOf(candidate)));
 		await mkdir(folder, { recursive: true });
 		for (const [name, text] of Object.entries(candidate)) await writeFile(join(folder, `${name}.md`), `${text}\n`);
-		argv = ["ship", "--repo", item.repo, "--base", item.start, "--prompts", folder, "--json", "--", item.body];
+		// ship reads an argument that ends in .md as a file; the trailing newline keeps it text and does not change the item.
+		argv = ["ship", "--repo", item.repo, "--base", item.start, "--prompts", folder, "--json", "--", `${item.body}\n`];
 	} else {
 		argv = ["resume", saved.runId, "--json"];
 	}

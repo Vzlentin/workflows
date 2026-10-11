@@ -44,6 +44,10 @@ if (args[0] === "resume") {
 	console.log("run " + args[1]);
 	finished(args[1], shipped(8));
 } else {
+	if (args.at(-1).endsWith(".md")) {
+		console.error("cannot read work item");
+		process.exit(1);
+	}
 	const option = (name) => args[args.indexOf(name) + 1];
 	const id = "fake-" + n;
 	execFileSync("git", ["branch", "ship/" + id, option("--base")], { cwd: option("--repo") });
@@ -79,7 +83,7 @@ describe("workflows optimize", () => {
 		const items = join(root, "items");
 		await mkdir(items);
 		for (const name of ["First", "Second", "Third"]) {
-			const text = `---\nrepo: ../repo\nstart: "${start}"\n---\n# ${name} item\n\nFix the README.\n`;
+			const text = `---\nrepo: ../repo\nstart: "${start}"\n---\n# ${name} item\n\n${name === "First" ? "Fix the typo in README.md" : "Fix the README."}\n`;
 			await writeFile(join(items, `${name.toLowerCase()}.md`), text);
 		}
 		await writeFile(join(root, "fake.mjs"), fake(root));
