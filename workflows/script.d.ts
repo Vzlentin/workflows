@@ -45,10 +45,10 @@ declare function session(profile?: string): { ask(prompt: string, options?: { sc
  * Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a
  * nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell.
  */
-declare function sh(cmd: string | string[]): Promise<string>;
+declare function sh(cmd: string | readonly string[]): Promise<string>;
 
 /** Runs `cmd` as `sh` does. Returns true when the exit code is 0. */
-declare function ok(cmd: string | string[]): Promise<boolean>;
+declare function ok(cmd: string | readonly string[]): Promise<boolean>;
 
 /** Runs the script `name` of `workflows/` as a child run and returns its result, with `runId` when it is an object. */
 declare function run(name: string, args?: Record<string, unknown>): Promise<any>;
