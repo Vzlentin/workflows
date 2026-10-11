@@ -34,17 +34,22 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Sessions } from "./agents.ts";
-import { check, childInput, help, listScripts, type ScriptInput, script } from "./meta.ts";
 import {
-	type Checkpoint,
-	type ChildRequest,
-	type Io,
-	newRunId,
-	type Stored,
-	taskKind,
-	UsageError,
-	workflowTask,
-} from "./workflow.ts";
+	check,
+	childInput,
+	help,
+	listScripts,
+	parse,
+	prepare,
+	report,
+	type ScriptInput,
+	scriptTask,
+	status,
+	title,
+	USAGE,
+} from "./meta.ts";
+import { type ChildRequest, runnerProvider, scriptExtensions } from "./script.ts";
+import { type Checkpoint, type Io, newRunId, type Stored, UsageError } from "./workflow.ts";
 
 export type Terminal = Io & {
 	readonly models: Models;
@@ -57,7 +62,7 @@ export type Terminal = Io & {
 /** The exit code: 0 for a successful result, 1 for any other result or error, 2 for bad usage, 130 when interrupted. */
 export async function main(argv: readonly string[], terminal: Terminal): Promise<number> {
 	const usage = [
-		`${script.usage} [--json]`,
+		`${USAGE} [--json]`,
 		"workflows <workflow> --help",
 		"workflows resume <run-id> [--json]",
 		"workflows list [--json]",
@@ -66,7 +71,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 	]
 		.map((line, index) => `${index === 0 ? "usage: " : "       "}${line}`)
 		.join("\n");
-	for (const provider of script.providers ?? []) terminal.addProvider(provider);
+	terminal.addProvider(runnerProvider());
 	try {
 		const dashes = argv.indexOf("--");
 		const options = dashes === -1 ? argv.length : dashes;
@@ -102,23 +107,12 @@ function runsDirectory(): string {
 }
 
 async function start(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
-	const parsed = await script.parse(args, terminal);
+	const parsed = await parse(args, terminal);
 	const id = newRunId();
 	const directory = join(runsDirectory(), id);
-	await mkdir(directory, { recursive: true });
-	let store: Store | undefined;
-	let task: TaskId<JsonValue>;
-	let input: ScriptInput;
-	try {
-		input = await script.prepare(parsed, { id, directory, cwd: terminal.cwd });
-		const opened = await openStore(directory, terminal);
-		store = opened;
-		task = await opened.create(input);
-	} catch (error) {
-		await store?.close();
-		await rm(directory, { recursive: true, force: true });
-		throw error;
-	}
+	const { store, task, input } = await openRun(directory, terminal, () =>
+		prepare(parsed, { id, directory, cwd: terminal.cwd }),
+	);
 	terminal.stdout(`run ${id}`);
 	return follow(store, task, input, id, terminal, json);
 }
@@ -131,66 +125,85 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 	await access(join(directory, "durable.sqlite")).catch(() => {
 		throw new Error(`no run ${id} in ${runsDirectory()}`);
 	});
-	const latest = await latestTask(join(directory, "durable.sqlite"));
-	const store = await openStore(directory, terminal);
-	try {
-		const { task, input } = await continueRun(store, latest, id);
-		terminal.stdout(`run ${id}`);
-		return await follow(store, task, input, id, terminal, json);
-	} finally {
-		await store.close();
-	}
+	const { store, task, input } = await openRun(directory, terminal);
+	terminal.stdout(`run ${id}`);
+	return follow(store, task, input, id, terminal, json);
 }
 
 /**
- * The task that continues the run `id`, whose newest task is `latest`: that task, or a new task from the checkpoint of
- * a failed phase. Throws for a run without a task, or one that an earlier version saved.
+ * The open store, the task and the input of the run in `directory`. When the store holds a workflow task, this is that
+ * task, or a new task from the checkpoint of a failed phase; it throws for a task that an earlier version saved.
+ * Otherwise `source` gives the input of a new run, and without `source` it throws. When the new run fails to start,
+ * the store closes, and the directory is removed if this call made it.
  */
-async function continueRun(
-	store: Store,
-	latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined,
-	id: string,
-): Promise<{ task: TaskId<JsonValue>; input: ScriptInput }> {
-	if (latest === undefined) throw new Error(`run ${id} has no workflow`);
-	if (!current(latest)) {
-		const name = latest.kind.slice(PREFIX.length);
-		throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot resume`);
-	}
-	const from = failedAt(latest);
-	const input = (latest.input as Stored).input as ScriptInput;
-	const task = from === undefined ? latest.id : await store.create(input, from);
-	return { task, input };
-}
-
-/** Whether the current script workflow can continue the task `latest`. */
-function current(latest: TaskRecord<JsonValue, JsonValue, JsonValue>): boolean {
-	return latest.kind === taskKind(script) && latest.version >= script.version;
-}
-
-/** The open store and the task of the child run of `request`: a new run, or the run that an earlier call started. */
-async function openChild(
-	request: ChildRequest,
+async function openRun(
+	directory: string,
 	terminal: Terminal,
-): Promise<{ store: Store; task: TaskId<JsonValue> }> {
-	const { id } = request;
-	const directory = join(runsDirectory(), id);
+	source?: () => Promise<ScriptInput>,
+): Promise<{ store: Store; task: TaskId<JsonValue>; input: ScriptInput }> {
+	const id = basename(directory);
 	const path = join(directory, "durable.sqlite");
 	const latest = existsSync(path) ? await latestTask(path) : undefined;
+	if (latest !== undefined) {
+		if (!current(latest)) {
+			const name = latest.kind.slice(PREFIX.length);
+			throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot resume`);
+		}
+		const input = (latest.input as Stored).input as ScriptInput;
+		const store = await openStore(directory, terminal);
+		try {
+			const from = failedAt(latest);
+			return { store, task: from === undefined ? latest.id : await store.create(input, from), input };
+		} catch (error) {
+			await store.close();
+			throw error;
+		}
+	}
+	if (source === undefined) throw new Error(`run ${id} has no workflow`);
+	const made = !existsSync(directory);
+	await mkdir(directory, { recursive: true });
 	let store: Store | undefined;
 	try {
-		if (latest !== undefined) {
-			store = await openStore(directory, terminal);
-			return { store, task: (await continueRun(store, latest, id)).task };
-		}
-		await mkdir(directory, { recursive: true });
-		const input = await childInput(request, { id, directory, cwd: request.cwd });
+		const input = await source();
 		store = await openStore(directory, terminal);
-		return { store, task: await store.create(input) };
+		return { store, task: await store.create(input), input };
 	} catch (error) {
 		await store?.close();
-		if (latest === undefined) await rm(directory, { recursive: true, force: true });
+		if (made) await rm(directory, { recursive: true, force: true });
 		throw error;
 	}
+}
+
+/** Whether the script task can continue the task `latest`. */
+function current(latest: TaskRecord<JsonValue, JsonValue, JsonValue>): boolean {
+	return latest.kind === scriptTask.definition.name && latest.version >= scriptTask.definition.version;
+}
+
+type Outcome =
+	| { readonly status: "completed"; readonly result: JsonValue }
+	| { readonly status: "interrupted" }
+	| { readonly status: "failed"; readonly error: string; readonly resumable: boolean };
+
+/**
+ * Runs `task` to its end and closes the store. `interrupt` stops it first, then a failed workflow script; both leave the
+ * task pending. Any other error of the wait propagates.
+ */
+async function wait(store: Store, task: TaskId<JsonValue>, interrupt: AbortSignal | undefined): Promise<Outcome> {
+	let settled: SettledTask<JsonValue>;
+	try {
+		const signal = AbortSignal.any(interrupt === undefined ? [store.failed] : [interrupt, store.failed]);
+		settled = await store.harness.waitForTask(task, withAbortSignal(signal, BACKGROUND_CONTEXT));
+	} catch (error) {
+		if (interrupt?.aborted) return { status: "interrupted" };
+		if (store.failed.aborted) return { status: "failed", error: String(store.failed.reason), resumable: true };
+		throw error;
+	} finally {
+		await store.close();
+	}
+	const { outcome } = settled.state;
+	if (outcome.status === "completed") return { status: "completed", result: outcome.result };
+	const error = outcome.error?.message ?? outcome.reason ?? outcome.status;
+	return { status: "failed", error, resumable: outcome.status === "failed" };
 }
 
 /** The child run of `request`, run to its end in this process; see `ExtensionHost.child`. */
@@ -199,21 +212,15 @@ async function runChild(
 	signal: AbortSignal | undefined,
 	terminal: Terminal,
 ): Promise<JsonValue> {
-	const { store, task } = await openChild(request, terminal);
-	const failed = (reason: unknown) => new Error(`child run ${request.id} failed: ${reason}`);
-	let settled: SettledTask<JsonValue>;
-	try {
-		const stop = AbortSignal.any(signal === undefined ? [store.failed] : [signal, store.failed]);
-		settled = await store.harness.waitForTask(task, withAbortSignal(stop, BACKGROUND_CONTEXT));
-	} catch (error) {
-		if (store.failed.aborted && !signal?.aborted) throw failed(store.failed.reason);
-		throw error;
-	} finally {
-		await store.close();
-	}
-	const { outcome } = settled.state;
-	if (outcome.status !== "completed") throw failed(outcome.error?.message ?? outcome.reason ?? outcome.status);
-	return outcome.result;
+	const { id } = request;
+	const directory = join(runsDirectory(), id);
+	const { store, task } = await openRun(directory, terminal, () =>
+		childInput(request, { id, directory, cwd: request.cwd }),
+	);
+	const outcome = await wait(store, task, signal);
+	if (outcome.status === "completed") return outcome.result;
+	if (outcome.status === "interrupted") throw signal?.reason;
+	throw new Error(`child run ${id} failed: ${outcome.error}`);
 }
 
 type Listed = { readonly runId: string; readonly workflow: string; readonly title: string; readonly status: string };
@@ -229,18 +236,22 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 		const latest = await latestTask(path);
 		if (latest === undefined || !current(latest)) continue;
 		const input = (latest.input as Stored).input as ScriptInput;
-		let title = "";
-		let name = script.name;
+		let subject = "";
+		let name = "run";
 		try {
-			title = script.title(input);
-			name = script.label?.(input) ?? name;
+			subject = title(input);
+			name = input.name;
 		} catch {
-			// An input saved by an earlier version can lack what `title` and `label` read.
+			// An input saved by an earlier version can lack what `title` reads.
 		}
 		const { state } = latest;
 		const finished = state.status === "terminal" && state.outcome.status === "completed";
-		const status = finished ? (script.status?.(state.outcome.result) ?? "done") : "unfinished";
-		runs.push({ runId: id, workflow: name, title, status });
+		runs.push({
+			runId: id,
+			workflow: name,
+			title: subject,
+			status: finished ? status(state.outcome.result) : "unfinished",
+		});
 	}
 	if (json) terminal.stdout(JSON.stringify(runs));
 	else for (const run of runs) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
@@ -350,11 +361,10 @@ async function loadEntries(cwd: string): Promise<Entry[]> {
 async function openStore(directory: string, terminal: Terminal): Promise<Store> {
 	const registry = createRegistry();
 	const entries = await loadEntries(terminal.cwd);
-	const task = workflowTask(script, terminal.stderr);
 	const selected = [
 		Sessions,
 		...entries.flatMap((entry) => entry.extensions),
-		defineExtension({ name: "workflows", tasks: [task] }),
+		defineExtension({ name: "workflows", tasks: [scriptTask] }),
 	];
 	for (const extension of selected) registry.install(extension);
 	const failure = new AbortController();
@@ -365,7 +375,7 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 		fail: (message: string) => failure.abort(message),
 		child: (request: ChildRequest, signal: AbortSignal | undefined) => runChild(request, signal, terminal),
 	};
-	for (const extension of script.extensions?.(host) ?? []) registry.install(extension);
+	for (const extension of scriptExtensions(host)) registry.install(extension);
 	const envs = new Map<string, NodeExecutionEnv>();
 	const warn = (error: unknown) =>
 		terminal.stderr(`warning: ${error instanceof Error ? error.message : String(error)}`);
@@ -401,7 +411,7 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 			const stored: Stored = { input, ...(from === undefined ? {} : { from }) };
 			const root = await harness.root(BACKGROUND_CONTEXT);
 			return root.commit(
-				(tx) => tx.createTask(task, stored, { ownership: { kind: "conversation" } }),
+				(tx) => tx.createTask(scriptTask, stored, { ownership: { kind: "conversation" } }),
 				BACKGROUND_CONTEXT,
 			);
 		},
@@ -434,33 +444,26 @@ async function follow(
 		else for (const line of footer) terminal.stderr(line);
 	};
 	const failed = (message: unknown, resumable: boolean) => {
-		const footer = [`failed ${script.title(input)}: ${message}`];
+		const footer = [`failed ${title(input)}: ${message}`];
 		if (resumable) footer.push(`continue with: workflows resume ${id}`);
 		end("failed", { error: String(message) }, ...footer);
 		return 1;
 	};
-	let settled: SettledTask<JsonValue>;
+	let outcome: Outcome;
 	try {
-		const signal = AbortSignal.any([terminal.interrupt, store.failed]);
-		settled = await store.harness.waitForTask(task, withAbortSignal(signal, BACKGROUND_CONTEXT));
+		outcome = await wait(store, task, terminal.interrupt);
 	} catch (error) {
-		if (store.failed.aborted && !terminal.interrupt.aborted) return failed(store.failed.reason, true);
-		if (!terminal.interrupt.aborted) {
-			end("failed", { error: error instanceof Error ? error.message : String(error) });
-			throw error;
-		}
+		end("failed", { error: error instanceof Error ? error.message : String(error) });
+		throw error;
+	}
+	if (outcome.status === "interrupted") {
 		end("interrupted", {}, `interrupted; continue with: workflows resume ${id}`);
 		return 130;
-	} finally {
-		await store.close();
 	}
-	const { outcome } = settled.state;
-	if (outcome.status === "completed") {
-		if (!json) return script.report(input, outcome.result, terminal);
-		const report: string[] = [];
-		const code = script.report(input, outcome.result, { ...terminal, stdout: (line) => report.push(line) });
-		end("finished", { result: outcome.result, report });
-		return code;
-	}
-	return failed(outcome.error?.message ?? outcome.reason ?? outcome.status, outcome.status === "failed");
+	if (outcome.status === "failed") return failed(outcome.error, outcome.resumable);
+	if (!json) return report(input, outcome.result, terminal);
+	const lines: string[] = [];
+	const code = report(input, outcome.result, { ...terminal, stdout: (line) => lines.push(line) });
+	end("finished", { result: outcome.result, report: lines });
+	return code;
 }

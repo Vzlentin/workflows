@@ -2,11 +2,11 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createRegistry, defineExtension, Harness } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, defineTask, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { script } from "../src/meta.ts";
-import { type AnyWorkflow, newRunId, workflowTask } from "../src/workflow.ts";
+import { scriptTask } from "../src/meta.ts";
+import { newRunId } from "../src/workflow.ts";
 import { FakeModel, git, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
 
 let root: string;
@@ -23,12 +23,18 @@ afterEach(() => rm(root, { recursive: true, force: true }));
 
 const runs = () => join(root, "state", "workflows", "runs");
 
-/** The ID of a new run that holds one pending task of `workflow`, as a run that an earlier version saved. */
-async function saveRun(workflow: AnyWorkflow): Promise<string> {
+/** The ID of a new run that holds one pending task of `kind` at `version`, as a run that an earlier version saved. */
+async function saveRun(kind: string, version: number): Promise<string> {
 	const id = newRunId();
 	const directory = join(runs(), id);
 	await mkdir(directory, { recursive: true });
-	const task = workflowTask(workflow, () => {});
+	const task = defineTask<object, { phase: string }, null>({
+		name: kind,
+		version,
+		initial: () => ({ phase: "run" }),
+		phases: { run: async () => {} },
+		abort: async () => {},
+	});
 	const registry = createRegistry();
 	registry.install(defineExtension({ name: "workflows", tasks: [task] }));
 	const models = new FakeModel({ interrupt: new AbortController() }).models;
@@ -470,9 +476,9 @@ export default function ({ events }) {
 
 describe("workflows resume of ship runs", () => {
 	it("refuses and does not list a run that the earlier ship or run command saved", async () => {
-		const ship = await saveRun({ ...script, name: "ship" });
-		// The script workflow owns the task kind of the earlier `run` command, so only its version can be earlier.
-		const run = await saveRun({ ...script, version: script.version - 1 });
+		const ship = await saveRun("workflows.ship", scriptTask.definition.version);
+		// The script task owns the task kind of the earlier `run` command, so only its version can be earlier.
+		const run = await saveRun("workflows.run", scriptTask.definition.version - 1);
 
 		for (const [id, name] of [
 			[ship, "ship"],

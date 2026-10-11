@@ -13,12 +13,13 @@
 - A workflow script declares its description, arguments, worktree and exit codes in `export const meta = { ... }`, a literal object at the top. It returns its report lines as `result.report`.
 - `optimize` is the workflow script `workflows/optimize.js`: it evaluates each candidate with `run("ship", ...)` child runs, and reads and writes files through `sh`.
 - `ship` is the workflow script `workflows/ship.js`: its `meta` gives the work item, the rounds and the worktree, and the script does the plan, the rounds, the review, the judge, the squash and the report lines.
-- Every script run is the task `workflows.run`. Bump its `version` in `src/meta.ts` when the shape of its saved input changes.
+- Every script run is the task `workflows.run`, `scriptTask` in `src/meta.ts`. Bump its `version` when the shape of its saved input changes.
+- In `src/main.ts`, `openRun` opens a run: it continues the run's task, or creates a new one. `wait` runs the task to its end. The command line and child runs both use them.
 - Biome does not check `workflows/*.js`: a script body has a top-level `return`.
 
 ## Durable runs
 
-- Saved runs in `durable.sqlite` resume against the current code. When you change the shape of a workflow's input or checkpoints, or of `Stored` in `src/workflow.ts`, bump the workflow's `version`. A run saved by an earlier version cannot resume.
+- Saved runs in `durable.sqlite` resume against the current code. When you change the shape of the stored input or the checkpoint, bump the `version` of `scriptTask`. A run saved by an earlier version cannot resume.
 - A phase can rerun after an interruption or a failure. Keep Git steps safe to repeat, and keep each `say` request ID unique in its session: an answered request ID returns its saved answer, and a failed one is sent again under the next free ID.
 - A workflow script also runs again from the top at resume. Keep its `sh` and `ok` Git steps safe to repeat: a step whose result was not saved runs again.
 - A run saves its prompts and models before it starts. Prompt or model edits change only new runs.
