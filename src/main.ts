@@ -35,7 +35,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Sessions } from "./agents.ts";
 import * as script from "./meta.ts";
-import { answerExtension, type ChildRequest } from "./script.ts";
+import { answerExtension } from "./script.ts";
 import { type Io, newRunId, type Stored, UsageError } from "./workflow.ts";
 
 export type Terminal = Io & {
@@ -171,34 +171,25 @@ type Outcome =
  * pending; when both happen, the outcome is `interrupted`. Any other error of the wait propagates.
  */
 async function wait(store: Store, task: TaskId<JsonValue>, interrupt: AbortSignal): Promise<Outcome> {
-	let settled: SettledTask<JsonValue>;
+	let settled: SettledTask<JsonValue> | { readonly failed: string };
 	try {
-		const signal = AbortSignal.any([interrupt, store.failed]);
-		settled = await store.harness.waitForTask(task, withAbortSignal(signal, BACKGROUND_CONTEXT));
+		const settling = store.harness.waitForTask(task, withAbortSignal(interrupt, BACKGROUND_CONTEXT));
+		// After a failure, the wait rejects when the store closes.
+		settling.catch(() => undefined);
+		const failed = store.failure(task).catch((error: Error) => ({ failed: error.message }));
+		settled = await Promise.race([settling, failed]);
 	} catch (error) {
 		if (interrupt.aborted) return { status: "interrupted" };
-		if (store.failed.aborted) return { status: "failed", error: String(store.failed.reason), resumable: true };
 		throw error;
 	} finally {
 		await store.close();
 	}
+	if ("failed" in settled)
+		return interrupt.aborted ? { status: "interrupted" } : { status: "failed", error: settled.failed, resumable: true };
 	const { outcome } = settled.state;
 	if (outcome.status === "completed") return { status: "completed", result: outcome.result };
 	const error = outcome.error?.message ?? outcome.reason ?? outcome.status;
 	return { status: "failed", error, resumable: outcome.status === "failed" };
-}
-
-/** The child run of `request`, run to its end in this process; see `ExtensionHost.child`. */
-async function runChild(request: ChildRequest, signal: AbortSignal, terminal: Terminal): Promise<JsonValue> {
-	const { id } = request;
-	const directory = join(runsDirectory(), id);
-	const { store, task } = await openRun(directory, terminal, () =>
-		script.childInput(request, { id, directory, cwd: request.cwd }),
-	);
-	const outcome = await wait(store, task, signal);
-	if (outcome.status === "completed") return outcome.result;
-	if (outcome.status === "interrupted") throw signal.reason;
-	throw new Error(`child run ${id} failed: ${outcome.error}`);
 }
 
 type Listed = { readonly runId: string; readonly workflow: string; readonly title: string; readonly status: string };
@@ -227,8 +218,8 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 const PREFIX = "workflows.";
 
 /**
- * The newest workflow task in the store at `path`, read from the storage only. Its kind can be one that no installed
- * workflow has, such as a workflow of an earlier version.
+ * The newest workflow task in the store at `path` that no task owns, so not the task of a child run, read from the
+ * storage only. Its kind can be one that no installed workflow has, such as a workflow of an earlier version.
  */
 async function latestTask(path: string): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined> {
 	const storage = await openNodeSqliteStorage(path);
@@ -237,7 +228,7 @@ async function latestTask(path: string): Promise<TaskRecord<JsonValue, JsonValue
 		let cursor: Cursor | undefined;
 		do {
 			const page = await storage.scanTasks({}, 256, cursor, BACKGROUND_CONTEXT);
-			for (const task of page.items) if (task.kind.startsWith(PREFIX)) latest = task;
+			for (const task of page.items) if (task.kind.startsWith(PREFIX) && task.owner === undefined) latest = task;
 			cursor = page.next;
 		} while (cursor !== undefined);
 		return latest;
@@ -254,10 +245,10 @@ function failed(task: TaskRecord<JsonValue, JsonValue, JsonValue>): boolean {
 type Store = {
 	readonly harness: Harness;
 	/**
-	 * Aborted with the message of the script host's `fail`. The task stays pending, because a resume after a failed
-	 * task starts a new task, and work saved under the old one would run again.
+	 * Rejects with the failure that the script host's `fail` reports for `task`. The task stays pending, because a
+	 * resume after a failed task starts a new task, and work saved under the old one would run again.
 	 */
-	readonly failed: AbortSignal;
+	failure(task: TaskId): Promise<never>;
 	/** A new task of the script workflow. */
 	create(input: script.ScriptInput): Promise<TaskId<JsonValue>>;
 	close(): Promise<void>;
@@ -323,13 +314,21 @@ async function loadEntries(cwd: string): Promise<Entry[]> {
  * and `workflows-answer` installed. Sessions select it only by name.
  */
 async function openStore(directory: string, terminal: Terminal): Promise<Store> {
-	const failure = new AbortController();
+	// A failure is kept until it is read: a child run can fail before its caller waits for it.
+	const failures = new Map<TaskId, PromiseWithResolvers<never>>();
+	const failure = (task: TaskId) => {
+		let found = failures.get(task);
+		if (found === undefined) {
+			found = Promise.withResolvers<never>();
+			found.promise.catch(() => undefined);
+			failures.set(task, found);
+		}
+		return found;
+	};
 	const host = {
-		runId: basename(directory),
-		runDir: directory,
 		log: terminal.stderr,
-		fail: (message: string) => failure.abort(message),
-		child: (request: ChildRequest, signal: AbortSignal) => runChild(request, signal, terminal),
+		fail: (task: TaskId, message: string) => failure(task).reject(new Error(message)),
+		failure: (task: TaskId) => failure(task).promise,
 	};
 	const task = script.scriptTask(host);
 	const registry = createRegistry();
@@ -371,7 +370,7 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 	};
 	return {
 		harness,
-		failed: failure.signal,
+		failure: host.failure,
 		create: async (input) => {
 			const stored: Stored = { input };
 			const root = await harness.root(BACKGROUND_CONTEXT);

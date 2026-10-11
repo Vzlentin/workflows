@@ -43,8 +43,8 @@ export type Io = {
 	readonly stderr: (line: string) => void;
 };
 
-/** The stored task input: the workflow input. */
-export type Stored = { readonly input: JsonValue };
+/** The saved input of a run's task; `call` is the key of the `run` call that started a child run. */
+export type Stored = { readonly input: JsonValue; readonly call?: string };
 
 /** What turns need from a task runtime or a tool API. */
 export type Turns = {

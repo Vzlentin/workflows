@@ -3,7 +3,8 @@
  * call it makes saves its result as a keyed memo of the task, so when the phase runs again after an interruption, the
  * finished calls return their saved results and only the rest runs. A call that fails saves nothing. A script failure
  * keeps the task pending: the command stops, and a resume runs the script again. `run(name, args)` starts a child run
- * with its own run directory and store, and a resume of the caller continues that child run.
+ * as a child task of the caller in the caller's store, with its own run directory, and a resume of the caller continues
+ * that child run.
  */
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -27,13 +28,15 @@ import {
 	defineTool,
 	type JsonObject,
 	type ModelRef,
+	type SettledTask,
 	section,
+	type TaskId,
 	type TaskRuntime,
 } from "@earendil-works/pi-durable";
 import { sessionAgent } from "./agents.ts";
 import { failure, git, run } from "./git.ts";
 import { instructions, render } from "./prompts.ts";
-import { type Checkpoint, newRunId, type Stored, sessionOf, textOf } from "./workflow.ts";
+import { type Checkpoint, type Stored, sessionOf, textOf } from "./workflow.ts";
 
 /** An agent profile from `agents/<name>.md`. */
 export type Profile = {
@@ -52,30 +55,27 @@ export type Bundle = {
 /** The bundle of a run and its own script, saved in the run's input. */
 export type RunBundle = Bundle & { readonly main: string };
 
-/** A `run(name, args)` call of a workflow script: its child run ID, and the bundle and directory of the caller. */
-export type ChildRequest = {
-	readonly id: string;
-	readonly name: string;
-	readonly args: JsonObject;
-	readonly bundle: RunBundle;
-	readonly cwd: string;
-};
-
 /** What a script run gets from the command. */
 export type ExtensionHost = {
-	/** The run ID, which is the base name of `runDir`. */
-	readonly runId: string;
-	/** The run directory. */
-	readonly runDir: string;
 	/** Writes one progress line. */
 	log(line: string): void;
-	/** Stops the command with `message` as a resumable failure; the run's task stays pending. */
-	fail(message: string): void;
-	/**
-	 * The result of the child run `request.id`. The first call starts the run, and a later call continues it. Throws
-	 * `child run <id> failed: <error>` when the run fails.
-	 */
-	child(request: ChildRequest, signal: AbortSignal): Promise<JsonValue>;
+	/** Reports `message` as the resumable failure of `task`, whose task stays pending. */
+	fail(task: TaskId, message: string): void;
+	/** Rejects with the message of the failure of `task`, also of a failure reported before this call. */
+	failure(task: TaskId): Promise<never>;
+};
+
+/** A started child run: its task and its run ID. */
+export type Child = { readonly task: TaskId<JsonValue>; readonly runId: string };
+
+/** What a script phase runs: its run ID and directory, bundle and args, and how it starts a child run. */
+export type ScriptRun = {
+	readonly runId: string;
+	readonly runDir: string;
+	readonly bundle: RunBundle;
+	readonly args: JsonObject;
+	/** Starts the child run of the `run` call `key`, or finds the one that an interrupted call started. */
+	child(key: string, name: string, args: JsonObject): Promise<Child>;
 };
 
 const PACKAGE = fileURLToPath(new URL("../", import.meta.url));
@@ -211,11 +211,11 @@ const respond = defineTool({
 });
 
 /** The sandbox functions that are not host calls. */
-function prelude(args: JsonObject, prompts: readonly string[], host: ExtensionHost): string {
+function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun): string {
 	return `
 const args = ${JSON.stringify(args)};
-const runId = ${JSON.stringify(host.runId)};
-const runDir = ${JSON.stringify(host.runDir)};
+const runId = ${JSON.stringify(script.runId)};
+const runDir = ${JSON.stringify(script.runDir)};
 const __unavailable = (name) => function () {
 	throw new Error(name + " is not available in workflow scripts");
 };
@@ -235,8 +235,7 @@ const agent = (prompt, options = {}) => session(options.as ?? "default").ask(pro
 const sh = async (cmd) => (await __sh(cmd, true)).stdout.replace(/\\n$/, "");
 const ok = async (cmd) => (await __sh(cmd, false)).code === 0;
 const run = async (name, args = {}) => {
-	const id = await __newRun(name, args);
-	const result = await __child(id, name, args);
+	const { runId: id, result } = await __run(name, args);
 	return result !== null && typeof result === "object" && !Array.isArray(result) ? { ...result, runId: id } : result;
 };
 const parallel = (thunks) => Promise.all(thunks.map((thunk) => thunk()));
@@ -376,6 +375,33 @@ async function shell(calls: Calls, cwd: string, cmd: string | string[], check: b
 	return result;
 }
 
+/**
+ * The result of the child run of the `run` call: the saved child task, or a new one, run to its end. Throws
+ * `child run <id> failed: <error>` when the child run fails.
+ */
+async function childResult(
+	calls: Calls,
+	script: ScriptRun,
+	host: ExtensionHost,
+	name: string,
+	args: JsonObject,
+): Promise<JsonValue> {
+	const started = await memoized(calls, "run", { name, args }, (key) => script.child(key, name, args));
+	const { task, runId } = started as Child;
+	const failed = (error: unknown) =>
+		new Error(`child run ${runId} failed: ${error instanceof Error ? error.message : String(error)}`);
+	let settled: SettledTask<JsonValue>;
+	try {
+		settled = await Promise.race([calls.runtime.waitForTask(task, calls.context), host.failure(task)]);
+	} catch (error) {
+		if (calls.runtime.signal.aborted) throw error;
+		throw failed(error);
+	}
+	const { outcome } = settled.state;
+	if (outcome.status !== "completed") throw failed(outcome.error?.message ?? outcome.reason ?? outcome.status);
+	return { runId, result: outcome.result };
+}
+
 function global(name: string, execute: (...values: never[]) => unknown): CodemodeTool {
 	return { name, spread: true, execute: (values) => execute(...(values as never[])) };
 }
@@ -396,18 +422,17 @@ export const answerExtension = defineExtension({
 });
 
 /**
- * Runs `bundle.main` with `args` in `cwd`, and commits its value as the run's result. A script failure is reported to
- * `host`, and the phase waits for the store to close: a failed task would drop the saved calls, so the task stays
- * pending and a resume runs the script again.
+ * Runs `script.bundle.main` with `script.args` in `cwd`, and returns its value or the message of its failure. A closing
+ * store cancels the script: then it throws the reason of the abort.
  */
-export async function runScriptPhase(
+export async function runScript(
 	runtime: Runtime,
 	context: Context,
 	cwd: string,
-	bundle: RunBundle,
-	args: JsonObject,
 	host: ExtensionHost,
-): Promise<void> {
+	script: ScriptRun,
+): Promise<{ readonly ok: true; readonly value: JsonValue } | { readonly ok: false; readonly error: string }> {
+	const { bundle, args } = script;
 	// A module export is a syntax error in the function body that the script runs as.
 	const source = bundle.main.replace(META, "$1$2");
 	const progress: Progress = { lines: [], log: host.log };
@@ -428,15 +453,8 @@ export async function runScriptPhase(
 				memoized(calls, "sh", { cmd, check }, () => shell(calls, cwd, cmd, check)),
 			),
 			// The name and the args are in the key, so a resume that reorders different `run` calls keeps each child run.
-			// The saved `new_run` keeps the child's ID, also for a `child` call that fails and runs again.
-			global("__newRun", (name: string, values: JsonObject) =>
-				memoized(calls, "new_run", { name, args: values }, async () => newRunId()),
-			),
-			global("__child", (id: string, name: string, values: JsonObject) =>
-				memoized(calls, "child", { id, name, args: values }, () =>
-					host.child({ id, name, args: values, bundle, cwd }, runtime.signal),
-				),
-			),
+			// The saved child task is waited for again, also after a failure of the child run.
+			global("__run", (name: string, values: JsonObject) => childResult(calls, script, host, name, values)),
 			global("phase", (title: string) => phaseLine(progress, String(title))),
 			global("log", (line: string) => progress.lines.push({ text: String(line), phase: false })),
 			global("__prompt", (name: string, inputs?: Record<string, string> | null) => {
@@ -449,18 +467,13 @@ export async function runScriptPhase(
 	const { signal } = runtime;
 	let result: Awaited<ReturnType<CodemodeSandbox["execute"]>>;
 	try {
-		const wrapped = `${prelude(args, Object.keys(bundle.prompts), host)}\nreturn await (async () => {\n${source}\n})();`;
+		const wrapped = `${prelude(args, Object.keys(bundle.prompts), script)}\nreturn await (async () => {\n${source}\n})();`;
 		result = await sandbox.execute(wrapped, { signal });
 	} finally {
 		await sandbox.close();
 		print(progress);
 	}
-	if (result.ok) {
-		const value = (result.value ?? null) as JsonValue;
-		await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: value } }), context);
-		return;
-	}
+	if (result.ok) return { ok: true, value: (result.value ?? null) as JsonValue };
 	if (signal.aborted) throw signal.reason;
-	host.fail(result.error.message);
-	await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+	return { ok: false, error: result.error.message };
 }

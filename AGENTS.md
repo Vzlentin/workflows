@@ -8,13 +8,13 @@
 
 ## Engine and workflows
 
-- `src/` is the engine: run directory, durable store, sessions, turns, retry, resume, Git repository selection, prompts, and `meta.ts`, the generic entry point that runs any workflow script as `workflows <wf>`. `run(name, args)` in a script starts a child run with its own run directory and store, through `ExtensionHost.child`, which `main.ts` provides.
+- `src/` is the engine: run directory, durable store, sessions, turns, retry, resume, Git repository selection, prompts, and `meta.ts`, the generic entry point that runs any workflow script as `workflows <wf>`. `run(name, args)` in a script starts a child run with its own run directory, as a pi-durable child task of the caller's task in the caller's store. The phase waits for it in memory, and `ExtensionHost.fail`/`failure` carry a failure of a child or root task to its waiter.
 - The workflows are data: `workflows/*.js`, `prompts/*.md` and `agents/*.md`. There is no workflow in TypeScript.
 - A workflow script declares its description, arguments, worktree and exit codes in `export const meta = { ... }`, a literal object at the top. It returns its report lines as `result.report`.
 - `optimize` is the workflow script `workflows/optimize.js`: it evaluates each candidate with `run("ship", ...)` child runs, and reads and writes files through `sh`.
 - `ship` is the workflow script `workflows/ship.js`: its `meta` gives the work item, the rounds and the worktree, and the script does the plan, the rounds, the review, the judge, the squash and the report lines.
 - Every script run is the task `workflows.run`, `scriptTask(host)` in `src/meta.ts`, whose name and version are `TASK`. Bump `TASK.version` when the shape of its saved input changes.
-- Start, resume and child runs share one way to open a run, which continues the run's task or creates a new one, and one way to wait for the task to end. Keep a new kind of run on that path.
+- Start and resume share one way to open a run, which continues the run's root task or creates a new one, and one way to wait for the task to end. Keep a new kind of run on that path. A child run is not a run of its own: `list` and `resume` see only root tasks, and a failed child task stays pending so that it keeps its memos.
 - Biome does not check `workflows/*.js`: a script body has a top-level `return`.
 
 ## Durable runs

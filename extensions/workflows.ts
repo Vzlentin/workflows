@@ -156,7 +156,7 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 			"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
 			"`base`, `rounds` and `prompts`. For `optimize`, which searches for better ship prompts over a folder of work " +
 			"items: `workflow` (`ship`) and `items`, and optional `improve` and `trials`. Each `run()` call of a " +
-			"script starts a child run, which `workflows list` shows. A failed or interrupted run stays resumable.",
+			"script starts a child run, which a resume of its caller continues. A failed or interrupted run stays resumable.",
 		parameters: Type.Object({
 			name: Type.Optional(
 				Type.String({ description: "`ship`, `campaign`, `optimize`, or the name of a workflow script" }),

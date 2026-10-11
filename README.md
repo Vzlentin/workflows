@@ -143,7 +143,8 @@ A planner session splits the goal into work items with the `split` prompt, and a
 work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the plan, the rounds, the review, the
 judge and the squash of `workflows/ship.js`, from the commit that the item before it made. So each shipped item is one
 commit, with the commit message of `ship`. No `ship/<run-id>` branch is made, and nothing is merged or pushed. Each
-item is a ship child run, with its own run ID and run directory: see `run` in [the script API](#the-script-api).
+item is a ship child run, with its own run ID and run directory, in the store of the campaign run: see `run` in
+[the script API](#the-script-api).
 
 After each shipped item, also the last one, a new planner session gets the goal, the shipped item and the remaining
 items with the `requeue` prompt. Its answer through `respond` is the new queue, which can be empty. The campaign ends
@@ -216,7 +217,7 @@ means and the path.
 
 A ship child run that fails stops the optimization with `failed optimize: child run <id> failed: <error>`, as any
 failed `run()` call does. `workflows resume <run-id>` runs the script again: the finished ship runs and reflect turns
-return their saved results, and the failed ship run continues.
+return their saved results, and the failed ship run continues. `workflows list` shows only the optimize run.
 
 ## Sessions
 
@@ -333,8 +334,10 @@ directory and can commit there.
 ### Child runs
 
 `run(name, args)` starts a child run of the script `name` of the caller's saved scripts. The child run has its own run
-ID, run directory and store, so `workflows list` shows it and `workflows resume <child-id>` continues it. It runs in
-the same process, and its `phase` and `log` lines go to the same stderr. It prints no `run` or report line.
+ID and run directory, but no store: it is a child task of the caller's task, in the caller's store. So `workflows list`
+does not show it, and `workflows resume <child-id>` prints `workflows: no run <child-id> in <runs>`. A resume of the
+caller continues it. It runs in the same process, and its `phase` and `log` lines go to the same stderr. It prints no
+`run` or report line.
 
 - The child's args are the defaults of its `meta.args`, then `args`, without `repo`, `base` and `prompts`. They are not
   checked against `meta`, so an undeclared arg reaches the script.
@@ -346,8 +349,9 @@ the same process, and its `phase` and `log` lines go to the same stderr. It prin
 - The child run gets the caller's saved scripts, prompts and profiles.
 
 `run()` returns the child's result, with `runId`, the child run ID, added to an object result. A failed child run
-fails the call with `child run <id> failed: <error>`. A resume of the caller continues the same child run, also after
-a failed call: the child ID is saved before the child starts.
+fails the call with `child run <id> failed: <error>`, and the child run stays pending. A resume of the caller continues
+the same child run, also after a failed call or an interruption, and repeats no call that the child run saved. When a
+caller catches the error of `run()` and ends, its pending child runs are aborted.
 
 ### The script API
 
@@ -427,7 +431,7 @@ A shipped, blocked or stopped run is final: resume prints the same result and ex
 
 A run saved before every workflow script became a command, such as a run of the earlier `workflows ship`,
 `workflows campaign` or `workflows run`, or before `run()` started child runs, such as an earlier `workflows optimize`
-run, cannot resume: resume prints
+run, or before a child run became a task in the caller's store, cannot resume: resume prints
 `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1. `list` does not
 show these runs.
 
@@ -461,7 +465,7 @@ workflows list --json
 ```
 
 `workflows list` prints one line for each run in the runs directory, newest run ID first: `<run-id> <workflow>
-<status> <title>`. `<workflow>` is the script name. Child runs are listed as runs of their own. The title is the subject of the first `text`
+<status> <title>`. `<workflow>` is the script name. Child runs are not listed: they are in the store of their caller. The title is the subject of the first `text`
 argument, such as the work item for ship and the goal for campaign, or else the script name. A finished run has the
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
 `done` when the result has no `status`. Any other run, also a failed one, is `unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
@@ -557,7 +561,8 @@ An optimize run has:
 - `baseline/<name>.md` and `best/<name>.md`: the baseline texts and the texts of the best candidate
 - `prompts.diff`: the score lines and the diff
 
-A child run that `run()` starts is a run directory of its own, next to the caller's.
+A child run that `run()` starts is a run directory of its own, next to the caller's, without `durable.sqlite`: the
+caller's store holds its task. A child run without a worktree can have an empty run directory.
 
 ## Prompts
 

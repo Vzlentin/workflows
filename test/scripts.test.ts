@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { git, type Kind, repository, sandbox, workflows } from "./support.ts";
@@ -262,10 +262,9 @@ return { runId, runDir, branch, start: args.start, plan: await prompts.plan() }`
 		});
 		expect(plan).toMatch(/^Plan this change\./);
 		expect(existsSync(join(runs(), child.runId, "worktree", "README.md"))).toBe(true);
+		expect(existsSync(join(runs(), child.runId, "durable.sqlite"))).toBe(false);
 		const listed = await workflows(["list"], { cwd: repo });
-		expect(listed.stdout.toSorted()).toEqual(
-			[`${child.runId} child done child`, `${run.id} parent done parent`].toSorted(),
-		);
+		expect(listed.stdout).toEqual([`${run.id} parent done parent`]);
 	});
 
 	it("runs a child run without repo in the directory of the caller", async () => {
@@ -304,11 +303,13 @@ return [one.reply, two.reply].join(", ")`,
 		const first = await stopped(["parent.js"], { nth: 2 });
 		expect(first.code).toBe(130);
 		expect(first.stderr).toEqual([`interrupted; continue with: workflows resume ${first.id}`]);
+		const children = await readdir(runs());
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${first.id}`, "Reply to one, Reply to two"]]);
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
+		expect(await readdir(runs())).toEqual(children);
 		const listed = await workflows(["list"], { cwd: root });
-		expect(listed.stdout).toHaveLength(3);
+		expect(listed.stdout).toHaveLength(1);
 	});
 
 	it("fails the caller with a failed child run, and its resume continues the child run", async () => {
@@ -322,10 +323,21 @@ return [one.reply, two.reply].join(", ")`,
 		const child = /^failed parent: child run (\S+) failed: /.exec(line)?.[1];
 		expect(child).toBeDefined();
 		expect(next).toBe(`continue with: workflows resume ${run.id}`);
+		const own = await workflows(["resume", child ?? ""], { cwd: root });
+		expect([own.code, own.stderr[0]]).toEqual([1, `workflows: no run ${child} in ${runs()}`]);
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${run.id}`, "Reply to one"]]);
-		const listed = await workflows(["list"], { cwd: root });
-		expect(listed.stdout).toContain(`${child} child done child`);
+		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: one"]);
+		expect(await readdir(runs())).toEqual([run.id, child].toSorted());
+	});
+
+	it("ends a caller that catches the failure of a child run", async () => {
+		await writeFile(join(root, "parent.js"), 'try { await run("child") } catch (error) { return "caught" }');
+		await mkdir(join(root, ".workflows", "workflows"), { recursive: true });
+		await writeFile(join(root, ".workflows", "workflows", "child.js"), 'throw new Error("no")');
+
+		const run = await workflows(["parent.js"], { cwd: root });
+		expect([run.code, run.stdout, run.stderr]).toEqual([0, [`run ${run.id}`, "caught"], []]);
 	});
 
 	it("uses a project agent profile in place of the package profile", async () => {
