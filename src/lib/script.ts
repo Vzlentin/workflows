@@ -40,6 +40,7 @@ import {
 	type JsonObject,
 	type ModelRef,
 	NestedCallDoc,
+	section,
 	type ToolExecutionApi,
 	type Tx,
 } from "@earendil-works/pi-durable";
@@ -149,8 +150,8 @@ async function bundleOf(api: ToolExecutionApi, context: Context): Promise<RunBun
 
 /**
  * The answer of `args` checked against `schema`, as `validateToolArguments` returns it. A string answer that does not
- * match is parsed as JSON and checked again, because a model can send an object as its JSON text. If it does not parse,
- * this throws the first error.
+ * match is parsed as JSON, and an object or array is checked again, because a model can send it as its JSON text. Any
+ * other string throws the first error.
  */
 function checkedAnswer(schema: JsonObject, args: JsonObject, id: string): unknown {
 	const parameters = { type: "object", properties: { answer: schema }, required: ["answer"] } as unknown as TSchema;
@@ -169,6 +170,7 @@ function checkedAnswer(schema: JsonObject, args: JsonObject, id: string): unknow
 		} catch {
 			throw error;
 		}
+		if (typeof parsed !== "object" || parsed === null) throw error;
 		return check(parsed);
 	}
 }
@@ -261,11 +263,7 @@ const ask = defineTool({
 			return undefined;
 		}, context);
 		// The request ID is the nested call ID, so an interrupted ask continues its turn.
-		const prompt =
-			schema === undefined
-				? args.prompt
-				: `${args.prompt}\n\nThe answer of respond must match this JSON Schema:\n${JSON.stringify(schema)}`;
-		const answer = await sessionOf(api, conversation, context).turn(api.callId, prompt);
+		const answer = await sessionOf(api, conversation, context).turn(api.callId, args.prompt);
 		if (schema === undefined) {
 			const reply = textOf(answer).trim();
 			return { output: text(reply), structuredOutput: reply };
@@ -469,7 +467,7 @@ async function runScript(
 /**
  * Two extensions, one per consumer. `workflows-script` is for the runner: its `workflow` tool, and the `session`, `ask`
  * and `sh` calls that a script makes inside that call. `workflows-answer` is for script sessions: the `respond` tool of
- * a `schema` ask.
+ * a `schema` ask, and the `answer_schema` section that shows the schema to the model.
  */
 function scriptExtensions(host: ExtensionHost): Extension[] {
 	const workflow = defineTool({
@@ -481,7 +479,16 @@ function scriptExtensions(host: ExtensionHost): Extension[] {
 	});
 	return [
 		defineExtension({ name: SCRIPT, tools: [workflow, session, ask, sh] }),
-		defineExtension({ name: ANSWER, tools: [respond] }),
+		defineExtension({
+			name: ANSWER,
+			tools: [respond],
+			sections: [
+				section("answer_schema", async ({ read, conversationId }, context) => {
+					const schema = (await read.snapshot(AnswerDoc, conversationId, context))?.schema;
+					return schema && `The answer of respond must match this JSON Schema:\n${JSON.stringify(schema)}`;
+				}),
+			],
+		}),
 	];
 }
 

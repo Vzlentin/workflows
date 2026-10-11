@@ -181,12 +181,8 @@ export class FakeModel {
 		if (last?.role === "toolResult") {
 			const after = messages.slice(messages.findLastIndex((message) => message.role === "assistant") + 1);
 			for (const message of after) if (message.role === "toolResult") this.results.push(textOf(message));
-			const user = messages.findLastIndex((message) => message.role === "user");
-			const answers = user < 0 ? undefined : scriptAnswers(textOf(messages[user] as Message));
-			if (answers !== undefined) {
-				const tried = messages.slice(user).filter((message) => message.role === "toolResult").length;
-				return respond(JSON.parse(answers[tried] ?? "null"));
-			}
+			const scripted = scriptAttempt(messages);
+			if (scripted !== undefined) return scripted;
 			if (tools.includes("respond")) return this.#judge();
 			return fauxAssistantMessage("I fixed the typo in README.md.");
 		}
@@ -246,11 +242,8 @@ export class FakeModel {
 				return respond({ items: [...(this.#script.items ?? [])] });
 			case "requeue":
 				return respond({ items: [...(this.#script.queues?.[nth - 1] ?? [])] });
-			case "script": {
-				const answers = scriptAnswers(prompt);
-				if (answers === undefined) return fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
-				return respond(JSON.parse(answers[0] ?? "null"));
-			}
+			case "script":
+				return scriptAttempt(messages) ?? fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
 		}
 	};
 
@@ -261,11 +254,18 @@ export class FakeModel {
 }
 
 /**
- * The answers of a `Script respond: <json>` prompt, one JSON text per line up to the first blank line: attempt n
- * answers with line n. Any other `Script: <text>` prompt has none, and its reply is `Reply to <text>`.
+ * The `respond` call of the current attempt at a `Script respond: <json>` prompt, which has one JSON text per line:
+ * attempt n answers with line n. Undefined for any other prompt, whose reply is `Reply to <text>`.
  */
-function scriptAnswers(prompt: string): string[] | undefined {
-	return /^Script respond: (.*?)(?:\n\n|$)/s.exec(prompt)?.[1]?.split("\n");
+function scriptAttempt(messages: readonly Message[]): AssistantMessage | undefined {
+	const user = messages.findLastIndex((message) => message.role === "user");
+	const prompt = messages[user];
+	const answers = prompt && /^Script respond: (.*)$/s.exec(textOf(prompt))?.[1]?.split("\n");
+	if (answers === undefined) return undefined;
+	const tried = messages.slice(user).filter((message) => message.role === "toolResult").length;
+	const answer = answers[tried];
+	if (answer === undefined) throw new Error(`no scripted answer for attempt ${tried + 1}`);
+	return respond(JSON.parse(answer));
 }
 
 function respond(answer: ToolCall["arguments"][string]): AssistantMessage {
