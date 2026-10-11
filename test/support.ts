@@ -122,7 +122,7 @@ export const PASSING_JUDGE: Verdict = {
 };
 
 /**
- * A scripted model for the `cursor` provider. It records every prompt it answers. After Ctrl+C it answers
+ * A scripted model for the `anthropic` provider. It records every prompt it answers. After Ctrl+C it answers
  * nothing: a request waits until the run closes.
  */
 export class FakeModel {
@@ -135,7 +135,7 @@ export class FakeModel {
 	constructor(script: Script) {
 		this.#script = script;
 		const faux = fauxProvider({
-			provider: "cursor",
+			provider: "anthropic",
 			models: [{ id: "claude-opus-5-5", reasoning: true }],
 		});
 		faux.setResponses(Array.from({ length: 200 }, () => this.#respond));

@@ -17,33 +17,29 @@ type WorkflowCall = {
 	readonly args?: Readonly<Record<string, unknown>>;
 };
 
-type WorkflowOutcome = {
-	readonly runId: string;
-	readonly status: "finished" | "failed" | "interrupted";
-	readonly result?: JsonValue;
-	readonly error?: string;
-};
+/** The stdout line of `workflows --json` after `run <run-id>`. */
+type WorkflowOutcome =
+	| { readonly runId: string; readonly status: "finished"; readonly result: JsonValue }
+	| { readonly runId: string; readonly status: "failed"; readonly error: string }
+	| { readonly runId: string; readonly status: "interrupted" };
 
 const CLI = [process.execPath, fileURLToPath(new URL("../dist/cli.js", import.meta.url))];
 
 const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
 
 /** The `workflows` arguments of a tool call, always with `--json`. */
-function cliArgs(call: WorkflowCall): string[] {
-	const given = [call.name, call.script, call.resume].filter((value) => value !== undefined);
-	if (given.length !== 1) throw new Error("give exactly one of name, script or resume");
-	const args = call.args ?? {};
-	const pairs = Object.entries(args).map(([key, value]) => `--arg=${key}=${text(value)}`);
-	if (call.resume !== undefined) return ["resume", call.resume, "--json"];
-	if (call.script !== undefined) return ["run", "-", ...pairs, "--json"];
-	if (call.name === "ship") {
-		const flags = (["repo", "base", "rounds"] as const).flatMap((key) =>
-			args[key] === undefined ? [] : [`--${key}`, text(args[key])],
-		);
-		const item = args.item === undefined ? [] : ["--", text(args.item)];
-		return ["ship", ...flags, "--json", ...item];
+function cliArgs({ name, script, resume, args = {} }: WorkflowCall): string[] {
+	const given = [name, script, resume].filter((value) => value !== undefined).length;
+	if (given !== 1) throw new Error("give exactly one of name, script or resume");
+	if (resume !== undefined) return ["resume", resume, "--json"];
+	if (name === "ship") {
+		// `ship` rejects a flag it does not know, so a mistyped arg fails before a run exists.
+		const { item, ...flags } = args;
+		const options = Object.entries(flags).map(([key, value]) => `--${key}=${text(value)}`);
+		return ["ship", ...options, "--json", ...(item === undefined ? [] : ["--", text(item)])];
 	}
-	return ["run", ...given, ...pairs, "--json"];
+	const pairs = Object.entries(args).map(([key, value]) => `--arg=${key}=${text(value)}`);
+	return ["run", name ?? "-", ...pairs, "--json"];
 }
 
 type Output = { readonly code: number | null; readonly stdout: readonly string[]; readonly stderr: readonly string[] };
@@ -53,7 +49,7 @@ async function runCli(
 	command: readonly string[],
 	args: readonly string[],
 	cwd: string,
-	options: { stdin?: string; signal?: AbortSignal | undefined; progress?: (line: string) => void },
+	options: { stdin?: string | undefined; signal?: AbortSignal | undefined; progress?: (line: string) => void },
 ): Promise<Output> {
 	const [program = "", ...prefix] = command;
 	const child = spawn(program, [...prefix, ...args], { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -78,15 +74,11 @@ async function runCli(
 	}
 }
 
-/** The outcome of a run's output; throws when the command failed before a run existed. */
+/** The outcome line after `run <run-id>`; throws the stderr text when the command stopped without one. */
 function outcomeOf(output: Output): WorkflowOutcome {
-	const runId = output.stdout[0]?.match(/^run (\S+)$/)?.[1];
-	if (runId === undefined) throw new Error(output.stderr.join("\n") || `workflows exited with ${output.code}`);
-	const line = output.stdout[1];
-	if (line !== undefined) return { runId, status: "finished", result: JSON.parse(line) as JsonValue };
-	if (output.code === 130) return { runId, status: "interrupted" };
-	const error = output.stderr.findLast((candidate) => !candidate.startsWith("continue with:"));
-	return { runId, status: "failed", ...(error === undefined ? {} : { error }) };
+	const [, line] = output.stdout;
+	if (line === undefined) throw new Error(output.stderr.join("\n") || `workflows exited with ${output.code}`);
+	return JSON.parse(line) as WorkflowOutcome;
 }
 
 function summary(outcome: WorkflowOutcome): string {
@@ -94,7 +86,7 @@ function summary(outcome: WorkflowOutcome): string {
 		case "finished":
 			return `run ${outcome.runId} finished: ${JSON.stringify(outcome.result)}`;
 		case "failed":
-			return `run ${outcome.runId} failed: ${outcome.error ?? "unknown error"}; continue it with resume: "${outcome.runId}"`;
+			return `run ${outcome.runId} failed: ${outcome.error}; continue it with resume: "${outcome.runId}"`;
 		case "interrupted":
 			return `run ${outcome.runId} interrupted; continue it with resume: "${outcome.runId}"`;
 	}
@@ -110,13 +102,6 @@ function resultOf(outcome: WorkflowOutcome): AgentToolResult<undefined> {
 }
 
 export default function workflows(pi: ExtensionAPI, command: readonly string[] = CLI) {
-	const start = (call: WorkflowCall, cwd: string, signal: AbortSignal | undefined, progress: (line: string) => void) =>
-		runCli(command, cliArgs(call), cwd, {
-			...(call.script === undefined ? {} : { stdin: call.script }),
-			signal,
-			progress,
-		}).then(outcomeOf);
-
 	pi.registerTool({
 		name: "workflow",
 		label: "Workflow",
@@ -138,15 +123,17 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 			error: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const outcome = await start(params, ctx.cwd, signal, (line) =>
-				onUpdate?.({ content: [{ type: "text", text: line }], details: undefined }),
-			);
-			return resultOf(outcome);
+			const output = await runCli(command, cliArgs(params), ctx.cwd, {
+				stdin: params.script,
+				signal,
+				progress: (line) => onUpdate?.({ content: [{ type: "text", text: line }], details: undefined }),
+			});
+			return resultOf(outcomeOf(output));
 		},
 	});
 
 	pi.registerCommand("workflows", {
-		description: "List the workflow runs, or continue one with: resume <run-id>",
+		description: "List the workflow runs, or ask the agent to continue one with: resume <run-id>",
 		handler: async (args, ctx) => {
 			const send = (content: string) => pi.sendMessage({ customType: "workflows", content, display: true });
 			const [verb, id, ...rest] = args.trim().split(/\s+/).filter(Boolean);
@@ -156,8 +143,9 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 					if (output.code !== 0) throw new Error(output.stderr.join("\n"));
 					send(output.stdout.join("\n") || "no runs");
 				} else if (verb === "resume" && id !== undefined && rest.length === 0) {
-					const outcome = await start({ resume: id }, ctx.cwd, ctx.signal, send);
-					pi.sendMessage({ customType: "workflows", content: summary(outcome), display: true, details: outcome });
+					// A tool call, so that Esc and the progress updates work as for any other run.
+					const message = `Continue the workflow run ${id} with the workflow tool: resume: "${id}".`;
+					pi.sendUserMessage(message, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 				} else {
 					send("usage: /workflows [resume <run-id>]");
 				}

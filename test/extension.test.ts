@@ -9,23 +9,27 @@ let root: string;
 let tool: ToolDefinition;
 let command: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 let messages: { content: unknown; details?: unknown }[];
+let prompts: unknown[][];
 
 /** A fake `workflows` command: its behavior comes from its arguments, which it appends to `args.log`. */
 const FAKE = `#!/bin/sh
 echo "$@" >> args.log
 case "$1 $2" in
-"run ok") echo "run r1"; echo "phase one" >&2; echo "log two" >&2; echo '{"answer":42}' ;;
-"run -") echo "run r2"; cat > stdin.js; echo '"from stdin"' ;;
-"run bad") echo "run r3"; echo "failed bad: boom" >&2; echo "continue with: workflows run resume r3" >&2; exit 1 ;;
+"run ok")
+	echo "run r1"; echo "phase one" >&2; echo "log two" >&2
+	echo '{"runId":"r1","status":"finished","result":{"answer":42}}' ;;
+"run -") echo "run r2"; cat > stdin.js; echo '{"runId":"r2","status":"finished","result":"from stdin"}' ;;
+"run bad")
+	echo "run r3"; echo "failed bad: boom" >&2; echo "continue with: workflows run resume r3" >&2
+	echo '{"runId":"r3","status":"failed","error":"boom"}'; exit 1 ;;
 "run slow")
 	echo "run r4"
-	trap 'echo "interrupted; continue with: workflows run resume r4" >&2; exit 130' INT
+	trap 'echo "interrupted; continue with: workflows run resume r4" >&2; echo '"'"'{"runId":"r4","status":"interrupted"}'"'"'; exit 130' INT
 	echo "started" >&2
 	while :; do sleep 0.02; done ;;
 "run usage") echo "workflows: unknown flag" >&2; exit 2 ;;
-"ship --rounds") echo "run r5"; echo '{"status":"shipped","rounds":1,"head":"abc"}' ;;
+"ship --rounds=2") echo "run r5"; echo '{"runId":"r5","status":"finished","result":{"status":"shipped","rounds":1,"head":"abc"}}' ;;
 "list ") echo "r5 ship shipped Fix the README typo"; echo "r4 run unfinished slow" ;;
-"resume r4") echo "run r4"; echo "judge" >&2; echo '{"status":"shipped","rounds":1,"head":"abc"}' ;;
 *) exit 9 ;;
 esac
 `;
@@ -34,6 +38,7 @@ beforeEach(async () => {
 	root = await mkdtemp(join(tmpdir(), "workflows-extension-test-"));
 	await writeFile(join(root, "workflows"), FAKE);
 	messages = [];
+	prompts = [];
 	const pi = {
 		registerTool: (registered: ToolDefinition) => {
 			tool = registered;
@@ -43,6 +48,7 @@ beforeEach(async () => {
 			command = options.handler;
 		},
 		sendMessage: (message: { content: unknown; details?: unknown }) => messages.push(message),
+		sendUserMessage: (...args: unknown[]) => prompts.push(args),
 	} as unknown as ExtensionAPI;
 	extension(pi, ["/bin/sh", join(root, "workflows")]);
 });
@@ -81,14 +87,14 @@ describe("the workflow tool", () => {
 		});
 		expect((await readFile(join(root, "args.log"), "utf8")).split("\n")).toEqual([
 			"run - --json",
-			"ship --rounds 2 --json -- Fix the README typo",
+			"ship --rounds=2 --json -- Fix the README typo",
 			"",
 		]);
 	});
 
 	it("returns a failed run as an error result that keeps its data", async () => {
 		const { result } = await call({ name: "bad" });
-		expect(result.structuredContent).toEqual({ runId: "r3", status: "failed", error: "failed bad: boom" });
+		expect(result.structuredContent).toEqual({ runId: "r3", status: "failed", error: "boom" });
 		expect(result.isError).toBe(true);
 	});
 
@@ -119,7 +125,7 @@ describe("the workflow tool", () => {
 });
 
 describe("/workflows", () => {
-	const ctx = () => ({ cwd: root, signal: undefined }) as unknown as ExtensionCommandContext;
+	const ctx = (idle = true) => ({ cwd: root, isIdle: () => idle }) as unknown as ExtensionCommandContext;
 
 	it("lists the runs", async () => {
 		await command("", ctx());
@@ -128,17 +134,15 @@ describe("/workflows", () => {
 		]);
 	});
 
-	it("resumes a run with its progress and its result", async () => {
+	it("asks the agent to resume a run with the workflow tool", async () => {
 		await command("resume r4", ctx());
-		expect(messages.map((message) => message.content)).toEqual([
-			"judge",
-			'run r4 finished: {"status":"shipped","rounds":1,"head":"abc"}',
+		await command("resume r5", ctx(false));
+		const message = (id: string) => `Continue the workflow run ${id} with the workflow tool: resume: "${id}".`;
+		expect(prompts).toEqual([
+			[message("r4"), undefined],
+			[message("r5"), { deliverAs: "followUp" }],
 		]);
-		expect(messages.at(-1)?.details).toEqual({
-			runId: "r4",
-			status: "finished",
-			result: { status: "shipped", rounds: 1, head: "abc" },
-		});
-		expect(await readFile(join(root, "args.log"), "utf8")).toBe("resume r4 --json\n");
+		expect(messages).toEqual([]);
+		await expect(readFile(join(root, "args.log"), "utf8")).rejects.toThrow();
 	});
 });

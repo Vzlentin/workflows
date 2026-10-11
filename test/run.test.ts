@@ -117,11 +117,9 @@ return { reply }`,
 		);
 		const run = await workflows(["run", "x.js", "--json"], { cwd: root });
 		expect(run.code).toBe(1);
-		expect(run.stdout).toEqual([`run ${run.id}`]);
-		expect(run.stderr).toEqual([
-			"failed x: sh exited with 1: test -f fixed",
-			`continue with: workflows run resume ${run.id}`,
-		]);
+		const error = "sh exited with 1: test -f fixed";
+		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, status: "failed", error })]);
+		expect(run.stderr).toEqual([`failed x: ${error}`, `continue with: workflows run resume ${run.id}`]);
 
 		await writeFile(join(root, "fixed"), "");
 		const resumed = await workflows(["run", "resume", run.id ?? ""], { cwd: root });
@@ -185,7 +183,7 @@ return "done"`,
 		await mkdir(agents, { recursive: true });
 		await writeFile(
 			join(agents, "default.md"),
-			"---\nmodel: cursor/claude-opus-5-5\nthinking: high\n---\nProject profile body.\n",
+			"---\nmodel: anthropic/claude-opus-5-5\nthinking: high\n---\nProject profile body.\n",
 		);
 		await writeFile(join(root, "x.js"), `return await agent("Script: one")`);
 		const run = await workflows(["run", "x.js"], { cwd: root });

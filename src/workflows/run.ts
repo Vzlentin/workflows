@@ -18,8 +18,6 @@ import { defineWorkflow, type Io, UsageError } from "../lib/workflow.ts";
 
 type Args = {
 	readonly name: string;
-	/** Set only in runs saved before `--json` moved to the command. */
-	readonly json?: boolean;
 	readonly args: JsonObject;
 	readonly bundle: RunBundle;
 };
@@ -79,8 +77,8 @@ export const run = defineWorkflow<Args, RunInput, ScriptCheckpoint, unknown>({
 	prepare: async (args, run) => ({ ...args, cwd: run.cwd }),
 	title: (input) => input.name,
 	phases: { run: (step) => scriptPhase(step, step.input.cwd, step.input.bundle, step.input.args) },
-	report: (input, result, io) => {
-		io.stdout(typeof result === "string" && !input.json ? result : JSON.stringify(result));
+	report: (_input, result, io) => {
+		io.stdout(typeof result === "string" ? result : JSON.stringify(result));
 		return 0;
 	},
 });

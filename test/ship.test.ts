@@ -200,16 +200,21 @@ export default function ({ events }) {
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
 	});
 
-	it("prints the result as one JSON line with --json, at the start and at resume", async () => {
-		const run = await workflows(["ship", "--json", "Fix the README typo"], { cwd: repo, script: { edits: [] } });
-		const result = { status: "blocked", rounds: 1, reply: "I found nothing to change." };
-		expect(run.code).toBe(1);
-		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify(result)]);
+	it("prints one JSON outcome line with --json, at the start and at resume", async () => {
+		const run = await workflows(["ship", "--json", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [], interruptAt: { kind: "implement", nth: 1 } },
+		});
+		expect(run.code).toBe(130);
+		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, status: "interrupted" })]);
 
-		const resumed = await workflows(["resume", run.id ?? "", "--json"], { cwd: repo });
+		const resumed = await workflows(["resume", run.id ?? "", "--json"], { cwd: repo, script: { edits: [] } });
+		const result = { status: "blocked", rounds: 1, reply: "I found nothing to change." };
 		expect(resumed.code).toBe(1);
-		expect(resumed.stdout).toEqual(run.stdout);
-		expect(resumed.model.calls).toEqual([]);
+		expect(resumed.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, status: "finished", result })]);
+
+		const item = await workflows(["ship", "--", "--json"], { cwd: repo, script: { edits: [] } });
+		expect(item.stdout.slice(1, 2)).toEqual([expect.stringMatching(/^blocked --json after 1 rounds: /)]);
 	});
 
 	it("stops at the round limit and keeps the implementer's own commits", async () => {

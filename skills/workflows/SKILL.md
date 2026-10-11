@@ -20,7 +20,8 @@ await tools.workflow({ script: "return await agent('List the modules under src/'
 await tools.workflow({ resume: "20261010T234930-3a93e88c" })
 ```
 
-- `name: "ship"` ships `args.item` onto the branch `ship/<run-id>`. `repo`, `base` and `rounds` are optional.
+- `name: "ship"` ships `args.item` onto the branch `ship/<run-id>`. `repo`, `base` and `rounds` are optional, and
+  any other arg is an error.
 - Any other `name` is a script in `workflows/` of the package or of the project's `.workflows/`. Each arg reaches
   the script as the string `args.<key>`: a string as it is, any other value as its JSON text, so `{ depth: 2 }` gives
   `"2"`.
@@ -53,4 +54,4 @@ workflows resume <run-id> [--json]
 workflows list [--json]
 ```
 
-In Pi, `/workflows` lists the runs and `/workflows resume <run-id>` continues one.
+In Pi, `/workflows` lists the runs, and `/workflows resume <run-id>` asks the agent to continue one with the tool.

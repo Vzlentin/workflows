@@ -20,8 +20,8 @@ Each box is a new session.
 
 ## Setup
 
-Requires Node.js 22.19 or later, Git, and Pi with the pi-cursor package, logged in to the `cursor` provider (log in
-once with `/login cursor` in `pi`).
+Requires Node.js 22.19 or later, Git, and Pi credentials for the `anthropic` provider: log in once with `/login` in
+`pi`, or set `ANTHROPIC_API_KEY`.
 GitHub repositories also need an authenticated `gh`.
 
 ```sh
@@ -103,7 +103,7 @@ Blocked and stopped runs keep their branch, worktree and round commits. Delete t
 ## Sessions
 
 The plan, implement, review and judge sessions use the agent profiles `agents/planner.md`, `agents/implementer.md`,
-`agents/reviewer.md` and `agents/judge.md`. Each uses `cursor/claude-opus-5-5` with thinking `medium`, and every
+`agents/reviewer.md` and `agents/judge.md`. Each uses `anthropic/claude-opus-5-5` with thinking `medium`, and every
 session gets the same tools. `ship` reads `workflows/ship.js`, the prompts and the profiles of the package only, not
 the `.workflows/` folder of the project.
 
@@ -148,7 +148,7 @@ given twice is bad usage: the command prints its usage and exits 2.
 The command prints `run <run-id>` on stdout, then each `phase` and `log` line on stderr when the script's next call
 runs, or when the script ends. When the script returns, the
 command prints the return value on stdout and exits 0. A string prints as it is, and any other value prints as JSON.
-With `--json`, the value always prints as JSON. See [JSON output](#json-output).
+With `--json`, stdout gets one JSON outcome line in place of the value. See [JSON output](#json-output).
 
 A script that throws, or a call in it that fails, stops the run: the command prints `failed <name>: <error>` and
 `continue with: workflows run resume <run-id>` on stderr, and exits 1. `<name>` is the file name without `.js`, the
@@ -186,7 +186,7 @@ the same calls each time it runs.
 
 `agents/<name>.md` is the profile of `agent(..., { as: name })` and `session(name)`. Its frontmatter gives `model`
 as `<provider>/<id>` and `thinking`. Its body, without frontmatter, is added to the session's system prompt. Every
-profile gets the same tools as the ship sessions. `agents/default.md` uses `cursor/claude-opus-5-5` with thinking
+profile gets the same tools as the ship sessions. `agents/default.md` uses `anthropic/claude-opus-5-5` with thinking
 `medium`.
 
 ### Saved inputs and resume
@@ -241,10 +241,16 @@ workflows ship --json plan.md
 workflows resume <run-id> --json
 ```
 
-Every form of start and resume accepts `--json`, at any position. After `run <run-id>`, stdout gets the result of a
-finished run as one line of JSON in place of the report lines, for example
-`{"status":"shipped","rounds":1,"head":"1a2b3c4"}` for ship. The stderr lines and the exit codes do not change. A
-failed or interrupted run prints no JSON line.
+Every form of start and resume accepts `--json`, at any position before `--`. After `run <run-id>`, stdout gets one
+line of JSON in place of the report lines, `{ "runId", "status", "result"?, "error"? }`, for every outcome:
+
+- `finished`: `result` is the result of the run, for example `{"status":"shipped","rounds":1,"head":"1a2b3c4"}` for
+  ship.
+- `failed`: `error` is the error message, without the `failed <name>:` prefix of the stderr line.
+- `interrupted`: Ctrl+C stopped the run.
+
+The stderr lines and the exit codes do not change. An error before the run exists, such as bad usage, prints no
+`run <run-id>` line and no JSON line.
 
 ## List
 
@@ -283,8 +289,8 @@ continues it from a terminal.
 
 The tool takes one of `name`, `script` or `resume`, plus `args`:
 
-- `name: "ship"` runs `workflows ship`. `args.item` is the work item, and `args.repo`, `args.base` and `args.rounds`
-  give `--repo`, `--base` and `--rounds`.
+- `name: "ship"` runs `workflows ship`. `args.item` is the work item, and each other arg becomes `--<key>=<value>`,
+  such as `--rounds=2`. An arg that `ship` does not know is bad usage, so no run starts.
 - Any other `name` runs `workflows run <name>`. Each arg becomes `--arg <key>=<value>`: a string as it is, any other
   value as its JSON text. The script gets every arg as a string, so `{ depth: 2 }` reaches it as `"2"`.
 - `script` runs `workflows run -` with the script on stdin.
@@ -295,9 +301,11 @@ stays resumable.
 
 The tool declares an `outputSchema`. Its `structuredContent` is `{ runId, status, result?, error? }`:
 
-- `finished`: the run finished, and `result` is its JSON line, such as a `blocked` ship result.
-- `failed`: the run failed, and `error` is its last stderr line before `continue with:`.
+- `finished`: the run finished, and `result` is its result, such as a `blocked` ship result.
+- `failed`: the run failed, and `error` is its error message.
 - `interrupted`: Esc stopped the run.
+
+These are the fields of the JSON outcome line of the command.
 
 A failed or interrupted result is an error result that keeps `structuredContent`. Thus
 `await tools.workflow({ name: "ship", args: { item } })` in a codemode script gets this object. A call that fails
@@ -305,8 +313,9 @@ before a run exists, such as an unknown workflow name, is a normal tool error wi
 
 ### `/workflows`
 
-`/workflows` prints the output of `workflows list` in the session. `/workflows resume <run-id>` continues the run,
-and prints its progress lines and its result in the session.
+`/workflows` prints the output of `workflows list` in the session. `/workflows resume <run-id>` does not run the
+command. It sends a user message that asks the agent to continue the run with the `workflow` tool, so that Esc and the
+progress updates work as for any tool call. When the agent is busy, the message waits as a follow-up.
 
 ## Run directory
 

@@ -70,8 +70,10 @@ export async function main(
 	for (const provider of new Set(workflows.flatMap((workflow) => workflow.providers ?? [])))
 		terminal.addProvider(provider);
 	try {
-		const json = argv.includes("--json");
-		const [command, ...args] = argv.filter((arg) => arg !== "--json");
+		const dashes = argv.indexOf("--");
+		const options = dashes === -1 ? argv.length : dashes;
+		const json = argv.slice(0, options).includes("--json");
+		const [command, ...args] = argv.filter((arg, index) => index >= options || arg !== "--json");
 		if (command === "list") return await list(args, terminal, workflows, json);
 		if (command === "resume") return await resume(args, terminal, workflows, undefined, json);
 		const workflow = workflows.find((candidate) => candidate.name === command);
@@ -176,11 +178,12 @@ async function list(
 ): Promise<number> {
 	if (args.length > 0) throw new UsageError("list takes no arguments");
 	const ids = await readdir(runsDirectory()).catch(() => []);
+	const kinds = new Set(workflows.map(taskKind));
 	const runs: Listed[] = [];
 	for (const id of ids.sort().reverse()) {
 		const path = join(runsDirectory(), id, "durable.sqlite");
 		if (!existsSync(path)) continue;
-		const latest = await latestTask(path, new Set(workflows.map(taskKind)));
+		const latest = await latestTask(path, kinds);
 		const workflow = workflows.find((candidate) => taskKind(candidate) === latest?.kind);
 		if (latest === undefined || workflow === undefined) continue;
 		const { input } = latest.input as Stored;
@@ -379,8 +382,12 @@ async function follow(
 	terminal: Terminal,
 	json: boolean,
 ): Promise<number> {
+	const end = (status: "finished" | "failed" | "interrupted", rest: { result?: JsonValue; error?: string }) => {
+		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
+	};
 	const failed = (message: unknown, resumable: boolean) => {
 		terminal.stderr(`failed ${workflow.title(input)}: ${message}`);
+		end("failed", { error: String(message) });
 		if (resumable) terminal.stderr(`continue with: workflows ${workflow.name} resume ${id}`);
 		return 1;
 	};
@@ -390,8 +397,12 @@ async function follow(
 		settled = await store.harness.waitForTask(task, withAbortSignal(signal, BACKGROUND_CONTEXT));
 	} catch (error) {
 		if (store.failed.aborted && !terminal.interrupt.aborted) return failed(store.failed.reason, true);
-		if (!terminal.interrupt.aborted) throw error;
+		if (!terminal.interrupt.aborted) {
+			end("failed", { error: error instanceof Error ? error.message : String(error) });
+			throw error;
+		}
 		terminal.stderr(`interrupted; continue with: workflows ${workflow.name} resume ${id}`);
+		end("interrupted", {});
 		return 130;
 	} finally {
 		await store.close();
@@ -399,8 +410,10 @@ async function follow(
 	const { outcome } = settled.state;
 	if (outcome.status === "completed") {
 		if (!json) return workflow.report(input, outcome.result, terminal);
+		// `report` also gives the exit code, so it runs with stdout muted. Split it from the exit code when a third
+		// workflow needs this.
 		const code = workflow.report(input, outcome.result, { ...terminal, stdout: () => {} });
-		terminal.stdout(JSON.stringify(outcome.result));
+		end("finished", { result: outcome.result });
 		return code;
 	}
 	return failed(outcome.error?.message ?? outcome.reason ?? outcome.status, outcome.status === "failed");
