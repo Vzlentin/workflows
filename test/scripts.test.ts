@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -226,6 +226,26 @@ describe("workflows show", () => {
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
 	});
+
+	it("waits for a write lock that another process holds for longer than 5 seconds", async () => {
+		await writeFile(join(root, "x.js"), `phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")`);
+		const first = await stopped(["x.js"], { nth: 2 });
+		const id = first.id ?? "";
+		const lock = [
+			'const { DatabaseSync } = require("node:sqlite");',
+			"const database = new DatabaseSync(process.argv[1]);",
+			'database.exec("BEGIN IMMEDIATE");',
+			'process.stdout.write("locked\\n");',
+			'setTimeout(() => { database.exec("COMMIT"); database.close(); }, 5500);',
+		].join("\n");
+		const holder = spawn(process.execPath, ["-e", lock, join(runs(), id, "durable.sqlite")]);
+		const exited = new Promise((resolve) => holder.on("exit", resolve));
+		await new Promise((resolve) => holder.stdout.once("data", resolve));
+		const shown = await workflows(["show", id], { cwd: root });
+		expect(await exited).toBe(0);
+		expect(shown.code).toBe(0);
+		expect(shown.stdout[0]).toBe(`run ${id} x unfinished x`);
+	}, 20_000);
 });
 
 describe("saved calls", () => {

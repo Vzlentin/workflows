@@ -40,6 +40,9 @@ import { type Io, newRunId, UsageError } from "./run.ts";
 import { answerExtension, CALL_KIND, type CallRecord } from "./script.ts";
 import { current, scriptTask, TASK } from "./task.ts";
 
+/** `list` and `show` take short write locks while a run goes on in another process, so wait longer than the 5 s default. */
+const STORAGE = { busyTimeoutMs: 60_000 };
+
 export type Terminal = Io & {
 	readonly models: Models;
 	/** Aborted by Ctrl+C: the run stops where it is and stays resumable. */
@@ -280,7 +283,8 @@ type Shown = Omit<CallRecord, "conversation" | "child"> & {
 
 /**
  * Prints the phases and calls of a run as a tree, then its report lines, or its error. It reads the task record and the
- * call records without a harness, so it changes nothing and the run can go on in another process.
+ * call records without a harness. It takes short write locks on the store, which a run in another process waits for
+ * (see `STORAGE`).
  */
 async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const { id, directory } = await savedRun(args);
@@ -316,7 +320,7 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 
 /** Every call record in the store at `path` by key, read from the storage only. */
 async function callRecords(path: string): Promise<Map<string, CallRecord>> {
-	const storage = await openNodeSqliteStorage(path);
+	const storage = await openNodeSqliteStorage(path, STORAGE);
 	try {
 		const records = new Map<string, CallRecord>();
 		let cursor: Cursor | undefined;
@@ -417,7 +421,7 @@ const PREFIX = "workflows.";
  * storage only. Its kind can be one that no installed workflow has, such as a workflow of an earlier version.
  */
 async function latestTask(path: string): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined> {
-	const storage = await openNodeSqliteStorage(path);
+	const storage = await openNodeSqliteStorage(path, STORAGE);
 	try {
 		let latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined;
 		let cursor: Cursor | undefined;
@@ -528,7 +532,7 @@ async function openStore(directory: string, terminal: Terminal): Promise<Store> 
 		registry.install(answerExtension);
 		// When its open fails, the harness closes the storage itself.
 		harness = await Harness.open(
-			await openNodeSqliteStorage(join(directory, "durable.sqlite")),
+			await openNodeSqliteStorage(join(directory, "durable.sqlite"), STORAGE),
 			{
 				models: terminal.models,
 				registry,

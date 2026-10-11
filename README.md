@@ -491,7 +491,8 @@ argument, such as the work item for ship and the goal for campaign, or else the 
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
 `done` when the result has no `status`. Any other run, also a failed one, is `unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
 
-`list` only reads the stores. It does not load Pi packages, and no run continues.
+`list` does not load Pi packages, and no run continues. It takes short write locks on the stores: a live run waits up
+to 60 seconds for them, and `list` waits for the run the same way.
 
 ## Show
 
@@ -529,8 +530,9 @@ object with the same tree: `{ "runId", "workflow", "title", "status", "report"?,
 times. `phase` is `null` before the first phase line. The `result` of a `run` call is `{ "runId", "result" }`, with the
 result of its child run, and its `calls` are the calls of the child run.
 
-`show` exits 0 for every run it can show. It only reads the store, through pi-durable's storage functions, as `list`
-does: it does not load Pi packages and writes nothing, so it is safe while the run goes on in another process. An
+`show` exits 0 for every run it can show. It reads the store through pi-durable's storage functions, as `list` does,
+and does not load Pi packages. It takes short write locks on the store: a run that goes on in another process waits up
+to 60 seconds for them, and `show` waits for the run the same way. An
 unknown run ID prints the `no run` error of `resume`. A run saved by an earlier version prints `workflows: run
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
