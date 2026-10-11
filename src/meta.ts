@@ -336,7 +336,7 @@ function textArg(input: ScriptInput): string | undefined {
 }
 
 /** The status of a result object, if it has one. */
-function statusOf(result: unknown): string | undefined {
+export function statusOf(result: unknown): string | undefined {
 	return isObject(result) && typeof result.status === "string" ? result.status : undefined;
 }
 
@@ -373,11 +373,6 @@ export function report(input: ScriptInput, result: unknown, io: Io): number {
 	else io.stdout(typeof result === "string" ? result : JSON.stringify(result));
 	const status = statusOf(result);
 	return status !== undefined && Object.hasOwn(input.meta.exit, status) ? (input.meta.exit[status] ?? 0) : 0;
-}
-
-/** The status of a finished run in `workflows list`. */
-export function status(result: unknown): string {
-	return statusOf(result) ?? "done";
 }
 
 type Runtime = TaskRuntime<Stored, Checkpoint, JsonValue, object>;
