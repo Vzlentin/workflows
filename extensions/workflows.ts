@@ -155,7 +155,7 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 			"`ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and `prompts`. For `campaign`, which " +
 			"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
 			"`base`, `rounds` and `prompts`. For `optimize`, which searches for better ship prompts over a folder of work " +
-			"items: `workflow` (`ship`) and `items`, and optional `prompts` and `trials`. A failed or interrupted run " +
+			"items: `workflow` (`ship`) and `items`, and optional `improve` and `trials`. A failed or interrupted run " +
 			"stays resumable.",
 		parameters: Type.Object({
 			name: Type.Optional(

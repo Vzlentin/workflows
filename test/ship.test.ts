@@ -396,20 +396,20 @@ export default function ({ events }) {
 		expect(plan?.prompt).toMatch(/^Plan this change\. PROJECT\n\n## item\nFix the README typo$/);
 	});
 
-	it("does not run ship.js without the start commit of workflows ship", async () => {
+	it("runs ship.js from another script in a new worktree, and leaves the checkout of the caller unchanged", async () => {
 		const scripts = join(repo, ".workflows", "workflows");
 		await mkdir(scripts, { recursive: true });
-		await writeFile(join(scripts, "guard.js"), 'return await run("ship", { item: "Fix the README typo" })');
+		await writeFile(join(scripts, "caller.js"), 'return await run("ship", { item: "Fix the README typo" })');
 		git(repo, "add", ".workflows");
-		git(repo, "commit", "-qm", "guard");
+		git(repo, "commit", "-qm", "caller");
 		start = git(repo, "rev-parse", "HEAD");
-		const run = await workflows(["guard"], { cwd: repo });
+		const run = await workflows(["caller", "--json"], { cwd: repo, script: { edits: [FIXED] } });
 
-		expect(run.code).toBe(1);
-		expect(run.stderr[0]).toBe(
-			"failed guard: ship runs only through workflows ship or workflows campaign, which give it the start commit",
-		);
-		expect(run.model.calls).toEqual([]);
+		expect(run.code).toBe(0);
+		const { result } = JSON.parse(run.stdout[1] ?? "");
+		expect(result).toMatchObject({ status: "shipped", rounds: 1, runId: expect.any(String) });
+		expect(git(worktreeOf(result.runId), "branch", "--show-current")).toBe(`ship/${result.runId}`);
+		expect(git(worktreeOf(result.runId), "rev-parse", "HEAD~1")).toBe(start);
 		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
 		expect(git(repo, "status", "--porcelain")).toBe("");
 	});

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type Kind, repository, sandbox, workflows } from "./support.ts";
+import { git, type Kind, repository, sandbox, workflows } from "./support.ts";
 
 let root: string;
 
@@ -19,6 +19,7 @@ beforeEach(async () => {
 afterEach(() => rm(root, { recursive: true, force: true }));
 
 const log = () => readFile(join(root, "log"), "utf8");
+const runs = () => join(root, "state", "workflows", "runs");
 
 /** Runs `argv` in `cwd` and presses Ctrl+C at the `nth` script prompt, or once the `gate` command is reached. */
 async function stopped(argv: string[], stop: { readonly nth: number } | { readonly gate: string }, cwd = root) {
@@ -230,6 +231,103 @@ return "done"`,
 		expect(await readFile(join(cwd, "log"), "utf8")).toBe("x\nx\n");
 	});
 
+	it("runs a child run with its own run directory, worktree and prompts", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "workflows");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "parent.js"),
+			`const child = await run("child", { prompts: { plan: "---\\ndescription: x\\n---\\nChild plan.\\n$@" } })
+return { child, runId, plan: await prompts.plan() }`,
+		);
+		await writeFile(
+			join(scripts, "child.js"),
+			`export const meta = { worktree: true }
+const branch = await sh(["git", "branch", "--show-current"])
+return { runId, runDir, branch, start: args.start, plan: await prompts.plan() }`,
+		);
+
+		const run = await workflows(["parent"], { cwd: repo });
+		expect([run.code, run.stderr]).toEqual([0, []]);
+		const { child, runId, plan } = JSON.parse(run.stdout[1] ?? "");
+		expect(runId).toBe(run.id);
+		expect(child.runId).not.toBe(run.id);
+		expect(child).toEqual({
+			runId: child.runId,
+			runDir: join(runs(), child.runId),
+			branch: `child/${child.runId}`,
+			start: git(repo, "rev-parse", "HEAD"),
+			plan: "Child plan.",
+		});
+		expect(plan).toMatch(/^Plan this change\./);
+		expect(existsSync(join(runs(), child.runId, "worktree", "README.md"))).toBe(true);
+		const listed = await workflows(["list"], { cwd: repo });
+		expect(listed.stdout.toSorted()).toEqual(
+			[`${child.runId} child done child`, `${run.id} parent done parent`].toSorted(),
+		);
+	});
+
+	it("runs a child run with start in the directory of the caller", async () => {
+		const repo = join(root, "repo");
+		const start = await repository(repo);
+		const scripts = join(repo, ".workflows", "workflows");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "parent.js"), `return await run("child", { start: "${start}" })`);
+		await writeFile(
+			join(scripts, "child.js"),
+			`export const meta = { worktree: true }
+return { branch: await sh(["git", "branch", "--show-current"]), start: args.start }`,
+		);
+
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(0);
+		const child = JSON.parse(run.stdout[1] ?? "");
+		expect(child).toEqual({ branch: "main", start, runId: expect.any(String) });
+		expect(existsSync(join(runs(), child.runId, "worktree"))).toBe(false);
+		expect(git(repo, "worktree", "list", "--porcelain").split("\n\n")).toHaveLength(1);
+	});
+
+	it("resumes an interrupted child run and repeats no call of a finished one", async () => {
+		await writeFile(
+			join(root, "parent.js"),
+			`const one = await run("child", { word: "one" })
+const two = await run("child", { word: "two" })
+return [one.reply, two.reply].join(", ")`,
+		);
+		await mkdir(join(root, ".workflows", "workflows"), { recursive: true });
+		await writeFile(
+			join(root, ".workflows", "workflows", "child.js"),
+			'return { reply: await agent("Script: " + args.word) }',
+		);
+
+		const first = await stopped(["parent.js"], { nth: 2 });
+		expect(first.code).toBe(130);
+		expect(first.stderr).toEqual([`interrupted; continue with: workflows resume ${first.id}`]);
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${first.id}`, "Reply to one, Reply to two"]]);
+		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
+		const listed = await workflows(["list"], { cwd: root });
+		expect(listed.stdout).toHaveLength(3);
+	});
+
+	it("fails the caller with a failed child run, and its resume continues the child run", async () => {
+		await writeFile(join(root, "parent.js"), 'return await run("child")');
+		await mkdir(join(root, ".workflows", "workflows"), { recursive: true });
+		await writeFile(join(root, ".workflows", "workflows", "child.js"), 'return await agent("Script: one")');
+
+		const run = await workflows(["parent.js"], { cwd: root, script: { failAt: { kind: "script", nth: 1 } } });
+		expect(run.code).toBe(1);
+		const [line = "", next] = run.stderr;
+		const child = /^failed parent: child run (\S+) failed: /.exec(line)?.[1];
+		expect(child).toBeDefined();
+		expect(next).toBe(`continue with: workflows resume ${run.id}`);
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${run.id}`, "Reply to one"]]);
+		const listed = await workflows(["list"], { cwd: root });
+		expect(listed.stdout).toContain(`${child} child done child`);
+	});
+
 	it("uses a project agent profile in place of the package profile", async () => {
 		const agents = join(root, ".workflows", "agents");
 		await mkdir(agents, { recursive: true });
@@ -312,6 +410,7 @@ return "done"`,
 		expect(listed.code).toBe(0);
 		expect(listed.stdout).toEqual([
 			"campaign: Split a goal into work items and ship each one as a commit on one branch.",
+			"optimize: Search for better ship prompts over a folder of work items.",
 			"ship: Ship one work item onto a new branch: plan, implement and review rounds, judge, and one squashed commit.",
 			"plain",
 		]);

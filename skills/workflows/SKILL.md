@@ -28,7 +28,7 @@ await tools.workflow({ resume: "20261010T234930-3a93e88c" })
   `campaign/<run-id>`. After each item, a planner updates the queue. `repo`, `base`, `rounds` and `prompts` are
   optional. The result is `{ status: "done", head, items: [{ item, result }] }` or `{ status: "stopped", items }`.
 - `name: "optimize"` searches for better texts of the prompts of `args.workflow`, which is `ship`, over the work items
-  of the folder `args.items`. `prompts`, the prompt names separated by commas, and `trials`, the number of candidates
+  of the folder `args.items`. `improve`, the prompt names separated by commas, and `trials`, the number of candidates
   with the baseline, are optional. The result is `{ baseline, best, diff }`: the mean scores and the path of a diff to
   apply by hand.
 - Any other `name` is a script in `workflows/` of the project's `.workflows/` or of the package. Each arg becomes the
@@ -44,7 +44,8 @@ stays resumable: call the tool again with `resume: runId`. Esc stops the run as 
 ## Workflow scripts
 
 A script is the body of an async function, so top-level `await` and `return` work. It runs in the codemode sandbox,
-with `agent`, `session`, `sh`, `ok`, `run`, `tools`, `prompts`, `parallel`, `pipeline`, `phase` and `log`. For the
+with `agent`, `session`, `sh`, `ok`, `run`, `tools`, `prompts`, `parallel`, `pipeline`, `phase` and `log`. `run` starts a
+child run with its own run ID, which its result has as `runId`. For the
 meaning of each function, see [the script API](../../README.md#the-script-api).
 
 Sandbox rules:
@@ -59,7 +60,7 @@ Sandbox rules:
 ```sh
 workflows ship [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<item.md> | <text>] [--json]
 workflows campaign [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<goal.md> | <text>] [--json]
-workflows optimize <ship | --workflow ship> --items <folder> [--prompts <name,...>] [--trials <n>] [--json]
+workflows optimize [--workflow ship] --items <folder> [--improve <name,...>] [--trials <n>] [--prompts <folder>] [ship] [--json]
 workflows <name | file.js | -> [<text>] [--<arg> <value>]... [--json]
 workflows <name> --help
 workflows check <name>

@@ -117,8 +117,8 @@ export type Script = {
 	readonly edits?: readonly (string | undefined)[];
 	/** The review verdict of each round. */
 	readonly verdicts?: readonly ("SHIP" | "FIX")[];
-	/** The judge's `respond` answer, or a text reply without `respond`. */
-	readonly judge?: Verdict | string;
+	/** The judge's `respond` answer, or a text reply without `respond`; a list gives one for each judge call. */
+	readonly judge?: Verdict | string | readonly (Verdict | string)[];
 	/** The work items of the split answer. */
 	readonly items?: readonly string[];
 	/** The queue of each requeue answer; a missing answer is an empty queue. */
@@ -249,16 +249,20 @@ export class FakeModel {
 				return respond({ items: [...(this.#script.items ?? [])] });
 			case "requeue":
 				return respond({ items: [...(this.#script.queues?.[nth - 1] ?? [])] });
-			case "reflect":
-				return fauxAssistantMessage(`Improved prompt ${nth}.`);
+			case "reflect": {
+				// The reply keeps the current text first, so that the prompt keeps its kind.
+				const current = /\n## current\n([\s\S]*?)\n\n## records\n/.exec(prompt)?.[1] ?? "";
+				return fauxAssistantMessage(`${current}\nImproved prompt ${nth}.`);
+			}
 			case "script":
 				return scriptAttempt(messages) ?? fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
 		}
 	};
 
 	#judge(): AssistantMessage {
-		const { judge = PASSING_JUDGE } = this.#script;
-		return typeof judge === "string" ? fauxAssistantMessage(judge) : respond(judge);
+		const { judge: scripted = PASSING_JUDGE } = this.#script;
+		const judge = Array.isArray(scripted) ? (scripted[this.count("judge") - 1] ?? PASSING_JUDGE) : scripted;
+		return typeof judge === "string" ? fauxAssistantMessage(judge) : respond(judge as Verdict);
 	}
 }
 

@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-/** The `workflows` executable: Pi's providers and credentials, the terminal, Ctrl+C, and the built-in workflows. */
+/** The `workflows` executable: Pi's providers and credentials, the terminal, and Ctrl+C. */
 import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { main } from "./lib/main.ts";
-import { optimizeWith } from "./workflows/optimize.ts";
 
 const interrupt = new AbortController();
 process.on("SIGINT", () => {
@@ -13,16 +12,12 @@ process.on("SIGINT", () => {
 
 const { modelRuntime } = await createAgentSessionServices({ cwd: process.cwd() });
 
-process.exitCode = await main(
-	process.argv.slice(2),
-	{
-		cwd: process.cwd(),
-		stdin: async () => (process.stdin.isTTY ? undefined : await text(process.stdin)),
-		stdout: (line) => process.stdout.write(`${line}\n`),
-		stderr: (line) => process.stderr.write(`${line}\n`),
-		models: modelRuntime,
-		addProvider: (provider) => modelRuntime.registerNativeProvider(provider),
-		interrupt: interrupt.signal,
-	},
-	[optimizeWith([process.execPath, process.argv[1] ?? ""])],
-);
+process.exitCode = await main(process.argv.slice(2), {
+	cwd: process.cwd(),
+	stdin: async () => (process.stdin.isTTY ? undefined : await text(process.stdin)),
+	stdout: (line) => process.stdout.write(`${line}\n`),
+	stderr: (line) => process.stderr.write(`${line}\n`),
+	models: modelRuntime,
+	addProvider: (provider) => modelRuntime.registerNativeProvider(provider),
+	interrupt: interrupt.signal,
+});

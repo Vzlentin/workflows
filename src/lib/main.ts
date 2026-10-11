@@ -35,10 +35,11 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Sessions } from "./agents.ts";
-import { check, help, listScripts, script } from "./meta.ts";
+import { check, childInput, help, listScripts, script } from "./meta.ts";
 import {
 	type AnyWorkflow,
 	type Checkpoint,
+	type ChildRequest,
 	type Io,
 	type Stored,
 	taskKind,
@@ -61,7 +62,7 @@ export type Terminal = Io & {
 export async function main(
 	argv: readonly string[],
 	terminal: Terminal,
-	builtins: readonly AnyWorkflow[],
+	builtins: readonly AnyWorkflow[] = [],
 ): Promise<number> {
 	const workflows = [...builtins, script];
 	const usage = [
@@ -163,23 +164,91 @@ async function resume(
 	const latest = await latestTask(join(directory, "durable.sqlite"));
 	const store = await openStore(directory, terminal, workflows);
 	try {
-		if (latest === undefined) throw new Error(`run ${id} has no workflow`);
-		const workflow = workflows.find((candidate) => taskKind(candidate) === latest.kind);
-		if (workflow === undefined) {
-			const name = latest.kind.slice(PREFIX.length);
-			throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot resume`);
-		}
-		if (latest.version < workflow.version) {
-			throw new Error(`run ${id} was saved by an earlier version of ${workflow.name} and cannot resume`);
-		}
+		const { workflow, task, input } = await continueRun(store, latest, id, workflows);
 		terminal.stdout(`run ${id}`);
-		const from = failedAt(latest);
-		const stored = latest.input as Stored;
-		const task = from === undefined ? latest.id : await store.create(workflow, { input: stored.input, from });
-		return await follow(store, workflow, task, stored.input, id, terminal, json);
+		return await follow(store, workflow, task, input, id, terminal, json);
 	} finally {
 		await store.close();
 	}
+}
+
+/**
+ * The task that continues the run `id`, whose newest task is `latest`: that task, or a new task from the checkpoint of
+ * a failed phase. Throws for a run without a task, or one that an earlier version saved.
+ */
+async function continueRun(
+	store: Store,
+	latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined,
+	id: string,
+	workflows: readonly AnyWorkflow[],
+): Promise<{ workflow: AnyWorkflow; task: TaskId<JsonValue>; input: JsonValue }> {
+	if (latest === undefined) throw new Error(`run ${id} has no workflow`);
+	const workflow = workflows.find((candidate) => taskKind(candidate) === latest.kind);
+	if (workflow === undefined) {
+		const name = latest.kind.slice(PREFIX.length);
+		throw new Error(`run ${id} was saved by an earlier version of ${name} and cannot resume`);
+	}
+	if (latest.version < workflow.version) {
+		throw new Error(`run ${id} was saved by an earlier version of ${workflow.name} and cannot resume`);
+	}
+	const from = failedAt(latest);
+	const stored = latest.input as Stored;
+	const task = from === undefined ? latest.id : await store.create(workflow, { input: stored.input, from });
+	return { workflow, task, input: stored.input };
+}
+
+/** The open store and the task of the child run of `request`: a new run, or the run that an earlier call started. */
+async function openChild(
+	request: ChildRequest,
+	terminal: Terminal,
+	workflows: readonly AnyWorkflow[],
+): Promise<{ store: Store; task: TaskId<JsonValue> }> {
+	const { id } = request;
+	const directory = join(runsDirectory(), id);
+	const path = join(directory, "durable.sqlite");
+	const latest = existsSync(path) ? await latestTask(path) : undefined;
+	let store: Store | undefined;
+	try {
+		if (latest !== undefined) {
+			store = await openStore(directory, terminal, workflows);
+			return { store, task: (await continueRun(store, latest, id, workflows)).task };
+		}
+		await mkdir(directory, { recursive: true });
+		const input = await childInput(request, { id, directory, cwd: request.cwd });
+		store = await openStore(directory, terminal, workflows);
+		return { store, task: await store.create(script, { input }) };
+	} catch (error) {
+		await store?.close();
+		if (latest === undefined) await rm(directory, { recursive: true, force: true });
+		throw error;
+	}
+}
+
+/** The child run of `request`, run to its end in this process; see `ExtensionHost.child`. */
+async function runChild(
+	request: ChildRequest,
+	signal: AbortSignal | undefined,
+	terminal: Terminal,
+	workflows: readonly AnyWorkflow[],
+): Promise<unknown> {
+	const { store, task } = await openChild(request, terminal, workflows);
+	const failed = (reason: unknown) => new Error(`child run ${request.id} failed: ${reason}`);
+	let settled: SettledTask<JsonValue>;
+	try {
+		const stop = AbortSignal.any(signal === undefined ? [store.failed] : [signal, store.failed]);
+		settled = await store.harness.waitForTask(task, withAbortSignal(stop, BACKGROUND_CONTEXT));
+	} catch (error) {
+		if (store.failed.aborted && !signal?.aborted) throw failed(store.failed.reason);
+		throw error;
+	} finally {
+		await store.close();
+	}
+	const { outcome } = settled.state;
+	if (outcome.status !== "completed") throw failed(outcome.error?.message ?? outcome.reason ?? outcome.status);
+	const { result } = outcome;
+	return typeof result === "object" && result !== null && !Array.isArray(result)
+		? { ...result, runId: request.id }
+		: result;
 }
 
 type Listed = { readonly runId: string; readonly workflow: string; readonly title: string; readonly status: string };
@@ -334,6 +403,8 @@ async function openStore(directory: string, terminal: Terminal, workflows: reado
 		runDir: directory,
 		log: terminal.stderr,
 		fail: (message: string) => failure.abort(message),
+		newRunId,
+		child: (request: ChildRequest, signal: AbortSignal | undefined) => runChild(request, signal, terminal, workflows),
 	};
 	// Workflows that share a runtime declare the same `extensions`, which runs once.
 	const runtimes = new Set(

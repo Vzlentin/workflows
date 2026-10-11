@@ -10,6 +10,7 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { ensureWorktree } from "./git.ts";
 import { prepareWorktree, readItem, subject } from "./item.ts";
+import { instructions } from "./prompts.ts";
 import {
 	type Bundle,
 	loadBundle,
@@ -19,7 +20,7 @@ import {
 	scriptPhase,
 	scriptWorkflow,
 } from "./script.ts";
-import { defineWorkflow, type Io, UsageError } from "./workflow.ts";
+import { type ChildRequest, defineWorkflow, type Io, type Run, UsageError } from "./workflow.ts";
 
 const TYPES = ["string", "number", "boolean", "text"] as const;
 
@@ -311,7 +312,7 @@ export const script = defineWorkflow<Args, ScriptInput, ScriptCheckpoint, unknow
 	...scriptWorkflow,
 	name: "run",
 	usage: "workflows <workflow | file.js | -> [<text>] [--<arg> <value>]...",
-	version: 3,
+	version: 4,
 	parse: async ([word = "", ...argv], io) => {
 		const found = await findScript(word, io);
 		const meta = await readMeta(found.source, found.name);
@@ -349,3 +350,30 @@ export const script = defineWorkflow<Args, ScriptInput, ScriptCheckpoint, unknow
 	},
 	status: (result) => statusOf(result) ?? "done",
 });
+
+/**
+ * The input of the child run of `request`: the script `request.name` of the caller's bundle, with the `meta` defaults
+ * and the given args. `repo` and `base` select the repository of a new worktree, and `prompts` maps prompt names to
+ * texts that replace them in this run only. With `start`, or without `meta.worktree`, the child runs in the caller's
+ * directory. The args are not checked against `meta`.
+ */
+export async function childInput(request: ChildRequest, run: Run): Promise<ScriptInput> {
+	const { name, bundle } = request;
+	const source = Object.hasOwn(bundle.scripts, name) ? bundle.scripts[name] : undefined;
+	if (source === undefined) throw new Error(`no workflow ${name}`);
+	const meta = await readMeta(source, name);
+	const { repo, base = "main", prompts = {}, ...given } = request.args;
+	if (!isObject(prompts)) throw new Error(`run ${name}: prompts is not an object of prompt texts`);
+	const replaced = { ...bundle.prompts };
+	for (const [prompt, value] of Object.entries(prompts)) {
+		if (!Object.hasOwn(bundle.prompts, prompt)) throw new Error(`run ${name}: no prompt ${prompt}`);
+		replaced[prompt] = instructions(String(value));
+	}
+	const defaults = Object.entries(meta.args).flatMap(([arg, spec]) =>
+		spec.default === undefined ? [] : [[arg, spec.default] as const],
+	);
+	const args = { ...Object.fromEntries(defaults), ...given };
+	const input = { name, args, meta, bundle: { ...bundle, prompts: replaced, main: source } };
+	if (given.start !== undefined || !meta.worktree) return { ...input, cwd: run.cwd };
+	return script.prepare({ ...input, repo: repo === undefined ? undefined : String(repo), base: String(base) }, run);
+}

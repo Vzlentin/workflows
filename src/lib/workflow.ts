@@ -16,6 +16,7 @@ import {
 	configure,
 	defineTask,
 	type Extension,
+	type JsonObject,
 	type NextTaskState,
 	type RunningTask,
 	type Task,
@@ -23,6 +24,7 @@ import {
 	type Tx,
 } from "@earendil-works/pi-durable";
 import { type AgentChoice, sessionAgent } from "./agents.ts";
+import type { RunBundle } from "./script.ts";
 
 /** Bad command-line usage: the command prints `usage`, or its own usage, and exits 2. */
 export class UsageError extends Error {
@@ -91,6 +93,22 @@ export type ExtensionHost = {
 	log(line: string): void;
 	/** Stops the command with `message` as a resumable failure; the run's task stays pending. */
 	fail(message: string): void;
+	/** A new run ID. */
+	newRunId(): string;
+	/**
+	 * The result of the child run `request.id`, with `runId` added to an object result. The first call starts the run,
+	 * and a later call continues it. Throws `child run <id> failed: <error>` when the run fails.
+	 */
+	child(request: ChildRequest, signal: AbortSignal | undefined): Promise<unknown>;
+};
+
+/** A `run(name, args)` call of a workflow script: its child run ID, and the bundle and directory of the caller. */
+export type ChildRequest = {
+	readonly id: string;
+	readonly name: string;
+	readonly args: JsonObject;
+	readonly bundle: RunBundle;
+	readonly cwd: string;
 };
 
 export type Workflow<A, I, S extends Checkpoint, R> = {
