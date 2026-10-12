@@ -24,9 +24,6 @@ case "$1" in
 ok)
 	echo "run r1"; echo "phase one" >&2; echo "log two" >&2
 	echo '{"runId":"r1","status":"finished","result":{"answer":42},"report":["{\\"answer\\":42}"]}' ;;
--)
-	echo "run r2"; cat > stdin.js
-	echo '{"runId":"r2","status":"finished","result":"from stdin","report":["from stdin"]}' ;;
 bad) echo "run r3"; echo "phase one" >&2; echo '{"runId":"r3","status":"failed","error":"boom"}'; exit 1 ;;
 slow)
 	echo "run r4"
@@ -44,10 +41,6 @@ optimize)
 	echo "run r7"
 	echo '{"runId":"r7","status":"finished","result":{"baseline":0.5,"best":0.75,"diff":"prompts.diff"},"report":["optimized ship: baseline 0.50, best 0.75, prompts.diff"]}' ;;
 list) echo "r5 ship shipped Fix the README typo"; echo "r4 run unfinished slow" ;;
-save)
-	[ -n "$3" ] || { echo "workflows: give one run ID and one name" >&2; echo "usage: workflows save <run-id> <name> [--force]" >&2; exit 2; }
-	[ "$2" = r5 ] || { echo "workflows: no run $2" >&2; exit 1; }
-	echo "/repo/.workflows/workflows/$3.js\${4:+ $4}" ;;
 show)
 	[ -n "$2" ] || { echo "workflows: give one run ID" >&2; echo "usage: workflows show <run-id> [--json]" >&2; exit 2; }
 	[ "$2" = r5 ] || { echo "workflows: no run $2" >&2; exit 1; }
@@ -117,16 +110,7 @@ describe("the workflow tool", () => {
 		expect(await readFile(join(root, "args.log"), "utf8")).toBe('ok --path=src --depth=2 --all --tags=["a"] --json\n');
 	});
 
-	it("sends a script on stdin, passes every argument as a flag", async () => {
-		const script = await call({ script: "return 'hi'" });
-		expect(script.result.structuredContent).toEqual({
-			runId: "r2",
-			status: "finished",
-			result: "from stdin",
-			report: ["from stdin"],
-		});
-		expect(await readFile(join(root, "stdin.js"), "utf8")).toBe("return 'hi'");
-
+	it("passes every argument as a flag", async () => {
 		const ship = await call({ name: "ship", args: { item: "Fix the README typo", rounds: 2 } });
 		expect(ship.result.structuredContent).toEqual({
 			runId: "r5",
@@ -150,7 +134,6 @@ describe("the workflow tool", () => {
 			report: ["optimized ship: baseline 0.50, best 0.75, prompts.diff"],
 		});
 		expect((await readFile(join(root, "args.log"), "utf8")).split("\n")).toEqual([
-			"- --json",
 			"ship --item=Fix the README typo --rounds=2 --json",
 			"campaign --base=develop --goal=goal.md --json",
 			"optimize --workflow=ship --items=items --trials=4 --json",
@@ -198,7 +181,6 @@ describe("the workflow tool", () => {
 		expect(draw({ name: "ok" })).toEqual(["workflow ok"]);
 		expect(draw({ name: "fix", args: { depth: 2, path: "src/lib" } })).toEqual(["workflow fix src/lib"]);
 		expect(draw({ name: "toString" })).toEqual(["workflow toString"]);
-		expect(draw({ script: "return 1" })).toEqual(["workflow script"]);
 		expect(draw({ resume: "r4" })).toEqual(["workflow resume r4"]);
 	});
 
@@ -230,7 +212,8 @@ describe("the workflow tool", () => {
 
 	it("throws the stderr text when no run starts", async () => {
 		await expect(call({ name: "usage" })).rejects.toThrow("workflows: unknown flag");
-		await expect(call({ name: "ok", resume: "r1" })).rejects.toThrow("give exactly one of name, script or resume");
+		await expect(call({ name: "ok", resume: "r1" })).rejects.toThrow("give exactly one of name or resume");
+		await expect(call({ script: "x" })).rejects.toThrow("give exactly one of name or resume");
 	});
 });
 
@@ -253,20 +236,7 @@ describe("/workflows", () => {
 			"run r5 ship shipped Fix\n  ✓ sh git status  0s",
 			"workflows: no run r9",
 			"workflows: give one run ID\nusage: workflows show <run-id> [--json]",
-			"usage: /workflows [show <run-id> | save <run-id> <name> [--force] | resume <run-id>]",
-		]);
-	});
-
-	it("saves the script of a run, or sends the error of the command", async () => {
-		await command("save r5 fix", ctx());
-		await command("save r9 fix", ctx());
-		await command("save r5 fix --force", ctx());
-		await command("save r5", ctx());
-		expect(messages.map((message) => message.content)).toEqual([
-			"/repo/.workflows/workflows/fix.js",
-			"workflows: no run r9",
-			"/repo/.workflows/workflows/fix.js --force",
-			"workflows: give one run ID and one name\nusage: workflows save <run-id> <name> [--force]",
+			"usage: /workflows [show <run-id> | resume <run-id>]",
 		]);
 	});
 

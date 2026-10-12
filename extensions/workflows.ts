@@ -14,7 +14,6 @@ import { Text } from "@earendil-works/pi-tui";
 
 type WorkflowCall = {
 	readonly name?: string;
-	readonly script?: string;
 	readonly resume?: string;
 	readonly args?: Readonly<Record<string, unknown>>;
 };
@@ -42,11 +41,9 @@ const text = (value: unknown) => (typeof value === "string" ? value : JSON.strin
  * The `workflows` arguments of a tool call, always with `--json`, with each arg as a flag. The command rejects a flag
  * it does not know, so a mistyped arg fails before a run exists.
  */
-function cliArgs({ name, script, resume, args = {} }: WorkflowCall): string[] {
-	const given = [name, script, resume].filter((value) => value !== undefined).length;
-	if (given !== 1) throw new Error("give exactly one of name, script or resume");
-	if (resume !== undefined) return ["resume", resume, "--json"];
-	if (name === undefined) return ["-", "--json"];
+function cliArgs({ name, resume, args = {} }: WorkflowCall): string[] {
+	if (resume !== undefined && name === undefined) return ["resume", resume, "--json"];
+	if (name === undefined || resume !== undefined) throw new Error("give exactly one of name or resume");
 	const flags = Object.entries(args).flatMap(([key, flag]) =>
 		flag === false ? [] : [flag === true ? `--${key}` : `--${key}=${text(flag)}`],
 	);
@@ -61,7 +58,6 @@ async function runCli(
 	args: readonly string[],
 	cwd: string,
 	options: {
-		stdin?: string | undefined;
 		signal?: AbortSignal | undefined;
 		progress?: (line: string) => void;
 	},
@@ -81,7 +77,7 @@ async function runCli(
 	const interrupt = () => child.kill("SIGINT");
 	options.signal?.addEventListener("abort", interrupt, { once: true });
 	try {
-		child.stdin.end(options.stdin ?? "");
+		child.stdin.end();
 		const [[code]] = await Promise.all([once(child, "close"), once(out, "close"), once(err, "close")]);
 		return { code: code as number | null, stdout, stderr };
 	} finally {
@@ -117,12 +113,11 @@ function resultOf(outcome: WorkflowOutcome, steps: readonly string[]): AgentTool
 }
 
 /**
- * `<name> <slug>`, `<name>`, `script` or `resume <run-id>`. The slug comes from the first string argument. The
+ * `<name> <slug>`, `<name>` or `resume <run-id>`. The slug comes from the first string argument. The
  * arguments can be partial while the call streams.
  */
-function callLabel({ name, script, resume, args }: WorkflowCall): string {
+function callLabel({ name, resume, args }: WorkflowCall): string {
 	if (resume !== undefined) return `resume ${resume}`;
-	if (script !== undefined) return "script";
 	const item = Object.values(args ?? {}).find((value) => typeof value === "string");
 	if (typeof item !== "string") return name ?? "";
 	if (item.endsWith(".md")) return `${name} ${basename(item, ".md")}`;
@@ -150,8 +145,8 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 		label: "Workflow",
 		description:
 			"Run a durable workflow and wait for its result. Give exactly one of: `name` (a workflow script such as " +
-			"`ship`, `campaign` or `optimize`), `script` (the body of an inline workflow script), or `resume` (a run " +
-			"ID). `args` are the workflow's arguments, each passed as `--<key>`; a script's `meta` declares them. For " +
+			"`ship`, `campaign` or `optimize`) or `resume` (a run ID). " +
+			"`args` are the workflow's arguments, each passed as `--<key>`; a script's `meta` declares them. For " +
 			"`ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and `prompts`. For `campaign`, which " +
 			"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
 			"`base`, `rounds` and `prompts`. For `optimize`, which searches for better ship prompts over a folder of work " +
@@ -161,7 +156,6 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 			name: Type.Optional(
 				Type.String({ description: "`ship`, `campaign`, `optimize`, or the name of a workflow script" }),
 			),
-			script: Type.Optional(Type.String({ description: "An inline workflow script" })),
 			resume: Type.Optional(Type.String({ description: "The ID of a run to continue" })),
 			args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 		}),
@@ -175,7 +169,6 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const steps: string[] = [];
 			const output = await runCli(command, cliArgs(params), ctx.cwd, {
-				stdin: params.script,
 				signal,
 				progress: (line) => {
 					steps.push(line);
@@ -200,8 +193,8 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 
 	pi.registerCommand("workflows", {
 		description:
-			"List the workflow runs, show the calls of one with: show <run-id>, keep its script as a project workflow with: " +
-			"save <run-id> <name>, or ask the agent to continue one with: resume <run-id>",
+			"List the workflow runs, show the calls of one with: show <run-id>, or ask the agent " +
+			"to continue one with: resume <run-id>",
 		handler: async (args, ctx) => {
 			const send = (content: string) => pi.sendMessage({ customType: "workflows", content, display: true });
 			const words = args.trim().split(/\s+/).filter(Boolean);
@@ -211,7 +204,7 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 					const output = await runCli(command, ["list"], ctx.cwd, {});
 					if (output.code !== 0) throw new Error(output.stderr.join("\n"));
 					send(output.stdout.join("\n") || "no runs");
-				} else if (verb === "show" || verb === "save") {
+				} else if (verb === "show") {
 					const output = await runCli(command, words, ctx.cwd, {});
 					if (output.code !== 0) throw new Error(output.stderr.join("\n"));
 					send(output.stdout.join("\n"));
@@ -220,7 +213,7 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 					const message = `Continue the workflow run ${id} with the workflow tool: resume: "${id}".`;
 					pi.sendUserMessage(message, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 				} else {
-					send("usage: /workflows [show <run-id> | save <run-id> <name> [--force] | resume <run-id>]");
+					send("usage: /workflows [show <run-id> | resume <run-id>]");
 				}
 			} catch (error) {
 				send(error instanceof Error ? error.message : String(error));

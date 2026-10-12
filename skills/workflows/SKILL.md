@@ -11,14 +11,13 @@ directly.
 
 ## The `workflow` tool
 
-Give exactly one of `name`, `script` or `resume`, plus `args`:
+Give exactly one of `name` or `resume`, plus `args`:
 
 ```js
 await tools.workflow({ name: "ship", args: { item: "Fix the README typo", repo: "calibre", rounds: 2 } })
 await tools.workflow({ name: "campaign", args: { goal: "goals/docs.md", rounds: 2 } })
 await tools.workflow({ name: "optimize", args: { workflow: "ship", items: "items/", trials: 5 } })
 await tools.workflow({ name: "review", args: { path: "src" } })
-await tools.workflow({ script: "return await agent('List the modules under src/')" })
 await tools.workflow({ resume: "20261010T234930-3a93e88c" })
 ```
 
@@ -34,7 +33,6 @@ await tools.workflow({ resume: "20261010T234930-3a93e88c" })
 - Any other `name` is a script in `workflows/` of the project's `.workflows/` or of the package. Each arg becomes the
   flag `--<key>`, and the script's `meta` declares the args it takes, with their types. An undeclared arg is an error.
   `workflows` lists the scripts with their `meta.description`.
-- `script` is an inline workflow script.
 - `resume` continues a run by its ID.
 
 The run starts in the session's directory. The result is `{ runId, status, result?, error? }`. `status` is
@@ -66,22 +64,17 @@ Sandbox rules:
 workflows ship [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<item.md> | <text>] [--json]
 workflows campaign [--repo <repository>] [--base <branch>] [--rounds <n>] [--prompts <folder>] [<goal.md> | <text>] [--json]
 workflows optimize [--workflow ship] --items <folder> [--improve <name,...>] [--trials <n>] [--prompts <folder>] [ship] [--json]
-workflows <name | file.js | -> [<text>] [--<arg> <value>]... [--json]
+workflows <name | file.js> [<text>] [--<arg> <value>]... [--json]
 workflows <name> --help
 workflows check <name>
 workflows
 workflows resume <run-id> [--json]
 workflows list [--json]
 workflows show <run-id> [--json]
-workflows save <run-id> <name> [--force]
 ```
 
 `workflows show <run-id>` prints the phases and calls of a run as a tree, with a mark for each call: `✓` finished, `✗`
 failed, `◉` running or stopped. It takes short write locks on the store: a live run waits up to 60 seconds for them, and `show` waits for the run the same way.
 
-`workflows save <run-id> <name>` writes the script of a run to `.workflows/workflows/<name>.js` of the project, so
-`workflows <name>` runs it again. A taken name needs `--force`.
-
-In Pi, `/workflows` lists the runs, `/workflows show <run-id>` shows one, `/workflows save <run-id> <name> [--force]` saves its
-script, and `/workflows resume <run-id>` asks the
+In Pi, `/workflows` lists the runs, `/workflows show <run-id>` shows one, and `/workflows resume <run-id>` asks the
 agent to continue one with the tool.

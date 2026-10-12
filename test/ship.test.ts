@@ -675,12 +675,6 @@ describe("workflows resume of ship runs", () => {
 				[],
 				[`workflows: run ${id} was saved by ${word} version of ${name} and cannot be shown`],
 			]);
-			const saved = await workflows(["save", id, "x"], { cwd: repo });
-			expect([saved.code, saved.stdout, saved.stderr]).toEqual([
-				1,
-				[],
-				[`workflows: run ${id} was saved by ${word} version of ${name} and cannot be saved`],
-			]);
 		}
 		const listed = await workflows(["list"], { cwd: repo });
 		expect(listed.stdout).toEqual([]);
