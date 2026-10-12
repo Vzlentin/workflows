@@ -1,21 +1,12 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-	AgentToolResult,
-	ExtensionAPI,
-	ExtensionCommandContext,
-	Theme,
-	ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import extension from "../extensions/workflows.ts";
 
 let root: string;
 let tool: ToolDefinition;
-let command: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
-let messages: { content: unknown; details?: unknown }[];
-let prompts: unknown[][];
 
 /** A fake `workflows` command: its behavior comes from its arguments, which it appends to `args.log`. */
 const FAKE = `#!/bin/sh
@@ -40,11 +31,6 @@ campaign)
 optimize)
 	echo "run r7"
 	echo '{"runId":"r7","status":"finished","result":{"baseline":0.5,"best":0.75,"diff":"prompts.diff"},"report":["optimized ship: baseline 0.50, best 0.75, prompts.diff"]}' ;;
-list) echo "r5 ship shipped Fix the README typo"; echo "r4 run unfinished slow" ;;
-show)
-	[ -n "$2" ] || { echo "workflows: give one run ID" >&2; echo "usage: workflows show <run-id> [--json]" >&2; exit 2; }
-	[ "$2" = r5 ] || { echo "workflows: no run $2" >&2; exit 1; }
-	echo "run r5 ship shipped Fix"; echo "  ✓ sh git status  0s" ;;
 *) exit 9 ;;
 esac
 `;
@@ -52,18 +38,10 @@ esac
 beforeEach(async () => {
 	root = await mkdtemp(join(tmpdir(), "workflows-extension-test-"));
 	await writeFile(join(root, "workflows"), FAKE);
-	messages = [];
-	prompts = [];
 	const pi = {
 		registerTool: (registered: ToolDefinition) => {
 			tool = registered;
 		},
-		registerCommand: (name: string, options: { handler: typeof command }) => {
-			expect(name).toBe("workflows");
-			command = options.handler;
-		},
-		sendMessage: (message: { content: unknown; details?: unknown }) => messages.push(message),
-		sendUserMessage: (...args: unknown[]) => prompts.push(args),
 	} as unknown as ExtensionAPI;
 	extension(pi, ["/bin/sh", join(root, "workflows")]);
 });
@@ -214,41 +192,5 @@ describe("the workflow tool", () => {
 		await expect(call({ name: "usage" })).rejects.toThrow("workflows: unknown flag");
 		await expect(call({ name: "ok", resume: "r1" })).rejects.toThrow("give exactly one of name or resume");
 		await expect(call({ script: "x" })).rejects.toThrow("give exactly one of name or resume");
-	});
-});
-
-describe("/workflows", () => {
-	const ctx = (idle = true) => ({ cwd: root, isIdle: () => idle }) as unknown as ExtensionCommandContext;
-
-	it("lists the runs", async () => {
-		await command("", ctx());
-		expect(messages.map((message) => message.content)).toEqual([
-			"r5 ship shipped Fix the README typo\nr4 run unfinished slow",
-		]);
-	});
-
-	it("shows a run, or the error of the command", async () => {
-		await command("show r5", ctx());
-		await command("show r9", ctx());
-		await command("show", ctx());
-		await command("nope", ctx());
-		expect(messages.map((message) => message.content)).toEqual([
-			"run r5 ship shipped Fix\n  ✓ sh git status  0s",
-			"workflows: no run r9",
-			"workflows: give one run ID\nusage: workflows show <run-id> [--json]",
-			"usage: /workflows [show <run-id> | resume <run-id>]",
-		]);
-	});
-
-	it("asks the agent to resume a run with the workflow tool", async () => {
-		await command("resume r4", ctx());
-		await command("resume r5", ctx(false));
-		const message = (id: string) => `Continue the workflow run ${id} with the workflow tool: resume: "${id}".`;
-		expect(prompts).toEqual([
-			[message("r4"), undefined],
-			[message("r5"), { deliverAs: "followUp" }],
-		]);
-		expect(messages).toEqual([]);
-		await expect(readFile(join(root, "args.log"), "utf8")).rejects.toThrow();
 	});
 });

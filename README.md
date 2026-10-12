@@ -542,8 +542,8 @@ as no run ID, prints `usage: workflows show <run-id> [--json]` and exits 2.
 
 ## Pi package
 
-The package is also a Pi package. Its `pi` field in `package.json` declares the extension `extensions/workflows.ts`
-and the skill `skills/workflows/SKILL.md`. Add it to Pi from its Git URL, like other Pi packages:
+The package is also a Pi package. Its `pi` field in `package.json` declares the extension `extensions/workflows.ts`.
+Add it to Pi from its Git URL, like other Pi packages:
 
 ```sh
 pi install https://github.com/Vzlentin/workflows
@@ -600,13 +600,6 @@ These are the fields of the JSON outcome line of the command.
 A failed or interrupted result is an error result that keeps `structuredContent`. Thus
 `await tools.workflow({ name: "ship", args: { item } })` in a codemode script gets this object. A call that fails
 before a run exists, such as an unknown workflow name, is a normal tool error with the stderr text.
-
-### `/workflows`
-
-`/workflows` prints the output of `workflows list` in the session. `/workflows show ...` runs
-`workflows show` with the same arguments, and prints the output, or the error and the usage line. `/workflows resume <run-id>` does not run the
-command. It sends a user message that asks the agent to continue the run with the `workflow` tool, so that Esc and the
-progress updates work as for any tool call. When the agent is busy, the message waits as a follow-up.
 
 ## Run directory
 

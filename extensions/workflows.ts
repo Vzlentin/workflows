@@ -1,5 +1,5 @@
 /**
- * The Pi extension: the `workflow` tool and the `/workflows` command. Each run is a child process of this package's
+ * The Pi extension: the `workflow` tool. Each run is a child process of this package's
  * `workflows` command, so a run started in Pi is a normal run that `workflows resume` also continues.
  */
 import { spawn } from "node:child_process";
@@ -188,36 +188,6 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 				return new Text(first?.type === "text" ? first.text : "", 0, 0);
 			}
 			return new Text(detailLines(details, theme).join("\n"), 0, 0);
-		},
-	});
-
-	pi.registerCommand("workflows", {
-		description:
-			"List the workflow runs, show the calls of one with: show <run-id>, or ask the agent " +
-			"to continue one with: resume <run-id>",
-		handler: async (args, ctx) => {
-			const send = (content: string) => pi.sendMessage({ customType: "workflows", content, display: true });
-			const words = args.trim().split(/\s+/).filter(Boolean);
-			const [verb, id, ...rest] = words;
-			try {
-				if (verb === undefined) {
-					const output = await runCli(command, ["list"], ctx.cwd, {});
-					if (output.code !== 0) throw new Error(output.stderr.join("\n"));
-					send(output.stdout.join("\n") || "no runs");
-				} else if (verb === "show") {
-					const output = await runCli(command, words, ctx.cwd, {});
-					if (output.code !== 0) throw new Error(output.stderr.join("\n"));
-					send(output.stdout.join("\n"));
-				} else if (verb === "resume" && id !== undefined && rest.length === 0) {
-					// A tool call, so that Esc and the progress updates work as for any other run.
-					const message = `Continue the workflow run ${id} with the workflow tool: resume: "${id}".`;
-					pi.sendUserMessage(message, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
-				} else {
-					send("usage: /workflows [show <run-id> | resume <run-id>]");
-				}
-			} catch (error) {
-				send(error instanceof Error ? error.message : String(error));
-			}
 		},
 	});
 }

@@ -12,16 +12,12 @@
 		"dist",
 		"extensions",
 		"prompts",
-		"skills",
 		"src",
 		"workflows"
 	],
 	"pi": {
 		"extensions": [
 			"./extensions/workflows.ts"
-		],
-		"skills": [
-			"./skills"
 		]
 	},
 	"engines": {
