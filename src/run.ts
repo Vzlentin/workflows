@@ -20,6 +20,19 @@ export class UsageError extends Error {
 	}
 }
 
+/** The result of `parse`, a call of `parseArgs`, whose errors become bad usage that prints `usage`. */
+export function withUsage<T>(parse: () => T, usage: string): T {
+	try {
+		return parse();
+	} catch (error) {
+		const code = (error as { code?: unknown }).code;
+		if (typeof code === "string" && code.startsWith("ERR_PARSE_ARGS")) {
+			throw new UsageError((error as Error).message, usage);
+		}
+		throw error;
+	}
+}
+
 /** What a run needs from the command line before it starts. */
 export type Run = { readonly id: string; readonly directory: string; readonly cwd: string };
 

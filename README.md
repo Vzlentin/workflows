@@ -260,7 +260,9 @@ workflows check review
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `list`, `show`, `save` and `check` are commands, so no script of these names can run.
+`resume`, `list`, `show`, `save` and `check` are commands, so no script of these names can run. Bad usage of a
+command prints `workflows: <error>`, then `usage:` and the usage line of that command, such as `usage: workflows
+show <run-id> [--json]`, and exits 2.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
@@ -538,7 +540,7 @@ to 60 seconds for them, and `show` waits for the run the same way. An
 unknown run ID prints the `no run` error of `resume`. A run saved by an earlier version prints `workflows: run
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
-as no run ID, exits 2.
+as no run ID, prints `usage: workflows show <run-id> [--json]` and exits 2.
 
 ## Save
 
@@ -551,8 +553,9 @@ path of the file. The folder is made when it does not exist. Then `workflows <na
 started from stdin or from a file can run again by name. The file has the full text of the script that the run saved,
 with its `export const meta` header. Only the script is saved: no prompts, agent profiles or scripts of child runs.
 
-- The name is lowercase letters, digits and `-`, and starts with a letter or a digit. Another name, or not exactly one
-  run ID and one name, prints the error, then `usage: workflows save <run-id> <name> [--force]`, and exits 2.
+- The name is lowercase letters, digits and `-`, and starts with a letter or a digit. Another name, not exactly one
+  run ID and one name, or another flag, prints the error, then `usage: workflows save <run-id> <name> [--force]`, and
+  exits 2.
 - A command name prints `workflows: <name> is a command and cannot be a workflow name` and exits 1.
 - An unknown run ID, or the ID of a child run, prints the `no run` error of `resume`. A run saved by an earlier
   version prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot be saved`, and a
@@ -628,9 +631,9 @@ before a run exists, such as an unknown workflow name, is a normal tool error wi
 
 ### `/workflows`
 
-`/workflows` prints the output of `workflows list` in the session, and `/workflows show <run-id>` prints the output
-of `workflows show <run-id>`, or its error. `/workflows save <run-id> <name>` prints the output of `workflows save
-<run-id> <name>` in the same way. `/workflows resume <run-id>` does not run the
+`/workflows` prints the output of `workflows list` in the session. `/workflows show ...` and `/workflows save ...`
+run `workflows show` and `workflows save` with the same arguments, such as `/workflows save <run-id> <name>
+--force`, and print the output, or the error and the usage line. `/workflows resume <run-id>` does not run the
 command. It sends a user message that asks the agent to continue the run with the `workflow` tool, so that Esc and the
 progress updates work as for any tool call. When the agent is busy, the message waits as a follow-up.
 

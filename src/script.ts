@@ -139,7 +139,7 @@ function profileOf(name: string, text: string): Profile {
 export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle> {
 	const project = cwd === undefined ? PACKAGE : await projectFolder(cwd);
 	const [scripts, merged, profiles] = await Promise.all([
-		readMerged(project, "workflows", ".js"),
+		loadScripts(project),
 		readMerged(project, "prompts", ".md"),
 		readMerged(project, "agents", ".md"),
 	]);
@@ -149,6 +149,11 @@ export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle
 		prompts: Object.fromEntries(Object.entries(templates).map(([name, text]) => [name, instructions(text)])),
 		agents: Object.fromEntries(Object.entries(profiles).map(([name, text]) => [name, profileOf(name, text)])),
 	};
+}
+
+/** The scripts of the package and of the project folder `project`, where a project script replaces the package script of its name. */
+export function loadScripts(project: string): Promise<Record<string, string>> {
+	return readMerged(project, "workflows", ".js");
 }
 
 /** `.workflows/` at the root of the Git repository of `cwd`, or in `cwd` outside a repository. */

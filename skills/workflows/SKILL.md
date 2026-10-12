@@ -82,6 +82,6 @@ failed, `◉` running or stopped. It takes short write locks on the store: a liv
 `workflows save <run-id> <name>` writes the script of a run to `.workflows/workflows/<name>.js` of the project, so
 `workflows <name>` runs it again. A taken name needs `--force`.
 
-In Pi, `/workflows` lists the runs, `/workflows show <run-id>` shows one, `/workflows save <run-id> <name>` saves its
+In Pi, `/workflows` lists the runs, `/workflows show <run-id>` shows one, `/workflows save <run-id> <name> [--force]` saves its
 script, and `/workflows resume <run-id>` asks the
 agent to continue one with the tool.

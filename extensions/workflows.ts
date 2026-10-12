@@ -204,17 +204,15 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 			"save <run-id> <name>, or ask the agent to continue one with: resume <run-id>",
 		handler: async (args, ctx) => {
 			const send = (content: string) => pi.sendMessage({ customType: "workflows", content, display: true });
-			const [verb, id, ...rest] = args.trim().split(/\s+/).filter(Boolean);
+			const words = args.trim().split(/\s+/).filter(Boolean);
+			const [verb, id, ...rest] = words;
 			try {
 				if (verb === undefined) {
 					const output = await runCli(command, ["list"], ctx.cwd, {});
 					if (output.code !== 0) throw new Error(output.stderr.join("\n"));
 					send(output.stdout.join("\n") || "no runs");
-				} else if (
-					id !== undefined &&
-					((verb === "show" && rest.length === 0) || (verb === "save" && rest.length === 1))
-				) {
-					const output = await runCli(command, [verb, id, ...rest], ctx.cwd, {});
+				} else if (verb === "show" || verb === "save") {
+					const output = await runCli(command, words, ctx.cwd, {});
 					if (output.code !== 0) throw new Error(output.stderr.join("\n"));
 					send(output.stdout.join("\n"));
 				} else if (verb === "resume" && id !== undefined && rest.length === 0) {
@@ -222,7 +220,7 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 					const message = `Continue the workflow run ${id} with the workflow tool: resume: "${id}".`;
 					pi.sendUserMessage(message, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 				} else {
-					send("usage: /workflows [show <run-id> | save <run-id> <name> | resume <run-id>]");
+					send("usage: /workflows [show <run-id> | save <run-id> <name> [--force] | resume <run-id>]");
 				}
 			} catch (error) {
 				send(error instanceof Error ? error.message : String(error));
