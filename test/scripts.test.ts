@@ -398,7 +398,7 @@ return findings[0].finding`,
 			`const { n } = await agent('Script respond: {"n": 3}', { schema: { type: "object", properties: { n: { type: "number" } }, required: ["n"] } })
 return n`,
 		);
-		const run = await workflows(["x.js"], { cwd: root, script: { plain: 1 } });
+		const run = await workflows(["x.js"], { cwd: root, script: { skipRespond: 1 } });
 		expect(run.stderr).toEqual([]);
 		expect(run.stdout).toEqual([`run ${run.id}`, "3"]);
 		expect(run.model.calls.map((call) => call.prompt)).toEqual(['Script respond: {"n": 3}', REMINDER]);
@@ -410,13 +410,74 @@ return n`,
 			`const { n } = await agent('Script respond: {"n": 3}', { schema: { type: "object", properties: { n: { type: "number" } }, required: ["n"] } })
 return n`,
 		);
-		const run = await workflows(["x.js"], { cwd: root, script: { plain: 3 } });
+		const run = await workflows(["x.js"], { cwd: root, script: { skipRespond: 3 } });
 		expect(run.code).toBe(1);
 		expect(run.stderr[0]).toBe("failed x: the answer did not call respond");
 		expect(run.model.calls.map((call) => call.prompt)).toEqual(['Script respond: {"n": 3}', REMINDER, REMINDER]);
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${run.id}`, "3"]]);
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(['Script respond: {"n": 3}']);
+	});
+
+	it("asks a failed schema ask again on resume after a later text ask in its session", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const schema = { type: "object", properties: { n: { type: "number" } }, required: ["n"] }
+const s = session()
+let a
+try {
+	a = await s.ask('Script respond: {"n": 3}', { schema })
+} catch {
+	await s.ask("Script: two")
+	throw new Error("x")
+}
+return a.n`,
+		);
+		const run = await workflows(["x.js"], { cwd: root, script: { skipRespond: 3 } });
+		expect(run.code).toBe(1);
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${run.id}`, "3"]]);
+		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(['Script respond: {"n": 3}']);
+	});
+
+	it("does not return the answer of a later schema ask in its session on resume", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const schema = { type: "object", properties: { n: { type: "number" } }, required: ["n"] }
+const s = session()
+let a
+try {
+	a = await s.ask('Script respond: {"n": 3}', { schema })
+} catch {
+	await s.ask('Script respond: {"n": 5}', { schema })
+	throw new Error("x")
+}
+return a.n`,
+		);
+		const run = await workflows(["x.js"], { cwd: root, script: { skipRespond: 3 } });
+		expect(run.code).toBe(1);
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${run.id}`, "3"]]);
+	});
+
+	it("keeps the reminder count of a turn across an interruption", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const { n } = await agent('Script respond: {"n": 3}', { schema: { type: "object", properties: { n: { type: "number" } }, required: ["n"] } })
+return n`,
+		);
+		const run = await workflows(["x.js"], {
+			cwd: root,
+			script: { interruptAt: { kind: "script", nth: 2 }, skipRespond: 9 },
+		});
+		expect(run.code).not.toBe(0);
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root, script: { skipRespond: 9 } });
+		expect(resumed.code).toBe(1);
+		expect(resumed.stderr[0]).toBe("failed x: the answer did not call respond");
+		// The interrupted turn sends its first reminder again and gets one more. The ask then sends its prompt again
+		// under the next request ID, and that turn gets its own two reminders.
+		const prompt = 'Script respond: {"n": 3}';
+		expect(resumed.model.calls.map((call) => call.prompt)).toEqual([REMINDER, REMINDER, prompt, REMINDER, REMINDER]);
 	});
 
 	it("returns the respond answer of a message that also calls another tool", async () => {

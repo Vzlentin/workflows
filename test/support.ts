@@ -145,8 +145,8 @@ export type Script = {
 	readonly failAt?: { readonly kind: Kind; readonly nth: number; readonly stopReason?: "length" };
 	/** The plan prompt first calls `probe` and `ls`, review and judge call `probe`, and implement calls `probe` next to its edit. */
 	readonly probe?: boolean;
-	/** How many reminders a `Script respond: <json>` turn gets a text reply to before it calls `respond`. */
-	readonly plain?: number;
+	/** How many answers of this model to `Script respond: <json>` prompts are text replies with no `respond` call. */
+	readonly skipRespond?: number;
 	/** Pressed Ctrl+C. */
 	readonly interrupt: AbortController;
 };
@@ -169,6 +169,7 @@ export class FakeModel {
 	readonly models = createModels();
 	readonly #script: Script;
 	#failed = false;
+	#skipped = 0;
 
 	constructor(script: Script) {
 		this.#script = script;
@@ -198,10 +199,10 @@ export class FakeModel {
 			tools.splice(0, tools.length, ...tools.filter((name) => !removed.has(name)));
 			tools.push(...(message.toolsAdded ?? []).map((tool) => tool.name));
 		}
-		const user = messages[asked(messages)];
+		const index = asked(messages);
+		const user = messages[index];
 		const prompt = user === undefined ? "" : textOf(user);
 		const lastUser = messages.findLast((message) => message.role === "user");
-		const said = lastUser === undefined ? "" : textOf(lastUser);
 		const found = KINDS.find(([start]) => prompt.replace(MEMORY, "").startsWith(start))?.[1];
 		if (found === undefined) throw new Error(`unexpected prompt: ${prompt}`);
 		const kind = found === "challenge" && tools.includes("respond") ? "verdict" : found;
@@ -209,7 +210,7 @@ export class FakeModel {
 		if (last?.role === "toolResult") {
 			const after = messages.slice(messages.findLastIndex((message) => message.role === "assistant") + 1);
 			for (const message of after) if (message.role === "toolResult") this.results.push(textOf(message));
-			const scripted = scriptAttempt(messages);
+			const scripted = scriptAttempt(messages, index);
 			if (scripted !== undefined) return scripted;
 			if (kind === "judge") return this.#judge();
 			if (kind === "implement") return implemented(this.count(kind), "I fixed the typo in README.md.");
@@ -233,7 +234,7 @@ export class FakeModel {
 			thinking: options?.reasoning,
 			tools,
 			sections: Object.assign({}, ...system.map((message) => message.sections ?? {})),
-			prompt: said,
+			prompt: lastUser === undefined ? "" : textOf(lastUser),
 		});
 		const probe = fauxToolCall("probe", {});
 		if (this.#script.probe && kind === "plan") {
@@ -284,11 +285,11 @@ export class FakeModel {
 					const calls = [fauxToolCall("respond", { answer: JSON.parse(both) }), fauxToolCall("ls", {})];
 					return fauxAssistantMessage(calls, { stopReason: "toolUse" });
 				}
-				const reminders = messages.slice(asked(messages)).filter((message) => textOf(message) === REMINDER).length;
-				if (prompt.startsWith("Script respond: ") && reminders < (this.#script.plain ?? 0)) {
-					return fauxAssistantMessage(`Plain reply ${reminders + 1}`);
+				if (prompt.startsWith("Script respond: ") && this.#skipped < (this.#script.skipRespond ?? 0)) {
+					this.#skipped++;
+					return fauxAssistantMessage("Plain reply");
 				}
-				return scriptAttempt(messages) ?? fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
+				return scriptAttempt(messages, index) ?? fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
 			}
 		}
 	};
@@ -306,11 +307,10 @@ function asked(messages: readonly Message[]): number {
 }
 
 /**
- * The `respond` call of the current attempt at a `Script respond: <json>` prompt, which has one JSON text per line:
+ * The `respond` call of the current attempt at the `Script respond: <json>` prompt at index `user` of `messages`, which has one JSON text per line:
  * attempt n answers with line n. Undefined for any other prompt, whose reply is `Reply to <text>`.
  */
-function scriptAttempt(messages: readonly Message[]): AssistantMessage | undefined {
-	const user = asked(messages);
+function scriptAttempt(messages: readonly Message[], user: number): AssistantMessage | undefined {
 	const prompt = messages[user];
 	const answers = prompt && /^Script respond: (.*)$/s.exec(textOf(prompt))?.[1]?.split("\n");
 	if (answers === undefined) return undefined;

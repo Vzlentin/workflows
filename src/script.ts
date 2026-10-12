@@ -163,13 +163,14 @@ const ANSWER = "workflows-answer";
 const checkpointWhen = (_value: unknown, _ops: unknown, info: { readonly deltasSinceBase: number }): boolean =>
 	info.deltasSinceBase >= 31;
 
-type Answer = { schema?: JsonObject; answer?: JsonValue };
+type AnswerState = { schema?: JsonObject; requestId?: string; answer?: JsonValue };
 
 /**
- * The JSON Schema of the current ask's answer, per conversation, and the answer that `respond` checked and saved. The
- * schema is absent when the ask has no `schema`, and the answer is absent until `respond` accepts one.
+ * The JSON Schema of the current ask's answer, per conversation, the request ID of the turn that sends it, and the
+ * answer that `respond` checked and saved in that turn. The schema is absent when the ask has no `schema`, and the
+ * answer is absent until `respond` accepts one.
  */
-const AnswerDoc = defineDoc<Answer>({
+const AnswerDoc = defineDoc<AnswerState>({
 	kind: "workflows.answer-schema",
 	// No `migrate`: only a task at `TASK.version` runs, and `show` does not read this document.
 	version: 2,
@@ -180,9 +181,21 @@ const AnswerDoc = defineDoc<Answer>({
 	checkpointWhen,
 });
 
-/** True when `doc` asks for a structured answer and `respond` has not saved one. */
-function awaitsRespond(doc: Answer | undefined): boolean {
-	return doc?.schema !== undefined && !("answer" in doc);
+/** Why a finished turn does not count: its answer was cut, or a `schema` ask got no `respond` answer in the turn. */
+type Failure = "cut" | "no-respond";
+
+/**
+ * Why the turn `attempt` with `answer` and the state `doc` does not count, or `undefined` when it counts. A `respond`
+ * answer counts only when `doc` saved it in the turn `attempt`.
+ */
+function answerFailure(
+	answer: AssistantMessage | undefined,
+	doc: AnswerState | undefined,
+	attempt: string | undefined,
+): Failure | undefined {
+	if (answer !== undefined && cut(answer)) return "cut";
+	if (doc?.schema !== undefined && (doc.requestId !== attempt || !("answer" in doc))) return "no-respond";
+	return undefined;
 }
 
 /**
@@ -239,11 +252,14 @@ const respond = defineTool({
 	},
 });
 
-/** The user message that asks again for a `respond` call after an answer of a `schema` ask without one. */
+/**
+ * The user message that asks again for a `respond` call after an answer of a `schema` ask without one. A reminder is
+ * known by its exact text, so a user prompt with the same text counts as one.
+ */
 export const REMINDER = "Answer with the respond tool, as the schema in answer_schema says.";
 
 /** How many reminders one turn submission gets before its call fails. */
-const REMINDERS = 2;
+const MAX_REMINDERS = 2;
 
 /**
  * Saves the number of reminders at the end of `messages` as the memo `reminders` of the generation. A continuation
@@ -271,9 +287,10 @@ async function remind(
 	api: HookApi,
 	context: Context,
 ): Promise<{ readonly continue: string } | undefined> {
-	if (cut(answer) || !awaitsRespond(await api.snapshot(AnswerDoc, api.conversationId, context))) return undefined;
+	const doc = await api.snapshot(AnswerDoc, api.conversationId, context);
+	if (answerFailure(answer, doc, doc?.requestId) !== "no-respond") return undefined;
 	const count = (await api.memo<number>("reminders", context)) ?? 0;
-	return count < REMINDERS ? { continue: REMINDER } : undefined;
+	return count < MAX_REMINDERS ? { continue: REMINDER } : undefined;
 }
 
 /** The sandbox functions that are not host calls. */
@@ -403,11 +420,14 @@ async function answerMessage(tx: Tx, id: EntryId): Promise<AssistantMessage | un
 	return (await tx.entry(AssistantEntry, id))?.model?.[0] as AssistantMessage | undefined;
 }
 
+/** What `check` of `turn` returns: why the turn `attempt` with `answer` does not count, or `undefined`. */
+type Check = (answer: AssistantMessage | undefined, attempt: string) => Failure | undefined;
+
 /**
  * The answer message to `content` in `conversation`. A turn answered before returns its saved answer. A turn that
- * failed before, or whose answer was cut, or a `schema` turn whose answer did not call `respond`, is sent again under
- * the next free request ID, and a cut answer throws. `start` runs in the transaction that picks the request ID, with
- * whether that ID is new.
+ * failed before, or whose answer does not count, is sent again under the next free request ID. A new answer that does
+ * not count throws. `check` runs in each transaction that reads an answer and returns the predicate that tells why an
+ * answer does not count. `start` runs in the transaction that picks the request ID, with that ID.
  */
 async function turn(
 	runtime: Runtime,
@@ -415,22 +435,24 @@ async function turn(
 	context: Context,
 	requestId: string,
 	content: string,
-	start: (tx: Tx, fresh: boolean) => Promise<void>,
+	start: (tx: Tx, attempt: string) => Promise<void>,
+	check: (tx: Tx) => Promise<Check>,
 ): Promise<AssistantMessage> {
 	const handle = await runtime.conversation(conversation, context);
 	if (handle === undefined) throw new Error(`Session ${conversation} is missing`);
 	let attempt = requestId;
 	await runtime.commit(async (tx) => {
+		const fails = await check(tx);
 		let record = await tx.submissionByRequest(conversation, attempt);
 		for (let n = 2; ; n++) {
 			if (record?.status === "done") {
 				const answer = record.answer === undefined ? undefined : await answerMessage(tx, record.answer);
-				if ((answer === undefined || !cut(answer)) && !awaitsRespond(await tx.doc(AnswerDoc, conversation))) break;
+				if (fails(answer, attempt) === undefined) break;
 			} else if (record?.status !== "unanswered") break;
 			attempt = `${requestId}#${n}`;
 			record = await tx.submissionByRequest(conversation, attempt);
 		}
-		await start(tx, record === undefined);
+		await start(tx, attempt);
 		return undefined;
 	}, context);
 	const submission = await handle.submit({ type: "input", content, requestId: attempt }, context);
@@ -440,12 +462,15 @@ async function turn(
 		throw new Error(`The ${requestId} turn was not answered: ${settled.reason ?? settled.status}${detail}`);
 	}
 	let answer: AssistantMessage | undefined;
+	let reason: Failure | undefined;
 	await runtime.commit(async (tx) => {
 		answer = await answerMessage(tx, settled.answer);
+		reason = (await check(tx))(answer, attempt);
 		return undefined;
 	}, context);
 	if (answer === undefined) throw new Error(`The ${requestId} answer ${settled.answer} is missing`);
-	if (cut(answer)) throw new Error(`The ${requestId} turn stopped: ${answer.stopReason}`);
+	if (reason === "cut") throw new Error(`The ${requestId} turn stopped: ${answer.stopReason}`);
+	if (reason === "no-respond") throw new Error("the answer did not call respond");
 	return answer;
 }
 
@@ -557,21 +582,37 @@ async function askTurn(
 	schema: JsonObject | null,
 ): Promise<JsonValue> {
 	const { runtime, context } = calls;
-	const answer = await turn(runtime, conversation, context, key, prompt, async (tx, fresh) => {
-		const doc = await tx.doc(AnswerDoc, conversation);
-		if (schema === null) delete doc.schema;
-		else doc.schema = schema;
-		// A new turn drops the answer of an earlier one. A turn sent before keeps the answer `respond` saved in it.
-		if (fresh) delete doc.answer;
-		await configure(tx, conversation, {
-			extensions: { add: [{ name: ANSWER }] },
-			modelTools: { remove: schema === null ? [respond] : [] },
-		});
-	});
+	const answer = await turn(
+		runtime,
+		conversation,
+		context,
+		key,
+		prompt,
+		async (tx, attempt) => {
+			const doc = await tx.doc(AnswerDoc, conversation);
+			if (schema === null) delete doc.schema;
+			else doc.schema = schema;
+			// Another turn drops the answer of an earlier one. The same turn keeps the answer `respond` saved in it.
+			if (doc.requestId !== attempt) {
+				doc.requestId = attempt;
+				delete doc.answer;
+			}
+			await configure(tx, conversation, {
+				extensions: { add: [{ name: ANSWER }] },
+				modelTools: { remove: schema === null ? [respond] : [] },
+			});
+		},
+		async (tx) => {
+			const doc = await tx.doc(AnswerDoc, conversation);
+			// The state of this ask: a later ask in the session can have changed the schema.
+			const { schema: _, ...rest } = doc;
+			const state: AnswerState = schema === null ? rest : { ...rest, schema };
+			return (answer, attempt) => answerFailure(answer, state, attempt);
+		},
+	);
 	if (schema === null) return textOf(answer).trim();
 	const doc = await runtime.snapshot(AnswerDoc, conversation, context);
-	if (doc === undefined || !("answer" in doc)) throw new Error("the answer did not call respond");
-	return doc.answer as JsonValue;
+	return doc?.answer as JsonValue;
 }
 
 /** The result of a shell command in `cwd`. With `check`, a non-zero exit throws. */

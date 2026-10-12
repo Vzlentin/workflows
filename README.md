@@ -385,7 +385,8 @@ JSON in the `answer_schema` system prompt section, and the prompt goes unchanged
 the schema is parsed as JSON, and a parsed object or array is checked instead, so an object sent as its JSON text is
 accepted. A string answer to a string schema, such as SHIP or FIX, stays a string. An answer that does not match the
 schema goes back to the model as an error, and the model tries again. A turn that ends without `respond` gets up to
-two reminders to call it, and then the call fails with `the answer did not call respond`.
+two reminders to call it, and then the call fails with `the answer did not call respond`. A `respond` answer counts
+only for the turn that gave it, and the limit of two reminders holds across an interruption and a resume.
 
 The script runs in the pi-codemode sandbox, with no time limit. It has no file system, network, modules or timers.
 Effects go through `sh` and `ok`. `Date`, `Date.now()` and `Math.random()` throw, so that a script makes
@@ -439,7 +440,7 @@ failed. Resume runs the script again in a new task of the same run: a failed Git
 again in the same session, saved calls return their results, and child runs continue. A run whose task ended in
 another way, such as an aborted, faulted or orphaned task, resumes in the same way. An ask whose answer stopped for a
 reason other than its end, such as its length, fails its call, and a resume asks again. So does an ask whose answer
-did not call `respond`.
+did not call `respond`. A resumed ask never returns the answer of another ask in its session.
 
 A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
 
