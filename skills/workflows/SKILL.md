@@ -73,10 +73,15 @@ workflows
 workflows resume <run-id> [--json]
 workflows list [--json]
 workflows show <run-id> [--json]
+workflows save <run-id> <name> [--force]
 ```
 
 `workflows show <run-id>` prints the phases and calls of a run as a tree, with a mark for each call: `✓` finished, `✗`
 failed, `◉` running or stopped. It takes short write locks on the store: a live run waits up to 60 seconds for them, and `show` waits for the run the same way.
 
-In Pi, `/workflows` lists the runs, `/workflows show <run-id>` shows one, and `/workflows resume <run-id>` asks the
+`workflows save <run-id> <name>` writes the script of a run to `.workflows/workflows/<name>.js` of the project, so
+`workflows <name>` runs it again. A taken name needs `--force`.
+
+In Pi, `/workflows` lists the runs, `/workflows show <run-id>` shows one, `/workflows save <run-id> <name> [--force]` saves its
+script, and `/workflows resume <run-id>` asks the
 agent to continue one with the tool.

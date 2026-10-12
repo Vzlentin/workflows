@@ -10,7 +10,7 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { selectRepository } from "./git.ts";
 import { instructions } from "./prompts.ts";
-import { type Io, type Run, UsageError } from "./run.ts";
+import { type Io, type Run, UsageError, withUsage } from "./run.ts";
 import { type Bundle, loadBundle, META, type RunBundle } from "./script.ts";
 
 /** The first non-empty line of `item`, without leading #. */
@@ -235,10 +235,12 @@ export async function listScripts(io: Io): Promise<string[]> {
 	);
 }
 
+export const CHECK = "workflows check <workflow>";
+
 /** `workflows check <wf>`: reads `meta` and checks the prompts and profiles that the script names; starts no run. */
 export async function check(args: readonly string[], io: Io): Promise<number> {
 	const [word, ...rest] = args;
-	if (word === undefined || rest.length > 0) throw new UsageError("give one workflow to check");
+	if (word === undefined || rest.length > 0) throw new UsageError("give one workflow to check", CHECK);
 	const found = await findScript(word, io);
 	await readMeta(found.source, found.name);
 	const failed = problem(found.source, found.name, found.bundle, true);
@@ -280,16 +282,10 @@ async function parseValues(meta: Meta, argv: readonly string[], io: Io, usage: s
 	};
 	for (const [arg, spec] of entries) options[arg] = { type: spec.type === "boolean" ? "boolean" : "string" };
 	const positional = entries.find(([, spec]) => spec.positional);
-	let parsed: { values: Record<string, string | boolean | undefined>; positionals: string[] };
-	try {
-		parsed = parseArgs({ args: [...argv], options, allowPositionals: positional !== undefined, strict: true });
-	} catch (error) {
-		const code = (error as { code?: unknown }).code;
-		if (typeof code === "string" && code.startsWith("ERR_PARSE_ARGS")) {
-			throw new UsageError((error as Error).message, usage);
-		}
-		throw error;
-	}
+	const parsed = withUsage(
+		() => parseArgs({ args: [...argv], options, allowPositionals: positional !== undefined, strict: true }),
+		usage,
+	);
 	const { values } = parsed;
 	if (positional !== undefined) {
 		const [arg, spec] = positional;

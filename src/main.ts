@@ -1,14 +1,16 @@
 /**
  * The `workflows` command line. `workflows <workflow> ...` starts a run of a workflow script,
- * `workflows resume <run-id>` continues one, `workflows list` prints the runs, and `workflows show <run-id>` prints the
- * calls of one run. A run directory holds the durable
+ * `workflows resume <run-id>` continues one, `workflows list` prints the runs, `workflows show <run-id>` prints the
+ * calls of one run, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow. A run
+ * directory holds the durable
  * store, which holds everything a resume needs, and whatever the workflow writes there.
  */
 import { existsSync } from "node:fs";
-import { access, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import * as ai from "@earendil-works/pi-ai";
@@ -37,11 +39,11 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Sessions } from "./agents.ts";
 import { takeLock } from "./lock.ts";
 import * as script from "./meta.ts";
-import { type Io, newRunId, UsageError } from "./run.ts";
-import { answerExtension, CALL_KIND, type CallRecord } from "./script.ts";
+import { type Io, newRunId, UsageError, withUsage } from "./run.ts";
+import { answerExtension, CALL_KIND, type CallRecord, loadScripts, projectFolder } from "./script.ts";
 import { current, scriptTask, TASK } from "./task.ts";
 
-/** `list` and `show` take short write locks while a run goes on in another process, so wait longer than the 5 s default. */
+/** `list`, `show` and `save` take short write locks while a run goes on in another process, so wait longer than the 5 s default. */
 const STORAGE = { busyTimeoutMs: 60_000 };
 
 export type Terminal = Io & {
@@ -50,15 +52,26 @@ export type Terminal = Io & {
 	readonly interrupt: AbortSignal;
 };
 
+const RESUME = "workflows resume <run-id> [--json]";
+const LIST = "workflows list [--json]";
+const SHOW = "workflows show <run-id> [--json]";
+const SAVE = "workflows save <run-id> <name> [--force]";
+
+/** The commands by name. No script can have one of these names. */
+const COMMANDS: Readonly<
+	Record<string, (args: readonly string[], terminal: Terminal, json: boolean) => Promise<number>>
+> = { list, resume, show, save, check: script.check };
+
 /** The exit code: 0 for a successful result, 1 for any other result or error, 2 for bad usage, 130 when interrupted. */
 export async function main(argv: readonly string[], terminal: Terminal): Promise<number> {
 	const usage = [
 		`${script.USAGE} [--json]`,
 		"workflows <workflow> --help",
-		"workflows resume <run-id> [--json]",
-		"workflows list [--json]",
-		"workflows show <run-id> [--json]",
-		"workflows check <workflow>",
+		RESUME,
+		LIST,
+		SHOW,
+		SAVE,
+		script.CHECK,
 		"workflows",
 	]
 		.map((line, index) => `${index === 0 ? "usage: " : "       "}${line}`)
@@ -72,10 +85,8 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 			for (const line of await script.listScripts(terminal)) terminal.stdout(line);
 			return 0;
 		}
-		if (command === "list") return await list(args, terminal, json);
-		if (command === "resume") return await resume(args, terminal, json);
-		if (command === "show") return await show(args, terminal, json);
-		if (command === "check") return await script.check(args, terminal);
+		const run = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
+		if (run !== undefined) return await run(args, terminal, json);
 		const flags = args.indexOf("--");
 		if (args.slice(0, flags === -1 ? args.length : flags).includes("--help")) {
 			for (const line of await script.help(command, terminal)) terminal.stdout(line);
@@ -109,20 +120,28 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 	return follow(store, task, input, id, terminal, json);
 }
 
-/** The ID and the directory of the one saved run that `args` names. */
-async function savedRun(args: readonly string[]): Promise<{ id: string; directory: string }> {
+/** The one run ID of `args`. Bad usage prints `usage`. */
+function oneRunId(args: readonly string[], usage: string): string {
 	const [id, ...rest] = args;
-	if (id === undefined || rest.length > 0 || id.startsWith("-")) throw new UsageError("give one run ID");
-	if (id.includes("/") || id.includes("\\") || id === "." || id === "..") throw new UsageError(`${id} is not a run ID`);
+	if (id === undefined || rest.length > 0 || id.startsWith("-")) throw new UsageError("give one run ID", usage);
+	return id;
+}
+
+/** The directory of the saved run `id`. A run ID that is a path is bad usage, which prints `usage`. */
+async function runDirectory(id: string, usage: string): Promise<string> {
+	if (id.includes("/") || id.includes("\\") || id === "." || id === "..") {
+		throw new UsageError(`${id} is not a run ID`, usage);
+	}
 	const directory = join(runsDirectory(), id);
 	await access(join(directory, "durable.sqlite")).catch(() => {
 		throw new Error(`no run ${id} in ${runsDirectory()}`);
 	});
-	return { id, directory };
+	return directory;
 }
 
 async function resume(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
-	const { id, directory } = await savedRun(args);
+	const id = oneRunId(args, RESUME);
+	const directory = await runDirectory(id, RESUME);
 	const { store, task, input } = await openRun(directory, terminal);
 	terminal.stdout(`run ${id}`);
 	return follow(store, task, input, id, terminal, json);
@@ -204,7 +223,7 @@ type Listed = { readonly runId: string; readonly workflow: string; readonly titl
 
 /** Prints the runs, newest run ID first. It reads the task records without a harness, so no run continues. */
 async function list(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
-	if (args.length > 0) throw new UsageError("list takes no arguments");
+	if (args.length > 0) throw new UsageError("list takes no arguments", LIST);
 	const ids = await readdir(runsDirectory()).catch(() => []);
 	const runs: Listed[] = [];
 	for (const id of ids.sort().reverse()) {
@@ -235,8 +254,8 @@ type Shown = Omit<CallRecord, "conversation" | "child"> & {
  * (see `STORAGE`).
  */
 async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
-	const { id, directory } = await savedRun(args);
-	const path = join(directory, "durable.sqlite");
+	const id = oneRunId(args, SHOW);
+	const path = join(await runDirectory(id, SHOW), "durable.sqlite");
 	const { input, state } = checked(await latestTask(path), id, "be shown");
 	const outcome = state.status === "terminal" ? state.outcome : undefined;
 	const status =
@@ -263,6 +282,34 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	terminal.stdout(`run ${id} ${input.name} ${status} ${title}`);
 	for (const line of treeLines(calls, "", Date.now())) terminal.stdout(line);
 	for (const line of footer) terminal.stdout(line);
+	return 0;
+}
+
+/** Writes the script of a saved run to `workflows/<name>.js` of the project folder, and prints the file's path. */
+async function save(args: readonly string[], terminal: Terminal): Promise<number> {
+	const { values, positionals } = withUsage(
+		() => parseArgs({ args: [...args], options: { force: { type: "boolean" } }, allowPositionals: true, strict: true }),
+		SAVE,
+	);
+	const [id, name, ...rest] = positionals;
+	if (id === undefined || name === undefined || rest.length > 0) {
+		throw new UsageError("give one run ID and one name", SAVE);
+	}
+	if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+		throw new UsageError(`${name} is not a workflow name: use lowercase letters, digits and -`, SAVE);
+	}
+	if (Object.hasOwn(COMMANDS, name)) throw new Error(`${name} is a command and cannot be a workflow name`);
+	const directory = await runDirectory(id, SAVE);
+	const { input } = checked(await latestTask(join(directory, "durable.sqlite")), id, "be saved");
+	const project = await projectFolder(terminal.cwd);
+	if (!values.force && Object.hasOwn(await loadScripts(project), name)) {
+		throw new Error(`a workflow ${name} exists; replace it with --force`);
+	}
+	const folder = join(project, "workflows");
+	const file = join(folder, `${name}.js`);
+	await mkdir(folder, { recursive: true });
+	await writeFile(file, input.bundle.main);
+	terminal.stdout(file);
 	return 0;
 }
 
