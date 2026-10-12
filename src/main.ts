@@ -1,16 +1,14 @@
 /**
  * The `workflows` command line. `workflows <workflow> ...` starts a run of a workflow script,
  * `workflows resume <run-id>` continues one, `workflows list` prints the runs, `workflows show <run-id>` prints the
- * calls of one run, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow. A run
- * directory holds the durable
- * store, which holds everything a resume needs, and whatever the workflow writes there.
+ * calls of one run. A run directory holds the durable store, which holds everything a resume needs, and whatever
+ * the workflow writes there.
  */
 import { existsSync } from "node:fs";
-import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import * as ai from "@earendil-works/pi-ai";
@@ -39,11 +37,11 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Sessions } from "./agents.ts";
 import { takeLock } from "./lock.ts";
 import * as script from "./meta.ts";
-import { type Io, newRunId, UsageError, withUsage } from "./run.ts";
-import { answerExtension, CALL_KIND, type CallRecord, loadScripts, projectFolder } from "./script.ts";
+import { type Io, newRunId, UsageError } from "./run.ts";
+import { answerExtension, CALL_KIND, type CallRecord } from "./script.ts";
 import { current, scriptTask, TASK } from "./task.ts";
 
-/** `list`, `show` and `save` take short write locks while a run goes on in another process, so wait longer than the 5 s default. */
+/** `list` and `show` take short write locks while a run goes on in another process, so wait longer than the 5 s default. */
 const STORAGE = { busyTimeoutMs: 60_000 };
 
 export type Terminal = Io & {
@@ -55,12 +53,11 @@ export type Terminal = Io & {
 const RESUME = "workflows resume <run-id> [--json]";
 const LIST = "workflows list [--json]";
 const SHOW = "workflows show <run-id> [--json]";
-const SAVE = "workflows save <run-id> <name> [--force]";
 
 /** The commands by name. No script can have one of these names. */
 const COMMANDS: Readonly<
 	Record<string, (args: readonly string[], terminal: Terminal, json: boolean) => Promise<number>>
-> = { list, resume, show, save, check: script.check };
+> = { list, resume, show, check: script.check };
 
 /** The exit code: 0 for a successful result, 1 for any other result or error, 2 for bad usage, 130 when interrupted. */
 export async function main(argv: readonly string[], terminal: Terminal): Promise<number> {
@@ -70,7 +67,6 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		RESUME,
 		LIST,
 		SHOW,
-		SAVE,
 		script.CHECK,
 		"workflows",
 	]
@@ -282,34 +278,6 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	terminal.stdout(`run ${id} ${input.name} ${status} ${title}`);
 	for (const line of treeLines(calls, "", Date.now())) terminal.stdout(line);
 	for (const line of footer) terminal.stdout(line);
-	return 0;
-}
-
-/** Writes the script of a saved run to `workflows/<name>.js` of the project folder, and prints the file's path. */
-async function save(args: readonly string[], terminal: Terminal): Promise<number> {
-	const { values, positionals } = withUsage(
-		() => parseArgs({ args: [...args], options: { force: { type: "boolean" } }, allowPositionals: true, strict: true }),
-		SAVE,
-	);
-	const [id, name, ...rest] = positionals;
-	if (id === undefined || name === undefined || rest.length > 0) {
-		throw new UsageError("give one run ID and one name", SAVE);
-	}
-	if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
-		throw new UsageError(`${name} is not a workflow name: use lowercase letters, digits and -`, SAVE);
-	}
-	if (Object.hasOwn(COMMANDS, name)) throw new Error(`${name} is a command and cannot be a workflow name`);
-	const directory = await runDirectory(id, SAVE);
-	const { input } = checked(await latestTask(join(directory, "durable.sqlite")), id, "be saved");
-	const project = await projectFolder(terminal.cwd);
-	if (!values.force && Object.hasOwn(await loadScripts(project), name)) {
-		throw new Error(`a workflow ${name} exists; replace it with --force`);
-	}
-	const folder = join(project, "workflows");
-	const file = join(folder, `${name}.js`);
-	await mkdir(folder, { recursive: true });
-	await writeFile(file, input.bundle.main);
-	terminal.stdout(file);
 	return 0;
 }
 

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { JsonValue } from "@earendil-works/chord";
@@ -170,74 +170,6 @@ describe("workflows/script.d.ts", () => {
 		const found = JSON.parse(run.stdout.at(-1) ?? "{}");
 		expect(Object.keys(found)).toEqual(names);
 		expect(Object.entries(found).filter(([, type]) => type === "undefined")).toEqual([]);
-	});
-});
-
-const SOURCE = 'export const meta = { args: { word: { type: "string" } } }\nreturn "word " + args.word\n';
-const SAVE = "usage: workflows save <run-id> <name> [--force]";
-
-/** A finished run of the script `SOURCE` from stdin in a new repository, and the path that `workflows save <id> fix` writes. */
-async function stdinRun() {
-	const repo = join(root, "repo");
-	await repository(repo);
-	const run = await workflows(["-", "--word", "a"], { cwd: repo, stdin: SOURCE });
-	expect([run.code, run.stdout.at(-1)]).toEqual([0, "word a"]);
-	// Git prints the real path of the repository, which differs from `repo` where the temporary folder is a link.
-	const file = join(await realpath(repo), ".workflows", "workflows", "fix.js");
-	return { repo, id: run.id ?? "", file };
-}
-
-describe("workflows save", () => {
-	it("saves the script of a run as a project workflow", async () => {
-		const { repo, id, file } = await stdinRun();
-		const sub = join(repo, "sub");
-		await mkdir(sub);
-		const saved = await workflows(["save", id, "fix"], { cwd: sub });
-		expect([saved.code, saved.stdout, saved.stderr]).toEqual([0, [file], []]);
-		expect(await readFile(file, "utf8")).toBe(SOURCE);
-		const fix = await workflows(["fix", "--word", "x"], { cwd: repo });
-		expect([fix.code, fix.stdout.at(-1)]).toEqual([0, "word x"]);
-	});
-
-	it("rejects a bad name, a command name, a bad run ID and bad usage", async () => {
-		const { repo, id } = await stdinRun();
-		const command = await workflows(["save", id, "show"], { cwd: repo });
-		expect([command.code, command.stderr]).toEqual([1, ["workflows: show is a command and cannot be a workflow name"]]);
-		const unknown = await workflows(["save", "nothing", "other"], { cwd: repo });
-		expect([unknown.code, unknown.stderr]).toEqual([1, [`workflows: no run nothing in ${runs()}`]]);
-		const cases = [
-			[id, "Fix"],
-			[id, "-x"],
-			["a/b", "fix"],
-			["-x", "fix"],
-			[id],
-			[id, "fix", "more"],
-			[id, "fix", "--forse"],
-		];
-		for (const args of cases) {
-			const bad = await workflows(["save", ...args], { cwd: repo });
-			expect([bad.code, bad.stderr.at(-1)], args.join(" ")).toEqual([2, SAVE]);
-		}
-		expect(existsSync(join(repo, ".workflows"))).toBe(false);
-	});
-
-	it("replaces a project or package workflow of the name only with --force", async () => {
-		const { repo, id, file } = await stdinRun();
-		await mkdir(join(repo, ".workflows", "workflows"), { recursive: true });
-		await writeFile(file, 'return "old"');
-		const taken = await workflows(["save", id, "fix"], { cwd: repo });
-		expect([taken.code, taken.stderr]).toEqual([1, ["workflows: a workflow fix exists; replace it with --force"]]);
-		const ship = await workflows(["save", id, "ship"], { cwd: repo });
-		expect([ship.code, ship.stderr]).toEqual([1, ["workflows: a workflow ship exists; replace it with --force"]]);
-		expect(await readFile(file, "utf8")).toBe('return "old"');
-
-		const forced = await workflows(["save", "--force", id, "fix"], { cwd: repo });
-		expect([forced.code, forced.stdout]).toEqual([0, [file]]);
-		expect(await readFile(file, "utf8")).toBe(SOURCE);
-		const shipped = await workflows(["save", id, "ship", "--force"], { cwd: repo });
-		expect(shipped.code).toBe(0);
-		const replaced = await workflows(["ship", "--word", "y"], { cwd: repo });
-		expect([replaced.code, replaced.stdout.at(-1)]).toEqual([0, "word y"]);
 	});
 });
 
@@ -911,7 +843,7 @@ return [one.reply, two.reply].join(", ")`,
 			[["nope"], "workflows: unknown command nope", 2],
 			[["toString"], "workflows: unknown command toString", 2],
 			[["missing.js"], `workflows: cannot read workflow ${join(root, "missing.js")}`, 1],
-			[["-"], "workflows: missing workflow script on stdin", 2],
+			[["-"], "workflows: unknown command -", 2],
 		];
 		for (const [argv, error, code] of cases) {
 			const run = await workflows(argv, { cwd: root });
