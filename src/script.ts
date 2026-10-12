@@ -137,8 +137,7 @@ function profileOf(name: string, text: string): Profile {
  * folder `prompts` replaces the template of that name.
  */
 export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle> {
-	const root = cwd === undefined ? undefined : await git(cwd, "rev-parse", "--show-toplevel").catch(() => cwd);
-	const project = root === undefined ? PACKAGE : join(root, ".workflows");
+	const project = cwd === undefined ? PACKAGE : await projectFolder(cwd);
 	const [scripts, merged, profiles] = await Promise.all([
 		readMerged(project, "workflows", ".js"),
 		readMerged(project, "prompts", ".md"),
@@ -150,6 +149,12 @@ export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle
 		prompts: Object.fromEntries(Object.entries(templates).map(([name, text]) => [name, instructions(text)])),
 		agents: Object.fromEntries(Object.entries(profiles).map(([name, text]) => [name, profileOf(name, text)])),
 	};
+}
+
+/** `.workflows/` at the root of the Git repository of `cwd`, or in `cwd` outside a repository. */
+export async function projectFolder(cwd: string): Promise<string> {
+	const root = await git(cwd, "rev-parse", "--show-toplevel").catch(() => cwd);
+	return join(root, ".workflows");
 }
 
 /** The leading comments and `export const meta =` of a script that declares its `meta`. */

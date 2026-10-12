@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { JsonValue } from "@earendil-works/chord";
@@ -851,6 +851,48 @@ return [one.reply, two.reply].join(", ")`,
 		expect([ship.code, ship.stdout.at(-1)]).toEqual([0, "project ship"]);
 		expect([fix.code, fix.stdout.at(-1)]).toEqual([0, "project fix"]);
 		expect([outside.code, outside.stderr[0]]).toEqual([2, "workflows: unknown command fix"]);
+	});
+
+	it("saves the script of a run as a project workflow", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const sub = join(repo, "sub");
+		await mkdir(sub);
+		const source = 'export const meta = { args: { word: { type: "string" } } }\nreturn "word " + args.word\n';
+		const run = await workflows(["-", "--word", "a"], { cwd: repo, stdin: source });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, "word a"]);
+		const id = run.id ?? "";
+		// Git prints the real path of the repository, which differs from `repo` where the temporary folder is a link.
+		const file = join(await realpath(repo), ".workflows", "workflows", "fix.js");
+
+		const saved = await workflows(["save", id, "fix"], { cwd: sub });
+		expect([saved.code, saved.stdout, saved.stderr]).toEqual([0, [file], []]);
+		expect(await readFile(file, "utf8")).toBe(source);
+		const fix = await workflows(["fix", "--word", "x"], { cwd: repo });
+		expect([fix.code, fix.stdout.at(-1)]).toEqual([0, "word x"]);
+
+		const command = await workflows(["save", id, "show"], { cwd: repo });
+		expect([command.code, command.stderr]).toEqual([1, ["workflows: show is a command and cannot be a workflow name"]]);
+		const taken = await workflows(["save", id, "fix"], { cwd: repo });
+		expect([taken.code, taken.stderr]).toEqual([1, ["workflows: a workflow fix exists; replace it with --force"]]);
+		const ship = await workflows(["save", id, "ship"], { cwd: repo });
+		expect([ship.code, ship.stderr]).toEqual([1, ["workflows: a workflow ship exists; replace it with --force"]]);
+		for (const name of ["Fix", "-x"]) {
+			const bad = await workflows(["save", id, name], { cwd: repo });
+			expect([bad.code, bad.stderr.at(-1)]).toEqual([2, "usage: workflows save <run-id> <name> [--force]"]);
+		}
+		for (const run of ["a/b", "-x"]) {
+			const bad = await workflows(["save", run, "fix"], { cwd: repo });
+			expect([bad.code, bad.stderr.at(-1)]).toEqual([2, "usage: workflows save <run-id> <name> [--force]"]);
+		}
+
+		await writeFile(file, 'return "old"');
+		const forced = await workflows(["save", "--force", id, "fix"], { cwd: repo });
+		expect([forced.code, forced.stdout]).toEqual([0, [file]]);
+		expect(await readFile(file, "utf8")).toBe(source);
+
+		const unknown = await workflows(["save", "nothing", "other"], { cwd: repo });
+		expect([unknown.code, unknown.stderr]).toEqual([1, [`workflows: no run nothing in ${runs()}`]]);
 	});
 
 	it("lists the workflows and prints the usage of one from its meta", async () => {

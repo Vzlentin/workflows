@@ -44,6 +44,7 @@ optimize)
 	echo "run r7"
 	echo '{"runId":"r7","status":"finished","result":{"baseline":0.5,"best":0.75,"diff":"prompts.diff"},"report":["optimized ship: baseline 0.50, best 0.75, prompts.diff"]}' ;;
 list) echo "r5 ship shipped Fix the README typo"; echo "r4 run unfinished slow" ;;
+save) [ "$2" = r5 ] || { echo "workflows: no run $2" >&2; exit 1; }; echo "/repo/.workflows/workflows/$3.js" ;;
 show) [ "$2" = r5 ] || { echo "workflows: no run $2" >&2; exit 1; }; echo "run r5 ship shipped Fix"; echo "  ✓ sh git status  0s" ;;
 *) exit 9 ;;
 esac
@@ -244,7 +245,18 @@ describe("/workflows", () => {
 		expect(messages.map((message) => message.content)).toEqual([
 			"run r5 ship shipped Fix\n  ✓ sh git status  0s",
 			"workflows: no run r9",
-			"usage: /workflows [show <run-id> | resume <run-id>]",
+			"usage: /workflows [show <run-id> | save <run-id> <name> | resume <run-id>]",
+		]);
+	});
+
+	it("saves the script of a run, or sends the error of the command", async () => {
+		await command("save r5 fix", ctx());
+		await command("save r9 fix", ctx());
+		await command("save r5", ctx());
+		expect(messages.map((message) => message.content)).toEqual([
+			"/repo/.workflows/workflows/fix.js",
+			"workflows: no run r9",
+			"usage: /workflows [show <run-id> | save <run-id> <name> | resume <run-id>]",
 		]);
 	});
 

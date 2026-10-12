@@ -260,7 +260,7 @@ workflows check review
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `list`, `show` and `check` are commands, so no script of these names can run.
+`resume`, `list`, `show`, `save` and `check` are commands, so no script of these names can run.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
@@ -540,6 +540,30 @@ unknown run ID prints the `no run` error of `resume`. A run saved by an earlier 
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
 as no run ID, exits 2.
 
+## Save
+
+```sh
+workflows save <run-id> <name> [--force]
+```
+
+`workflows save` writes the script of a run to `workflows/<name>.js` of the project folder, and prints the absolute
+path of the file. The folder is made when it does not exist. Then `workflows <name>` runs the script, so a script that
+started from stdin or from a file can run again by name. The file has the full text of the script that the run saved,
+with its `export const meta` header. Only the script is saved: no prompts, agent profiles or scripts of child runs.
+
+- The name is lowercase letters, digits and `-`, and starts with a letter or a digit. Another name, or not exactly one
+  run ID and one name, prints the error, then `usage: workflows save <run-id> <name> [--force]`, and exits 2.
+- A command name prints `workflows: <name> is a command and cannot be a workflow name` and exits 1.
+- An unknown run ID, or the ID of a child run, prints the `no run` error of `resume`. A run saved by an earlier
+  version prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot be saved`, and a
+  run saved by a later version prints the same with `a later version`. These exit 1.
+- When a project or package workflow of the name exists, the command prints `workflows: a workflow <name> exists;
+  replace it with --force` and exits 1. With `--force`, the file replaces the project script of the name, or adds a
+  project script before the package script of the name.
+
+`save` reads the store as `show` does: it takes no run lock and does not load Pi packages. It exits 0 when it wrote
+the file. `--json` has no effect.
+
 ## Pi package
 
 The package is also a Pi package. Its `pi` field in `package.json` declares the extension `extensions/workflows.ts`
@@ -605,7 +629,8 @@ before a run exists, such as an unknown workflow name, is a normal tool error wi
 ### `/workflows`
 
 `/workflows` prints the output of `workflows list` in the session, and `/workflows show <run-id>` prints the output
-of `workflows show <run-id>`, or its error. `/workflows resume <run-id>` does not run the
+of `workflows show <run-id>`, or its error. `/workflows save <run-id> <name>` prints the output of `workflows save
+<run-id> <name>` in the same way. `/workflows resume <run-id>` does not run the
 command. It sends a user message that asks the agent to continue the run with the `workflow` tool, so that Esc and the
 progress updates work as for any tool call. When the agent is busy, the message waits as a follow-up.
 
@@ -659,7 +684,7 @@ This runs Biome, the TypeScript check and Vitest. The tests use a fake model pro
 The engine files in `src/`:
 
 - `cli.ts`: the `workflows` command entry point.
-- `main.ts`: the commands `start`, `resume`, `list` and `show`, the run directory and the durable store.
+- `main.ts`: the commands `start`, `resume`, `list`, `show` and `save`, the run directory and the durable store.
 - `meta.ts`: the `meta` of a workflow script, its arguments, its usage, and the report lines and exit code of a run.
 - `task.ts`: the task of every script run, its saved input and checkpoint, its phase, and child runs.
 - `script.ts`: the workflow script calls, agent profiles, prompts for scripts, and sessions.

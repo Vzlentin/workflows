@@ -1,13 +1,14 @@
 /**
  * The `workflows` command line. `workflows <workflow> ...` starts a run of a workflow script,
- * `workflows resume <run-id>` continues one, `workflows list` prints the runs, and `workflows show <run-id>` prints the
- * calls of one run. A run directory holds the durable
+ * `workflows resume <run-id>` continues one, `workflows list` prints the runs, `workflows show <run-id>` prints the
+ * calls of one run, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow. A run
+ * directory holds the durable
  * store, which holds everything a resume needs, and whatever the workflow writes there.
  */
 import { existsSync } from "node:fs";
-import { access, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join, resolve as resolvePath } from "node:path";
+import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -38,7 +39,7 @@ import { Sessions } from "./agents.ts";
 import { takeLock } from "./lock.ts";
 import * as script from "./meta.ts";
 import { type Io, newRunId, UsageError } from "./run.ts";
-import { answerExtension, CALL_KIND, type CallRecord } from "./script.ts";
+import { answerExtension, CALL_KIND, type CallRecord, loadBundle, projectFolder } from "./script.ts";
 import { current, scriptTask, TASK } from "./task.ts";
 
 /** `list` and `show` take short write locks while a run goes on in another process, so wait longer than the 5 s default. */
@@ -58,6 +59,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		"workflows resume <run-id> [--json]",
 		"workflows list [--json]",
 		"workflows show <run-id> [--json]",
+		SAVE,
 		"workflows check <workflow>",
 		"workflows",
 	]
@@ -75,6 +77,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		if (command === "list") return await list(args, terminal, json);
 		if (command === "resume") return await resume(args, terminal, json);
 		if (command === "show") return await show(args, terminal, json);
+		if (command === "save") return await save(args, terminal);
 		if (command === "check") return await script.check(args, terminal);
 		const flags = args.indexOf("--");
 		if (args.slice(0, flags === -1 ? args.length : flags).includes("--help")) {
@@ -109,11 +112,13 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 	return follow(store, task, input, id, terminal, json);
 }
 
-/** The ID and the directory of the one saved run that `args` names. */
-async function savedRun(args: readonly string[]): Promise<{ id: string; directory: string }> {
+/** The ID and the directory of the one saved run that `args` names. Bad usage prints `usage`, or the general usage without it. */
+async function savedRun(args: readonly string[], usage?: string): Promise<{ id: string; directory: string }> {
 	const [id, ...rest] = args;
-	if (id === undefined || rest.length > 0 || id.startsWith("-")) throw new UsageError("give one run ID");
-	if (id.includes("/") || id.includes("\\") || id === "." || id === "..") throw new UsageError(`${id} is not a run ID`);
+	if (id === undefined || rest.length > 0 || id.startsWith("-")) throw new UsageError("give one run ID", usage);
+	if (id.includes("/") || id.includes("\\") || id === "." || id === "..") {
+		throw new UsageError(`${id} is not a run ID`, usage);
+	}
 	const directory = join(runsDirectory(), id);
 	await access(join(directory, "durable.sqlite")).catch(() => {
 		throw new Error(`no run ${id} in ${runsDirectory()}`);
@@ -263,6 +268,33 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	terminal.stdout(`run ${id} ${input.name} ${status} ${title}`);
 	for (const line of treeLines(calls, "", Date.now())) terminal.stdout(line);
 	for (const line of footer) terminal.stdout(line);
+	return 0;
+}
+
+const SAVE = "workflows save <run-id> <name> [--force]";
+
+/** The commands, which no script can be named. */
+const COMMANDS = new Set(["resume", "list", "check", "show", "save"]);
+
+/** Writes the script of a saved run to `workflows/<name>.js` of the project folder, and prints the file's path. */
+async function save(args: readonly string[], terminal: Terminal): Promise<number> {
+	const force = args.includes("--force");
+	const rest = args.filter((arg) => arg !== "--force");
+	if (rest.length !== 2) throw new UsageError("give one run ID and one name", SAVE);
+	const [id, name] = rest as [string, string];
+	if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+		throw new UsageError(`${name} is not a workflow name: use lowercase letters, digits and -`, SAVE);
+	}
+	if (COMMANDS.has(name)) throw new Error(`${name} is a command and cannot be a workflow name`);
+	const { directory } = await savedRun([id], SAVE);
+	const { input } = checked(await latestTask(join(directory, "durable.sqlite")), id, "be saved");
+	if (!force && Object.hasOwn((await loadBundle(terminal.cwd)).scripts, name)) {
+		throw new Error(`a workflow ${name} exists; replace it with --force`);
+	}
+	const file = join(await projectFolder(terminal.cwd), "workflows", `${name}.js`);
+	await mkdir(dirname(file), { recursive: true });
+	await writeFile(file, input.bundle.main);
+	terminal.stdout(file);
 	return 0;
 }
 
