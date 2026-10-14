@@ -12,9 +12,13 @@ import { Type } from "@earendil-works/pi-ai";
 import type { AgentToolResult, ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
+type SaveCall = { readonly runId?: string; readonly name?: string; readonly force?: boolean };
+
 type WorkflowCall = {
 	readonly name?: string;
+	readonly script?: string;
 	readonly resume?: string;
+	readonly save?: SaveCall;
 	readonly args?: Readonly<Record<string, unknown>>;
 };
 
@@ -38,16 +42,18 @@ const CLI = [process.execPath, fileURLToPath(new URL("../src/cli.ts", import.met
 const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
 
 /**
- * The `workflows` arguments of a tool call, always with `--json`, with each arg as a flag. The command rejects a flag
+ * The `workflows` arguments of a tool call, with each arg as a flag, and `--json` for a run. The command rejects a flag
  * it does not know, so a mistyped arg fails before a run exists.
  */
-function cliArgs({ name, resume, args = {} }: WorkflowCall): string[] {
-	if (resume !== undefined && name === undefined) return ["resume", resume, "--json"];
-	if (name === undefined || resume !== undefined) throw new Error("give exactly one of name or resume");
+function cliArgs({ name, script, resume, save, args = {} }: WorkflowCall): string[] {
+	const given = [name, script, resume, save].filter((value) => value !== undefined).length;
+	if (given !== 1) throw new Error("give exactly one of name, script, resume or save");
+	if (resume !== undefined) return ["resume", resume, "--json"];
+	if (save !== undefined) return ["save", save.runId ?? "", save.name ?? "", ...(save.force ? ["--force"] : [])];
 	const flags = Object.entries(args).flatMap(([key, flag]) =>
 		flag === false ? [] : [flag === true ? `--${key}` : `--${key}=${text(flag)}`],
 	);
-	return [name, ...flags, "--json"];
+	return [name ?? "-", ...flags, "--json"];
 }
 
 type Output = { readonly code: number | null; readonly stdout: readonly string[]; readonly stderr: readonly string[] };
@@ -58,6 +64,7 @@ async function runCli(
 	args: readonly string[],
 	cwd: string,
 	options: {
+		stdin?: string | undefined;
 		signal?: AbortSignal | undefined;
 		progress?: (line: string) => void;
 	},
@@ -77,7 +84,7 @@ async function runCli(
 	const interrupt = () => child.kill("SIGINT");
 	options.signal?.addEventListener("abort", interrupt, { once: true });
 	try {
-		child.stdin.end();
+		child.stdin.end(options.stdin ?? "");
 		const [[code]] = await Promise.all([once(child, "close"), once(out, "close"), once(err, "close")]);
 		return { code: code as number | null, stdout, stderr };
 	} finally {
@@ -103,6 +110,23 @@ function summary(outcome: WorkflowOutcome): string {
 	}
 }
 
+/**
+ * The file that `workflows save` wrote, as a finished outcome, so that it fits the tool's output schema. Throws the
+ * stderr text when the command failed.
+ */
+function savedOf(output: Output, runId: string): AgentToolResult<WorkflowDetails> {
+	const file = output.stdout.at(-1);
+	if (output.code !== 0 || file === undefined) {
+		throw new Error(output.stderr.join("\n") || `workflows exited with ${output.code}`);
+	}
+	const outcome: WorkflowOutcome = { runId, status: "finished", result: { file }, report: [file] };
+	return {
+		content: [{ type: "text", text: `saved the script of run ${runId} as ${file}` }],
+		details: { steps: [], outcome },
+		structuredContent: outcome,
+	};
+}
+
 function resultOf(outcome: WorkflowOutcome, steps: readonly string[]): AgentToolResult<WorkflowDetails> {
 	return {
 		content: [{ type: "text", text: summary(outcome) }],
@@ -113,11 +137,13 @@ function resultOf(outcome: WorkflowOutcome, steps: readonly string[]): AgentTool
 }
 
 /**
- * `<name> <slug>`, `<name>` or `resume <run-id>`. The slug comes from the first string argument. The
- * arguments can be partial while the call streams.
+ * `<name> <slug>`, `<name>`, `script`, `resume <run-id>` or `save <run-id> <name>`. The slug comes from the first
+ * string argument. The arguments can be partial while the call streams.
  */
-function callLabel({ name, resume, args }: WorkflowCall): string {
+function callLabel({ name, script, resume, save, args }: WorkflowCall): string {
 	if (resume !== undefined) return `resume ${resume}`;
+	if (save !== undefined) return ["save", save.runId, save.name].filter((word) => word !== undefined).join(" ");
+	if (script !== undefined) return "script";
 	const item = Object.values(args ?? {}).find((value) => typeof value === "string");
 	if (typeof item !== "string") return name ?? "";
 	if (item.endsWith(".md")) return `${name} ${basename(item, ".md")}`;
@@ -139,24 +165,55 @@ function detailLines({ steps, outcome }: WorkflowDetails, theme: Theme): string[
 	return [...lines, theme.fg("error", `✗ ${summary(outcome)}`)];
 }
 
+/** How to write an inline script. Keep it in step with `workflows/script.d.ts`; a test checks the globals. */
+const GUIDELINES = [
+	"A `workflow` `script` is the body of an async function, so top-level `await` and `return` work. An optional " +
+		'`export const meta = { args: { <name>: { type: "string" | "number" | "boolean" | "text" } } }` at ' +
+		"the top declares the args, which the tool's `args` fill and the script reads as `args.<name>`.",
+	"Script globals: `agent(prompt, { as, schema })` is one turn in a new session and returns the reply, or the " +
+		"checked answer with a JSON Schema. `session(profile).ask(prompt, { schema })` is one turn in a session that " +
+		"keeps its history. `sh(cmd)` returns stdout and throws on a nonzero exit, `ok(cmd)` returns true on exit 0. " +
+		"`run(name, args)` runs a named workflow as a child run. `parallel([() => ...])` and " +
+		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +
+		"and `log(text)` write progress lines. `args`, `runId` and `runDir` are values.",
+	"A script has no file system, network, modules or timers, so effects go through `sh`. `Date`, `Date.now()` and " +
+		"`Math.random()` throw. A resume runs the script again from the top: saved calls return their results, and a " +
+		"command that did not finish runs again, so keep `sh` and `ok` commands safe to repeat.",
+	"To keep a good inline script as a named workflow of the project, call `workflow` with " +
+		"`save: { runId, name }` after its run. Add `force: true` to replace a workflow of that name.",
+];
+
 export default function workflows(pi: ExtensionAPI, command: readonly string[] = CLI) {
 	pi.registerTool({
 		name: "workflow",
 		label: "Workflow",
 		description:
 			"Run a durable workflow and wait for its result. Give exactly one of: `name` (a workflow script such as " +
-			"`ship`, `campaign` or `optimize`) or `resume` (a run ID). " +
-			"`args` are the workflow's arguments, each passed as `--<key>`; a script's `meta` declares them. For " +
+			"`ship`, `campaign` or `optimize`), `script` (the body of an inline workflow script), `resume` (a run " +
+			"ID), or `save` (keeps the script of a run as a named workflow of the project). `args` are the arguments of " +
+			"`name` or `script`, each passed as `--<key>`; a script's `meta` declares them. For " +
 			"`ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and `prompts`. For `campaign`, which " +
 			"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
 			"`base`, `rounds` and `prompts`. For `optimize`, which searches for better ship prompts over a folder of work " +
 			"items: `workflow` (`ship`) and `items`, and optional `improve` and `trials`. Each `run()` call of a " +
 			"script starts a child run, which a resume of its caller continues. A failed or interrupted run stays resumable.",
+		promptGuidelines: GUIDELINES,
 		parameters: Type.Object({
 			name: Type.Optional(
 				Type.String({ description: "`ship`, `campaign`, `optimize`, or the name of a workflow script" }),
 			),
+			script: Type.Optional(Type.String({ description: "An inline workflow script" })),
 			resume: Type.Optional(Type.String({ description: "The ID of a run to continue" })),
+			save: Type.Optional(
+				Type.Object(
+					{
+						runId: Type.String(),
+						name: Type.String({ description: "Lowercase letters, digits and -" }),
+						force: Type.Optional(Type.Boolean({ description: "Replace a workflow of that name" })),
+					},
+					{ description: "Writes the script of the run to .workflows/workflows/<name>.js of the project" },
+				),
+			),
 			args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 		}),
 		outputSchema: Type.Object({
@@ -167,8 +224,13 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 			error: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			if (params.save !== undefined) {
+				const output = await runCli(command, cliArgs(params), ctx.cwd, { signal });
+				return savedOf(output, params.save.runId);
+			}
 			const steps: string[] = [];
 			const output = await runCli(command, cliArgs(params), ctx.cwd, {
+				stdin: params.script,
 				signal,
 				progress: (line) => {
 					steps.push(line);

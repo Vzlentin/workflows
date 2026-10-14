@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -15,6 +15,9 @@ case "$1" in
 ok)
 	echo "run r1"; echo "phase one" >&2; echo "log two" >&2
 	echo '{"runId":"r1","status":"finished","result":{"answer":42},"report":["{\\"answer\\":42}"]}' ;;
+-)
+	echo "run r2"; cat > stdin.js
+	echo '{"runId":"r2","status":"finished","result":"from stdin","report":["from stdin"]}' ;;
 bad) echo "run r3"; echo "phase one" >&2; echo '{"runId":"r3","status":"failed","error":"boom"}'; exit 1 ;;
 slow)
 	echo "run r4"
@@ -22,6 +25,9 @@ slow)
 	echo "started" >&2
 	while :; do sleep 0.02; done ;;
 usage) echo "workflows: unknown flag" >&2; exit 2 ;;
+save)
+	if [ "$3" = taken ]; then echo "workflows: a workflow taken exists; replace it with --force" >&2; exit 1; fi
+	echo "$PWD/.workflows/workflows/$3.js" ;;
 ship)
 	echo "run r5"
 	echo '{"runId":"r5","status":"finished","result":{"status":"shipped","rounds":1,"head":"abc"},"report":["shipped Fix the README typo in 1 rounds, judge failed, abc"]}' ;;
@@ -88,7 +94,16 @@ describe("the workflow tool", () => {
 		expect(await readFile(join(root, "args.log"), "utf8")).toBe('ok --path=src --depth=2 --all --tags=["a"] --json\n');
 	});
 
-	it("passes every argument as a flag", async () => {
+	it("sends a script on stdin, passes every argument as a flag", async () => {
+		const script = await call({ script: "return 'hi'", args: { word: "a", all: true } });
+		expect(script.result.structuredContent).toEqual({
+			runId: "r2",
+			status: "finished",
+			result: "from stdin",
+			report: ["from stdin"],
+		});
+		expect(await readFile(join(root, "stdin.js"), "utf8")).toBe("return 'hi'");
+
 		const ship = await call({ name: "ship", args: { item: "Fix the README typo", rounds: 2 } });
 		expect(ship.result.structuredContent).toEqual({
 			runId: "r5",
@@ -112,6 +127,7 @@ describe("the workflow tool", () => {
 			report: ["optimized ship: baseline 0.50, best 0.75, prompts.diff"],
 		});
 		expect((await readFile(join(root, "args.log"), "utf8")).split("\n")).toEqual([
+			"- --word=a --all --json",
 			"ship --item=Fix the README typo --rounds=2 --json",
 			"campaign --base=develop --goal=goal.md --json",
 			"optimize --workflow=ship --items=items --trials=4 --json",
@@ -159,7 +175,10 @@ describe("the workflow tool", () => {
 		expect(draw({ name: "ok" })).toEqual(["workflow ok"]);
 		expect(draw({ name: "fix", args: { depth: 2, path: "src/lib" } })).toEqual(["workflow fix src/lib"]);
 		expect(draw({ name: "toString" })).toEqual(["workflow toString"]);
+		expect(draw({ script: "return 1" })).toEqual(["workflow script"]);
 		expect(draw({ resume: "r4" })).toEqual(["workflow resume r4"]);
+		expect(draw({ save: { runId: "r2", name: "fix" } })).toEqual(["workflow save r2 fix"]);
+		expect(draw({ save: { runId: "r2" } })).toEqual(["workflow save r2"]);
 	});
 
 	it("draws the steps of a running run, the last one as running", async () => {
@@ -190,7 +209,35 @@ describe("the workflow tool", () => {
 
 	it("throws the stderr text when no run starts", async () => {
 		await expect(call({ name: "usage" })).rejects.toThrow("workflows: unknown flag");
-		await expect(call({ name: "ok", resume: "r1" })).rejects.toThrow("give exactly one of name or resume");
-		await expect(call({ script: "x" })).rejects.toThrow("give exactly one of name or resume");
+		const both = "give exactly one of name, script, resume or save";
+		await expect(call({ name: "ok", resume: "r1" })).rejects.toThrow(both);
+		await expect(call({ script: "return 1", save: { runId: "r2", name: "fix" } })).rejects.toThrow(both);
+	});
+
+	it("saves the script of a run and returns the file", async () => {
+		const file = join(await realpath(root), ".workflows", "workflows", "fix.js");
+		const { result } = await call({ save: { runId: "r2", name: "fix" } });
+		expect(result.structuredContent).toEqual({ runId: "r2", status: "finished", result: { file }, report: [file] });
+		expect(result.content).toEqual([{ type: "text", text: `saved the script of run r2 as ${file}` }]);
+		expect(draw({ save: { runId: "r2", name: "fix" } }, result)).toEqual(["workflow save r2 fix", file]);
+
+		await call({ save: { runId: "r2", name: "fix", force: true } });
+		await expect(call({ save: { runId: "r2", name: "taken" } })).rejects.toThrow(
+			"workflows: a workflow taken exists; replace it with --force",
+		);
+		expect((await readFile(join(root, "args.log"), "utf8")).split("\n")).toEqual([
+			"save r2 fix",
+			"save r2 fix --force",
+			"save r2 taken",
+			"",
+		]);
+	});
+
+	it("names every script global in its prompt guidelines", async () => {
+		const declarations = await readFile(new URL("../workflows/script.d.ts", import.meta.url), "utf8");
+		const globals = [...declarations.matchAll(/^declare (?:const|function) (\w+)/gm)].map(([, name]) => name);
+		expect(globals.length).toBeGreaterThan(10);
+		const guidelines = (tool.promptGuidelines ?? []).join("\n");
+		for (const name of globals) expect(guidelines, name).toContain(`\`${name}`);
 	});
 });

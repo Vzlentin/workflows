@@ -247,18 +247,20 @@ workflows                                  # lists the workflows
 workflows review --path src
 workflows ship --help
 workflows ./fix.js "Fix the README typo"
+cat fix.js | workflows - --json
 workflows check review
 ```
 
 `workflows <wf>` runs one workflow script. The first word selects it:
 
+- `-` reads the script from stdin.
 - A word that ends in `.js` or contains `/` is a file, relative to the current directory. A missing file is an
   error.
 - Any other word is a name: `<wf>.js` in `workflows/` of the project folder first, then of the package. A project
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `list`, `show` and `check` are commands, so no script of these names can run. Bad usage of a
+`resume`, `list`, `show`, `save` and `check` are commands, so no script of these names can run. Bad usage of a
 command prints `workflows: <error>`, then `usage:` and the usage line of that command, such as `usage: workflows
 show <run-id> [--json]`, and exits 2.
 
@@ -325,7 +327,7 @@ code comes from `meta.exit`. With `--json`, stdout gets one JSON outcome line in
 
 A script that throws, or a call in it that fails, stops the run: the command prints `failed <title>: <error>` and
 `continue with: workflows resume <run-id>` on stderr, and exits 1. `<title>` is the subject of the first `text`
-argument, or else the file name without `.js`, or the workflow name. The run's task ends as failed, and its
+argument, or else the file name without `.js`, the workflow name, or `stdin`. The run's task ends as failed, and its
 saved calls stay in the run's store for the resume. `workflows show <run-id>` shows the failed call. See [Show](#show).
 
 `workflows/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
@@ -540,6 +542,31 @@ unknown run ID prints the `no run` error of `resume`. A run saved by an earlier 
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
 as no run ID, prints `usage: workflows show <run-id> [--json]` and exits 2.
 
+## Save
+
+```sh
+workflows save <run-id> <name> [--force]
+```
+
+`workflows save` writes the script of a run to `workflows/<name>.js` of the project folder, and prints the absolute
+path of the file. The folder is made when it does not exist. Then `workflows <name>` runs the script, so a script that
+started from stdin or from a file can run again by name. The file has the full text of the script that the run saved,
+with its `export const meta` header. Only the script is saved: no prompts, agent profiles or scripts of child runs.
+
+- The name is lowercase letters, digits and `-`, and starts with a letter or a digit. Another name, not exactly one
+  run ID and one name, or another flag, prints the error, then `usage: workflows save <run-id> <name> [--force]`, and
+  exits 2.
+- A command name prints `workflows: <name> is a command and cannot be a workflow name` and exits 1.
+- An unknown run ID, or the ID of a child run, prints the `no run` error of `resume`. A run saved by an earlier
+  version prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot be saved`, and a
+  run saved by a later version prints the same with `a later version`. These exit 1.
+- When a project or package workflow of the name exists, the command prints `workflows: a workflow <name> exists;
+  replace it with --force` and exits 1. With `--force`, the file replaces the project script of the name, or adds a
+  project script before the package script of the name.
+
+`save` reads the store as `show` does: it takes no run lock and does not load Pi packages. It exits 0 when it wrote
+the file. `--json` has no effect.
+
 ## Pi package
 
 The package is also a Pi package. Its `pi` field in `package.json` declares the extension `extensions/workflows.ts`.
@@ -566,7 +593,7 @@ continues it from a terminal. The child process runs outside Pi, so the package 
 
 ### The `workflow` tool
 
-The tool takes one of `name` or `resume`, plus `args`:
+The tool takes one of `name`, `script`, `resume` or `save`, plus `args` with `name` or `script`:
 
 - `name` runs `workflows <name> --<key>=<value>... --json`, with each arg as a flag: a string as it is, `true` as a
   bare `--<key>`, no flag for `false`, and any other value as its JSON text. For example
@@ -575,13 +602,19 @@ The tool takes one of `name` or `resume`, plus `args`:
   bad usage, so no run starts.
   `{ name: "optimize", args: { workflow: "ship", items: "items/" } }` runs
   `workflows optimize --workflow=ship --items=items/ --json`.
+- `script` runs `workflows - --<key>=<value>... --json` with the script on stdin, and each arg as a flag as for `name`.
 - `resume` runs `workflows resume <run-id>`.
+- `save: { runId, name, force? }` runs `workflows save <run-id> <name>`, with `--force` when `force` is true. See
+  [Save](#save).
+
+The tool adds guidelines to the system prompt on how to write a `script`: its shape and `meta`, the script globals,
+the sandbox and resume rules, and `save`. A test checks that they name every global of `workflows/script.d.ts`.
 
 Each stderr line of the run is a progress update of the tool. Esc sends SIGINT to the run, as Ctrl+C does, so the run
 stays resumable.
 
-In Pi, the call line is `workflow <name> <slug>`, `workflow <name>` or `workflow resume <run-id>`,
-such as `workflow ship Fix the README typo` or `workflow optimize ship`. The slug comes from the first string arg: the
+In Pi, the call line is `workflow <name> <slug>`, `workflow <name>`, `workflow script`, `workflow resume <run-id>` or
+`workflow save <run-id> <name>`, such as `workflow ship Fix the README typo` or `workflow optimize ship`. The slug comes from the first string arg: the
 file name of a `.md` file without `.md`, or else the first 40 characters of its subject. Under it, each stderr line is a step: `✓` for a step that is done, `◉` for the step that
 runs now, and `✗` for the step where the run failed or was interrupted. A finished run ends with its `report` lines,
 such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8`. A failed or interrupted run ends with the
@@ -596,6 +629,9 @@ The tool declares an `outputSchema`. Its `structuredContent` is `{ runId, status
 - `interrupted`: Esc stopped the run.
 
 These are the fields of the JSON outcome line of the command.
+
+A `save` call returns `{ runId, status: "finished", result: { file }, report: [file] }`, with the absolute path of the
+file that it wrote. A `save` that fails is a normal tool error with the stderr text.
 
 A failed or interrupted result is an error result that keeps `structuredContent`. Thus
 `await tools.workflow({ name: "ship", args: { item } })` in a codemode script gets this object. A call that fails
@@ -651,7 +687,7 @@ This runs Biome, the TypeScript check and Vitest. The tests use a fake model pro
 The engine files in `src/`:
 
 - `cli.ts`: the `workflows` command entry point.
-- `main.ts`: the commands `start`, `resume`, `list` and `show`, the run directory and the durable store.
+- `main.ts`: the commands `start`, `resume`, `list`, `show` and `save`, the run directory and the durable store.
 - `meta.ts`: the `meta` of a workflow script, its arguments, its usage, and the report lines and exit code of a run.
 - `task.ts`: the task of every script run, its saved input and checkpoint, its phase, and child runs.
 - `script.ts`: the workflow script calls, agent profiles, prompts for scripts, and sessions.

@@ -173,9 +173,14 @@ function problem(source: string, name: string, bundle: Bundle, profiles: boolean
 
 type Found = { readonly name: string; readonly source: string; readonly bundle: Bundle };
 
-/** A `.js` file or a path relative to the current directory, or a script name of the bundle. */
+/** `-` for stdin, a `.js` file or a path relative to the current directory, or a script name of the bundle. */
 async function findScript(word: string, io: Io): Promise<Found> {
 	const bundle = await loadBundle(io.cwd);
+	if (word === "-") {
+		const source = await io.stdin();
+		if (source === undefined) throw new UsageError("missing workflow script on stdin");
+		return { name: "stdin", source, bundle };
+	}
 	if (word.endsWith(".js") || word.includes("/")) {
 		const path = resolve(io.cwd, word);
 		const source = await readFile(path, "utf8").catch(() => {
@@ -334,7 +339,7 @@ export function statusOf(result: unknown): string | undefined {
 	return isObject(result) && typeof result.status === "string" ? result.status : undefined;
 }
 
-export const USAGE = "workflows <workflow | file.js> [<text>] [--<arg> <value>]...";
+export const USAGE = "workflows <workflow | file.js | -> [<text>] [--<arg> <value>]...";
 
 /** The checked arguments of `workflows <wf> ...`; throws `UsageError` or `Error` before a run directory exists. */
 export async function parse([word = "", ...argv]: readonly string[], io: Io): Promise<Args> {
