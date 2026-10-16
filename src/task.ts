@@ -105,11 +105,14 @@ async function runPhase(
 	const { input } = task;
 	const { worktree } = input;
 	const cwd = worktree?.path ?? input.cwd;
+	const caller = task.owner === undefined ? undefined : await runtime.getTask(task.owner as TaskId<JsonValue>, context);
+	const parent = caller !== undefined && current(caller) ? caller.input.runId : null;
 	try {
 		if (worktree !== undefined)
 			await ensureWorktree(worktree.repository, worktree.path, worktree.branch, worktree.start);
 		const result = await runScript(runtime, context, cwd, host, {
 			runId: input.runId,
+			parent,
 			runDir: input.runDir,
 			bundle: input.bundle,
 			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },
@@ -117,12 +120,14 @@ async function runPhase(
 			restart: (key, ended) => restartChild(definition, runtime, context, key, ended),
 		});
 		await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
+		host.progress({ kind: "end", run: input.runId, failed: false });
 	} catch (error) {
 		// A closing store cancels the phase; it runs again when the run resumes.
 		if (runtime.signal.aborted) throw error;
 		// A thrown phase would end the task as faulted, so the phase commits the failure itself.
 		const message = error instanceof Error ? error.message : String(error);
 		await runtime.commit(() => ({ status: "terminal", outcome: { status: "failed", error: { message } } }), context);
+		host.progress({ kind: "end", run: input.runId, failed: true });
 	}
 }
 

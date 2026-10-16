@@ -34,8 +34,22 @@ type WorkflowOutcome =
 	| { readonly runId: string; readonly status: "failed"; readonly error: string }
 	| { readonly runId: string; readonly status: "interrupted" };
 
-/** The `details` of each update and of the result, so the steps draw the same after a reload. */
+/**
+ * The `details` of each update and of the result, so the steps draw the same after a reload. `steps` are the progress
+ * lines that the command drew last, then any other stderr line, such as a warning.
+ */
 type WorkflowDetails = { readonly steps: readonly string[]; readonly outcome?: WorkflowOutcome };
+
+/** The lines of a `{"progress":[...]}` stderr line of `workflows --json`, or undefined for any other line. */
+function progressLines(line: string): string[] | undefined {
+	if (!line.startsWith('{"progress":')) return undefined;
+	try {
+		const { progress } = JSON.parse(line) as { progress?: unknown };
+		return Array.isArray(progress) ? progress.map(String) : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 const CLI = [process.execPath, fileURLToPath(new URL("../src/cli.ts", import.meta.url))];
 
@@ -151,15 +165,18 @@ function callLabel({ name, script, resume, save, args }: WorkflowCall): string {
 	return `${name} ${line.replace(/^#+/, "").trim().slice(0, 40)}`;
 }
 
+const MARKS = { "✓": "success", "◉": "accent", "✗": "error" } as const;
+
 /**
- * The steps, the last one as running, done or failed, then the report lines of a finished run, or the summary of a
- * failed or interrupted one.
+ * The progress lines as the command drew them, with themed marks, then the report lines of a finished run, or the
+ * summary of a failed or interrupted one.
  */
 function detailLines({ steps, outcome }: WorkflowDetails, theme: Theme): string[] {
-	const done = theme.fg("success", "✓");
-	const last =
-		outcome === undefined ? theme.fg("accent", "◉") : outcome.status === "finished" ? done : theme.fg("error", "✗");
-	const lines = steps.map((step, index) => `${index === steps.length - 1 ? last : done} ${theme.fg("muted", step)}`);
+	const lines = steps.map((step) => {
+		const [, indent = "", mark, text = step] = /^(\s*)(?:([✓◉✗]) )?(.*)$/.exec(step) ?? [];
+		const shown = mark === undefined ? "" : `${theme.fg(MARKS[mark as keyof typeof MARKS], mark)} `;
+		return `${indent}${shown}${theme.fg("muted", text)}`;
+	});
 	if (outcome === undefined) return lines;
 	if (outcome.status === "finished") return [...lines, ...outcome.report];
 	return [...lines, theme.fg("error", `✗ ${summary(outcome)}`)];
@@ -228,16 +245,20 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 				const output = await runCli(command, cliArgs(params), ctx.cwd, { signal });
 				return savedOf(output, params.save.runId);
 			}
-			const steps: string[] = [];
+			let drawn: readonly string[] = [];
+			const other: string[] = [];
 			const output = await runCli(command, cliArgs(params), ctx.cwd, {
 				stdin: params.script,
 				signal,
 				progress: (line) => {
-					steps.push(line);
-					onUpdate?.({ content: [{ type: "text", text: line }], details: { steps: [...steps] } });
+					const lines = progressLines(line);
+					if (lines === undefined) other.push(line);
+					else drawn = lines;
+					const text = lines === undefined ? line : (lines.at(-1)?.trim() ?? "");
+					onUpdate?.({ content: [{ type: "text", text }], details: { steps: [...drawn, ...other] } });
 				},
 			});
-			return resultOf(outcomeOf(output), steps);
+			return resultOf(outcomeOf(output), [...drawn, ...other]);
 		},
 		renderCall(args, theme) {
 			return new Text(theme.fg("toolTitle", theme.bold("workflow ")) + theme.fg("accent", callLabel(args)), 0, 0);

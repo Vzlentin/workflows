@@ -44,6 +44,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { sessionAgent } from "./agents.ts";
 import { failure, git, run } from "./git.ts";
+import type { ProgressEvent } from "./progress.ts";
 import { instructions, render } from "./prompts.ts";
 import type { Runtime } from "./task.ts";
 
@@ -66,8 +67,8 @@ export type RunBundle = Bundle & { readonly main: string };
 
 /** What a script run gets from the command. */
 export type ExtensionHost = {
-	/** Writes one progress line. */
-	log(line: string): void;
+	/** Shows one `phase` or `log` line, or the end, of a run. */
+	progress(event: ProgressEvent): void;
 };
 
 /** A started child run: its task and its run ID. */
@@ -76,6 +77,8 @@ export type Child = { readonly task: TaskId<JsonValue>; readonly runId: string }
 /** What a script phase runs: its run ID and directory, bundle and args, and how it starts a child run. */
 export type ScriptRun = {
 	readonly runId: string;
+	/** The run ID of the caller of a child run, or null for a root run. */
+	readonly parent: string | null;
 	readonly runDir: string;
 	readonly bundle: RunBundle;
 	readonly args: JsonObject;
@@ -403,7 +406,7 @@ type Line = { readonly text: string; readonly phase: boolean };
  * The lines of a script that wait for its next call that runs, in order, and where they print. At most one is a phase
  * line: a new phase line replaces it. `phase` is the current phase line, which each call that starts records.
  */
-type Progress = { readonly lines: Line[]; readonly log: (line: string) => void; phase: string | null };
+type Progress = { readonly lines: Line[]; readonly log: (line: Line) => void; phase: string | null };
 
 function phaseLine(progress: Progress, text: string): void {
 	progress.phase = text;
@@ -412,7 +415,7 @@ function phaseLine(progress: Progress, text: string): void {
 }
 
 function print(progress: Progress): void {
-	for (const line of progress.lines.splice(0)) progress.log(line.text);
+	for (const line of progress.lines.splice(0)) progress.log(line);
 }
 
 export function textOf(message: AssistantMessage | UserMessage): string {
@@ -697,7 +700,10 @@ export async function runScript(
 	const { bundle, args } = script;
 	// A module export is a syntax error in the function body that the script runs as.
 	const source = bundle.main.replace(META, "$1$2");
-	const progress: Progress = { lines: [], log: host.log, phase: null };
+	const { runId, parent } = script;
+	const log = (line: Line) =>
+		host.progress({ kind: line.phase ? "phase" : "log", run: runId, parent, text: line.text });
+	const progress: Progress = { lines: [], log, phase: null };
 	const calls: Calls = { runId: script.runId, runtime, context, counters: new Map(), progress };
 	const sandbox = new CodemodeSandbox({
 		timeoutMs: Number.POSITIVE_INFINITY,

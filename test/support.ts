@@ -337,6 +337,12 @@ export type Outcome = {
 	readonly id: string | undefined;
 };
 
+/** The lines of the last `{"progress":[...]}` stderr line of a `--json` run, and throws for any other stderr line. */
+export function progressOf(stderr: readonly string[]): string[] {
+	const snapshots = stderr.map((line) => (JSON.parse(line) as { progress: string[] }).progress);
+	return snapshots.at(-1) ?? [];
+}
+
 /** Runs `workflows <argv>` in `cwd` against a fresh fake model. */
 export async function workflows(
 	argv: readonly string[],

@@ -38,6 +38,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Sessions } from "./agents.ts";
 import { takeLock } from "./lock.ts";
 import * as script from "./meta.ts";
+import { type Display, display } from "./progress.ts";
 import { type Io, newRunId, UsageError, withUsage } from "./run.ts";
 import { answerExtension, CALL_KIND, type CallRecord, loadScripts, projectFolder } from "./script.ts";
 import { current, scriptTask, TASK } from "./task.ts";
@@ -112,11 +113,12 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 	const parsed = await script.parse(args, terminal);
 	const id = newRunId();
 	const directory = join(runsDirectory(), id);
-	const { store, task, input } = await openRun(directory, terminal, () =>
+	const shown = display(terminal, json);
+	const { store, task, input } = await openRun(directory, terminal, shown, () =>
 		script.prepare(parsed, { id, directory, cwd: terminal.cwd }),
 	);
 	terminal.stdout(`run ${id}`);
-	return follow(store, task, input, id, terminal, json);
+	return follow(store, task, input, id, terminal, json, shown);
 }
 
 /** The one run ID of `args`. Bad usage prints `usage`. */
@@ -141,9 +143,10 @@ async function runDirectory(id: string, usage: string): Promise<string> {
 async function resume(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const id = oneRunId(args, RESUME);
 	const directory = await runDirectory(id, RESUME);
-	const { store, task, input } = await openRun(directory, terminal);
+	const shown = display(terminal, json);
+	const { store, task, input } = await openRun(directory, terminal, shown);
 	terminal.stdout(`run ${id}`);
-	return follow(store, task, input, id, terminal, json);
+	return follow(store, task, input, id, terminal, json, shown);
 }
 
 /**
@@ -156,6 +159,7 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 async function openRun(
 	directory: string,
 	terminal: Terminal,
+	shown: Display,
 	source?: () => Promise<script.ScriptInput>,
 ): Promise<{ store: Store; task: TaskId<JsonValue>; input: script.ScriptInput }> {
 	const id = basename(directory);
@@ -164,12 +168,12 @@ async function openRun(
 	if (latest !== undefined) {
 		const { input, state } = checked(latest, id, "resume");
 		const ended = state.status === "terminal" && state.outcome.status !== "completed";
-		return openTask(directory, terminal, input, ended ? undefined : latest.id);
+		return openTask(directory, terminal, shown, input, ended ? undefined : latest.id);
 	}
 	if (source === undefined) throw new Error(`run ${id} has no workflow`);
 	await mkdir(directory, { recursive: true });
 	try {
-		return await openTask(directory, terminal, await source());
+		return await openTask(directory, terminal, shown, await source());
 	} catch (error) {
 		await rm(directory, { recursive: true, force: true });
 		throw error;
@@ -180,10 +184,11 @@ async function openRun(
 async function openTask(
 	directory: string,
 	terminal: Terminal,
+	shown: Display,
 	input: script.ScriptInput,
 	task?: TaskId<JsonValue>,
 ): Promise<{ store: Store; task: TaskId<JsonValue>; input: script.ScriptInput }> {
-	const store = await openStore(directory, terminal);
+	const store = await openStore(directory, terminal, shown);
 	try {
 		return { store, task: task ?? (await store.create(input)), input };
 	} catch (error) {
@@ -508,9 +513,9 @@ async function loadEntries(
  * and `workflows-answer` installed. Sessions select it only by name. It holds the lock of the run until it closes, and
  * throws when another process runs the run.
  */
-async function openStore(directory: string, terminal: Terminal): Promise<Store> {
+async function openStore(directory: string, terminal: Terminal, shown: Display): Promise<Store> {
 	const lock = takeLock(directory, basename(directory));
-	const task = scriptTask({ log: terminal.stderr });
+	const task = scriptTask({ progress: shown.event });
 	const registry = createRegistry();
 	const agentDir = getAgentDir();
 	// Project settings and packages count only when Pi trusts the project.
@@ -589,13 +594,15 @@ async function follow(
 	id: string,
 	terminal: Terminal,
 	json: boolean,
+	shown: Display,
 ): Promise<number> {
-	// With `--json`, the outcome line replaces the footer lines on stderr, so each stderr line is a step.
+	// With `--json`, the outcome line replaces the footer lines on stderr, so each stderr line is a progress line.
 	const end = (
 		status: "finished" | "failed" | "interrupted",
 		rest: { result?: JsonValue; report?: string[]; error?: string },
 		...footer: string[]
 	) => {
+		if (status !== "finished") shown.stop(true);
 		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
 		else for (const line of footer) terminal.stderr(line);
 	};
@@ -615,6 +622,7 @@ async function follow(
 		end("failed", { error }, `failed ${script.title(input)}: ${error}`, `continue with: workflows resume ${id}`);
 		return 1;
 	}
+	shown.stop(false);
 	if (!json) return script.report(input, outcome.result, terminal);
 	const report: string[] = [];
 	const code = script.report(input, outcome.result, { ...terminal, stdout: (line) => report.push(line) });

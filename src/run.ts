@@ -42,4 +42,6 @@ export type Io = {
 	readonly stdin: () => Promise<string | undefined>;
 	readonly stdout: (line: string) => void;
 	readonly stderr: (line: string) => void;
+	/** Draws the progress lines of a run again in place, when stderr is a terminal. */
+	readonly redraw?: ((lines: readonly string[]) => void) | undefined;
 };

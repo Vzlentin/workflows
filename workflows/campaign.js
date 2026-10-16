@@ -27,7 +27,7 @@ const done = []
 // Known ceiling: requeue can add items after each shipped item, so the queue has no length limit.
 for (let n = 1; queue.length > 0; n++) {
 	const [item, ...rest] = queue
-	phase(`item ${n}: ${subjectOf(item)}`)
+	phase(`item ${n}/${n + rest.length}: ${subjectOf(item)}`)
 	const patches = `${runDir}/item-${n}`
 	await sh(["mkdir", "-p", patches])
 	const start = await sh(["git", "rev-parse", "HEAD"])

@@ -67,9 +67,9 @@ uses it and its local `--base` commit. Otherwise `gh repo clone <value>` clones 
 directory, and the run starts from the cloned `origin/<base>`. A bare name such as `calibre` clones from the
 authenticated user, and `owner/calibre` names the owner.
 
-The command prints `run <run-id>`, then one progress line on stderr as each session starts: `plan`,
-`round <n>: implement`, `round <n>: review` and `judge`. A resume prints the phase line of the first call that runs,
-such as a turn or a Git step, and the lines after it.
+The command prints `run <run-id>`, then one progress step on stderr as each session starts: `plan`,
+`round <n>: implement`, `round <n>: review` and `judge`. See [Progress](#progress) for how the steps show. A resume
+prints the phase line of the first call that runs, such as a turn or a Git step, and the lines after it.
 
 The work item ships onto the branch `ship/<run-id>`, in a worktree in the run directory. The selected repository's
 checkout, index and local edits stay unchanged. Ship does not push and does not open a pull request.
@@ -150,8 +150,22 @@ After each shipped item, also the last one, a new planner session gets the goal,
 items with the `requeue` prompt. Its answer through `respond` is the new queue, which can be empty. The campaign ends
 when the queue is empty. The queue has no length limit: a requeue can add items each time.
 
-The command prints `run <run-id>`, then `item <n>: <subject>` on stderr before the progress lines of each item. A
-resume can print the line of the item it continues after the first lines of that item.
+The command prints `run <run-id>`, then the step `item <n>/<total>: <subject>` on stderr before the steps of each item.
+`<total>` is the number of items known when the item starts: the shipped items, this item and the queue. A requeue can
+change it. The steps of the item's ship run are under the item step, indented by 2:
+
+```text
+✓ item 1/2: Fix the README typo
+  ✓ plan
+  ✓ round 1: implement
+  ✓ round 1: review
+  ✓ judge
+◉ item 2/2: Add a thanks line
+  ◉ plan
+```
+
+See [Progress](#progress). At resume, the first steps of the item it continues can come before the item step. On a
+terminal and in Pi they move under the item step when it comes.
 
 - When the queue is empty, the command prints `done <subject> in <n> items, <commit>` with the commit of the last item,
   and exits 0.
@@ -320,13 +334,34 @@ call, and a dynamic call such as `prompts[name]()` is not scanned.
 ### Output
 
 The command prints `run <run-id>` on stdout, then each `phase` and `log` line on stderr when the script's next call
-runs, or when the script ends. When the script returns a result with `report`, a list of lines, the command prints
+runs, or when the script ends. See [Progress](#progress). When the script returns a result with `report`, a list of lines, the command prints
 those lines on stdout. Otherwise it prints the return value: a string as it is, and any other value as JSON. The exit
 code comes from `meta.exit`. With `--json`, stdout gets one JSON outcome line in place of the lines. See
 [JSON output](#json-output).
 
 A script that throws, or a call in it that fails, stops the run: the command prints `failed <title>: <error>` and
-`continue with: workflows resume <run-id>` on stderr, and exits 1. `<title>` is the subject of the first `text`
+`continue with: workflows resume <run-id>` on stderr, and exits 1.
+
+### Progress
+
+The `phase` and `log` lines of a run make a tree of steps. Each `phase` line is a step of its run, and the step before
+it in the same run is done. Each `log` line is under the current step of its run, or at the level of its run before
+the first step. A child run is under the step of its caller that is current when its first line comes, indented by 2.
+When the caller has no step then, the child run moves under the caller's next step. The command draws the tree on
+stderr in one of three ways:
+
+- On a terminal, the command draws the tree again in place at each change. A step is `◉` while it runs, `✓` when it
+  is done, and `✗` when its run failed or was interrupted. Each line is cut to the width of the terminal. When another
+  line, such as a warning, comes between two draws, the lines above it stay, and the changed lines print again below
+  it.
+- When stderr is not a terminal, and without `--json`, each step and log line prints once as it comes, with its indent
+  and without a mark.
+- With `--json`, each change prints one stderr line `{"progress":["<line>",...]}` with every line of the tree, each
+  step as `<indent><mark> <text>` and each log line as `<indent><text>`. A run without steps prints no progress line.
+  The [Pi tool](#the-workflow-tool) draws the last of these lines, so Pi shows the same steps as a terminal.
+
+When the run ends, the steps that still run become `✓` when the run finished, and `✗` when it failed or was
+interrupted. On a terminal and with `--json`, the tree draws once more then. `<title>` is the subject of the first `text`
 argument, or else the file name without `.js`, the workflow name, or `stdin`. The run's task ends as failed, and its
 saved calls stay in the run's store for the resume. `workflows show <run-id>` shows the failed call. See [Show](#show).
 
@@ -341,8 +376,8 @@ directory and can commit there.
 `run(name, args)` starts a child run of the script `name` of the caller's saved scripts. The child run has its own run
 ID and run directory, but no store: it is a child task of the caller's task, in the caller's store. So `workflows list`
 does not show it, and `workflows resume <child-id>` prints `workflows: no run <child-id> in <runs>`. A resume of the
-caller continues it. It runs in the same process, and its `phase` and `log` lines go to the same stderr. It prints no
-`run` or report line.
+caller continues it. It runs in the same process, and its `phase` and `log` lines go to the same stderr, under the
+caller's current step: see [Progress](#progress). It prints no `run` or report line.
 
 - The child's args are the defaults of its `meta.args`, then `args`, without `repo`, `base` and `prompts`. They are not
   checked against `meta`, so an undeclared arg reaches the script.
@@ -376,7 +411,7 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `parallel(thunks)` | Runs the functions at once and returns their results |
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
-| `phase(title)`, `log(text)` | Write one line on stderr before the script's next call that runs |
+| `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
 
 `workflows/script.d.ts` declares these globals for editors. A project gets the same completion when it copies
 `script.d.ts` and `jsconfig.json` into `.workflows/workflows/`, and copies them again after an upgrade of the package.
@@ -479,7 +514,7 @@ line of JSON in place of the report lines, `{ "runId", "status", "result"?, "rep
 - `interrupted`: Ctrl+C stopped the run.
 
 The JSON line replaces the `failed`, `continue with` and `interrupted` lines on stderr, so each stderr line is a
-`phase` or `log` line of the run, or a warning. The exit codes do not change. An error before the run exists, such as
+`{"progress":[...]}` line of the run, see [Progress](#progress), or a warning. The exit codes do not change. An error before the run exists, such as
 bad usage, prints no `run <run-id>` line and no JSON line.
 
 ## List
@@ -610,13 +645,16 @@ The tool takes one of `name`, `script`, `resume` or `save`, plus `args` with `na
 The tool adds guidelines to the system prompt on how to write a `script`: its shape and `meta`, the script globals,
 the sandbox and resume rules, and `save`. A test checks that they name every global of `workflows/script.d.ts`.
 
-Each stderr line of the run is a progress update of the tool. Esc sends SIGINT to the run, as Ctrl+C does, so the run
+Each stderr line of the run is a progress update of the tool. The text of an update is the last line of a
+`{"progress":[...]}` line, or the stderr line itself. Esc sends SIGINT to the run, as Ctrl+C does, so the run
 stays resumable.
 
 In Pi, the call line is `workflow <name> <slug>`, `workflow <name>`, `workflow script`, `workflow resume <run-id>` or
 `workflow save <run-id> <name>`, such as `workflow ship Fix the README typo` or `workflow optimize ship`. The slug comes from the first string arg: the
-file name of a `.md` file without `.md`, or else the first 40 characters of its subject. Under it, each stderr line is a step: `✓` for a step that is done, `◉` for the step that
-runs now, and `✗` for the step where the run failed or was interrupted. A finished run ends with its `report` lines,
+file name of a `.md` file without `.md`, or else the first 40 characters of its subject. Under it are the lines of the last `{"progress":[...]}` line of the command, as the
+command draws them on a terminal, with the marks in the theme's colors, then any other stderr line, such as a warning.
+See [Progress](#progress). So a campaign shows its item steps with the ship steps of each item under them. The tool
+does not make the steps itself. A finished run ends with its `report` lines,
 such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8`. A failed or interrupted run ends with the
 error and the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the
 same after a reload. The model gets the same result text as before.
@@ -688,6 +726,7 @@ The engine files in `src/`:
 
 - `cli.ts`: the `workflows` command entry point.
 - `main.ts`: the commands `start`, `resume`, `list`, `show` and `save`, the run directory and the durable store.
+- `progress.ts`: the tree of steps of a run, and how the command draws it on stderr.
 - `meta.ts`: the `meta` of a workflow script, its arguments, its usage, and the report lines and exit code of a run.
 - `task.ts`: the task of every script run, its saved input and checkpoint, its phase, and child runs.
 - `script.ts`: the workflow script calls, agent profiles, prompts for scripts, and sessions.

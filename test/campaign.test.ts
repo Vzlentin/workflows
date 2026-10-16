@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { git, PASSING_JUDGE, repository, sandbox, workflows } from "./support.ts";
+import { git, PASSING_JUDGE, progressOf, repository, sandbox, workflows } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -42,7 +42,9 @@ describe("workflows campaign", () => {
 			...PASSING_JUDGE,
 			memory: ["#1 planner 0: Handoff 1: one word changes.", "#2 implementer 1: Implement 1: README.md had wrold."],
 		});
-		expect(run.stderr).toEqual(["item 1: Fix the README typo", ...ROUND, "item 2: Add a thanks line", ...ROUND]);
+		const round = ROUND.map((line) => `  ✓ ${line}`);
+		const items = ["✓ item 1/1: Fix the README typo", ...round, "✓ item 2/2: Add a thanks line", ...round];
+		expect(progressOf(run.stderr)).toEqual(items);
 		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "requeue", ...SHIP, "requeue"]);
 		const [split] = run.model.calls;
 		expect(split?.prompt).toMatch(/^Split this goal into work items\.\n[\s\S]*\n\n## goal\n# Fix the README\n/);
@@ -70,7 +72,9 @@ describe("workflows campaign", () => {
 		const lines = shown.stdout.map((line) => line.replace(/ {2}\d+s$/, ""));
 		for (const [n, child] of children.entries()) {
 			const at = lines.indexOf(`  ✓ run ship ${child}`);
-			expect(lines[at - 3], child).toBe(`item ${n + 1}: ${n === 0 ? "Fix the README typo" : "Add a thanks line"}`);
+			expect(lines[at - 3], child).toBe(
+				`item ${n + 1}/${n + 1}: ${n === 0 ? "Fix the README typo" : "Add a thanks line"}`,
+			);
 			expect(lines.slice(at + 1, at + 4)).toEqual(["    plan", "      ✓ session planner", "      ✓ ask planner"]);
 		}
 		expect(lines.at(-1)).toBe(report[0]);
@@ -90,6 +94,7 @@ describe("workflows campaign", () => {
 
 		expect(run.code).toBe(1);
 		expect(run.stdout).toEqual([`run ${run.id}`, `stopped Fix the README at item 1: ${worktreeOf(run.id)}`]);
+		expect(run.stderr).toEqual(["item 1/2: Fix the README typo", "  plan", "  round 1: implement"]);
 		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", "plan", "challenge", "handoff", "implement"]);
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
 	});
@@ -102,17 +107,18 @@ describe("workflows campaign", () => {
 		expect(first.code).toBe(130);
 		expect(first.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "requeue"]);
 
-		const resumed = await workflows(["resume", first.id ?? ""], {
+		const resumed = await workflows(["resume", first.id ?? "", "--json"], {
 			cwd: root,
 			script: { edits: [THANKED], queues: [[]] },
 		});
 		expect(resumed.code).toBe(0);
-		expect(resumed.stdout).toEqual([`run ${first.id}`, expect.stringMatching(/^done Fix the README in 2 items, /)]);
-		const ITEM = "item 2: Add a thanks line";
-		// The pending nested ship task restarts at the same time as the campaign script replays to it,
-		// so the place of the item line depends on timing.
-		expect(resumed.stderr.filter((line) => line !== ITEM)).toEqual(ROUND);
-		expect(resumed.stderr.filter((line) => line === ITEM)).toHaveLength(1);
+		expect(JSON.parse(resumed.stdout[1] ?? "").report).toEqual([
+			expect.stringMatching(/^done Fix the README in 2 items, /),
+		]);
+		// The pending nested ship task restarts at the same time as the campaign script replays to it, so its first
+		// steps can come before the item line. They move under the item line when it comes.
+		const round = ROUND.map((line) => `  ✓ ${line}`);
+		expect(progressOf(resumed.stderr)).toEqual(["✓ item 2/2: Add a thanks line", ...round]);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual([...SHIP, "requeue"]);
 		const worktree = worktreeOf(first.id);
 		const reflog = git(worktree, "reflog", "--format=%gs").split("\n");

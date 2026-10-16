@@ -9,7 +9,17 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
-import { FakeModel, git, lockHolder, PASSING_JUDGE, repository, sandbox, type Verdict, workflows } from "./support.ts";
+import {
+	FakeModel,
+	git,
+	lockHolder,
+	PASSING_JUDGE,
+	progressOf,
+	repository,
+	sandbox,
+	type Verdict,
+	workflows,
+} from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -119,14 +129,15 @@ describe("workflows ship", () => {
 			},
 		});
 
-		expect(run.stderr).toEqual([
-			"plan",
-			"round 1: implement",
-			"round 1: review",
-			"round 2: implement",
-			"round 2: review",
-			"judge",
+		expect(progressOf(run.stderr)).toEqual([
+			"✓ plan",
+			"✓ round 1: implement",
+			"✓ round 1: review",
+			"✓ round 2: implement",
+			"✓ round 2: review",
+			"✓ judge",
 		]);
+		expect(JSON.parse(run.stderr[0] ?? "")).toEqual({ progress: ["◉ plan"] });
 		expect(run.code).toBe(0);
 		const { result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(run.stdout).toHaveLength(2);
@@ -475,7 +486,7 @@ export default function ({ events }) {
 		expect(run.stdout[1]).toMatch(SHIPPED);
 		expect(run.stdout[1]).toContain("judge failed,");
 		expect(run.stderr.filter((line) => !progress.test(line))).toEqual([
-			"judge failed on Fix the README typo: the answer did not call respond",
+			"  judge failed on Fix the README typo: the answer did not call respond",
 		]);
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-parse", "HEAD^")).toBe(develop);

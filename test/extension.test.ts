@@ -13,12 +13,15 @@ const FAKE = `#!/bin/sh
 echo "$@" >> args.log
 case "$1" in
 ok)
-	echo "run r1"; echo "phase one" >&2; echo "log two" >&2
+	echo "run r1"; echo '{"progress":["◉ item 1/2: one"]}' >&2
+	echo '{"progress":["◉ item 1/2: one","  ◉ plan"]}' >&2; echo "warning: slow disk" >&2
+	echo '{"progress":["◉ item 1/2: one","  ✓ plan","  judge failed","◉ item 2/2: two"]}' >&2
+	echo '{"progress":["✓ item 1/2: one","  ✓ plan","  judge failed","✓ item 2/2: two"]}' >&2
 	echo '{"runId":"r1","status":"finished","result":{"answer":42},"report":["{\\"answer\\":42}"]}' ;;
 -)
 	echo "run r2"; cat > stdin.js
 	echo '{"runId":"r2","status":"finished","result":"from stdin","report":["from stdin"]}' ;;
-bad) echo "run r3"; echo "phase one" >&2; echo '{"runId":"r3","status":"failed","error":"boom"}'; exit 1 ;;
+bad) echo "run r3"; echo '{"progress":["✗ one"]}' >&2; echo '{"runId":"r3","status":"failed","error":"boom"}'; exit 1 ;;
 slow)
 	echo "run r4"
 	trap 'echo '"'"'{"runId":"r4","status":"interrupted"}'"'"'; exit 130' INT
@@ -80,7 +83,7 @@ function draw(args: object, result?: AgentToolResult<unknown>, isPartial = false
 }
 
 describe("the workflow tool", () => {
-	it("returns the structured result of a finished run, with each stderr line as progress", async () => {
+	it("returns the structured result of a finished run, with each stderr line as an update", async () => {
 		const args = { path: "src", depth: 2, all: true, dry: false, tags: ["a"] };
 		const { result, updates } = await call({ name: "ok", args });
 		expect(result.structuredContent).toEqual({
@@ -90,7 +93,7 @@ describe("the workflow tool", () => {
 			report: ['{"answer":42}'],
 		});
 		expect(result.isError).toBeUndefined();
-		expect(updates).toEqual(["phase one", "log two"]);
+		expect(updates).toEqual(["◉ item 1/2: one", "◉ plan", "warning: slow disk", "◉ item 2/2: two", "✓ item 2/2: two"]);
 		expect(await readFile(join(root, "args.log"), "utf8")).toBe('ok --path=src --depth=2 --all --tags=["a"] --json\n');
 	});
 
@@ -181,14 +184,27 @@ describe("the workflow tool", () => {
 		expect(draw({ save: { runId: "r2" } })).toEqual(["workflow save r2"]);
 	});
 
-	it("draws the steps of a running run, the last one as running", async () => {
+	it("draws the last progress lines of the command, then the other stderr lines", async () => {
 		const { partials } = await call({ name: "ok" });
-		expect(draw({ name: "ok" }, partials[1], true)).toEqual(["workflow ok", "✓ phase one", "◉ log two"]);
+		expect(draw({ name: "ok" }, partials[2], true)).toEqual([
+			"workflow ok",
+			"◉ item 1/2: one",
+			"  ◉ plan",
+			"warning: slow disk",
+		]);
 	});
 
 	it("draws the report lines after the steps of a finished run", async () => {
 		const ok = await call({ name: "ok" });
-		expect(draw({ name: "ok" }, ok.result)).toEqual(["workflow ok", "✓ phase one", "✓ log two", '{"answer":42}']);
+		expect(draw({ name: "ok" }, ok.result)).toEqual([
+			"workflow ok",
+			"✓ item 1/2: one",
+			"  ✓ plan",
+			"  judge failed",
+			"✓ item 2/2: two",
+			"warning: slow disk",
+			'{"answer":42}',
+		]);
 
 		const ship = await call({ name: "ship", args: { item: "Fix the README typo", rounds: 2 } });
 		expect(draw({ name: "ship", args: { item: "Fix the README typo" } }, ship.result)).toEqual([
@@ -202,7 +218,7 @@ describe("the workflow tool", () => {
 		expect(result.content).toEqual([{ type: "text", text: 'run r3 failed: boom; continue it with resume: "r3"' }]);
 		expect(draw({ name: "bad" }, result)).toEqual([
 			"workflow bad",
-			"✗ phase one",
+			"✗ one",
 			'✗ run r3 failed: boom; continue it with resume: "r3"',
 		]);
 	});

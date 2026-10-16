@@ -59,8 +59,8 @@ declare function parallel<const T extends readonly (() => unknown)[]>(thunks: T)
 /** Sends each item through the stages in order, and the items at once. */
 declare function pipeline(items: readonly unknown[], ...stages: Array<(value: any) => unknown>): Promise<any[]>;
 
-/** Writes the phase line `title` on stderr before the script's next call that runs. */
+/** Starts the progress step `title` on stderr before the script's next call that runs. */
 declare function phase(title: string): void;
 
-/** Writes the line `text` on stderr before the script's next call that runs. */
+/** Writes the line `text` under the current step on stderr before the script's next call that runs. */
 declare function log(text: string): void;
