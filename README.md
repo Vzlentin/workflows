@@ -247,7 +247,8 @@ that Pi extension packages register, such as `cursor`. Their system prompt has t
 that Pi loads for the worktree.
 
 The tools are `read`, `grep`, `find`, `ls`, `write`, `edit` and `bash`, plus the tools of the packages in Pi's
-settings that declare `"piDurable": { "extensions": [...] }`, such as pi-ipython and pi-rlm. Git packages and local
+settings that declare `"piDurable": { "extensions": [...] }`, such as pi-ipython and pi-rlm, and the tools of the harness
+that workflows installs, through jiti, unless Pi's settings have a separate harness package. Git packages and local
 package directories are supported. Packages installed from npm are not supported, because Node does not strip types
 from TypeScript files under `node_modules`. The run does not install missing packages, and it loads the packages
 again at each resume. A package entry that fails to load fails the start or resume with `workflows: <error>`. Each
@@ -604,7 +605,8 @@ the file. `--json` has no effect.
 
 ## Pi package
 
-The package is also a Pi package. Its `pi` field in `package.json` declares the extension `extensions/workflows.ts`.
+The package is also a Pi package. Its `pi` field in `package.json` declares the extensions `extensions/workflows.ts`
+and `extensions/subagent.ts`.
 Add it to Pi from its Git URL, like other Pi packages:
 
 ```sh
@@ -618,8 +620,59 @@ pi update --extension https://github.com/Vzlentin/workflows
 ```
 
 The Pi package needs no build. Pi installs the dependencies, and the extension runs the CLI from its TypeScript
-source. Node strips the types, because a git package is not under `node_modules`. The `workflows` command on the
-PATH still needs `npm run build` in a checkout, because its `bin` is `dist/cli.js`. See [Setup](#setup).
+source. Node strips the types, because a git package is not under `node_modules`. In a checkout, the `workflows`
+command still needs `npm run build`, because its `bin` is `dist/cli.js`. See [Setup](#setup).
+
+The install includes [harness](https://github.com/Vzlentin/harness) as a dependency, at a Git ref in `package.json`.
+`extensions/subagent.ts` loads harness's extension from `node_modules/harness`, so Pi also gets the `subagent` tool,
+the `/subagent` command and the subagents widget. Pi does not start with two tools of one name, so when Pi also loads
+the `subagent` extension of a separate package named `harness`, the extension registers nothing and, at session start,
+shows:
+
+```text
+workflows includes harness. Remove the separate install with: pi remove <source>.
+```
+
+The check follows Pi's package scope and resource filters. A project package (`pi remove <source> -l`) always counts,
+because a session can trust a project for itself or with `--approve`. In a session that does not trust the project,
+the message adds `The subagent tool is off in this session.` A run checks with the saved trust of its directory, as it
+does for the packages it loads.
+
+To move from a separate harness install, run `pi remove <source of harness>` and then
+`pi update --extension https://github.com/Vzlentin/workflows`, in either order.
+
+### Commands on PATH
+
+After Pi installs or updates the package, its `postinstall` script links two commands into `~/.local/bin`:
+
+- `workflows` to `src/cli.ts` of the install
+- `harness` to `node_modules/harness/bin/harness.mjs` of the install
+
+One install owns the links. The script checks each link before it changes any of them:
+
+| The link | Result |
+| --- | --- |
+| does not exist, or points to a file that does not exist | It is linked |
+| points into this install | It is linked again |
+| points to a separate Pi install of harness | It is linked |
+| points to another workflows install | The script fails and names that install |
+| points to a workflows checkout, is a file, or points elsewhere | The script fails. Nothing is overwritten |
+
+The script compares real paths, so a link through other links counts as the install it reaches. Each link is replaced
+in one rename, so the command never goes missing. When the script fails on `pi install`, Pi removes its clone and does
+not add the package. When it fails on an update, Pi keeps the new code and its dependencies, reports the failure, and
+installs the dependencies again at the next update, so the links stay as they were until the conflict is gone.
+
+When Pi's settings have a separate package named `harness`, the script also prints:
+
+```text
+workflows: harness is included now. Pi skips its subagent tool from workflows until you run: pi remove <source>
+```
+
+The script links nothing in a directory that is neither a Pi git install (under `<agent dir>/git`) nor under
+`~/.local/share/workflows` (`XDG_DATA_HOME`), such as a checkout or a project install, unless
+`WORKFLOWS_LINK_BINS=1` is set. `WORKFLOWS_BIN_DIR` replaces `~/.local/bin`. `pi remove` does not remove the links.
+They then point to nothing, and the next install replaces them.
 
 The extension runs each workflow as a child process of this package's `node src/cli.ts`, in the session's directory,
 always with `--json`. So a run that starts in Pi is a normal run in the runs directory, and `workflows resume`

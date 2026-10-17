@@ -12,12 +12,14 @@
 		"dist",
 		"extensions",
 		"prompts",
+		"scripts",
 		"src",
 		"workflows"
 	],
 	"pi": {
 		"extensions": [
-			"./extensions/workflows.ts"
+			"./extensions/workflows.ts",
+			"./extensions/subagent.ts"
 		]
 	},
 	"engines": {
@@ -26,12 +28,15 @@
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
 		"check": "biome check . && tsc -p tsconfig.json && tsc -p workflows/jsconfig.json && vitest --run",
-		"test": "vitest --run"
+		"test": "vitest --run",
+		"postinstall": "node scripts/link-bins.ts"
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.3.0",
 		"@earendil-works/pi-codemode": "1.3.0",
-		"@earendil-works/pi-durable": "1.3.0"
+		"@earendil-works/pi-durable": "1.3.0",
+		"harness": "github:Vzlentin/harness#236db91db54dc958e05efadf726aa0066b169483",
+		"jiti": "2.7.0"
 	},
 	"optionalDependencies": {
 		"@earendil-works/pi-ai": "^1.3.0",

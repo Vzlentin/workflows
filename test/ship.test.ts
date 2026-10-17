@@ -94,6 +94,8 @@ const progress = /^(plan|judge|round \d: (implement|review))$/;
 const FIXED = "# Demo\n\nHello world\n";
 const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|failed), [0-9a-f]+$/;
 const TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash"];
+// The tool of the harness that workflows installs, loaded after the packages in Pi's settings.
+const HARNESS_TOOLS = ["subagent"];
 const answers = (kind: string) => (["verdict", "judge", "implement", "handoff"].includes(kind) ? ["respond"] : []);
 const NOTES = [
 	"#1 planner 0: Handoff 1: one word changes.",
@@ -181,7 +183,7 @@ describe("workflows ship", () => {
 		for (const call of calls) {
 			expect(call.thinking).toBe("medium");
 			expect(call.model).toBe("claude-opus-5-5");
-			expect(call.tools).toEqual([...TOOLS, ...answers(call.kind)]);
+			expect(call.tools).toEqual([...TOOLS, ...HARNESS_TOOLS, ...answers(call.kind)]);
 			expect(call.sections.cwd).toBe(`<cwd>\n${worktree}\n</cwd>`);
 			expect(call.sections.project_context).toContain("Run the demo checks.");
 			expect(call.sections.skills).toContain("<name>demo</name>");
@@ -277,7 +279,8 @@ export default function ({ events }) {
 		expect(run.model.calls.map((call) => call.kind)).toEqual([
 			...["plan", "challenge", "handoff", "implement", "review", "verdict", "judge"],
 		]);
-		for (const call of run.model.calls) expect(call.tools).toEqual([...TOOLS, "probe", ...answers(call.kind)]);
+		for (const call of run.model.calls)
+			expect(call.tools).toEqual([...TOOLS, "probe", ...HARNESS_TOOLS, ...answers(call.kind)]);
 		const probed = (await readFile(join(root, "probe.log"), "utf8")).trim().split("\n");
 		expect(probed).toHaveLength(4);
 		expect(new Set(probed).size).toBe(4);
