@@ -13,11 +13,11 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { separateHarness } from "../src/harness.ts";
 
 const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
-const piGitRoot = join(getAgentDir(), "git");
+// pi-coding-agent is an optional dependency, so the script also runs without it.
+const harness = await import("../src/harness.ts").catch(() => undefined);
+const piGitRoot = join(agentDir(), "git");
 const scriptRoot = join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "workflows");
 const binDir = resolve(process.env.WORKFLOWS_BIN_DIR || join(homedir(), ".local", "bin"));
 
@@ -25,6 +25,13 @@ const bins: Record<string, string> = {
 	workflows: join(root, "src", "cli.ts"),
 	harness: join(root, "node_modules", "harness", "bin", "harness.mjs"),
 };
+
+/** Pi's agent directory, as Pi finds it: `PI_CODING_AGENT_DIR` with `~` expanded, or `~/.pi/agent`. */
+function agentDir(): string {
+	const dir = process.env.PI_CODING_AGENT_DIR;
+	if (!dir) return join(homedir(), ".pi", "agent");
+	return dir === "~" ? homedir() : dir.startsWith("~/") ? join(homedir(), dir.slice(2)) : dir;
+}
 
 function real(path: string): string {
 	try {
@@ -69,11 +76,16 @@ if (kindOf(root) === "checkout" && process.env.WORKFLOWS_LINK_BINS !== "1") {
 const plan: [string, string][] = [];
 for (const [name, target] of Object.entries(bins)) {
 	const link = join(binDir, name);
-	const stat = lstatSync(link, { throwIfNoEntry: false });
-	if (stat !== undefined && !stat.isSymbolicLink()) fail(`${link} exists and is not a link. Remove it first`);
-	// A dangling link is left over from a removed install, for example after `pi remove`.
-	const current = stat === undefined ? undefined : real(link);
-	if (current === undefined || !existsSync(current)) {
+	let current: string | undefined;
+	try {
+		const stat = lstatSync(link, { throwIfNoEntry: false });
+		if (stat !== undefined && !stat.isSymbolicLink()) fail(`${link} exists and is not a link. Remove it first`);
+		current = stat === undefined ? undefined : realpathSync(link);
+	} catch (error) {
+		// A dangling link is left over from a removed install, for example after `pi remove`.
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") fail(`cannot read ${link}: ${(error as Error).message}`);
+	}
+	if (current === undefined) {
 		plan.push([link, target]);
 		continue;
 	}
@@ -114,10 +126,10 @@ try {
 	fail(`cannot link into ${binDir}: ${(error as Error).message}`);
 }
 
-const separate = separateHarness(process.cwd(), root);
-if (separate !== undefined) {
+const separate = await harness?.separateHarness(process.cwd(), root).catch(() => undefined);
+if (harness !== undefined && separate !== undefined) {
 	console.log(
-		`workflows: harness is included now. Pi skips its subagent tool from workflows until you run: pi remove ${separate.source}`,
+		`workflows: harness is included now. Pi skips its subagent tool from workflows until you run: ${harness.removeCommand(separate)}`,
 	);
 }
 const path = (process.env.PATH ?? "").split(":").map((dir) => resolve(dir || "."));

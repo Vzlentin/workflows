@@ -490,7 +490,8 @@ async function loadEntries(
 			.listConfiguredPackages()
 			.flatMap((found) => found.installedPath ?? []),
 	);
-	if (existsSync(HARNESS) && separateHarness(cwd, fileURLToPath(new URL("..", import.meta.url))) === undefined) {
+	const own = fileURLToPath(new URL("..", import.meta.url));
+	if (existsSync(HARNESS) && (await separateHarness(cwd, own, settingsManager)) === undefined) {
 		roots.add(HARNESS);
 	}
 	const jiti = createJiti(import.meta.url);

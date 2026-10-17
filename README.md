@@ -625,12 +625,17 @@ command still needs `npm run build`, because its `bin` is `dist/cli.js`. See [Se
 
 The install includes [harness](https://github.com/Vzlentin/harness) as a dependency, at a Git ref in `package.json`.
 `extensions/subagent.ts` loads harness's extension from `node_modules/harness`, so Pi also gets the `subagent` tool,
-the `/subagent` command and the subagents widget. Pi does not start with two tools of one name, so when Pi's settings
-also have a separate package named `harness`, the extension registers nothing and, at session start, shows:
+the `/subagent` command and the subagents widget. Pi does not start with two tools of one name, so when Pi also loads
+the `subagent` extension of a separate package named `harness`, the extension registers nothing and, at session start,
+shows:
 
 ```text
-workflows includes harness. Remove the separate install with: pi remove <source>
+workflows includes harness. Remove the separate install with: pi remove <source>.
 ```
+
+The check follows Pi's package scope and resource filters. A project package (`pi remove <source> -l`) counts unless
+the project is saved as untrusted, because a session can trust a project for itself. In a session that does not trust
+the project, the message adds `The subagent tool is off in this session.`
 
 To move from a separate harness install, run `pi remove <source of harness>` and then
 `pi update --extension https://github.com/Vzlentin/workflows`, in either order.
