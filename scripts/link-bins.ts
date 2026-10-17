@@ -1,5 +1,5 @@
 // Links the workflows and harness commands into ~/.local/bin, as the postinstall of a Pi git install. One install
-// owns the links. Another install fails and names the owner, and Pi then removes its clone.
+// owns the links. Another install fails and names the owner. On `pi install`, Pi then removes its clone.
 import {
 	existsSync,
 	lstatSync,
@@ -7,18 +7,19 @@ import {
 	readFileSync,
 	readlinkSync,
 	realpathSync,
+	renameSync,
 	symlinkSync,
-	unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { separateHarness } from "../src/harness.ts";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const home = homedir();
-const piGitRoot = join(process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent"), "git");
-const scriptRoot = join(process.env.XDG_DATA_HOME ?? join(home, ".local", "share"), "workflows");
-const binDir = process.env.WORKFLOWS_BIN_DIR ?? join(home, ".local", "bin");
+const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
+const piGitRoot = join(getAgentDir(), "git");
+const scriptRoot = join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "workflows");
+const binDir = resolve(process.env.WORKFLOWS_BIN_DIR || join(homedir(), ".local", "bin"));
 
 const bins: Record<string, string> = {
 	workflows: join(root, "src", "cli.ts"),
@@ -38,10 +39,10 @@ function inside(path: string, dir: string): boolean {
 	return p === d || p.startsWith(d + sep);
 }
 
-function kindOf(path: string): "pi-git" | "script" | "dev" {
+function kindOf(path: string): "pi-git" | "script" | "checkout" {
 	if (inside(path, piGitRoot)) return "pi-git";
 	if (inside(path, scriptRoot)) return "script";
-	return "dev";
+	return "checkout";
 }
 
 /** The nearest package above `path`, skipping packages that are installed in `node_modules`. */
@@ -59,8 +60,8 @@ function fail(message: string): never {
 	process.exit(1);
 }
 
-if (kindOf(root) === "dev" && process.env.WORKFLOWS_LINK_BINS !== "1") {
-	console.log("workflows: dev checkout, bins not linked (set WORKFLOWS_LINK_BINS=1 to link them)");
+if (kindOf(root) === "checkout" && process.env.WORKFLOWS_LINK_BINS !== "1") {
+	console.log("workflows: checkout, bins not linked (set WORKFLOWS_LINK_BINS=1 to link them)");
 	process.exit(0);
 }
 
@@ -70,37 +71,54 @@ for (const [name, target] of Object.entries(bins)) {
 	const link = join(binDir, name);
 	const stat = lstatSync(link, { throwIfNoEntry: false });
 	if (stat !== undefined && !stat.isSymbolicLink()) fail(`${link} exists and is not a link. Remove it first`);
-	const current = stat === undefined ? undefined : resolve(binDir, readlinkSync(link));
 	// A dangling link is left over from a removed install, for example after `pi remove`.
+	const current = stat === undefined ? undefined : real(link);
 	if (current === undefined || !existsSync(current)) {
 		plan.push([link, target]);
 		continue;
 	}
 	const owner = packageOf(current);
-	if (owner?.name === "workflows" && real(owner.dir) === real(root)) {
+	const ownerKind = owner === undefined ? undefined : kindOf(owner.dir);
+	// The installs of install.sh are versions of one install, so a new version takes the links over.
+	const same =
+		owner !== undefined && (real(owner.dir) === root || (ownerKind === "script" && kindOf(root) === "script"));
+	if (owner?.name === "workflows" && same) {
 		plan.push([link, target]);
 		continue;
 	}
-	if (owner?.name === "harness" && kindOf(owner.dir) === "pi-git") {
-		console.log(
-			`workflows: ${link} pointed to the separate harness install at ${owner.dir}, which workflows now includes. Remove it from Pi with pi remove and its source from pi list`,
-		);
+	if (owner?.name === "harness" && ownerKind === "pi-git") {
 		plan.push([link, target]);
 		continue;
 	}
-	if (owner?.name !== "workflows" || kindOf(owner.dir) === "dev") {
-		fail(`${link} points to ${current}, which is not a workflows install. Remove it first`);
+	const shown = resolve(binDir, readlinkSync(link));
+	if (owner?.name === "workflows" && ownerKind === "checkout") {
+		fail(`${link} points to ${shown}, a workflows checkout. Remove it first`);
 	}
-	if (kindOf(owner.dir) === "script") {
+	if (owner?.name !== "workflows")
+		fail(`${link} points to ${shown}, which is not a workflows install. Remove it first`);
+	if (ownerKind === "script")
 		fail(`already installed at ${owner.dir}. To use it from Pi, run: pi install ${owner.dir}`);
-	}
-	fail(`already installed through Pi at ${owner.dir}. To update it, run: pi update`);
+	fail(`already installed through Pi at ${owner.dir}. To update it, run: pi update --extensions`);
 }
 
-mkdirSync(binDir, { recursive: true });
-for (const [link, target] of plan) {
-	if (lstatSync(link, { throwIfNoEntry: false }) !== undefined) unlinkSync(link);
-	symlinkSync(target, link);
-	console.log(`workflows: linked ${link} -> ${target}`);
+try {
+	mkdirSync(binDir, { recursive: true });
+	// A new link replaces the old one in one rename, so the command is never missing.
+	for (const [link, target] of plan) {
+		const temporary = `${link}.${process.pid}.tmp`;
+		symlinkSync(target, temporary);
+		renameSync(temporary, link);
+		console.log(`workflows: linked ${link} -> ${target}`);
+	}
+} catch (error) {
+	fail(`cannot link into ${binDir}: ${(error as Error).message}`);
 }
-if (!(process.env.PATH ?? "").split(":").includes(binDir)) console.log(`workflows: add ${binDir} to PATH`);
+
+const separate = separateHarness(process.cwd(), root);
+if (separate !== undefined) {
+	console.log(
+		`workflows: harness is included now. Pi skips its subagent tool from workflows until you run: pi remove ${separate.source}`,
+	);
+}
+const path = (process.env.PATH ?? "").split(":").map((dir) => resolve(dir || "."));
+if (!path.includes(binDir)) console.log(`workflows: add ${binDir} to PATH`);

@@ -19,7 +19,7 @@
 	"pi": {
 		"extensions": [
 			"./extensions/workflows.ts",
-			"./node_modules/harness/extensions/subagent.ts"
+			"./extensions/subagent.ts"
 		]
 	},
 	"engines": {
@@ -35,7 +35,8 @@
 		"@earendil-works/chord": "1.3.0",
 		"@earendil-works/pi-codemode": "1.3.0",
 		"@earendil-works/pi-durable": "1.3.0",
-		"harness": "github:Vzlentin/harness#55863de2a0d0b5a0240ac49e1d9d738ea32e1d7c"
+		"harness": "github:Vzlentin/harness#55863de2a0d0b5a0240ac49e1d9d738ea32e1d7c",
+		"jiti": "2.7.0"
 	},
 	"optionalDependencies": {
 		"@earendil-works/pi-ai": "^1.3.0",

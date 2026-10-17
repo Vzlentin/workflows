@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve as resolvePath } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -35,7 +35,9 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { createJiti } from "jiti";
 import { Sessions } from "./agents.ts";
+import { separateHarness } from "./harness.ts";
 import { takeLock } from "./lock.ts";
 import * as script from "./meta.ts";
 import { type Display, display } from "./progress.ts";
@@ -467,11 +469,15 @@ function piSettings(settings: SettingsManager, extensions: readonly Extension[])
 /** What the default export of a `piDurable` entry returns. */
 type Entry = { readonly extensions: readonly Extension[]; close(): Promise<void> };
 
+/** The harness that workflows installs as a dependency. */
+const HARNESS = fileURLToPath(new URL("../node_modules/harness", import.meta.url));
+
 /**
- * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, in one shared event bus, as one
- * entry whose `close()` closes each of them and passes its errors to `warn`. When an entry fails to load, the entries
- * loaded before it close. Missing packages are skipped, not installed. Node does not strip types under
- * `node_modules`, so entries of npm packages fail to load.
+ * The `piDurable` entries of the installed packages in Pi's `settingsManager` for `cwd`, and of the harness that
+ * workflows installs unless Pi has its own, in one shared event bus, as one entry whose `close()` closes each of them
+ * and passes its errors to `warn`. When an entry fails to load, the entries loaded before it close. Missing packages are
+ * skipped, not installed. Node does not strip types under `node_modules`, so entries of npm packages fail to load, and
+ * the harness dependency loads through jiti.
  */
 async function loadEntries(
 	cwd: string,
@@ -484,6 +490,10 @@ async function loadEntries(
 			.listConfiguredPackages()
 			.flatMap((found) => found.installedPath ?? []),
 	);
+	if (existsSync(HARNESS) && separateHarness(cwd, fileURLToPath(new URL("..", import.meta.url))) === undefined) {
+		roots.add(HARNESS);
+	}
+	const jiti = createJiti(import.meta.url);
 	const events = createEventBus();
 	const entries: Entry[] = [];
 	const close = async () => {
@@ -497,7 +507,10 @@ async function loadEntries(
 				readonly piDurable?: { readonly extensions?: readonly string[] };
 			};
 			for (const path of manifest.piDurable?.extensions ?? []) {
-				const entry = await import(pathToFileURL(resolvePath(root, path)).href);
+				const file = resolvePath(root, path);
+				const entry = (root === HARNESS ? await jiti.import(file) : await import(pathToFileURL(file).href)) as {
+					default: (api: object) => Promise<Entry> | Entry;
+				};
 				entries.push(await entry.default({ durable, ai, events }));
 			}
 		}
