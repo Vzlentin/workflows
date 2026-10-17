@@ -618,8 +618,32 @@ pi update --extension https://github.com/Vzlentin/workflows
 ```
 
 The Pi package needs no build. Pi installs the dependencies, and the extension runs the CLI from its TypeScript
-source. Node strips the types, because a git package is not under `node_modules`. The `workflows` command on the
-PATH still needs `npm run build` in a checkout, because its `bin` is `dist/cli.js`. See [Setup](#setup).
+source. Node strips the types, because a git package is not under `node_modules`. In a checkout, the `workflows`
+command still needs `npm run build`, because its `bin` is `dist/cli.js`. See [Setup](#setup).
+
+The install includes [harness](https://github.com/Vzlentin/harness) as a dependency, at a Git ref in `package.json`.
+Pi loads its extension from `node_modules/harness`, so Pi also gets the `subagent` tool and the `/subagent` command. Do
+not also install harness as its own Pi package: Pi would then have two `subagent` tools.
+
+### Commands on PATH
+
+After Pi installs or updates the package, its `postinstall` script links two commands into `~/.local/bin`:
+
+- `workflows` to `src/cli.ts` of the install
+- `harness` to `node_modules/harness/bin/harness.mjs` of the install
+
+One install owns the links. The script checks each link before it changes any of them:
+
+| The link | Result |
+| --- | --- |
+| does not exist, or points to a file that does not exist | It is linked |
+| points into this install | It is linked again |
+| points to a separate Pi install of harness | It is linked, with a message to remove that install from Pi |
+| points to another workflows install | The script fails and names that install. Pi then removes its clone and does not add the package |
+| is a file, or points elsewhere | The script fails. Nothing is overwritten |
+
+In a checkout, the script links nothing, unless `WORKFLOWS_LINK_BINS=1` is set. `WORKFLOWS_BIN_DIR` replaces
+`~/.local/bin`. `pi remove` does not remove the links. They then point to nothing, and the next install replaces them.
 
 The extension runs each workflow as a child process of this package's `node src/cli.ts`, in the session's directory,
 always with `--json`. So a run that starts in Pi is a normal run in the runs directory, and `workflows resume`
