@@ -4,12 +4,7 @@
  */
 import { readFileSync, realpathSync } from "node:fs";
 import { basename, join, sep } from "node:path";
-import {
-	DefaultPackageManager,
-	getAgentDir,
-	ProjectTrustStore,
-	SettingsManager,
-} from "@earendil-works/pi-coding-agent";
+import { DefaultPackageManager, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 export type SeparateHarness = { readonly source: string; readonly scope: "user" | "project" | "temporary" };
 
@@ -31,9 +26,9 @@ function nameOf(dir: string): string | undefined {
 
 /**
  * The harness package other than the one under `root` whose `subagent` extension Pi loads in `cwd`, as Pi resolves it:
- * after project trust, package scope and resource filters. `settings` defaults to Pi's settings, with the project
- * trusted unless `cwd` is saved as untrusted: a Pi session can trust a project for itself, which the saved trust does
- * not show, and two `subagent` tools stop Pi. Missing packages are skipped, not installed.
+ * after package scope and resource filters, and after project trust when `settings` gives it. Without `settings`, the
+ * project counts as trusted: a Pi session can trust a project for itself or with `--approve`, which the saved trust
+ * does not show, and two `subagent` tools stop Pi. Missing packages are skipped, not installed.
  */
 export async function separateHarness(
 	cwd: string,
@@ -41,9 +36,7 @@ export async function separateHarness(
 	settings?: SettingsManager,
 ): Promise<SeparateHarness | undefined> {
 	const agentDir = getAgentDir();
-	const settingsManager =
-		settings ??
-		SettingsManager.create(cwd, agentDir, { projectTrusted: new ProjectTrustStore(agentDir).get(cwd) !== false });
+	const settingsManager = settings ?? SettingsManager.create(cwd, agentDir, { projectTrusted: true });
 	const resolved = await new DefaultPackageManager({ cwd, agentDir, settingsManager }).resolve(async () => "skip");
 	const own = real(root);
 	for (const extension of resolved.extensions) {

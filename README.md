@@ -633,9 +633,10 @@ shows:
 workflows includes harness. Remove the separate install with: pi remove <source>.
 ```
 
-The check follows Pi's package scope and resource filters. A project package (`pi remove <source> -l`) counts unless
-the project is saved as untrusted, because a session can trust a project for itself. In a session that does not trust
-the project, the message adds `The subagent tool is off in this session.`
+The check follows Pi's package scope and resource filters. A project package (`pi remove <source> -l`) always counts,
+because a session can trust a project for itself or with `--approve`. In a session that does not trust the project,
+the message adds `The subagent tool is off in this session.` A run checks with the saved trust of its directory, as it
+does for the packages it loads.
 
 To move from a separate harness install, run `pi remove <source of harness>` and then
 `pi update --extension https://github.com/Vzlentin/workflows`, in either order.
