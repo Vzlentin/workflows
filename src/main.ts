@@ -13,27 +13,22 @@ import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
-import type { Cursor, DocumentId, TaskRecord } from "@earendil-works/pi-durable";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import type { TaskRecord } from "@earendil-works/pi-durable";
 import type { Client } from "harness/src/client.ts";
 import type { TaskInfo } from "harness/src/protocol.ts";
 import { createJiti } from "jiti";
 import * as script from "./meta.ts";
-import { display, PROGRESS_KIND, type ProgressEvent } from "./progress.ts";
+import { display } from "./progress.ts";
 import { type Io, newRunId, UsageError, withUsage } from "./run.ts";
-import { CALL_KIND, type CallRecord, loadScripts, projectFolder } from "./script.ts";
+import { type CallRecord, loadScripts, projectFolder } from "./script.ts";
+import { callRecords, openStore, progressEvents, reading, runTasks } from "./store.ts";
 import { current, TASK } from "./task.ts";
-
-/** The command reads the store while the host writes to it, so it waits longer than the 5 s default for a lock. */
-const STORAGE = { busyTimeoutMs: 60_000 };
 
 /** How often the command reads the progress of a run that it follows. */
 const POLL_MS = 500;
 
 /** How long a command that Ctrl+C detached waits for a second Ctrl+C, which stops the run. */
 const STOP_WINDOW_MS = 2000;
-
-type Storage = Awaited<ReturnType<typeof openNodeSqliteStorage>>;
 
 export type Terminal = Io & {
 	/** Aborted by the first Ctrl+C: the command detaches, and the run goes on in the host. */
@@ -218,43 +213,7 @@ async function savedRun(id: string, usage: string): Promise<SavedRun> {
 	return { id, project, store: await storeOf(project) };
 }
 
-/** `read` on the store at `path`, opened for reads; `fallback` when the store does not exist. */
-async function reading<T>(path: string, fallback: T, read: (storage: Storage) => Promise<T>): Promise<T> {
-	if (!existsSync(path)) return fallback;
-	const storage = await openNodeSqliteStorage(path, STORAGE);
-	try {
-		return await read(storage);
-	} finally {
-		await storage.close(BACKGROUND_CONTEXT);
-	}
-}
-
 const PREFIX = "workflows.";
-
-/** The run ID in the input of a workflow task, also of an earlier version, which some versions wrapped as `{ input }`. */
-function runIdOf(input: JsonValue): string | undefined {
-	const saved = script.isObject(input) && script.isObject(input.input) ? input.input : input;
-	return script.isObject(saved) && typeof saved.runId === "string" ? saved.runId : undefined;
-}
-
-/**
- * The workflow tasks that no task owns, so not the tasks of child runs, by run ID, oldest first. Their kind can be one
- * that no installed workflow has, such as a workflow of an earlier version.
- */
-async function runTasks(storage: Storage): Promise<Map<string, TaskRecord<JsonValue, JsonValue, JsonValue>[]>> {
-	const runs = new Map<string, TaskRecord<JsonValue, JsonValue, JsonValue>[]>();
-	let cursor: Cursor | undefined;
-	do {
-		const page = await storage.scanTasks({}, 256, cursor, BACKGROUND_CONTEXT);
-		for (const task of page.items) {
-			const id = runIdOf(task.input);
-			if (!task.kind.startsWith(PREFIX) || task.owner !== undefined || id === undefined) continue;
-			runs.set(id, [...(runs.get(id) ?? []), task]);
-		}
-		cursor = page.next;
-	} while (cursor !== undefined);
-	return runs;
-}
 
 /** The root tasks of `run`, oldest first. */
 function tasksOf(run: SavedRun): Promise<TaskRecord<JsonValue, JsonValue, JsonValue>[]> {
@@ -264,15 +223,6 @@ function tasksOf(run: SavedRun): Promise<TaskRecord<JsonValue, JsonValue, JsonVa
 /** The number of progress events of the root run `id`. */
 function progressCount(run: SavedRun): Promise<number> {
 	return reading(run.store, 0, async (storage) => (await progressEvents(storage, run.id)).length);
-}
-
-/** The progress events of the root run `id`, read from the storage only. */
-async function progressEvents(storage: Storage, id: string): Promise<readonly ProgressEvent[]> {
-	const address = { kind: PROGRESS_KIND, scope: { kind: "session" as const }, key: id };
-	const record = await storage.findDocument(address, "current", BACKGROUND_CONTEXT);
-	if (record === undefined) return [];
-	const stored = await storage.document(record.id, "current", BACKGROUND_CONTEXT);
-	return (stored?.value as { events?: ProgressEvent[] } | undefined)?.events ?? [];
 }
 
 /**
@@ -426,31 +376,6 @@ async function save(args: readonly string[], terminal: Terminal): Promise<number
 	return 0;
 }
 
-/** The call records of the run `runId` and of its child runs, by key, read from the storage only. */
-async function callRecords(storage: Storage, runId: string): Promise<Map<string, CallRecord>> {
-	const documents = new Map<string, DocumentId>();
-	let cursor: Cursor | undefined;
-	do {
-		const query = { scope: { kind: "session" as const }, at: "current" as const, kind: CALL_KIND };
-		const page = await storage.scanDocuments(query, 256, cursor, BACKGROUND_CONTEXT);
-		for (const record of page.items) if (record.key !== undefined) documents.set(record.key, record.id);
-		cursor = page.next;
-	} while (cursor !== undefined);
-	const records = new Map<string, CallRecord>();
-	const runs = [runId];
-	for (const run of runs) {
-		for (const [key, id] of documents) {
-			if (!key.startsWith(`${run}/`)) continue;
-			const stored = await storage.document(id, "current", BACKGROUND_CONTEXT);
-			if (stored === undefined) continue;
-			const record = stored.value as CallRecord;
-			records.set(key, record);
-			if (record.child !== undefined) runs.push(record.child.runId);
-		}
-	}
-	return records;
-}
-
 /** The calls of the run `runId` in the order they started, each `run` call with the calls of its child run. */
 function callTree(records: Map<string, CallRecord>, runId: string): Shown[] {
 	const own = [...records].filter(([key]) => key.startsWith(`${runId}/`)).map(([, record]) => record);
@@ -591,13 +516,14 @@ async function follow(run: Following, terminal: Terminal, json: boolean): Promis
 		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
 		else for (const line of footer) terminal.stderr(line);
 	};
-	const storage = await openNodeSqliteStorage(await storeOf(run.project), STORAGE).catch((error: unknown) => {
+	const storage = await openStore(await storeOf(run.project)).catch((error: unknown) => {
 		client.close();
 		throw error;
 	});
 	let seen = run.from;
 	const poll = async () => {
 		// A read that fails, such as one that waited too long for a lock, shows nothing; the next read catches up.
+		if (storage === undefined) return;
 		const events = await progressEvents(storage, id).catch(() => []);
 		for (const event of events.slice(seen)) shown.event(event);
 		seen = Math.max(seen, events.length);
@@ -645,7 +571,7 @@ async function follow(run: Following, terminal: Terminal, json: boolean): Promis
 	} finally {
 		polled.abort();
 		client.close();
-		await storage.close(BACKGROUND_CONTEXT);
+		await storage?.close(BACKGROUND_CONTEXT);
 	}
 
 	async function report(info: TaskInfo): Promise<number> {

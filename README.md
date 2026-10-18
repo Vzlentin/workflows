@@ -578,8 +578,8 @@ argument, such as the work item for ship and the goal for campaign, or else the 
 `later-version`, with its workflow name as its title: it cannot resume. Any other run, also a failed one, is
 `unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
 
-`list` reads the project store file and does not start the host, so no run continues. It takes short write locks on
-the store. The host and `list` wait up to 60 seconds for each other's locks.
+`list` reads the project store file read-only and does not start the host, so no run continues. It takes no lock that
+the host waits for, and runs no checkpoint of the file.
 
 ## Show
 
@@ -618,7 +618,8 @@ times. `phase` is `null` before the first phase line. The `result` of a `run` ca
 result of its child run, and its `calls` are the calls of the child run.
 
 `show` exits 0 for every run it can show. It reads the project store through pi-durable's storage functions, as `list`
-does, and does not start the host. It takes short write locks on the store as `list` does. An unknown run ID, or a run directory without a `project` file, prints the
+does, and does not start the host. It reads the file read-only as `list` does. An unknown run ID, or a run directory
+without a `project` file, prints the
 `no run` error of `resume`. A run saved by an earlier version prints `workflows: run
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
@@ -858,6 +859,7 @@ The engine files in `src/`:
   run directory.
 - `entry.ts`: the `piDurable` entry that the harness host loads, with the script task.
 - `progress.ts`: the tree of steps of a run, and how the command draws it on stderr.
+- `store.ts`: the command's read-only reads of the project store: the tasks of the runs, their progress and calls.
 - `meta.ts`: the `meta` of a workflow script, its arguments, its usage, `check`, and the report lines and exit code of
   a run.
 - `task.ts`: the task of every script run, its saved input and checkpoint, its phase, child runs, and the end of its

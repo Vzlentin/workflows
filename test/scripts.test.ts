@@ -266,7 +266,7 @@ describe("workflows show", () => {
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
 	});
 
-	it("waits for a write lock that another process holds for longer than 5 seconds", async () => {
+	it("reads the store while another process holds its write lock", async () => {
 		await writeFile(join(root, "x.js"), `phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")`);
 		const first = await stopped(["x.js"], { nth: 2 });
 		const id = first.id ?? "";

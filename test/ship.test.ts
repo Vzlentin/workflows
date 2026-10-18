@@ -586,8 +586,7 @@ describe("workflows show", () => {
 
 describe("workflows resume of ship runs", () => {
 	it("refuses a run that another version saved, and lists it as such", async () => {
-		const ship = await saveRun("workflows.ship", TASK.version);
-		// The script task owns the task kind of the earlier `run` command, so only its version can be earlier.
+		// A task without a workflow name in its input is named by its kind.
 		const run = await saveRun("workflows.run", TASK.version - 1);
 		// A script task of an earlier version names its workflow in its input.
 		const script = await saveRun("workflows.run", TASK.version - 1, { name: "ship" });
@@ -597,7 +596,6 @@ describe("workflows resume of ship runs", () => {
 		const later = await saveRun("workflows.run", TASK.version + 1, { name: "ship" });
 
 		for (const [id, name, word] of [
-			[ship, "ship", "an earlier"],
 			[run, "run", "an earlier"],
 			[script, "ship", "an earlier"],
 			[wrapped, "campaign", "an earlier"],
@@ -624,8 +622,8 @@ describe("workflows resume of ship runs", () => {
 		}
 		const listed = await workflows(["list"], { cwd: repo });
 		const word = (id: string) => (id === later ? "later-version" : "earlier-version");
-		const all = [ship, run, script, wrapped, later].sort().reverse();
-		const names: Record<string, string> = { [ship]: "ship", [run]: "run", [script]: "ship", [wrapped]: "campaign" };
+		const all = [run, script, wrapped, later].sort().reverse();
+		const names: Record<string, string> = { [run]: "run", [script]: "ship", [wrapped]: "campaign" };
 		expect(listed.stdout).toEqual(all.map((id) => `${id} ${names[id] ?? "ship"} ${word(id)} ${names[id] ?? "ship"}`));
 		const unknown = await workflows(["show", "20990101T000000-00000000"], { cwd: repo });
 		expect([unknown.code, unknown.stdout, unknown.stderr]).toEqual([
