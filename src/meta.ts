@@ -238,32 +238,87 @@ export async function listScripts(io: Io): Promise<string[]> {
 
 export const CHECK = "workflows check <workflow>";
 
-/** A string literal, as a script writes it. */
-const LITERAL = String.raw`(["'\`])([^"'\`]*)\1`;
+/** The fields of an object literal that a session call reads: a string literal gives its text, any other value null. */
+type Fields = { readonly provider?: string | null; readonly model?: string | null; readonly as?: string | null };
 
-/**
- * The value of the field `name` in the object literal `text`: the string it gives, `null` when its value is not a
- * string literal, or undefined when the object has no such field.
- */
-function literalField(text: string, name: string): string | null | undefined {
-	if (!new RegExp(String.raw`(?:^|[{,\s])${name}\s*:`).test(text)) return undefined;
-	return new RegExp(String.raw`(?:^|[{,\s])${name}\s*:\s*${LITERAL}`).exec(text)?.[2] ?? null;
+/** `fields` of the text of one brace block, whose strings are `"<n>"` with their texts in `strings`. */
+function fieldsOf(text: string, strings: readonly string[]): Fields | undefined {
+	const fields: Record<string, string | null> = {};
+	for (const name of ["provider", "model", "as"]) {
+		if (!new RegExp(String.raw`(?:^|[,\s])${name}\s*(?::|,|$)`).test(text)) continue;
+		const literal = new RegExp(String.raw`(?:^|[,\s])${name}\s*:\s*"(\d+)"\s*(?:,|$)`).exec(text)?.[1];
+		fields[name] = literal === undefined ? null : (strings[Number(literal)] ?? null);
+	}
+	return Object.keys(fields).length === 0 ? undefined : fields;
 }
 
 /**
- * The first model that an object literal of `source` names with a literal `model` or `provider`, with the profile of
- * its `as` (default `default`) for the other field, as `<provider>/<id>`, that `models` does not know. An object with
- * a computed field, or without a provider or a model after its profile, is left to the start of the session.
+ * The fields of each object literal that `source` passes directly to `session(...)` or `agent(...)`, at the object's
+ * own level. Comments, strings and nested objects do not count, and an object with a spread is left out, because its
+ * fields are not all known.
+ */
+function sessionFields(source: string): Fields[] {
+	const found: Fields[] = [];
+	const strings: string[] = [];
+	// The open brackets. An object keeps its text at its own level: each string as `"<n>"`, a template with `${` as `x`,
+	// and an inner object as `{}`.
+	const open: ({ readonly call: string } | { text: string; readonly session: boolean })[] = [];
+	const add = (text: string) => {
+		const object = open.findLast((entry) => "text" in entry);
+		if (object !== undefined && "text" in object) object.text += text;
+	};
+	for (let at = 0; at < source.length; at++) {
+		const char = source[at] ?? "";
+		const rest = source.slice(at, at + 2);
+		if (rest === "//" || rest === "/*") {
+			const end = source.indexOf(rest === "//" ? "\n" : "*/", at + 2);
+			at = end === -1 ? source.length : end + (rest === "//" ? 0 : 1);
+			continue;
+		}
+		if (char === '"' || char === "'" || char === "`") {
+			let text = "";
+			let computed = false;
+			for (at++; at < source.length && source[at] !== char; at++) {
+				if (source[at] === "\\") at++;
+				else if (char === "`" && source.slice(at, at + 2) === "${") computed = true;
+				text += source[at] ?? "";
+			}
+			strings.push(text);
+			add(computed ? "x" : `"${strings.length - 1}"`);
+		} else if (char === "(") {
+			open.push({ call: /([A-Za-z_$][\w$]*)\s*$/.exec(source.slice(0, at))?.[1] ?? "" });
+			add(char);
+		} else if (char === ")") {
+			if (open.at(-1) !== undefined && "call" in (open.at(-1) ?? {})) open.pop();
+			add(char);
+		} else if (char === "{") {
+			const top = open.at(-1);
+			add("{}");
+			open.push({ text: "", session: top !== undefined && "call" in top && ["session", "agent"].includes(top.call) });
+		} else if (char === "}") {
+			const top = open.at(-1);
+			if (top === undefined || !("text" in top)) continue;
+			open.pop();
+			const fields = top.session && !top.text.includes("...") ? fieldsOf(top.text, strings) : undefined;
+			if (fields !== undefined) found.push(fields);
+		} else {
+			add(char);
+		}
+	}
+	return found;
+}
+
+/**
+ * The first model, as `<provider>/<id>`, that a session call of `source` names with a literal `provider` or `model`,
+ * with the profile of its `as` (default `default`) for the other field, and that `models` does not have. A call with a
+ * computed field, or without a provider or a model after its profile, is left to the start of the session.
  */
 async function unknownModel(
 	source: string,
 	bundle: Bundle,
 	models: () => Promise<Models>,
 ): Promise<string | undefined> {
-	const named = [...source.matchAll(/\{[^{}]*\}/g)].flatMap(([text]) => {
-		const provider = literalField(text, "provider");
-		const model = literalField(text, "model");
-		const as = literalField(text, "as");
+	const named = sessionFields(source).flatMap(({ provider, model, as }) => {
 		if (provider === null || model === null || as === null) return [];
 		if (provider === undefined && model === undefined) return [];
 		const profile = bundle.agents[as ?? "default"]?.model;

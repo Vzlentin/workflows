@@ -336,9 +336,10 @@ call, and a dynamic call such as `prompts[name]()` is not scanned.
 `workflows check <wf>` reads and checks `meta`, the scanned prompts, and the agent profiles of each literal
 `session("<profile>")` and `as: "<profile>"`. It also checks each object literal with a string `provider` or `model`,
 with the profile of its `as` (default `default`) for the field that it leaves out, against Pi's model registry: Pi's
-`models.json` and the providers that Pi and its packages register. A model that the registry does not have fails with
+`models.json` and the providers that Pi and its packages register. Only an object literal that the script passes to
+`session(...)` or `agent(...)` counts, without its inner objects. A model that the registry does not have fails with
 `<name> uses the model <provider>/<id>, which Pi's model registry does not have`. A field whose value is not a string
-literal is checked when the session opens. `check` prints `ok <name>` and exits 0, or prints the first problem and
+literal, or an object with a spread, is checked when the session opens. `check` prints `ok <name>` and exits 0, or prints the first problem and
 exits 1. It starts no run and writes nothing.
 
 ### Output

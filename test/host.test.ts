@@ -241,11 +241,17 @@ return [one, two, three].join(", ")`,
 		await writeFile(
 			join(root, "known.js"),
 			`const name = "x"
+const repo = { provider: "github" }
+// agent("a", { model: "commented" })
 await agent("a", { provider: "other", model: "o-1" })
-await session({ model: name }).ask("b")
-return await agent("c", { as: "planner", model: "claude-haiku-5" })`,
+await session({ model: name }).ask("Reply like { model: 'nope' }")
+await agent("b", { ...repo, model: "nope" })
+return await agent("c", { as: "planner", model: "claude-haiku-5", schema: { type: "object" } })`,
 		);
-		await writeFile(join(root, "model.js"), 'return await session({ thinking: "high", model: "nope" }).ask("a")');
+		await writeFile(
+			join(root, "model.js"),
+			'return await session({ thinking: "high", model: "nope", schema: { type: "object" } }).ask("a")',
+		);
 		await writeFile(join(root, "provider.js"), "return await agent('a', { provider: 'gone' })");
 
 		const known = await workflows(["check", "known.js"], { cwd: root });
