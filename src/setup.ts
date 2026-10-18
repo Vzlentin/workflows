@@ -95,10 +95,9 @@ export function ensureHarness(dir: string): string | undefined {
 /**
  * Sets up the package in `dir` when it is a top-level global install: it ensures harness, runs harness's setup for its
  * own Pi extension, sets the entry `workflows` in harness's `entries.json`, so a host that starts before any
- * `workflows` command runs workflows, and runs harness's setup for `dir`, which removes `npm:@vzlentin/pi-workflows`
- * (the `retiredPiPackages` of `package.json`) and registers `<dir>/pi` in Pi. harness's setup keeps a stamp for each
- * package version and path, and writes it only when its `pi` commands worked, so a later run is cheap and a failed one
- * tries again. It never throws: an error is a warning.
+ * `workflows` command runs workflows, and runs harness's setup for `dir`, which registers `<dir>/pi` in Pi. harness's
+ * setup keeps a stamp for each package version and path, and writes it only when `pi` worked, so a later run is cheap
+ * and a failed one tries again. It never throws: an error is a warning.
  */
 export async function setup(dir: string): Promise<void> {
 	try {

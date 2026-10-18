@@ -119,12 +119,6 @@ async function installWorkflows(at = join("@vzlentin", "workflows")) {
 /** A global install of the checkout's harness next to workflows. */
 const installHarness = () => cp(HARNESS, join(LIB(), "@vzlentin", "harness"), { recursive: true });
 
-/** Pi's settings with the packages `sources`. */
-async function piSettings(...sources: string[]) {
-	await mkdir(join(root, "pi-agent"));
-	await writeFile(join(root, "pi-agent", "settings.json"), JSON.stringify({ packages: sources }));
-}
-
 /** Runs the postinstall of the package in `dir` with `env`, by default the one that npm gives a global install. */
 const postinstall = (
 	dir: string,
@@ -241,7 +235,6 @@ describe("the setup", () => {
 		const top = await installWorkflows();
 		const nested = await installWorkflows(join("other", "node_modules", "@vzlentin", "workflows"));
 		await installHarness();
-		await piSettings("npm:@vzlentin/pi-workflows");
 
 		expect(await postinstall(top, {})).toEqual({ code: 0, stdout: "", stderr: "" });
 		expect(await postinstall(nested)).toEqual({ code: 0, stdout: "", stderr: "" });
@@ -250,22 +243,13 @@ describe("the setup", () => {
 		await expect(entries()).rejects.toThrow("ENOENT");
 	});
 
-	it("sets up harness, the entry and Pi from the postinstall, and removes the retired Pi packages", async () => {
+	it("sets up harness, the entry and Pi from the postinstall", async () => {
 		const dir = await installWorkflows();
 		await installHarness();
-		await piSettings("npm:@vzlentin/pi-subagent", "npm:@vzlentin/pi-workflows@0.1.0");
 
-		expect(await postinstall(dir)).toEqual({
-			code: 0,
-			stdout: "",
-			stderr:
-				"harness: removing npm:@vzlentin/pi-subagent from Pi, which @vzlentin/harness replaces\n" +
-				"workflows: removing npm:@vzlentin/pi-workflows@0.1.0 from Pi, which @vzlentin/workflows replaces\n",
-		});
+		expect(await postinstall(dir)).toEqual({ code: 0, stdout: "", stderr: "" });
 		expect(await log("pi.log")).toEqual([
-			"remove npm:@vzlentin/pi-subagent",
 			`install ${join(LIB(), "@vzlentin", "harness", "pi")}`,
-			"remove npm:@vzlentin/pi-workflows@0.1.0",
 			`install ${join(dir, "pi")}`,
 		]);
 		expect(await entries()).toEqual({ workflows: join(dir, "dist", "entry.js") });
@@ -273,7 +257,7 @@ describe("the setup", () => {
 
 		// The postinstall wrote the stamp, so the first command does not set up again.
 		expect(await workflows(dir, {}, "list")).toEqual({ code: 0, stdout: "", stderr: "" });
-		expect(await log("pi.log")).toHaveLength(4);
+		expect(await log("pi.log")).toHaveLength(2);
 	});
 
 	it("installs a missing harness from the first command, and sets up once per version", async () => {

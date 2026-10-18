@@ -700,16 +700,14 @@ The steps:
    script, or the `npm` on `PATH`. It prints the output of npm on stderr only when npm fails. When harness still does
    not fit, it prints the error line below, and stops.
 2. It runs harness's setup (`setupOnce` of `@vzlentin/harness/setup`) for the global harness, which registers
-   harness's Pi extension and removes `npm:@vzlentin/pi-subagent`, also when npm ran no install script of harness.
+   harness's Pi extension, also when npm ran no install script of harness.
 3. It sets the entry `workflows` in harness's `entries.json` to `dist/entry.js` of the install. So a host that starts
    before any `workflows` command, such as one that `harness` or Pi starts, runs workflows. The path has no version,
    so it stays the same across updates.
-4. With harness's `setupOnce` for the workflows package: it runs `pi remove <source>` for each source in Pi's settings
-   that is `npm:@vzlentin/pi-workflows` or a version of it (the `retiredPiPackages` of `package.json`), one source
-   for each command, then `pi install <install>/pi`. `pi` is looked up on `PATH` without the folders that end in
-   `node_modules/.bin`, as a dependency has a `pi` of its own. A Pi failure prints `workflows: pi <command> failed
-   (<reason>). To add the Pi extension of workflows, run: pi install <install>/pi`. Pi records the real path of
-   `<install>/pi`.
+4. With harness's `setupOnce` for the workflows package: it runs `pi install <install>/pi`. `pi` is looked up on
+   `PATH` without the folders that end in `node_modules/.bin`, as a dependency has a `pi` of its own. A Pi failure
+   prints `workflows: pi install failed (<reason>). To add the Pi extension of workflows, run: pi install
+   <install>/pi`. Pi records the real path of `<install>/pi`.
 
 A failure of the setup prints `workflows: setup failed: <message>`, or `harness: setup failed: <message>` when it
 comes from harness's `setupOnce`, and the command goes on.

@@ -41,27 +41,6 @@ npm runs no script when it removes a package, so remove the Pi extension first. 
 no longer use it: see its README. After an update, a harness host that runs keeps the old version until it stops. It
 stops by itself after 5 minutes with no work.
 
-### Move from 0.1.0
-
-0.1.0 had the separate Pi packages `@vzlentin/pi-workflows` and `@vzlentin/pi-subagent`, and its own copy of harness.
-Install 0.2.0 as above: the setup removes the two Pi packages from Pi. Pi does not start while one of them and the
-new extension are both installed, so run a `workflows` command before you start Pi. To remove them by hand:
-
-```sh
-pi remove npm:@vzlentin/pi-workflows
-pi remove npm:@vzlentin/pi-subagent
-```
-
-### Move from the Pi git install
-
-Earlier versions installed with `pi install https://github.com/Vzlentin/workflows` and linked the commands into
-`~/.local/bin`. Remove that install and the links first:
-
-```sh
-pi remove https://github.com/Vzlentin/workflows
-rm ~/.local/bin/workflows ~/.local/bin/harness
-```
-
 ## Use
 
 ```sh
