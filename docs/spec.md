@@ -242,8 +242,10 @@ the packages in Pi's settings that declare `"piDurable": { "extensions": [...] }
 host loads these packages once, when it starts, so a package installed later reaches the runs of a project after its
 host restarts. A subagent that a session spawns is a child of that session.
 
-A session of a run is at depth 1 of harness's tree of children, under the run, and its subagents at depth 2, the
-deepest that harness allows.
+A session of a run that a command starts is at depth 1 of harness's tree of children, in the tree
+`workflows:<root-run-id>`, and its subagents at depth 2, the deepest that harness allows. A run that the `workflow`
+tool of a conversation of the host starts puts its sessions under that conversation instead, see
+[The `workflow` tool of the host](#the-workflow-tool-of-the-host).
 
 ## Workflow scripts
 
@@ -756,6 +758,34 @@ directory, starts the host when none runs, asks it to start the run's task, and 
   closes its sessions and their subagents. When it fails or stops, it closes only what is under its sessions, such as
   their subagents, and stops the turns of its sessions, which stay for a resume.
 - Each try of a run is a task that harness starts with the key `wf:<run-id>#<n>`, from 1.
+
+### The `workflow` tool of the host
+
+The entry also gives the conversations of the host the `workflow` tool: the project agent, its subagents, and the
+subagents of sessions. The sessions of a run do not get it. It takes the parameters of
+[The `workflow` tool](#the-workflow-tool) of Pi, and runs the `workflows` command of the same install as a child
+process with the Node of the host, in the conversation's directory, with `--json`. It sets `HARNESS_PROJECT` to the
+project of the host and `PI_SESSION_ID` to the conversation ID.
+
+- When the command prints `run <run-id>`, the running output of the call gets `run <run-id>: if this call stops, the
+  run is detached and goes on in the harness host; follow it with resume: "<run-id>"`. Each stderr line appends a line to the running output, the last progress line or the line itself,
+  and sets the `details` of the call to `{ steps }`, the progress lines of the command then any other stderr line.
+  The result keeps the last `details`.
+- The result text of a finished run is the summary of Pi's tool, then the `report` lines. A failed, detached, stopped
+  or host-stopped run is an error result with its summary, and keeps the structured output
+  `{ runId, status, result?, report?, error? }`.
+- Esc in a conversation aborts the call: the command gets SIGINT, detaches, and the run goes on in the host. The
+  result is an error that keeps the running output, so it names the run, says that it is detached, and says to follow
+  it with `resume`. A call
+  that a host restart interrupts does not run again; its error result also keeps the running output.
+- The command saves `PI_SESSION_ID` in the input of the run as `parent`, and the child runs get the same `parent`.
+  When it is the project agent or a conversation of the children library, the sessions of the run are children of
+  that conversation: under the project agent at depth 1, under a subagent at depth 2. Else, such as for the session ID
+  of Pi, they are in the tree `workflows:<root-run-id>`. A session of a run under a subagent is in the subagent's
+  list of children, so closing that subagent closes the session.
+- A conversation at the depth limit of its tree, such as a subagent of a session, gets the error `a subagent at depth
+  <depth> cannot use workflow: the sessions of a run would be deeper than the depth limit <limit>`, and no command
+  starts.
 
 ## Pi
 
