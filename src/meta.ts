@@ -6,6 +6,7 @@
 import { readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import type { Models } from "@earendil-works/pi-ai/models";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { selectRepository } from "./git.ts";
@@ -237,14 +238,61 @@ export async function listScripts(io: Io): Promise<string[]> {
 
 export const CHECK = "workflows check <workflow>";
 
-/** `workflows check <wf>`: reads `meta` and checks the prompts and profiles that the script names; starts no run. */
-export async function check(args: readonly string[], io: Io): Promise<number> {
+/** A string literal, as a script writes it. */
+const LITERAL = String.raw`(["'\`])([^"'\`]*)\1`;
+
+/**
+ * The value of the field `name` in the object literal `text`: the string it gives, `null` when its value is not a
+ * string literal, or undefined when the object has no such field.
+ */
+function literalField(text: string, name: string): string | null | undefined {
+	if (!new RegExp(String.raw`(?:^|[{,\s])${name}\s*:`).test(text)) return undefined;
+	return new RegExp(String.raw`(?:^|[{,\s])${name}\s*:\s*${LITERAL}`).exec(text)?.[2] ?? null;
+}
+
+/**
+ * The first model that an object literal of `source` names with a literal `model` or `provider`, with the profile of
+ * its `as` (default `default`) for the other field, as `<provider>/<id>`, that `models` does not know. An object with
+ * a computed field, or without a provider or a model after its profile, is left to the start of the session.
+ */
+async function unknownModel(
+	source: string,
+	bundle: Bundle,
+	models: () => Promise<Models>,
+): Promise<string | undefined> {
+	const named = [...source.matchAll(/\{[^{}]*\}/g)].flatMap(([text]) => {
+		const provider = literalField(text, "provider");
+		const model = literalField(text, "model");
+		const as = literalField(text, "as");
+		if (provider === null || model === null || as === null) return [];
+		if (provider === undefined && model === undefined) return [];
+		const profile = bundle.agents[as ?? "default"]?.model;
+		const found = { provider: provider ?? profile?.provider, model: model ?? profile?.modelId };
+		return found.provider === undefined || found.model === undefined ? [] : [found];
+	});
+	if (named.length === 0) return undefined;
+	const registry = await models();
+	const unknown = named.find(({ provider, model }) => registry.getModel(provider ?? "", model ?? "") === undefined);
+	return unknown === undefined ? undefined : `${unknown.provider}/${unknown.model}`;
+}
+
+/**
+ * `workflows check <wf>`: reads `meta` and checks the prompts and profiles that the script names, and the literal
+ * models of its calls against Pi's model registry; starts no run.
+ */
+export async function check(
+	args: readonly string[],
+	io: Io & { readonly models: () => Promise<Models> },
+): Promise<number> {
 	const [word, ...rest] = args;
 	if (word === undefined || rest.length > 0) throw new UsageError("give one workflow to check", CHECK);
 	const found = await findScript(word, io);
 	await readMeta(found.source, found.name);
 	const failed = problem(found.source, found.name, found.bundle, true);
 	if (failed !== undefined) throw new Error(failed);
+	const model = await unknownModel(found.source, found.bundle, io.models);
+	if (model !== undefined)
+		throw new Error(`${found.name} uses the model ${model}, which Pi's model registry does not have`);
 	io.stdout(`ok ${found.name}`);
 	return 0;
 }

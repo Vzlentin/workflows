@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Models } from "@earendil-works/pi-ai/models";
 import type { Cursor, DocumentId, TaskRecord } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Client } from "harness/src/client.ts";
@@ -38,6 +39,8 @@ export type Terminal = Io & {
 	readonly stop: AbortSignal;
 	/** How long the command waits for a second Ctrl+C after the first. */
 	readonly stopWindowMs: number;
+	/** Pi's model registry, for `check`. */
+	readonly models: () => Promise<Models>;
 	/** Connects to the host of `project`, which it starts when none runs. Default: harness's client. */
 	readonly connect?: (project: string) => Promise<Client>;
 };

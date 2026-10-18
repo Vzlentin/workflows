@@ -476,6 +476,7 @@ export async function workflows(
 		interrupt: interrupt.signal,
 		stop: (options.stop ?? new AbortController()).signal,
 		stopWindowMs: options.stopWindowMs ?? 0,
+		models: async () => model.models,
 		connect: async (project) => {
 			if (host === undefined) {
 				const stateDir = statePaths(project).dir;

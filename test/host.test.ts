@@ -224,4 +224,29 @@ return [one, two, three].join(", ")`,
 		const bad = await workflows(["bad.js"], { cwd: root });
 		expect([bad.code, bad.stderr.at(-2)]).toEqual([1, "failed bad: Unknown model: anthropic/nope"]);
 	});
+
+	it("checks the literal models of a script against the model registry", async () => {
+		await writeFile(
+			join(root, "known.js"),
+			`const name = "x"
+await agent("a", { provider: "other", model: "o-1" })
+await session({ model: name }).ask("b")
+return await agent("c", { as: "planner", model: "claude-haiku-5" })`,
+		);
+		await writeFile(join(root, "model.js"), 'return await session({ thinking: "high", model: "nope" }).ask("a")');
+		await writeFile(join(root, "provider.js"), "return await agent('a', { provider: 'gone' })");
+
+		const known = await workflows(["check", "known.js"], { cwd: root });
+		expect([known.code, known.stdout]).toEqual([0, ["ok known"]]);
+		const model = await workflows(["check", "model.js"], { cwd: root });
+		expect([model.code, model.stderr]).toEqual([
+			1,
+			["workflows: model uses the model anthropic/nope, which Pi's model registry does not have"],
+		]);
+		const provider = await workflows(["check", "provider.js"], { cwd: root });
+		expect([provider.code, provider.stderr]).toEqual([
+			1,
+			["workflows: provider uses the model gone/claude-opus-5-5, which Pi's model registry does not have"],
+		]);
+	});
 });

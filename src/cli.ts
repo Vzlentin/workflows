@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-/** The `workflows` executable: the terminal and Ctrl+C. */
+/** The `workflows` executable: the terminal, Ctrl+C, and Pi's models for `check`. */
 import { text } from "node:stream/consumers";
+import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { main } from "./main.ts";
 import { terminalRedraw } from "./progress.ts";
 
@@ -29,4 +30,5 @@ process.exitCode = await main(process.argv.slice(2), {
 	interrupt: interrupt.signal,
 	stop: stop.signal,
 	stopWindowMs: STOP_WINDOW_MS,
+	models: async () => (await createAgentSessionServices({ cwd: process.cwd() })).modelRuntime,
 });
