@@ -139,6 +139,13 @@ async function runPhase(
 	const caller = task.owner === undefined ? undefined : await runtime.getTask(task.owner as TaskId<JsonValue>, context);
 	const parent = caller !== undefined && current(caller) ? caller.input.runId : null;
 	try {
+		// A command that reaches the running task of a root run shows its progress from here.
+		if (task.owner === undefined) {
+			await runtime.commit(async (tx) => {
+				await addProgress(tx, root, [{ kind: "start", run: runId }]);
+				return undefined;
+			}, context);
+		}
 		if (worktree !== undefined)
 			await ensureWorktree(worktree.repository, worktree.path, worktree.branch, worktree.start);
 		const result = await runScript(runtime, context, cwd, host, {

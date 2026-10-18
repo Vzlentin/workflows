@@ -252,7 +252,7 @@ describe("workflows show", () => {
 		const shown = await workflows(["show", id], { cwd: root });
 		expect(rows()).toEqual(before);
 		expect(shown.stdout).toEqual([
-			`run ${id} x unfinished x`,
+			`run ${id} x running x`,
 			"talk",
 			expect.stringMatching(/^ {2}✓ session default {2}\d+s$/),
 			expect.stringMatching(/^ {2}✓ ask default {2}\d+s$/),
@@ -283,7 +283,7 @@ describe("workflows show", () => {
 		const shown = await workflows(["show", id], { cwd: root });
 		expect(await exited).toBe(0);
 		expect(shown.code).toBe(0);
-		expect(shown.stdout[0]).toBe(`run ${id} x unfinished x`);
+		expect(shown.stdout[0]).toBe(`run ${id} x running x`);
 	}, 20_000);
 });
 

@@ -13,15 +13,16 @@ import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
-import type { TaskRecord } from "@earendil-works/pi-durable";
+import type { TaskOutcome, TaskRecord } from "@earendil-works/pi-durable";
 import type { Client } from "harness/src/client.ts";
 import type { TaskInfo } from "harness/src/protocol.ts";
 import { createJiti } from "jiti";
 import * as script from "./meta.ts";
 import { display } from "./progress.ts";
 import { type Io, newRunId, UsageError, withUsage } from "./run.ts";
-import { type CallRecord, loadScripts, projectFolder } from "./script.ts";
-import { callRecords, openStore, progressEvents, reading, runTasks } from "./store.ts";
+import type { CallRecord } from "./script.ts";
+import { loadScripts, projectFolder } from "./script.ts";
+import { callRecords, openStore, progressEvents, type RunTask, reading, runTasks } from "./store.ts";
 import { current, TASK } from "./task.ts";
 
 /** How often the command reads the progress of a run that it follows. */
@@ -30,15 +31,25 @@ const POLL_MS = 500;
 /** How long a command that Ctrl+C detached waits for a second Ctrl+C, which stops the run. */
 const STOP_WINDOW_MS = 2000;
 
+/** The error of harness's client when the host closes the connection, such as when it stops. */
+const HOST_CLOSED = "The harness host closed the connection";
+
 export type Terminal = Io & {
 	/** Aborted by the first Ctrl+C: the command detaches, and the run goes on in the host. */
 	readonly interrupt: AbortSignal;
-	/** Waits up to `ms` for a second Ctrl+C, which stops the run, and gives whether it came. */
-	readonly secondInterrupt: (ms: number) => Promise<boolean>;
+	/** Aborted by a second Ctrl+C while the command follows a run: the command stops the run. */
+	readonly stop: AbortSignal;
+	/** Tells whether the command follows a run, so that a second Ctrl+C stops the run rather than exits. */
+	readonly following: (active: boolean) => void;
+	/** How long a command that Ctrl+C detached waits for a second Ctrl+C. Default 2 s. */
+	readonly stopWindowMs?: number;
 	/** Pi's model registry, for `check`. */
 	readonly models: () => Promise<Models>;
-	/** Connects to the host of `project`, which it starts when none runs. Default: harness's client. */
-	readonly connect?: (project: string) => Promise<Client>;
+	/**
+	 * Connects to the host of `project`. With `start`, it starts the host when none runs; without, it gives undefined
+	 * then. Default: harness's client.
+	 */
+	readonly connect?: (project: string, start: boolean) => Promise<Client | undefined>;
 };
 
 const RESUME = "workflows resume <run-id> [--json]";
@@ -127,16 +138,25 @@ async function storeOf(project: string): Promise<string> {
 	return join((await harness()).protocol.statePaths(project).dir, "durable.sqlite");
 }
 
-/** A connection to the host of `project`. harness's client reads the project from `HARNESS_PROJECT`. */
-async function connectTo(terminal: Terminal, project: string): Promise<Client> {
-	if (terminal.connect !== undefined) return terminal.connect(project);
+/**
+ * A connection to the host of `project`. With `start`, it starts the host when none runs; without, it is undefined
+ * then. harness's client reads the project from `HARNESS_PROJECT`.
+ */
+async function connectTo(terminal: Terminal, project: string, start: true): Promise<Client>;
+async function connectTo(terminal: Terminal, project: string, start: boolean): Promise<Client | undefined>;
+async function connectTo(terminal: Terminal, project: string, start: boolean): Promise<Client | undefined> {
+	const connected = await connectOrNot(terminal, project, start);
+	if (start && connected === undefined) throw new Error(`no harness host for ${project}`);
+	return connected;
+}
+
+async function connectOrNot(terminal: Terminal, project: string, start: boolean): Promise<Client | undefined> {
+	if (terminal.connect !== undefined) return terminal.connect(project, start);
 	const { client } = await harness();
 	const saved = process.env.HARNESS_PROJECT;
 	process.env.HARNESS_PROJECT = project;
 	try {
-		const connected = await client.connect({ start: true });
-		if (connected === undefined) throw new Error(`no harness host for ${project}`);
-		return connected;
+		return await client.connect({ start });
 	} finally {
 		if (saved === undefined) delete process.env.HARNESS_PROJECT;
 		else process.env.HARNESS_PROJECT = saved;
@@ -151,14 +171,47 @@ function runsDirectory(): string {
 /** The `start` key of the task `n` of the run `id`, counting from 1. */
 const taskKey = (id: string, n: number) => `wf:${id}#${n}`;
 
-/** Starts the task of `key` with `input` in the host of `client`. */
-async function startTask(client: Client, input: script.ScriptInput, key: string): Promise<void> {
+/** An error after which the host has no task of the request, or none that runs. */
+class Refused extends Error {}
+
+/** Starts the task of `key` with `input` in the host of `client`, and checks the version of the host's task. */
+async function startTask(client: Client, project: string, input: script.ScriptInput, key: string): Promise<TaskInfo> {
+	let info: TaskInfo;
 	try {
-		await client.request({ type: "start", kind: TASK.name, input, key });
+		info = await client.request({ type: "start", kind: TASK.name, input, key });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		if (!message.startsWith("Unknown task kind")) throw error;
-		throw new Error(`${message}: the harness host does not load workflows; add it to Pi with pi install`);
+		throw new Refused(`${message}: the harness host does not load workflows; add it to Pi with pi install`);
+	}
+	await checkVersion(client, project, info, true);
+	return info;
+}
+
+/**
+ * Throws when the host ran the task `info` with another version of workflows, after it aborts the task when this command
+ * `started` it: a host keeps the version of workflows that it loaded when it started.
+ */
+async function checkVersion(client: Client, project: string, info: TaskInfo, started: boolean): Promise<void> {
+	if (info.version === TASK.version) return;
+	if (started) await client.request({ type: "abort-task", key: info.key });
+	const pid = client.pid;
+	throw new Refused(
+		`the harness host of project ${project} (pid ${pid}) runs version ${info.version} of the workflows task, and this command version ${TASK.version}. Stop the host with kill ${pid}; it starts again with the installed workflows`,
+	);
+}
+
+/** The info of the task of `key` in the host of `project`, undefined when the host has no such task. */
+async function findTask(terminal: Terminal, project: string, key: string): Promise<TaskInfo | undefined> {
+	const client = await connectTo(terminal, project, false);
+	if (client === undefined) throw new Error(`no harness host for ${project}`);
+	try {
+		return await client.request({ type: "task", key });
+	} catch (error) {
+		if (error instanceof Error && error.message.startsWith("Unknown task:")) return undefined;
+		throw error;
+	} finally {
+		client.close();
 	}
 }
 
@@ -170,16 +223,32 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 	const key = taskKey(id, 1);
 	await mkdir(directory, { recursive: true });
 	let client: Client | undefined;
-	let input: script.ScriptInput;
+	let input: script.ScriptInput | undefined;
+	let sent = false;
 	try {
 		input = await script.prepare(parsed, { id, directory, cwd: terminal.cwd });
 		await writeFile(join(directory, "project"), `${project}\n`);
 		terminal.interrupt.throwIfAborted();
-		client = await connectTo(terminal, project);
+		terminal.following(true);
+		client = await connectTo(terminal, project, true);
 		terminal.interrupt.throwIfAborted();
-		await startTask(client, input, key);
+		sent = true;
+		await startTask(client, project, input, key);
 	} catch (error) {
 		client?.close();
+		terminal.following(false);
+		if (sent && input !== undefined && !(error instanceof Refused)) {
+			// The host may have created the task before the error, such as a closed connection, so the run may exist.
+			const message = error instanceof Error ? error.message : String(error);
+			const found = await findTask(terminal, project, key).catch(() => null);
+			if (found === null) throw new Error(`${message}; run ${id} may have started: workflows resume ${id}`);
+			if (found !== undefined) {
+				terminal.following(true);
+				terminal.stdout(`run ${id}`);
+				const again = await connectTo(terminal, project, true);
+				return follow({ id, project, key, input, client: again, from: 0 }, terminal, json);
+			}
+		}
 		await rm(directory, { recursive: true, force: true });
 		if (!terminal.interrupt.aborted) throw error;
 		terminal.stderr("workflows: interrupted before the run started");
@@ -213,60 +282,109 @@ async function savedRun(id: string, usage: string): Promise<SavedRun> {
 	return { id, project, store: await storeOf(project) };
 }
 
-const PREFIX = "workflows.";
-
 /** The root tasks of `run`, oldest first. */
-function tasksOf(run: SavedRun): Promise<TaskRecord<JsonValue, JsonValue, JsonValue>[]> {
-	return reading(run.store, [], async (storage) => (await runTasks(storage)).get(run.id) ?? []);
+function tasksOf(run: SavedRun): Promise<RunTask[]> {
+	return reading(run.store, [], async (store) => (await runTasks(store)).get(run.id) ?? []);
 }
 
-/** The number of progress events of the root run `id`. */
-function progressCount(run: SavedRun): Promise<number> {
-	return reading(run.store, 0, async (storage) => (await progressEvents(storage, run.id)).length);
+/**
+ * The task of a run that the commands go by: its last task, unless that is a task of another version that ended after
+ * a task of this version, as when the command refused the host's version and aborted it; then the last task of this
+ * version.
+ */
+function taskOf(tasks: readonly RunTask[]): RunTask | undefined {
+	const latest = tasks.at(-1);
+	if (latest === undefined || current(latest) || latest.state.status !== "terminal") return latest;
+	return tasks.findLast(current) ?? latest;
+}
+
+/** The status of a run whose task is `task`, for `list` and `show`. */
+function runStatus(task: RunTask): string {
+	const { state } = task;
+	if (state.status !== "terminal") {
+		if (current(task)) return "running";
+		return savedBy(task).later ? "later-version" : "earlier-version";
+	}
+	const { outcome } = state;
+	if (outcome.status === "completed") return script.statusOf(outcome.result) ?? "done";
+	return outcome.status === "aborted" ? "stopped" : outcome.status;
+}
+
+/** The progress events of the root run `run`. */
+function progressOf(run: SavedRun): Promise<readonly unknown[]> {
+	return reading(run.store, [], (store) => progressEvents(store, run.id));
 }
 
 /**
  * Continues the run of `args`. A finished run prints its result. A run whose last task ended without a result continues
- * in a new task with the same input. A run whose last task did not end is followed.
+ * in a new task with the same input, and shows the progress from its start. A run whose last task did not end is
+ * followed: with its host running, from the start of the task's current execution, else from when the host starts.
  */
 async function resume(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const run = await savedRun(oneRunId(args, RESUME), RESUME);
 	const tasks = await tasksOf(run);
-	const { input, state } = checked(tasks.at(-1), run.id, "resume");
+	const { input, state } = checked(taskOf(tasks), run.id, "resume");
 	if (state.status === "terminal" && state.outcome.status === "completed") {
 		terminal.stdout(`run ${run.id}`);
 		return finished(input, run.id, state.outcome.result, terminal, json);
 	}
-	const from = await progressCount(run);
-	const ended = state.status === "terminal";
+	const ended = tasks.at(-1)?.state.status === "terminal";
 	const key = taskKey(run.id, tasks.length + (ended ? 1 : 0));
-	const client = await connectTo(terminal, run.project);
+	terminal.following(true);
+	let client: Client | undefined;
+	let from: number;
 	try {
-		if (ended) await startTask(client, input, key);
+		if (ended) {
+			from = (await progressOf(run)).length;
+			client = await connectTo(terminal, run.project, true);
+			await startTask(client, run.project, input, key);
+		} else {
+			const before = (await progressOf(run)).length;
+			client = await connectTo(terminal, run.project, false);
+			if (client === undefined) {
+				from = before;
+				client = await connectTo(terminal, run.project, true);
+			} else {
+				const events = (await progressOf(run)) as readonly { kind?: string; run?: string }[];
+				const started = events.findLastIndex((event) => event.kind === "start" && event.run === run.id);
+				from = started === -1 ? events.length : started;
+			}
+			await checkVersion(client, run.project, await client.request({ type: "task", key }), false);
+		}
 	} catch (error) {
-		client.close();
+		client?.close();
+		terminal.following(false);
 		throw error;
 	}
 	terminal.stdout(`run ${run.id}`);
 	return follow({ id: run.id, project: run.project, key, input, client, from }, terminal, json);
 }
 
-/** Stops the run of `args` in its host. Its task ends as aborted, and a resume continues it. */
+/**
+ * Stops the run of `args` in its host. Its task ends as stopped, and a resume continues it. A pending task of another
+ * version, which no host can run, ends as orphaned.
+ */
 async function stop(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const run = await savedRun(oneRunId(args, STOP), STOP);
 	const tasks = await tasksOf(run);
-	const { input, state } = checked(tasks.at(-1), run.id, "be stopped");
-	if (state.status === "terminal") throw new Error(`run ${run.id} is not running`);
+	const latest = tasks.at(-1);
+	if (latest === undefined) throw new Error(`run ${run.id} has no workflow`);
+	if (latest.state.status === "terminal") throw new Error(`run ${run.id} is not running`);
 	const outcome = await abortRun(terminal, run.project, taskKey(run.id, tasks.length));
-	if (outcome?.status !== "aborted") throw new Error(`run ${run.id} is not running`);
+	if (outcome?.status !== "aborted" && outcome?.status !== "orphaned") throw new Error(`run ${run.id} is not running`);
 	if (json) terminal.stdout(JSON.stringify({ runId: run.id, status: "stopped" }));
-	else terminal.stdout(`stopped ${script.title(input)}; continue with: workflows resume ${run.id}`);
+	else if (current(latest)) {
+		terminal.stdout(`stopped ${script.title(latest.input)}; continue with: workflows resume ${run.id}`);
+	} else {
+		const { name, later } = savedBy(latest);
+		terminal.stdout(`stopped ${name}, which ${later ? "a later" : "an earlier"} version saved; it cannot resume`);
+	}
 	return 0;
 }
 
 /** Aborts the task of `key` in the host of `project`, and gives its outcome once it ended. */
 async function abortRun(terminal: Terminal, project: string, key: string): Promise<TaskInfo["outcome"]> {
-	const client = await connectTo(terminal, project);
+	const client = await connectTo(terminal, project, true);
 	try {
 		await client.request({ type: "abort-task", key });
 		return (await client.request({ type: "wait-task", key })).outcome;
@@ -277,24 +395,21 @@ async function abortRun(terminal: Terminal, project: string, key: string): Promi
 
 type Listed = { readonly runId: string; readonly workflow: string; readonly title: string; readonly status: string };
 
-/** Prints the runs of the project of the current directory, newest run ID first. It reads the project store only. */
+/**
+ * Prints the runs of the project of the current directory that have a run directory, newest run ID first. It reads the
+ * project store only.
+ */
 async function list(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	if (args.length > 0) throw new UsageError("list takes no arguments", LIST);
 	const store = await storeOf(await projectOf(terminal.cwd));
-	const runs = await reading(store, new Map(), runTasks);
+	const runs = await reading(store, new Map<string, RunTask[]>(), runTasks);
 	const listed: Listed[] = [];
 	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
-		const latest = tasks.at(-1);
-		if (latest === undefined) continue;
-		if (!current(latest)) {
-			const { name, later } = savedBy(latest);
-			listed.push({ runId: id, workflow: name, title: name, status: later ? "later-version" : "earlier-version" });
-			continue;
-		}
-		const { input, state } = latest;
-		const done = state.status === "terminal" && state.outcome.status === "completed";
-		const status = done ? (script.statusOf(state.outcome.result) ?? "done") : "unfinished";
-		listed.push({ runId: id, workflow: input.name, title: script.title(input), status });
+		const task = taskOf(tasks);
+		if (task === undefined || !existsSync(join(runsDirectory(), id, "project"))) continue;
+		const status = runStatus(task);
+		if (current(task)) listed.push({ runId: id, workflow: task.input.name, title: script.title(task.input), status });
+		else listed.push({ runId: id, workflow: savedBy(task).name, title: savedBy(task).name, status });
 	}
 	if (json) terminal.stdout(JSON.stringify(listed));
 	else for (const run of listed) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
@@ -308,36 +423,43 @@ type Shown = Omit<CallRecord, "conversation" | "child"> & {
 	readonly calls?: Shown[];
 };
 
+/** The footer lines and the JSON fields of a run that ended with `outcome` without a result. */
+function endOf(outcome: TaskOutcome<JsonValue>, title: string, id: string): { lines: string[]; error?: string } {
+	const resume = `continue with: workflows resume ${id}`;
+	if (outcome.status === "failed" || outcome.status === "faulted") {
+		return { lines: [`failed ${title}: ${outcome.error.message}`, resume], error: outcome.error.message };
+	}
+	if (outcome.status === "orphaned") return { lines: [`orphaned ${title}: ${outcome.reason}`, resume] };
+	return { lines: [`stopped ${title}; ${resume}`] };
+}
+
 /**
- * Prints the phases and calls of a run as a tree, then its report lines, or its error. It reads the task records and
+ * Prints the phases and calls of a run as a tree, then its report lines, or how it ended. It reads the task records and
  * the call records from the project store only.
  */
 async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const run = await savedRun(oneRunId(args, SHOW), SHOW);
 	const { id } = run;
-	const { latest, records } = await reading(run.store, { latest: undefined, records: new Map() }, async (storage) => ({
-		latest: (await runTasks(storage)).get(id)?.at(-1),
-		records: await callRecords(storage, id),
+	const { task, records } = await reading(run.store, { task: undefined, records: new Map() }, async (store) => ({
+		task: taskOf((await runTasks(store)).get(id) ?? []),
+		records: await callRecords(store, id),
 	}));
-	const { input, state } = checked(latest, id, "be shown");
+	const checkedTask = checked(task, id, "be shown");
+	const { input, state } = checkedTask;
 	const outcome = state.status === "terminal" ? state.outcome : undefined;
-	const status =
-		outcome?.status === "completed"
-			? (script.statusOf(outcome.result) ?? "done")
-			: outcome?.status === "failed"
-				? "failed"
-				: "unfinished";
-	const calls = callTree(records, id);
+	const calls = callTree(records, id, outcome !== undefined);
 	const title = script.title(input);
 	const footer: string[] = [];
 	let end: { report: string[] } | { error: string } | undefined;
 	if (outcome?.status === "completed") {
 		script.report(input, outcome.result, { ...terminal, stdout: (line) => footer.push(line) });
 		end = { report: footer };
-	} else if (outcome?.status === "failed") {
-		footer.push(`failed ${title}: ${outcome.error.message}`, `continue with: workflows resume ${id}`);
-		end = { error: outcome.error.message };
+	} else if (outcome !== undefined) {
+		const ended = endOf(outcome, title, id);
+		footer.push(...ended.lines);
+		if (ended.error !== undefined) end = { error: ended.error };
 	}
+	const status = runStatus(checkedTask);
 	if (json) {
 		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, calls }));
 		return 0;
@@ -363,7 +485,7 @@ async function save(args: readonly string[], terminal: Terminal): Promise<number
 	}
 	if (Object.hasOwn(COMMANDS, name)) throw new Error(`${name} is a command and cannot be a workflow name`);
 	const run = await savedRun(id, SAVE);
-	const { input } = checked((await tasksOf(run)).at(-1), id, "be saved");
+	const { input } = checked(taskOf(await tasksOf(run)), id, "be saved");
 	const project = await projectFolder(terminal.cwd);
 	if (!values.force && Object.hasOwn(await loadScripts(project), name)) {
 		throw new Error(`a workflow ${name} exists; replace it with --force`);
@@ -376,39 +498,25 @@ async function save(args: readonly string[], terminal: Terminal): Promise<number
 	return 0;
 }
 
-/** The calls of the run `runId` in the order they started, each `run` call with the calls of its child run. */
-function callTree(records: Map<string, CallRecord>, runId: string): Shown[] {
+/**
+ * The calls of the run `runId` in the order they started, each `run` call with the calls of its child run. A call that
+ * started and did not end is `◉` while the run's task runs, and `✗` once it `ended`.
+ */
+function callTree(records: Map<string, CallRecord>, runId: string, ended: boolean): Shown[] {
 	const own = [...records].filter(([key]) => key.startsWith(`${runId}/`)).map(([, record]) => record);
 	return own
 		.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
 		.map(({ conversation: _, child: started, ...record }) => {
-			const mark = record.error !== undefined ? "✗" : record.endedAt !== undefined ? "✓" : "◉";
+			const cut = ended && record.endedAt === undefined;
+			const mark = record.error !== undefined || cut ? "✗" : record.endedAt !== undefined ? "✓" : "◉";
 			// A `run` call that failed before its child run started has no `child`.
 			const child = started?.runId;
 			const shown = { ...record, label: labelOf(record, child, records), mark } as const;
-			return child === undefined ? shown : { ...shown, calls: callTree(records, child) };
+			return child === undefined ? shown : { ...shown, calls: callTree(records, child, ended) };
 		});
 }
 
-/**
- * The profile of a session, also for an ask in it, the command on one line for `sh` and `ok`, and the workflow and child
- * run ID for `run`.
- */
-function labelOf(
-	{ kind, args }: Pick<CallRecord, "kind" | "args">,
-	child: string | undefined,
-	records: Map<string, CallRecord>,
-): string {
-	if (kind === "sh" || kind === "ok") {
-		const { cmd } = args;
-		return (Array.isArray(cmd) ? cmd.join(" ") : String(cmd)).replace(/\s+/g, " ").trim().slice(0, 80);
-	}
-	if (kind === "run") return [args.name, child].filter((value) => value !== undefined).join(" ");
-	if (kind === "session") return String(args.profile);
-	// A linear scan for each ask; an index by conversation if runs get thousands of calls.
-	const session = [...records.values()].find((record) => record.conversation === args.conversation);
-	return String(session?.args.profile);
-}
+const PREFIX = "workflows.";
 
 /** The task `latest` of the run `id`. It throws when there is none, or when another version saved it. */
 function checked(
@@ -441,19 +549,43 @@ function duration(ms: number): string {
 	return `${Math.floor(seconds / 3600)}h${pad(Math.floor(seconds / 60) % 60)}m`;
 }
 
-/** The phase lines at `indent` and the calls under them, the calls of a child run under its `run` line. */
+/**
+ * The phase lines at `indent` and the calls under them, the calls of a child run under its `run` line. A call that a
+ * stopped or failed task cut has no duration.
+ */
 function treeLines(calls: readonly Shown[], indent: string, now: number): string[] {
 	const lines: string[] = [];
 	let phase: string | null = null;
 	for (const call of calls) {
 		if (call.phase !== null && call.phase !== phase) lines.push(`${indent}${call.phase}`);
 		phase = call.phase;
+		const cut = call.endedAt === undefined && call.mark === "✗";
 		const end = call.endedAt === undefined ? now : Date.parse(call.endedAt);
-		const time = duration(end - Date.parse(call.startedAt));
-		lines.push(`${indent}  ${call.mark} ${call.kind} ${call.label}  ${time}`);
+		const time = cut ? "" : `  ${duration(end - Date.parse(call.startedAt))}`;
+		lines.push(`${indent}  ${call.mark} ${call.kind} ${call.label}${time}`);
 		if (call.calls !== undefined) lines.push(...treeLines(call.calls, `${indent}    `, now));
 	}
 	return lines;
+}
+
+/**
+ * The profile of a session, also for an ask in it, the command on one line for `sh` and `ok`, and the workflow and child
+ * run ID for `run`.
+ */
+function labelOf(
+	{ kind, args }: Pick<CallRecord, "kind" | "args">,
+	child: string | undefined,
+	records: Map<string, CallRecord>,
+): string {
+	if (kind === "sh" || kind === "ok") {
+		const { cmd } = args;
+		return (Array.isArray(cmd) ? cmd.join(" ") : String(cmd)).replace(/\s+/g, " ").trim().slice(0, 80);
+	}
+	if (kind === "run") return [args.name, child].filter((value) => value !== undefined).join(" ");
+	if (kind === "session") return String(args.profile);
+	// A linear scan for each ask; an index by conversation if runs get thousands of calls.
+	const session = [...records.values()].find((record) => record.conversation === args.conversation);
+	return String(session?.args.profile);
 }
 
 /** Prints the report of the finished run `id` with `result`, or its JSON outcome line, and gives its exit code. */
@@ -496,35 +628,40 @@ type Following = {
 	readonly key: string;
 	readonly input: script.ScriptInput;
 	readonly client: Client;
-	/** The number of progress events of the run before the command started or reached the task. */
+	/** The number of progress events of the run before the ones that the command shows. */
 	readonly from: number;
 };
 
+/** True for the error of a wait whose host stopped: its connection closed. */
+const hostStopped = (error: unknown) => error instanceof Error && error.message === HOST_CLOSED;
+
 /**
  * Shows the progress of the run until its task ends, and reports its outcome. Ctrl+C detaches and leaves the run to
- * the host; a second Ctrl+C within the window stops it.
+ * the host; a second Ctrl+C, also one that came before the window, stops it. A host that stops leaves the run pending.
  */
 async function follow(run: Following, terminal: Terminal, json: boolean): Promise<number> {
 	const { id, input, client } = run;
+	terminal.following(true);
 	const shown = display(terminal, json);
 	// With `--json`, the outcome line replaces the footer lines on stderr, so each stderr line is a progress line.
 	const end = (
-		status: "finished" | "failed" | "detached" | "stopped",
+		status: "finished" | "failed" | "detached" | "stopped" | "host-stopped",
 		rest: { result?: JsonValue; report?: string[]; error?: string },
 		...footer: string[]
 	) => {
 		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
 		else for (const line of footer) terminal.stderr(line);
 	};
-	const storage = await openStore(await storeOf(run.project)).catch((error: unknown) => {
+	const store = await openStore(await storeOf(run.project)).catch((error: unknown) => {
 		client.close();
+		terminal.following(false);
 		throw error;
 	});
 	let seen = run.from;
 	const poll = async () => {
+		if (store === undefined) return;
 		// A read that fails, such as one that waited too long for a lock, shows nothing; the next read catches up.
-		if (storage === undefined) return;
-		const events = await progressEvents(storage, id).catch(() => []);
+		const events = await progressEvents(store, id).catch(() => []);
 		for (const event of events.slice(seen)) shown.event(event);
 		seen = Math.max(seen, events.length);
 	};
@@ -555,7 +692,7 @@ async function follow(run: Following, terminal: Terminal, json: boolean): Promis
 			(done) => done,
 			() => new Promise<never>(() => {}),
 		);
-		const second = await Promise.race([terminal.secondInterrupt(STOP_WINDOW_MS), ended]);
+		const second = await Promise.race([abortedWithin(terminal.stop, terminal.stopWindowMs ?? STOP_WINDOW_MS), ended]);
 		if (typeof second !== "boolean") return await report(second);
 		if (!second) {
 			if (json) end("detached", {});
@@ -564,14 +701,20 @@ async function follow(run: Following, terminal: Terminal, json: boolean): Promis
 		await abortRun(terminal, run.project, run.key);
 		return await report(await waited);
 	} catch (error) {
-		await stopPolling().catch(() => undefined);
+		await stopPolling();
+		if (hostStopped(error)) {
+			const line = `the host stopped; the run continues when it starts again: workflows resume ${id}`;
+			end("host-stopped", {}, line);
+			return 1;
+		}
 		shown.stop(true);
 		end("failed", { error: error instanceof Error ? error.message : String(error) });
 		throw error;
 	} finally {
 		polled.abort();
 		client.close();
-		await storage?.close(BACKGROUND_CONTEXT);
+		terminal.following(false);
+		await store?.close(BACKGROUND_CONTEXT);
 	}
 
 	async function report(info: TaskInfo): Promise<number> {
@@ -586,20 +729,14 @@ async function follow(run: Following, terminal: Terminal, json: boolean): Promis
 			return code;
 		}
 		shown.stop(true);
-		if (outcome?.status === "failed") {
-			const { message } = outcome.error;
-			end(
-				"failed",
-				{ error: message },
-				`failed ${script.title(input)}: ${message}`,
-				`continue with: workflows resume ${id}`,
-			);
-			return 1;
-		}
-		if (outcome?.status === "aborted") {
-			end("stopped", {}, `stopped ${script.title(input)}; continue with: workflows resume ${id}`);
+		if (outcome === undefined) throw new Error(`run ended ${info.status}`);
+		const ended = endOf(outcome, script.title(input), id);
+		if (outcome.status === "aborted") {
+			end("stopped", {}, ...ended.lines);
 			return 130;
 		}
-		throw new Error(`run ended ${outcome?.status ?? info.status}`);
+		const error = ended.error ?? `the task was orphaned: ${outcome.status === "orphaned" ? outcome.reason : ""}`;
+		end("failed", { error }, ...ended.lines);
+		return 1;
 	}
 }

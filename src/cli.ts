@@ -4,16 +4,10 @@ import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { main } from "./main.ts";
 import { terminalRedraw } from "./progress.ts";
+import { CtrlC } from "./run.ts";
 
-const interrupt = new AbortController();
-/** Resolves the wait for a second Ctrl+C while the command waits for one. */
-let second: ((stop: boolean) => void) | undefined;
-// The first Ctrl+C detaches from the run. A later one stops the run while the command waits for it, else exits.
-process.on("SIGINT", () => {
-	if (!interrupt.signal.aborted) interrupt.abort();
-	else if (second !== undefined) second(true);
-	else process.exit(130);
-});
+const ctrlC = new CtrlC(() => process.exit(130));
+process.on("SIGINT", () => ctrlC.press());
 
 const live = process.stderr.isTTY ? terminalRedraw(process.stderr) : undefined;
 
@@ -26,15 +20,8 @@ process.exitCode = await main(process.argv.slice(2), {
 		process.stderr.write(`${line}\n`);
 	},
 	redraw: live?.redraw,
-	interrupt: interrupt.signal,
-	secondInterrupt: (ms) =>
-		new Promise((resolve) => {
-			const timer = setTimeout(() => second?.(false), ms);
-			second = (stop) => {
-				clearTimeout(timer);
-				second = undefined;
-				resolve(stop);
-			};
-		}),
+	interrupt: ctrlC.interrupt,
+	stop: ctrlC.stop,
+	following: (active) => ctrlC.following(active),
 	models: async () => (await createAgentSessionServices({ cwd: process.cwd() })).modelRuntime,
 });

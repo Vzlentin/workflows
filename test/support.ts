@@ -19,6 +19,7 @@ import { type Host, runHost } from "harness/src/host.ts";
 import { projectDir } from "harness/src/projects.ts";
 import { statePaths } from "harness/src/protocol.ts";
 import { main } from "../src/main.ts";
+import { CtrlC } from "../src/run.ts";
 
 /** The workflows checkout, which the hosts of the tests load as a local Pi package. */
 export const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
@@ -211,8 +212,8 @@ export type Script = {
 	readonly probe?: boolean;
 	/** How many answers of this model to `Script respond: <json>` prompts are text replies with no `respond` call. */
 	readonly skipRespond?: number;
-	/** Pressed Ctrl+C. */
-	readonly interrupt: AbortController;
+	/** Ctrl+C: `abort` presses it, and `signal` aborts at the first press. */
+	readonly interrupt: { readonly signal: AbortSignal; abort(): void };
 };
 
 export type Verdict = { readonly answers: readonly ("PASS" | "FAIL")[]; readonly findings: readonly string[] };
@@ -421,6 +422,8 @@ export type Outcome = {
 	readonly id: string | undefined;
 	/** The host of the command, with `keepHost`. */
 	readonly host: Host | undefined;
+	/** The Ctrl+C presses that would make the real command exit. */
+	readonly exits: number;
 };
 
 /** The lines of the last `{"progress":[...]}` stderr line of a `--json` run, and throws for any other stderr line. */
@@ -447,8 +450,8 @@ async function connectTo(project: string) {
  * Runs `workflows <argv>` in `cwd` against a fresh fake model. The first connection starts a harness host in this
  * process with the fake model, and the host closes when the command ends, as a stopped host does, unless `keepHost`.
  * A later command then gets a new host, which resumes the pending runs. With `host`, the command connects to that host
- * and leaves it open. `interrupt` is the first Ctrl+C and `stop` the second, which counts in the window after the
- * first. Without `stop`, no second Ctrl+C comes, and the window ends at once.
+ * and leaves it open. Ctrl+C works as in the real command: `ctrlC.press()` presses it, and so does an abort of
+ * `interrupt`. A press that would make the real command exit is counted in `exits`.
  */
 export async function workflows(
 	argv: readonly string[],
@@ -457,13 +460,26 @@ export async function workflows(
 		readonly stdin?: string;
 		readonly script?: Omit<Script, "interrupt">;
 		readonly interrupt?: AbortController;
-		readonly stop?: AbortController;
+		readonly ctrlC?: CtrlC;
+		/** The window for a second Ctrl+C; default 0, so a detached command ends at once. */
+		readonly stopWindowMs?: number;
 		readonly host?: Host;
 		readonly keepHost?: boolean;
 	},
 ): Promise<Outcome> {
-	const interrupt = options.interrupt ?? new AbortController();
-	const model = new FakeModel({ ...options.script, interrupt });
+	let exits = 0;
+	const ctrlC =
+		options.ctrlC ??
+		new CtrlC(() => {
+			exits++;
+		});
+	const { interrupt } = options;
+	if (interrupt?.signal.aborted) ctrlC.press();
+	else interrupt?.signal.addEventListener("abort", () => ctrlC.press(), { once: true });
+	const model = new FakeModel({
+		...options.script,
+		interrupt: { signal: ctrlC.interrupt, abort: () => ctrlC.press() },
+	});
 	const stdout: string[] = [];
 	const stderr: string[] = [];
 	let host = options.host;
@@ -473,25 +489,15 @@ export async function workflows(
 		stdin: async () => options.stdin,
 		stdout: (line) => stdout.push(line),
 		stderr: (line) => stderr.push(line),
-		interrupt: interrupt.signal,
-		secondInterrupt: (ms) => {
-			const { stop } = options;
-			if (stop === undefined) return Promise.resolve(false);
-			return new Promise((resolve) => {
-				const timer = setTimeout(() => resolve(false), ms);
-				stop.signal.addEventListener("abort", () => {
-					clearTimeout(timer);
-					resolve(true);
-				});
-				if (stop.signal.aborted) resolve(true);
-			});
-		},
+		interrupt: ctrlC.interrupt,
+		stop: ctrlC.stop,
+		following: (active) => ctrlC.following(active),
+		stopWindowMs: options.stopWindowMs ?? 0,
 		models: async () => model.models,
-		connect: async (project) => {
+		connect: async (project, start) => {
 			if (host === undefined) {
-				const stateDir = statePaths(project).dir;
-				started = await runHost({ stateDir, project, cwd: projectDir(project), models: model.models });
-				if (started === undefined) throw new Error(`another host has the lock of ${project}`);
+				if (!start) return undefined;
+				started = await startHost(project, model.models);
 				host = started;
 			}
 			return connectTo(project);
@@ -499,5 +505,12 @@ export async function workflows(
 	});
 	if (!options.keepHost) await started?.close();
 	const id = stdout.find((line) => line.startsWith("run "))?.slice(4);
-	return { code, stdout, stderr, model, id, host: options.keepHost ? started : undefined };
+	return { code, stdout, stderr, model, id, host: options.keepHost ? started : undefined, exits };
+}
+
+/** A harness host of `project` in this process, with `models`. */
+export async function startHost(project = "main", models = createModels()): Promise<Host> {
+	const host = await runHost({ stateDir: statePaths(project).dir, project, cwd: projectDir(project), models });
+	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
+	return host;
 }

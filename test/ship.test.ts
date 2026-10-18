@@ -698,7 +698,7 @@ describe("workflows resume of ship runs", () => {
 		expect(again.model.calls).toEqual([]);
 	});
 
-	it("lists finished and unfinished runs without continuing them", async () => {
+	it("lists finished and running runs without continuing them", async () => {
 		const shipped = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
 		expect(shipped.code).toBe(0);
 		const stopped = await workflows(["ship", "# Second item"], {
@@ -714,7 +714,7 @@ describe("workflows resume of ship runs", () => {
 		expect(runs).toEqual(
 			[
 				{ runId: shipped.id, workflow: "ship", title: "Fix the README typo", status: "shipped" },
-				{ runId: stopped.id, workflow: "ship", title: "Second item", status: "unfinished" },
+				{ runId: stopped.id, workflow: "ship", title: "Second item", status: "running" },
 			].sort((a, b) => (b.runId ?? "").localeCompare(a.runId ?? "")),
 		);
 		const text = await workflows(["list"], { cwd: root });

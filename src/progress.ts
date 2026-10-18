@@ -9,10 +9,14 @@ import type { Io } from "./run.ts";
 /** The document kind of the progress of a run in the project store. */
 export const PROGRESS_KIND = "workflows.progress";
 
-/** A `phase` or `log` line of the run `run`, whose caller is `parent`, or the end of the run `run`. */
+/**
+ * A `phase` or `log` line of the run `run`, whose caller is `parent`, the end of the run `run`, or the start of an
+ * execution of the root run `run`, from which a command that reaches the running task shows the lines.
+ */
 export type ProgressEvent =
 	| { readonly kind: "phase" | "log"; readonly run: string; readonly parent: string | null; readonly text: string }
-	| { readonly kind: "end"; readonly run: string; readonly failed: boolean };
+	| { readonly kind: "end"; readonly run: string; readonly failed: boolean }
+	| { readonly kind: "start"; readonly run: string };
 
 export type Mark = "✓" | "◉" | "✗";
 
@@ -31,6 +35,7 @@ export class Progress {
 
 	/** Adds `event`, and returns the line that it adds, with its indent and without a mark. */
 	add(event: ProgressEvent): string | undefined {
+		if (event.kind === "start") return undefined;
 		if (event.kind === "end") {
 			const step = this.#runs.get(event.run)?.current;
 			if (step?.mark === "◉") step.mark = event.failed ? "✗" : "✓";

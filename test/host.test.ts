@@ -4,9 +4,12 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, Cursor } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { request } from "harness/src/client.ts";
 import { addProject } from "harness/src/projects.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { detached, piSettings, rootTasks, runsOf, sandbox, storeOf, workflows } from "./support.ts";
+import { CtrlC, newRunId } from "../src/run.ts";
+import { TASK } from "../src/task.ts";
+import { detached, piSettings, rootTasks, runsOf, sandbox, startHost, storeOf, workflows } from "./support.ts";
 
 let root: string;
 
@@ -63,28 +66,71 @@ async function children(): Promise<Record<string, boolean>> {
 	}
 }
 
+/** A Pi package whose entry gives the task `workflows.run` at `version`, as an older workflows: it waits until aborted. */
+async function oldWorkflows(version: number): Promise<string> {
+	const pkg = join(root, "old-workflows");
+	await mkdir(pkg, { recursive: true });
+	await writeFile(
+		join(pkg, "package.json"),
+		JSON.stringify({ name: "old-workflows", type: "module", piDurable: { extensions: ["./index.ts"] } }),
+	);
+	await writeFile(
+		join(pkg, "index.ts"),
+		`export default function ({ durable }) {
+	const task = durable.defineTask({
+		name: "workflows.run",
+		version: ${version},
+		initial: () => ({ phase: "run" }),
+		phases: { run: (_task, runtime, context) => runtime.sleep(runtime.now() + 3600000, context) },
+		abort: (_task, runtime, context) =>
+			runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+	});
+	return { extensions: [], tasks: [task], close: async () => {} };
+}
+`,
+	);
+	return pkg;
+}
+
+/** Pi's settings with only the package `pkg`, so the hosts load it in place of the workflows checkout. */
+async function onlyPackage(pkg: string): Promise<void> {
+	await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false }, packages: [pkg] }));
+}
+
+/** The line of a command that a host of the version `version` of the workflows task refused. */
+const refused = (version: number) =>
+	`workflows: the harness host of project main (pid ${process.pid}) runs version ${version} of the workflows task, and this command version ${TASK.version}. Stop the host with kill ${process.pid}; it starts again with the installed workflows`;
+
 describe("runs in the harness host", { timeout: 30_000 }, () => {
-	it("goes on in the host after Ctrl+C, and resume follows the same task", async () => {
-		const { id, host } = await detachedRun();
+	it("goes on in the host after Ctrl+C, and resume follows the same task from the start of its execution", async () => {
+		await writeFile(join(root, "phased.js"), 'phase("gate")\nlog("waits")\nawait sh("./gate.sh g")\nreturn "done"');
+		const interrupt = new AbortController();
+		const pending = workflows(["phased.js"], { cwd: root, interrupt, keepHost: true });
+		await reached("g");
+		interrupt.abort();
+		const first = await pending;
+		const { host } = first;
+		if (host === undefined) throw new Error("no host");
+		const id = first.id ?? "";
+		expect([first.code, first.stderr]).toEqual([130, ["gate", "  waits", detached(id)]]);
 		try {
 			const resumed = workflows(["resume", id], { cwd: root, host });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			await writeFile(join(root, "g.open"), "");
 			const outcome = await resumed;
-			expect([outcome.code, outcome.stdout]).toEqual([0, [`run ${id}`, "done"]]);
+			expect([outcome.code, outcome.stdout, outcome.stderr]).toEqual([0, [`run ${id}`, "done"], ["gate", "  waits"]]);
 		} finally {
 			await host.close();
 		}
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
 	});
 
-	it("stops the run on a second Ctrl+C, and a resume continues it", async () => {
-		const interrupt = new AbortController();
-		const stop = new AbortController();
-		const pending = workflows(["gated.js", "--json"], { cwd: root, interrupt, stop });
+	it("stops the run on a second Ctrl+C in the window, and a resume continues it", async () => {
+		const ctrlC = new CtrlC(() => {});
+		const pending = workflows(["gated.js", "--json"], { cwd: root, ctrlC, stopWindowMs: 5000 });
 		await reached("g");
-		interrupt.abort();
-		setTimeout(() => stop.abort(), 50);
+		ctrlC.press();
+		setTimeout(() => ctrlC.press(), 50);
 		const run = await pending;
 		expect([run.code, run.stdout.at(-1)]).toEqual([130, JSON.stringify({ runId: run.id, status: "stopped" })]);
 		const id = run.id ?? "";
@@ -99,9 +145,23 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		]);
 	});
 
+	it("stops the run on a second Ctrl+C that comes before the command waits for it", async () => {
+		const ctrlC = new CtrlC(() => {});
+		const pending = workflows(["gated.js"], { cwd: root, ctrlC });
+		await reached("g");
+		ctrlC.press();
+		ctrlC.press();
+		const run = await pending;
+		expect([run.code, run.stderr]).toEqual([
+			130,
+			[detached(run.id), `stopped gated; continue with: workflows resume ${run.id}`],
+		]);
+		expect([run.exits, await rootTasks(run.id ?? "")]).toEqual([0, [{ status: "terminal", outcome: "aborted" }]]);
+	});
+
 	it("reports a run that ends while it waits for a second Ctrl+C", async () => {
 		const interrupt = new AbortController();
-		const pending = workflows(["gated.js"], { cwd: root, interrupt, stop: new AbortController() });
+		const pending = workflows(["gated.js"], { cwd: root, interrupt, stopWindowMs: 5000 });
 		await reached("g");
 		interrupt.abort();
 		await writeFile(join(root, "g.open"), "");
@@ -133,8 +193,40 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 			await host.close();
 		}
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
+		const listed = await workflows(["list"], { cwd: root });
+		expect(listed.stdout).toEqual([`${id} gated stopped gated`]);
+		const shown = await workflows(["show", id], { cwd: root });
+		expect(shown.stdout).toEqual([
+			`run ${id} gated stopped gated`,
+			"  ✗ sh ./gate.sh g",
+			`stopped gated; continue with: workflows resume ${id}`,
+		]);
 		const usage = await workflows(["stop"], { cwd: root });
 		expect([usage.code, usage.stderr.at(-1)]).toEqual([2, "usage: workflows stop <run-id> [--json]"]);
+	});
+
+	it("kills a running sh and closes the subagents of the sessions when a run stops", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'await session().ask("Script spawn: child")\nawait sh("./gate.sh g; touch late")\nreturn "done"',
+		);
+		const interrupt = new AbortController();
+		const pending = workflows(["x.js"], { cwd: root, interrupt, keepHost: true });
+		await reached("g");
+		interrupt.abort();
+		const run = await pending;
+		const { host } = run;
+		if (host === undefined) throw new Error("no host");
+		try {
+			const stopped = await workflows(["stop", run.id ?? ""], { cwd: root, host });
+			expect(stopped.code).toBe(0);
+			expect(Object.values(await children())).toEqual([false, true]);
+		} finally {
+			await host.close();
+		}
+		await writeFile(join(root, "g.open"), "");
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(existsSync(join(root, "late"))).toBe(false);
 	});
 
 	it("cancels the calls of a script that ends before them", async () => {
@@ -144,6 +236,88 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		await writeFile(join(root, "g.open"), "");
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(existsSync(join(root, "late"))).toBe(false);
+		const shown = await workflows(["show", run.id ?? ""], { cwd: root });
+		expect(shown.stdout.slice(0, 3)).toEqual([
+			`run ${run.id} x failed x`,
+			"  ✗ sh ./gate.sh g; touch late",
+			expect.stringMatching(/^ {2}✗ sh sleep 0\.2; exit 3 {2}\d+s$/),
+		]);
+	});
+
+	it("leaves the run pending when its host stops while the command follows it", async () => {
+		const host = await startHost();
+		const pending = workflows(["gated.js"], { cwd: root, host });
+		await reached("g");
+		await host.close();
+		const run = await pending;
+		const id = run.id ?? "";
+		expect([run.code, run.stderr]).toEqual([
+			1,
+			[`the host stopped; the run continues when it starts again: workflows resume ${id}`],
+		]);
+		// The store still has the task as it was when the host stopped; the next host continues it.
+		expect(await rootTasks(id)).toEqual([{ status: expect.stringMatching(/^(pending|running)$/) }]);
+		const listed = await workflows(["list"], { cwd: root });
+		expect(listed.stdout).toEqual([`${id} gated running gated`]);
+
+		await writeFile(join(root, "g.open"), "");
+		const resumed = await workflows(["resume", id, "--json"], { cwd: root });
+		expect(resumed.code).toBe(0);
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
+	});
+
+	it("refuses a host that runs another version of workflows, and aborts the task that it started there", async () => {
+		await writeFile(join(root, "x.js"), 'await sh("test -f ok")\nreturn "done"');
+		const failed = await workflows(["x.js"], { cwd: root });
+		expect(failed.code).toBe(1);
+		const id = failed.id ?? "";
+
+		await onlyPackage(await oldWorkflows(TASK.version - 1));
+		const fresh = await workflows(["x.js"], { cwd: root });
+		expect([fresh.code, fresh.stdout, fresh.stderr]).toEqual([1, [], [refused(TASK.version - 1)]]);
+		expect(await readdir(runsOf(root))).toEqual([id]);
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([1, [], [refused(TASK.version - 1)]]);
+		expect(await rootTasks(id)).toEqual([
+			{ status: "terminal", outcome: "failed" },
+			{ status: "terminal", outcome: "aborted" },
+		]);
+
+		await piSettings(root);
+		await writeFile(join(root, "ok"), "");
+		const listed = await workflows(["list"], { cwd: root });
+		expect(listed.stdout).toEqual([`${id} x failed x`]);
+		const again = await workflows(["resume", id], { cwd: root });
+		expect([again.code, again.stdout]).toEqual([0, [`run ${id}`, "done"]]);
+		expect((await rootTasks(id)).at(-1)).toEqual({ status: "terminal", outcome: "completed" });
+	});
+
+	it("stops a pending run of an earlier version, which ends as orphaned", async () => {
+		await onlyPackage(await oldWorkflows(TASK.version - 1));
+		const id = newRunId();
+		await mkdir(join(runsOf(root), id), { recursive: true });
+		await writeFile(join(runsOf(root), id, "project"), "main\n");
+		const old = await startHost();
+		try {
+			const input = { runId: id, name: "x" };
+			await request({ type: "start", kind: TASK.name, input, key: `wf:${id}#1` }, { start: false });
+		} finally {
+			await old.close();
+		}
+		await piSettings(root);
+
+		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x earlier-version x`]);
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect(resumed.stderr).toEqual([`workflows: run ${id} was saved by an earlier version of x and cannot resume`]);
+		const stopped = await workflows(["stop", id], { cwd: root });
+		expect([stopped.code, stopped.stdout]).toEqual([
+			0,
+			["stopped x, which an earlier version saved; it cannot resume"],
+		]);
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "orphaned" }]);
+		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x orphaned x`]);
+		const again = await workflows(["stop", id], { cwd: root });
+		expect(again.stderr).toEqual([`workflows: run ${id} is not running`]);
 	});
 
 	it("closes the sessions and their subagents when a run completes", async () => {
@@ -228,7 +402,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		expect(main.code).toBe(0);
 
 		const listed = await workflows(["list"], { cwd: real });
-		expect(listed.stdout).toEqual([`${id} x unfinished x`]);
+		expect(listed.stdout).toEqual([`${id} x running x`]);
 		const other = await workflows(["list"], { cwd: root });
 		expect(other.stdout).toEqual([`${main.id} y done y`]);
 

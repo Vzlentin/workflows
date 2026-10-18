@@ -498,8 +498,10 @@ repository again, or create another branch. Answered turns are not sent to the m
 progress is sent again.
 
 A run has one live task at a time. When the run's last task has not ended, because it runs in the host or waits for
-the host to start, resume follows that task: it starts the host when none runs, prints the progress lines that come
-after it, and the outcome. A host that starts continues the unfinished runs of its project on its own.
+the host to start, resume follows that task and prints its outcome. When the host runs, resume prints the progress
+lines of the task's current execution from its start. When no host runs, resume starts it and prints the progress
+lines that come after. A host that starts continues the unfinished runs of its project on its own. When resume starts
+a new task, it prints the progress lines of that task.
 
 A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows resume <run-id>`, and
 exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. The run's task ends as
@@ -513,9 +515,20 @@ A shipped, blocked or stopped run is final: resume prints the same result and ex
 
 A run saved by another version of workflows cannot resume. Resume prints `workflows: run <run-id> was saved by an
 earlier version of <workflow> and cannot resume`, or `a later version`, and exits 1. `list` shows these runs as
-`earlier-version` or `later-version`. The host still starts with such a run in its store: it leaves the run pending,
-prints a `warning:` line in its log for an earlier version, and continues the others. Such a run does not keep the
-host from exiting when it is idle. Runs saved before runs moved into the harness host stay in their run directories,
+`earlier-version` or `later-version` while their task has not ended. The host still starts with such a run in its
+store: it leaves the run pending, prints a `warning:` line in its log for an earlier version, and continues the others.
+Such a run does not keep the host from exiting when it is idle. `workflows stop` ends it as `orphaned`.
+
+A host keeps the version of workflows that it loaded when it started. When the host runs another version of the
+workflows task than the command, the command aborts the task that it just started there, prints `workflows: the
+harness host of project <project> (pid <pid>) runs version <n> of the workflows task, and this command version <m>.
+Stop the host with kill <pid>; it starts again with the installed workflows` and exits 1. A new run then has no run
+directory; a resumed run keeps its earlier tasks, and the next resume goes on from them. A command that follows a
+task checks the version of the task in the same way, without aborting it.
+
+When the `start` request fails in another way, such as a connection that closes, the command asks the host for the
+task. When the host has it, the run started, and the command follows it. When the command cannot tell, it keeps the
+run directory and prints the error with `run <run-id> may have started: workflows resume <run-id>`. Runs saved before runs moved into the harness host stay in their run directories,
 and no command reads them.
 
 ### Ctrl+C and stop
@@ -524,9 +537,14 @@ The run goes on in the host after the command ends. Ctrl+C detaches the command:
 goes on. Follow it with: workflows resume <run-id>. Stop it with: workflows stop <run-id>` and waits 2 s for a second
 Ctrl+C. Without one, it exits 130, or reports the outcome of a run that ends in those 2 s. A second Ctrl+C in those
 2 s stops the run: the run's task ends as stopped, and the command prints `stopped <title>; continue with: workflows
-resume <run-id>` and exits 130. Any other second Ctrl+C exits at once. A Ctrl+C before the run starts, such as while
-the command clones the repository, starts no run: the command removes the run directory, prints `workflows:
-interrupted before the run started` and exits 130.
+resume <run-id>` and exits 130. A second Ctrl+C that comes before the command waits for it, such as one right after
+the first, stops the run in the same way. A second Ctrl+C while the command follows no run, and a third, exit at once.
+A Ctrl+C before the run starts, such as while the command clones the repository, starts no run: the command removes
+the run directory, prints `workflows: interrupted before the run started` and exits 130.
+
+When the host stops while the command follows the run, the run stays pending: the command prints `the host stopped;
+the run continues when it starts again: workflows resume <run-id>`, leaves the steps as they are and exits 1. The next
+host continues the run when it starts, and `resume` starts it.
 
 ```sh
 workflows stop <run-id>
@@ -534,8 +552,10 @@ workflows stop <run-id>
 
 `workflows stop` stops a run that runs, from any directory: it aborts the run's task with its child runs, sessions and
 Git steps, prints `stopped <title>; continue with: workflows resume <run-id>` and exits 0. When no host runs, it starts
-the run's host, which continues the run for a moment before the stop reaches it. With `--json`, it prints `{ "runId", "status": "stopped" }`. A run whose last task has ended prints
-`workflows: run <run-id> is not running` and exits 1. A command that follows a run that `stop` stops prints the
+the run's host, which continues the run for a moment before the stop reaches it. With `--json`, it prints `{ "runId",
+"status": "stopped" }`. A run whose last task has ended prints `workflows: run <run-id> is not running` and exits 1.
+`stop` also stops a pending run of another version of workflows, which no host can run: its task ends as `orphaned`,
+and the command prints `stopped <workflow>, which an earlier version saved; it cannot resume` (or `a later version`). A command that follows a run that `stop` stops prints the
 `stopped` line and exits 130. A stopped run resumes in a new task.
 
 Model requests use the retry, stream timeout and compaction settings of Pi's `settings.json` in `~/.pi/agent`, as the
@@ -557,8 +577,9 @@ line of JSON in place of the report lines, `{ "runId", "status", "result"?, "rep
 - `failed`: `error` is the error message.
 - `detached`: Ctrl+C detached the command, and the run goes on in the host.
 - `stopped`: a second Ctrl+C or `workflows stop` stopped the run.
+- `host-stopped`: the host stopped while the command followed the run, which stays pending.
 
-The JSON line replaces the `failed`, `continue with`, `detached` and `stopped` lines on stderr, so each stderr line is
+The JSON line replaces the `failed`, `continue with`, `detached`, `stopped` and `host stopped` lines on stderr, so each stderr line is
 a `{"progress":[...]}` line of the run, see [Progress](#progress), or a warning. The exit codes do not change. An error before the run exists, such as
 bad usage, prints no `run <run-id>` line and no JSON line.
 
@@ -574,9 +595,11 @@ workflows list --json
 runs are not listed: they are tasks of their caller. The title is the subject of the first `text`
 argument, such as the work item for ship and the goal for campaign, or else the script name. A finished run has the
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
-`done` when the result has no `status`. A run that another version of workflows saved is `earlier-version` or
-`later-version`, with its workflow name as its title: it cannot resume. Any other run, also a failed one, is
-`unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
+`done` when the result has no `status`. A run whose task has not ended is `running`, also when it waits for its host
+to start. A run whose task ended without a result is `stopped`, `failed`, `faulted` or `orphaned`. A pending run that
+another version of workflows saved is `earlier-version` or `later-version`, with its workflow name as its title: it
+cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
+Only the runs that have a run directory with a `project` file are listed.
 
 `list` reads the project store file read-only and does not start the host, so no run continues. It takes no lock that
 the host waits for, and runs no checkpoint of the file.
@@ -597,19 +620,21 @@ run <run-id> <workflow> <status> <title>
 <report lines, or the failed and continue with lines>
 ```
 
-- The first line has the fields of `workflows list`, but a run whose task failed has the status `failed`.
+- The first line has the fields of `workflows list`.
 - The calls are in the order they started. Each call is under the phase line that was current when it started, and is
   indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `sh`, `ok`
   or `run`. An `agent` call is a `session` call and an `ask` call.
-- The mark is `✓` for a finished call, `✗` for a failed call, and `◉` for a call that started and did not end: it
-  runs now, or a stop interrupted it.
+- The mark is `✓` for a finished call and `✗` for a failed call. A call that started and did not end is `◉` while the
+  run's task has not ended: it runs now, or the host stopped. Once the task ended, such a call is `✗`, without a
+  duration: the end of the task cut it.
 - The label is the profile of the session for `session` and `ask`, and the command on one line, cut at 80 characters,
   for `sh` and `ok`. For `run`, it is the workflow name and the child run ID. The phase lines and calls of the child run
   are indented by 2 more under the `run` line.
 - The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, it is the time since the call
   started.
 - A finished run ends with its report lines. A failed run ends with `failed <title>: <error>` and `continue with:
-  workflows resume <run-id>`. Any other run ends after its calls.
+  workflows resume <run-id>`, a stopped run with `stopped <title>; continue with: workflows resume <run-id>`, and an
+  orphaned run with `orphaned <title>: <reason>` and the `continue with` line. Any other run ends after its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
 object with the same tree: `{ "runId", "workflow", "title", "status", "report"?, "error"?, "calls" }`. Each call is
