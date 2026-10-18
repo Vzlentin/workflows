@@ -1,0 +1,17 @@
+{
+	"name": "@vzlentin/workflows-pi",
+	"private": true,
+	"description": "The workflow tool of workflows in Pi",
+	"type": "module",
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	}
+}

@@ -20,30 +20,36 @@ need an authenticated `gh`.
 npm install -g @vzlentin/workflows
 ```
 
-This gives you the `workflows` command. It includes harness, so you do not have to install harness. Install
-`@vzlentin/harness` too if you want the `harness` command.
+This gives you the `workflows` command, and the `workflow` tool in Pi. workflows runs on the global install of
+[harness](https://github.com/Vzlentin/harness): the install adds `@vzlentin/harness` when it is missing or too old,
+so you also get the `harness` command and harness's `subagent` tool in Pi. There is only one copy of harness.
 
-### Pi
-
-To also get the `workflow` tool in Pi:
-
-```sh
-pi install npm:@vzlentin/pi-workflows
-```
-
-You can add it now or later.
+The install registers the Pi extension of each package with `pi install <path>`, where `<path>` is the `pi` folder of
+the global package, and `pi list` shows it. When `pi` is not on your `PATH`, run
+`pi install "$(realpath "$(npm root -g)")/@vzlentin/workflows/pi"` later. With `--prefix`, give the same prefix to every
+`npm` command. Recent npm versions warn that the install scripts are not in `allow-scripts`; add
+`--allow-scripts=@vzlentin/workflows,@vzlentin/harness` to allow them.
 
 ### Update and remove
 
 ```sh
-npm update -g @vzlentin/workflows
-pi update                                   # when you installed @vzlentin/pi-workflows
+npm install -g @vzlentin/workflows@latest                           # update
+pi remove "$(realpath "$(npm root -g)")/@vzlentin/workflows/pi"    # remove
 npm uninstall -g @vzlentin/workflows
-pi remove npm:@vzlentin/pi-workflows
 ```
 
-After an update, a harness host that runs keeps the old version until it stops. It stops by itself after 5 minutes
-with no work.
+npm runs no script when it removes a package, so remove the Pi extension first. Remove harness the same way when you
+no longer use it: see its README. After an update, a harness host that runs keeps the old version until it stops. It
+stops by itself after 5 minutes with no work.
+
+### Move from 0.1.0
+
+0.1.0 had separate Pi packages, and its own copy of harness. Remove the Pi packages, then install again:
+
+```sh
+pi remove npm:@vzlentin/pi-workflows npm:@vzlentin/pi-subagent
+npm install -g @vzlentin/workflows@latest
+```
 
 ### Move from the Pi git install
 
@@ -80,8 +86,9 @@ XDG_STATE_HOME=/tmp/wf-dev/state XDG_CONFIG_HOME=/tmp/wf-dev/config node src/cli
 ```
 
 `node src/cli.ts` runs the command of this checkout. Give it its own `XDG_STATE_HOME` and `XDG_CONFIG_HOME`, so its
-runs, hosts and harness entry do not mix with those of the installed `workflows`. The checkout runs from its TypeScript source. `npm publish` builds
-`dist/` first. The Pi plugin is the package in `pi-workflows/`, published from that directory with `npm publish`.
+runs, hosts and harness entry do not mix with those of the installed `workflows`. The checkout runs from its TypeScript
+source. `npm publish` builds `dist/` first. The Pi extension is in `pi/`, and runs `dist/cli.js`: to try it from the
+checkout, run `npm run build`, then `pi install "$PWD/pi"`.
 
 The tests use a fake model provider, a fake `gh`, a fake `workflows` command for the Pi plugin, and temporary Git
 repositories. They do not call a real model or open Pi.

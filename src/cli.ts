@@ -2,9 +2,19 @@
 /** The `workflows` executable: the terminal, Ctrl+C, and Pi's models for `check`. */
 import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
-import { main } from "./main.ts";
+import { harnessProblem } from "./harness.ts";
 import { terminalRedraw } from "./progress.ts";
 import { CtrlC } from "./run.ts";
+
+// `main.ts` imports harness, so the command checks that the harness install fits before it loads `main.ts`.
+const problem = harnessProblem(import.meta.url);
+
+if (problem !== undefined) {
+	process.stderr.write(`${problem}\n`);
+	process.exit(1);
+}
+
+const { main } = await import("./main.ts");
 
 const ctrlC = new CtrlC(() => process.exit(130));
 

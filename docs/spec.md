@@ -671,6 +671,27 @@ with its `export const meta` header. Only the script is saved: no prompts, agent
 `save` reads the project store as `show` does, and does not start the host. It exits 0 when it wrote the file. `--json`
 has no effect.
 
+## Install
+
+workflows has no copy of harness. `@vzlentin/harness` is an optional peer dependency of `@vzlentin/workflows`, in the
+caret range of its `package.json`. A global install of workflows uses the global install of harness next to
+it, so the `workflows` command, the harness host and the `harness` command all load the same harness.
+
+- The `workflows` command checks harness before it loads any harness module. When no harness resolves from its
+  install, every command prints `workflows needs @vzlentin/harness <range>: npm install -g @vzlentin/harness@<range>`
+  and exits 1. When the harness that resolves is out of the range, it prints `workflows needs @vzlentin/harness
+  <range>, found <version>: npm install -g @vzlentin/harness@<range>` and exits 1.
+- The postinstall, `scripts/postinstall.js`, does something only in a global install (`npm_config_global` is `true`),
+  so a checkout's `npm ci` and an install as a dependency do nothing. When harness does not resolve or is out of the
+  range, it prints `workflows: installing @vzlentin/harness@<range>`, runs `npm install -g @vzlentin/harness@<range>`
+  with the npm of the install, which keeps the prefix, and checks again. When it still does not fit, it prints the error line above and the install fails. Then it runs `pi
+  install <install>/pi`, which registers the Pi extension of the install by its path. `<install>` is the real path
+  of the global package, with no symbolic link, as npm runs the script there. When `pi` is not on `PATH`
+  (without the `node_modules/.bin` folders that npm adds), it prints `workflows: pi is not on PATH; to get the
+  workflow tool in Pi, run: pi install <install>/pi`. When `pi install` fails, it prints `workflows: pi install failed
+  (<reason>); to get the workflow tool in Pi, run: pi install <install>/pi`. Neither fails the install. A repeated
+  install changes nothing: harness fits, and Pi keeps one entry for the path.
+
 ## Runs in the harness host
 
 A run executes in the [harness](https://github.com/Vzlentin/harness) host of a project, as a task of the entry of
@@ -700,9 +721,10 @@ directory, starts the host when none runs, asks it to start the run's task, and 
 
 ## Pi
 
-`@vzlentin/pi-workflows` gives Pi the `workflow` tool. It depends on `@vzlentin/workflows`, and runs each workflow as
-a child process of the `workflows` command of that install (`dist/cli.js`), in the session's directory, always with
-`--json`. So a run that starts in Pi is a normal run of the project of the session's directory, and `workflows resume`
+The `pi/` folder of the package is the Pi extension that gives Pi the `workflow` tool. The postinstall of a global
+install registers it, see [Install](#install). It runs each workflow as a child process of the `workflows` command of
+the same install (`../dist/cli.js` from the extension), with the Node that runs Pi, in the session's directory, always
+with `--json`. So a run that starts in Pi is a normal run of the project of the session's directory, and `workflows resume`
 follows or continues it from a terminal.
 
 ### The `workflow` tool
@@ -802,6 +824,7 @@ uses the profiles as they were when it started.
 The engine files in `src/`:
 
 - `cli.ts`: the `workflows` command entry point.
+- `harness.ts`: the check of the harness install, for the command and the postinstall.
 - `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show` and `save`, a client of the harness host, and the
   run directory.
 - `entry.ts`: the entry that the harness host loads, with the script task.

@@ -14,5 +14,5 @@
 		"skipLibCheck": true,
 		"noEmit": true
 	},
-	"include": ["src", "test", "pi-workflows"]
+	"include": ["src", "test", "pi"]
 }

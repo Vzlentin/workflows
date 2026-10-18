@@ -1,6 +1,6 @@
 {
 	"name": "@vzlentin/workflows",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Ship one work item onto a new branch through durable Pi sessions",
 	"repository": {
 		"type": "git",
@@ -13,7 +13,9 @@
 	"files": [
 		"agents",
 		"dist",
+		"pi",
 		"prompts",
+		"scripts/postinstall.js",
 		"workflows"
 	],
 	"engines": {
@@ -25,6 +27,7 @@
 	"scripts": {
 		"build": "rm -rf dist && tsc -p tsconfig.build.json",
 		"prepack": "npm run build",
+		"postinstall": "node scripts/postinstall.js",
 		"check": "biome check . && oxlint --deny-warnings && tsc -p tsconfig.json && tsc -p workflows/jsconfig.json && vitest --run",
 		"test": "vitest --run"
 	},
@@ -34,15 +37,23 @@
 		"@earendil-works/pi-codemode": "1.3.0",
 		"@earendil-works/pi-coding-agent": "1.3.0",
 		"@earendil-works/pi-durable": "1.3.0",
-		"@vzlentin/harness": "0.1.0",
 		"typebox": "1.3.27"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.15",
 		"@oxlint/plugins": "1.88.0",
 		"@types/node": "26.6.4",
+		"@vzlentin/harness": "0.2.0",
 		"oxlint": "1.88.0",
 		"typescript": "7.0.2",
 		"vitest": "5.0.3"
+	},
+	"peerDependencies": {
+		"@vzlentin/harness": "^0.2.0"
+	},
+	"peerDependenciesMeta": {
+		"@vzlentin/harness": {
+			"optional": true
+		}
 	}
 }
