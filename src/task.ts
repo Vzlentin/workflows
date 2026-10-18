@@ -92,22 +92,25 @@ async function restartChild(
 }
 
 /**
- * Ends the sessions of the run `runId`. After a completed run, it closes them with everything under them. After a
- * failed or aborted run, it closes only what is under them, such as their subagents, and keeps them for a resume. The
- * store aborts the turns of the sessions that this task owns, but not of those that an earlier task of the run opened,
- * so it aborts those itself.
+ * Ends the sessions of the run `input`. After a completed root run, it closes the sessions of the run and of its child
+ * runs, also of a failed child run that the script caught, with everything under them. After a completed child run, it
+ * closes the sessions of that run. After a failed or aborted run, it closes only what is under the sessions of the run,
+ * such as their subagents, and keeps them for a resume. The store aborts the turns of the sessions that this task owns,
+ * but not of those that an earlier task of the run opened, so it aborts those itself.
  */
 async function endSessions(
 	host: Host,
 	runtime: Runtime,
-	runId: string,
+	input: ScriptInput,
 	completed: boolean,
 	context: Context,
 ): Promise<void> {
 	const { children, place } = host;
-	const owner = ownerOf(runtime, runId);
-	for (const { conversation, task } of (await runtime.snapshot(SessionsDoc, runId, context))?.sessions ?? []) {
-		const child = await children.find(place, owner, { id: String(conversation) }, context);
+	const { runId, root } = input;
+	const all = completed && runId === root;
+	for (const { run, conversation, task } of (await runtime.snapshot(SessionsDoc, root, context))?.sessions ?? []) {
+		if (!all && run !== runId) continue;
+		const child = await children.find(place, ownerOf(runtime, run), { id: String(conversation) }, context);
 		if (child === undefined) continue;
 		if (completed) {
 			await child.close(context);
@@ -148,7 +151,7 @@ async function runPhase(
 			child: (key, name, args) => startChild(definition, runtime, context, { input, cwd }, key, name, args),
 			restart: (key, ended) => restartChild(definition, runtime, context, key, ended),
 		});
-		await endSessions(host, runtime, runId, true, context);
+		await endSessions(host, runtime, input, true, context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: false }]);
 			return { status: "terminal", outcome: { status: "completed", result } };
@@ -158,7 +161,7 @@ async function runPhase(
 		if (runtime.signal.aborted) throw error;
 		// A thrown phase would end the task as faulted, so the phase commits the failure itself.
 		const message = error instanceof Error ? error.message : String(error);
-		await endSessions(host, runtime, runId, false, context);
+		await endSessions(host, runtime, input, false, context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: true }]);
 			return { status: "terminal", outcome: { status: "failed", error: { message } } };
@@ -185,7 +188,7 @@ export function scriptTask(host: Host): ScriptTask {
 		phases: { run: (task, runtime, context) => runPhase(definition, task, runtime, context, host) },
 		abort: async (task, runtime, context) => {
 			const { runId, root } = task.input;
-			await endSessions(host, runtime, runId, false, context);
+			await endSessions(host, runtime, task.input, false, context);
 			await runtime.commit(async (tx) => {
 				await addProgress(tx, root, [{ kind: "end", run: runId, failed: true }]);
 				return { status: "terminal", outcome: { status: "aborted" } };

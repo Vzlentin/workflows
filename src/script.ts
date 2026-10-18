@@ -253,10 +253,13 @@ export const ProgressDoc = defineDocFamily<{ events: ProgressEvent[] }, null>({
 	checkpointWhen,
 });
 
-/** One session of a run: its conversation, and the task that opened it. */
-export type OpenedSession = { conversation: ConversationId; task: number };
+/** One session of a run: its run ID, its conversation, and the task that opened it. */
+export type OpenedSession = { run: string; conversation: ConversationId; task: number };
 
-/** The sessions of each run, keyed by run ID, so the run's end closes them, also those of an earlier task. */
+/**
+ * The sessions of a root run and its child runs, keyed by the root run ID, so the end of a run closes them, also those
+ * of an earlier task of the run.
+ */
 export const SessionsDoc = defineDocFamily<{ sessions: OpenedSession[] }, null>({
 	kind: "workflows.sessions",
 	version: 1,
@@ -418,8 +421,8 @@ async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionAr
 		context,
 		async (tx, conversation) => {
 			(await tx.doc(CallDoc, key, null)).conversation = conversation;
-			const opened = await tx.doc(SessionsDoc, script.runId, null);
-			opened.sessions.push({ conversation, task: runtime.taskId });
+			const opened = await tx.doc(SessionsDoc, script.root, null);
+			opened.sessions.push({ run: script.runId, conversation, task: runtime.taskId });
 		},
 	);
 	return child.id;

@@ -142,6 +142,18 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		expect(Object.values(await children())).toEqual([true, true]);
 	});
 
+	it("closes the sessions of a failed child run that the script caught when the run completes", async () => {
+		await mkdir(join(root, ".workflows", "workflows"), { recursive: true });
+		await writeFile(
+			join(root, ".workflows", "workflows", "child.js"),
+			'await session().ask("Script spawn: child")\nthrow new Error("no")',
+		);
+		await writeFile(join(root, "parent.js"), 'try { await run("child") } catch { return "caught" }');
+		const run = await workflows(["parent.js"], { cwd: root });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, "caught"]);
+		expect(Object.values(await children())).toEqual([true, true]);
+	});
+
 	it("aborts the turn of a session that an earlier task of the run opened when the run stops", async () => {
 		await writeFile(
 			join(root, "x.js"),
