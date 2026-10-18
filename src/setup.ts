@@ -7,7 +7,16 @@ import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENTRY, HARNESS, harnessDir, harnessProblem, harnessRange, installCommand } from "./harness.ts";
+import {
+	ENTRY,
+	HARNESS,
+	harnessDir,
+	harnessProblem,
+	harnessRange,
+	harnessVersion,
+	installCommand,
+	newerThanRange,
+} from "./harness.ts";
 
 const NAME = join("@vzlentin", "workflows");
 
@@ -58,15 +67,16 @@ export function fixPrefix(dir: string): string | undefined {
 }
 
 /**
- * Checks harness for the package in `dir`. When it is missing or out of the range and `dir` is a top-level global
- * install, it installs harness into the prefix of `dir` and checks again. Returns the error line that remains, or
+ * Checks harness for the package in `dir`. When it is missing or older than the range and `dir` is a top-level global
+ * install, it installs harness into the prefix of `dir` and checks again. A newer harness is never replaced. Returns the error line that remains, or
  * undefined when harness fits.
  */
 export function ensureHarness(dir: string): string | undefined {
 	if (harnessProblem(dir) === undefined) return undefined;
 	const prefix = globalPrefix(dir);
+	const version = harnessVersion(dir);
 
-	if (prefix !== undefined) {
+	if (prefix !== undefined && (version === undefined || !newerThanRange(version, harnessRange()))) {
 		const command = installCommand(harnessRange(), prefix);
 		process.stderr.write(`workflows: installing ${HARNESS}: ${command}\n`);
 		const result = runNpm(["install", "-g", "--prefix", prefix, `${HARNESS}@${harnessRange()}`]);

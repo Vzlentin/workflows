@@ -695,7 +695,7 @@ Two places run it:
 
 The steps:
 
-1. When harness is missing or out of the range, it prints `workflows: installing @vzlentin/harness: npm install -g
+1. When harness is missing or older than the range, it prints `workflows: installing @vzlentin/harness: npm install -g
    --prefix <prefix> @vzlentin/harness@<range>` and runs that command, with the npm of the install in an install
    script, or the `npm` on `PATH`. It prints the output of npm on stderr only when npm fails. When harness still does
    not fit, it prints the error line below, and stops.
@@ -716,13 +716,16 @@ comes from harness's `setupOnce`, and the command goes on.
 
 ### The harness check
 
-Every `workflows` command checks harness before it loads any harness module. When harness is missing or out of the
-range, an installed command runs step 1 of the setup and goes on when harness then fits. Otherwise it prints one of
+Every `workflows` command checks harness before it loads any harness module. When harness is missing or older than
+the range, an installed command runs step 1 of the setup and goes on when harness then fits. A harness newer than the
+range is never replaced. Otherwise it prints one of
 these lines and exits 1:
 
 - `workflows needs @vzlentin/harness <range>: npm install -g [--prefix <prefix>] @vzlentin/harness@<range>`
 - `workflows needs @vzlentin/harness <range>, found <version>: npm install -g [--prefix <prefix>]
   @vzlentin/harness@<range>`
+- `workflows needs @vzlentin/harness <range>, found <version>, which is newer. Update workflows: npm install -g
+  [--prefix <prefix>] @vzlentin/workflows`
 
 `--prefix <prefix>` is there when the install is a top-level global install whose prefix is not the output of `npm
 prefix -g`.

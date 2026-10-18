@@ -181,6 +181,11 @@ describe("the harness check", () => {
 
 		await fakeHarness("0.2.3");
 		expect(harnessProblem(dir)).toBeUndefined();
+
+		await fakeHarness("0.3.0");
+		expect(harnessProblem(dir)).toBe(
+			"workflows needs @vzlentin/harness ^0.2.0, found 0.3.0, which is newer. Update workflows: npm install -g @vzlentin/workflows",
+		);
 	});
 
 	it("stops the command of a checkout before it loads harness", async () => {
@@ -304,6 +309,21 @@ describe("the setup", () => {
 			stderr: `${installing}workflows needs @vzlentin/harness ^0.2.0: npm install -g @vzlentin/harness@^0.2.0\n`,
 		});
 		expect(await log("pi.log")).toEqual([]);
+	});
+
+	it("never replaces a harness that is newer than the range", async () => {
+		const dir = await installWorkflows();
+		await installHarness();
+		const manifest = join(LIB(), "@vzlentin", "harness", "package.json");
+		const json = JSON.parse(await readFile(manifest, "utf8"));
+		await writeFile(manifest, JSON.stringify({ ...json, version: "0.3.0" }));
+
+		expect(await workflows(dir, { NPM_INSTALLS: HARNESS }, "list")).toEqual({
+			code: 1,
+			stdout: "",
+			stderr: `workflows needs @vzlentin/harness ^0.2.0, found 0.3.0, which is newer. Update workflows: npm install -g --prefix ${PREFIX()} @vzlentin/workflows\n`,
+		});
+		expect(await log("npm.log")).toEqual(["prefix -g"]);
 	});
 
 	it("does not fail the install when harness stays missing", async () => {

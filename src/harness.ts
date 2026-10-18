@@ -90,6 +90,24 @@ export function inRange(version: string, range: string): boolean {
 	return true;
 }
 
+/** Whether `version` is newer than every version in the caret range `range`, such as `0.3.0` for `^0.2.0`. */
+export function newerThanRange(version: string, range: string): boolean {
+	const [low, found] = [VERSION.exec(range.slice(1)), VERSION.exec(version)];
+
+	if (low === null || found === null || inRange(version, range)) return false;
+	const [want, have] = [low.slice(1).map(Number), found.slice(1).map(Number)];
+	const index = want.findIndex((part, at) => part !== have[at]);
+
+	return index !== -1 && (have[index] ?? 0) > (want[index] ?? 0);
+}
+
+/** The version of the harness that the package in `dir` imports, or undefined when there is none. */
+export function harnessVersion(dir: string): string | undefined {
+	const found = harnessDir(dir);
+
+	return found === undefined ? undefined : manifest(join(found, "package.json"))?.version;
+}
+
 /** The command that installs a harness in `range`, with `--prefix <prefix>` when `prefix` is given. */
 export function installCommand(range: string, prefix: string | undefined): string {
 	return `npm install -g ${prefix === undefined ? "" : `--prefix ${prefix} `}${HARNESS}@${range}`;
@@ -101,12 +119,17 @@ export function installCommand(range: string, prefix: string | undefined): strin
  */
 export function harnessProblem(dir: string, prefix?: string): string | undefined {
 	const range = harnessRange();
-	const found = harnessDir(dir);
-	const version = found === undefined ? undefined : manifest(join(found, "package.json"))?.version;
+	const version = harnessVersion(dir);
 
 	if (version === undefined) return `workflows needs ${HARNESS} ${range}: ${installCommand(range, prefix)}`;
 
 	if (inRange(version, range)) return undefined;
+
+	if (newerThanRange(version, range)) {
+		const update = `npm install -g ${prefix === undefined ? "" : `--prefix ${prefix} `}@vzlentin/workflows`;
+
+		return `workflows needs ${HARNESS} ${range}, found ${version}, which is newer. Update workflows: ${update}`;
+	}
 
 	return `workflows needs ${HARNESS} ${range}, found ${version}: ${installCommand(range, prefix)}`;
 }
