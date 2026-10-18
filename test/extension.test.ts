@@ -1,12 +1,15 @@
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentToolResult, ExtensionAPI, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { JsonValue } from "@earendil-works/chord";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import extension from "../pi-workflows/index.ts";
+import extension, { workflowTool } from "../pi-workflows/index.ts";
+
+type Tool = ReturnType<typeof workflowTool>;
 
 let root: string;
-let tool: ToolDefinition;
+let tool: Tool;
 
 /** A fake `workflows` command: its behavior comes from its arguments, which it appends to `args.log`. */
 const FAKE = `#!/bin/sh
@@ -29,6 +32,7 @@ slow)
 	while :; do sleep 0.02; done ;;
 stopped) echo "run r8"; echo '{"runId":"r8","status":"stopped"}'; exit 130 ;;
 host) echo "run r9"; echo '{"runId":"r9","status":"host-stopped"}'; exit 1 ;;
+invalid) echo "run r10"; echo '{"runId":"r10","status":"lost"}' ;;
 usage) echo "workflows: unknown flag" >&2; exit 2 ;;
 save)
 	if [ "$3" = taken ]; then echo "workflows: a workflow taken exists; replace it with --force" >&2; exit 1; fi
@@ -49,42 +53,67 @@ esac
 beforeEach(async () => {
 	root = await mkdtemp(join(tmpdir(), "workflows-extension-test-"));
 	await writeFile(join(root, "workflows"), FAKE);
-	const pi = {
-		registerTool: (registered: ToolDefinition) => {
-			tool = registered;
-		},
-	} as unknown as ExtensionAPI;
-	extension(pi, ["/bin/sh", join(root, "workflows")]);
+	tool = workflowTool(["/bin/sh", join(root, "workflows")]);
 });
 
 afterEach(() => rm(root, { recursive: true, force: true }));
 
-async function call(params: object, signal?: AbortSignal) {
+/** The arguments of a call of the tool, which Pi checks against the tool's parameters. */
+type Params = Parameters<Tool["execute"]>[1];
+
+/** A result or an update of a call of the tool. */
+type Result = Awaited<ReturnType<Tool["execute"]>>;
+
+/** The arguments of a call while it streams, so any field can be missing. */
+type PartialParams = {
+	readonly name?: string;
+	readonly script?: string;
+	readonly resume?: string;
+	readonly save?: { readonly runId?: string; readonly name?: string; readonly force?: boolean };
+	readonly args?: { readonly [key: string]: JsonValue };
+};
+
+/** The context of a tool call in `cwd`. */
+const contextOf = (cwd: string) => {
+	// SAFETY: `execute` of the workflow tool reads only `ctx.cwd` of its context.
+	return { cwd } as Parameters<Tool["execute"]>[4];
+};
+
+async function call(params: Params, signal?: AbortSignal) {
 	const updates: string[] = [];
-	const partials: AgentToolResult<unknown>[] = [];
-	const onUpdate = (partial: AgentToolResult<unknown>) => {
+	const partials: Result[] = [];
+
+	const onUpdate = (partial: Result) => {
 		const [first] = partial.content;
 		updates.push(first?.type === "text" ? first.text : "");
 		partials.push(partial);
 	};
-	const ctx = { cwd: root } as Parameters<ToolDefinition["execute"]>[4];
-	const result = await tool.execute("call-1", params, signal, onUpdate, ctx);
+
+	const result = await tool.execute("call-1", params, signal, onUpdate, contextOf(root));
+
 	return { result, updates, partials };
 }
 
-const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme;
+// SAFETY: the renderers of the workflow tool call only `fg` and `bold` of the theme.
+const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
 
 /** The lines that the renderers draw for the call row and, when given, for `result`. */
-function draw(args: object, result?: AgentToolResult<unknown>, isPartial = false): string[] {
-	const context = { args } as Parameters<NonNullable<ToolDefinition["renderCall"]>>[2];
-	const components = [
-		tool.renderCall?.(args, theme, context),
-		result && tool.renderResult?.(result, { expanded: false, isPartial }, theme, context),
-	];
-	return components.flatMap((component) => component?.render(200).map((line) => line.trimEnd()) ?? []);
+function draw(args: PartialParams, result?: Result, isPartial = false): string[] {
+	const components = [tool.renderCall(args, theme)];
+
+	if (result !== undefined) components.push(tool.renderResult(result, { expanded: false, isPartial }, theme));
+
+	return components.flatMap((component) => component.render(200).map((line) => line.trimEnd()));
 }
 
 describe("the workflow tool", () => {
+	it("is the tool that the extension registers", () => {
+		const names: string[] = [];
+		const pi: Pick<ExtensionAPI, "registerTool"> = { registerTool: (registered) => names.push(registered.name) };
+		extension(pi, ["/bin/sh", join(root, "workflows")]);
+		expect(names).toEqual([tool.name]);
+	});
+
 	it("returns the structured result of a finished run, with each stderr line as an update", async () => {
 		const args = { path: "src", depth: 2, all: true, dry: false, tags: ["a"] };
 		const { result, updates } = await call({ name: "ok", args });
@@ -149,18 +178,21 @@ describe("the workflow tool", () => {
 	it("detaches from the run with SIGINT on Esc, and says how to follow or stop it", async () => {
 		const esc = new AbortController();
 		const updates: string[] = [];
-		const ctx = { cwd: root } as Parameters<ToolDefinition["execute"]>[4];
+
 		const result = await tool.execute(
 			"call-1",
 			{ name: "slow" },
 			esc.signal,
 			(partial) => {
-				const line = (partial.content[0] as { text: string }).text;
+				const [first] = partial.content;
+				const line = first?.type === "text" ? first.text : "";
 				updates.push(line);
+
 				if (line === "started") esc.abort();
 			},
-			ctx,
+			contextOf(root),
 		);
+
 		expect(result.structuredContent).toEqual({ runId: "r4", status: "detached" });
 		expect(result.isError).toBe(true);
 		expect(result.content).toEqual([
@@ -189,6 +221,12 @@ describe("the workflow tool", () => {
 				text: 'the harness host of run r9 stopped; the run continues when the host starts again, so follow it with resume: "r9"',
 			},
 		]);
+	});
+
+	it("throws an outcome line that is not valid", async () => {
+		await expect(call({ name: "invalid" })).rejects.toThrow(
+			'workflows printed an outcome that is not valid: {"runId":"r10","status":"lost"}',
+		);
 	});
 
 	it("draws the call line of each kind of call", () => {
@@ -281,6 +319,7 @@ describe("the workflow tool", () => {
 		const globals = [...declarations.matchAll(/^declare (?:const|function) (\w+)/gm)].map(([, name]) => name);
 		expect(globals.length).toBeGreaterThan(10);
 		const guidelines = (tool.promptGuidelines ?? []).join("\n");
+
 		for (const name of globals) expect(guidelines, name).toContain(`\`${name}`);
 	});
 });

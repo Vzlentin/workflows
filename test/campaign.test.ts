@@ -59,6 +59,7 @@ describe("workflows campaign", () => {
 			"Add a thanks line",
 			"Fix the README typo",
 		]);
+
 		for (const message of messages) expect(message).toMatch(/\nRounds: 1\nJudge: 0\.83/);
 		expect(report[0]).toContain(git(worktree, "rev-parse", "--short", "HEAD"));
 		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(THANKED);
@@ -70,6 +71,7 @@ describe("workflows campaign", () => {
 		const shown = await workflows(["show", run.id ?? ""], { cwd: root });
 		const children = result.items.map((item: { result: { runId: string } }) => item.result.runId);
 		const lines = shown.stdout.map((line) => line.replace(/ {2}\d+s$/, ""));
+
 		for (const [n, child] of children.entries()) {
 			const at = lines.indexOf(`  ✓ run ship ${child}`);
 			expect(lines[at - 3], child).toBe(
@@ -77,6 +79,7 @@ describe("workflows campaign", () => {
 			);
 			expect(lines.slice(at + 1, at + 4)).toEqual(["    plan", "      ✓ session planner", "      ✓ ask planner"]);
 		}
+
 		expect(lines.at(-1)).toBe(report[0]);
 		const { calls } = JSON.parse((await workflows(["show", run.id ?? "", "--json"], { cwd: root })).stdout[0] ?? "");
 		const shipped = calls.filter((call: { kind: string }) => call.kind === "run");
@@ -104,6 +107,7 @@ describe("workflows campaign", () => {
 			cwd: repo,
 			script: { items: [FIRST], edits: [FIXED], queues: [[SECOND]], interruptAt: { kind: "plan", nth: 2 } },
 		});
+
 		expect(first.code).toBe(130);
 		expect(first.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "requeue"]);
 
@@ -111,6 +115,7 @@ describe("workflows campaign", () => {
 			cwd: root,
 			script: { edits: [THANKED], queues: [[]] },
 		});
+
 		expect(resumed.code).toBe(0);
 		expect(JSON.parse(resumed.stdout[1] ?? "").report).toEqual([
 			expect.stringMatching(/^done Fix the README in 2 items, /),

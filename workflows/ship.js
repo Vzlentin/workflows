@@ -11,13 +11,17 @@ export const meta = {
 }
 
 const { item, rounds, start, patches = runDir } = args
-if (typeof start !== "string") {
+
+// The engine gives a `meta.worktree` script `start` as a string or not at all.
+if (start === undefined) {
 	throw new Error("ship runs only through workflows ship or workflows campaign, which give it the start commit")
 }
+
 const subject = (item.split("\n").find((line) => line.trim() !== "") ?? "").replace(/^#+/, "").trim()
 const worktree = `${runDir}/worktree`
 
 const SHIP_OR_FIX = { enum: ["SHIP", "FIX"] }
+
 const VERDICT = {
 	type: "object",
 	required: ["answers", "findings"],
@@ -26,11 +30,13 @@ const VERDICT = {
 		findings: { type: "array", items: { type: "string" } },
 	},
 }
+
 const NOTED = {
 	type: "object",
 	required: ["text", "notes"],
 	properties: { text: { type: "string" }, notes: { type: "array", items: { type: "string" } } },
 }
+
 // With the SHIP or FIX rule, and not in a template, so that a template edit cannot remove it.
 const EVIDENCE =
 	"A reversal of a memory note, or of a choice that the implementer explained, stays only with a defect that this " +
@@ -43,9 +49,13 @@ const EVIDENCE =
 const memory = []
 
 phase("plan")
+
 const planner = remembering("planner")
+
 await planner.ask(prompts.plan({ item }))
+
 await planner.ask(prompts.challenge())
+
 let plan = await planner.noted(
 	0,
 	prompts.handoff(),
@@ -53,9 +63,11 @@ let plan = await planner.noted(
 )
 
 let before = start
+
 for (let round = 1; round <= rounds; round++) {
 	phase(`round ${round}: implement`)
 	const implementer = remembering("implementer")
+
 	const reply = await implementer.noted(
 		round,
 		prompts.implement({ plan }),
@@ -63,15 +75,20 @@ for (let round = 1; round <= rounds; round++) {
 	)
 
 	await sh(["git", "add", "-A"])
+
 	if (await ok(["git", "diff", "--cached", "--quiet", start])) {
 		const report = [`blocked ${subject} after ${round} rounds: ${worktree}`, reply]
+
 		return { status: "blocked", rounds: round, reply, memory, report }
 	}
+
 	// The check's result is saved, so a commit that succeeded before a stop may run again with nothing staged.
 	if (!(await ok(["git", "diff", "--cached", "--quiet"]))) {
 		await sh(["git", "commit", "--allow-empty", "-m", `round ${round}`])
 	}
+
 	const change = [await patch(`round-${round}.patch`, start)]
+
 	if (round > 1) change.push(await patch(`round-${round}-fix.patch`, before))
 
 	phase(`round ${round}: review`)
@@ -79,10 +96,13 @@ for (let round = 1; round <= rounds; round++) {
 	await reviewer.ask(prompts.review({ item, plan, change: change.join("\n"), reply }))
 	const answer = "Answer with respond: SHIP if nothing needs to change, FIX otherwise."
 	const challenge = `${await prompts.challenge()}\n\n${EVIDENCE}\n\n${answer}`
+
 	if ((await reviewer.ask(challenge, { schema: SHIP_OR_FIX })) === "SHIP") return await judgeAndSquash(round)
+
 	if (round === rounds) {
 		return { status: "stopped", rounds: round, memory, report: [`stopped ${subject} after ${round} rounds: ${worktree}`] }
 	}
+
 	plan = await reviewer.noted(
 		round,
 		prompts.handoff(),
@@ -97,31 +117,38 @@ async function judgeAndSquash(round) {
 	const judge = session("judge")
 	let verdict
 	let judgeError
+
 	try {
 		verdict = await judge.ask(prompts.judge({ item, base: start, head }), { schema: VERDICT })
 	} catch (error) {
 		judgeError = error.message
 		log(`judge failed on ${subject}: ${judgeError}`)
 	}
+
 	// One command, so that a repeat resets a squash commit that was made but not saved.
 	const squash = 'git reset -q --soft "$1" && git commit -q -m "$2"'
 	await sh(["sh", "-c", squash, "squash", start, message(round, verdict)])
 	const short = await sh(["git", "rev-parse", "--short", "HEAD"])
 	const judged = verdict === undefined ? "failed" : score(verdict.answers).toFixed(2)
-	return {
-		status: "shipped",
-		rounds: round,
-		head: short,
-		...(verdict === undefined ? {} : { score: score(verdict.answers), answers: verdict.answers, findings: verdict.findings }),
-		...(judgeError === undefined ? {} : { judgeError }),
-		memory,
-		report: [`shipped ${subject} in ${round} rounds, judge ${judged}, ${short}`],
+	const shipped = { status: "shipped", rounds: round, head: short }
+
+	if (verdict !== undefined) {
+		shipped.score = score(verdict.answers)
+		shipped.answers = verdict.answers
+		shipped.findings = verdict.findings
 	}
+
+	if (judgeError !== undefined) shipped.judgeError = judgeError
+	shipped.memory = memory
+	shipped.report = [`shipped ${subject} in ${round} rounds, judge ${judged}, ${short}`]
+
+	return shipped
 }
 
 function remember(author, round, notes) {
 	for (const note of notes) {
 		const line = note.replace(/\s+/g, " ").trim()
+
 		if (line !== "") memory.push(`#${memory.length + 1} ${author} ${round}: ${line}`)
 	}
 }
@@ -135,24 +162,29 @@ function withMemory(prompt) {
 function remembering(profile) {
 	const s = session(profile)
 	const ask = async (prompt, options) => s.ask(withMemory(await prompt), options)
+
 	const noted = async (round, prompt, rule) => {
 		const rules = `When you are done, answer with respond: text is ${rule}`
 		const { text, notes } = await ask(`${await prompt}\n\n${rules}`, { schema: NOTED })
 		remember(profile, round, notes)
+
 		return text
 	}
+
 	return { ask, noted }
 }
 
 async function patch(name, from) {
 	const path = `${patches}/${name}`
 	await sh(["git", "diff", "--binary", `--output=${path}`, from, "HEAD"])
+
 	return path
 }
 
 // Zero when question 1 or 2 fails, else the passing fraction of questions 3 to 8.
 function score(answers) {
 	if (answers[0] !== "PASS" || answers[1] !== "PASS") return 0
+
 	return answers.slice(2).filter((answer) => answer === "PASS").length / 6
 }
 
@@ -160,9 +192,11 @@ function score(answers) {
 function message(round, verdict) {
 	const paragraphs = [subject, item.trim()]
 	const trailers = [`Rounds: ${round}`]
+
 	if (verdict !== undefined) {
 		if (verdict.findings.length > 0) paragraphs.push(verdict.findings.join("\n"))
 		trailers.push(`Judge: ${score(verdict.answers).toFixed(2)}`)
 	}
+
 	return [...paragraphs, trailers.join("\n")].join("\n\n")
 }

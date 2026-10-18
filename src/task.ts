@@ -32,7 +32,9 @@ type ScriptTask = Task<ScriptInput, Checkpoint, JsonValue, object>;
 /** The child run saved in the record of the `run` call `key`. */
 async function savedChild(runtime: Runtime, key: string, context: Context): Promise<Child> {
 	const child = (await runtime.snapshot(CallDoc, key, context))?.child;
+
 	if (child === undefined) throw new Error(`the child run of ${key} is missing`);
+
 	return child;
 }
 
@@ -52,6 +54,7 @@ async function startChild(
 	const id = newRunId();
 	const directory = join(dirname(caller.input.runDir), id);
 	await mkdir(directory, { recursive: true });
+
 	try {
 		const run = { id, directory, cwd: caller.cwd, root: caller.input.root };
 		const input = await childInput({ name, args, bundle: caller.input.bundle }, run);
@@ -59,12 +62,14 @@ async function startChild(
 			const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 			const doc = await tx.doc(CallDoc, key, null);
 			doc.child = { task, runId: id };
+
 			return undefined;
 		}, context);
 	} catch (error) {
 		await rm(directory, { recursive: true, force: true });
 		throw error;
 	}
+
 	return savedChild(runtime, key, context);
 }
 
@@ -80,14 +85,17 @@ async function restartChild(
 	ended: TaskId<JsonValue>,
 ): Promise<Child> {
 	const record = await runtime.getTask(ended, context);
+
 	if (record === undefined || !current(record)) throw new Error(`the child task ${ended} is missing`);
 	const { input } = record;
 	await runtime.commit(async (tx) => {
 		const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 		const doc = await tx.doc(CallDoc, key, null);
 		doc.child = { task, runId: input.runId };
+
 		return undefined;
 	}, context);
+
 	return savedChild(runtime, key, context);
 }
 
@@ -108,15 +116,20 @@ async function endSessions(
 	const { children, place } = host;
 	const { runId, root } = input;
 	const all = completed && runId === root;
+
 	for (const { run, conversation, task } of (await runtime.snapshot(SessionsDoc, root, context))?.sessions ?? []) {
 		if (!all && run !== runId) continue;
 		const child = await children.find(place, ownerOf(runtime, run), { id: String(conversation) }, context);
+
 		if (child === undefined) continue;
+
 		if (completed) {
 			await child.close(context);
 			continue;
 		}
+
 		await child.close(context, { below: true });
+
 		if (task !== runtime.taskId) await child.conversation.abort(context, { background: true });
 	}
 }
@@ -136,18 +149,22 @@ async function runPhase(
 	const { input } = task;
 	const { worktree, runId, root } = input;
 	const cwd = worktree?.path ?? input.cwd;
-	const caller = task.owner === undefined ? undefined : await runtime.getTask(task.owner as TaskId<JsonValue>, context);
+	const caller = task.owner === undefined ? undefined : await runtime.getTask(task.owner, context);
 	const parent = caller !== undefined && current(caller) ? caller.input.runId : null;
+
 	try {
 		// A command that reaches the running task of a root run shows its progress from here.
 		if (task.owner === undefined) {
 			await runtime.commit(async (tx) => {
 				await addProgress(tx, root, [{ kind: "start", run: runId }]);
+
 				return undefined;
 			}, context);
 		}
+
 		if (worktree !== undefined)
 			await ensureWorktree(worktree.repository, worktree.path, worktree.branch, worktree.start);
+
 		const result = await runScript(runtime, context, cwd, host, {
 			runId,
 			parent,
@@ -158,9 +175,11 @@ async function runPhase(
 			child: (key, name, args) => startChild(definition, runtime, context, { input, cwd }, key, name, args),
 			restart: (key, ended) => restartChild(definition, runtime, context, key, ended),
 		});
+
 		await endSessions(host, runtime, input, true, context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: false }]);
+
 			return { status: "terminal", outcome: { status: "completed", result } };
 		}, context);
 	} catch (error) {
@@ -171,6 +190,7 @@ async function runPhase(
 		await endSessions(host, runtime, input, false, context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: true }]);
+
 			return { status: "terminal", outcome: { status: "failed", error: { message } } };
 		}, context);
 	}
@@ -180,9 +200,9 @@ async function runPhase(
 export const TASK = { name: "workflows.run", version: 11 } as const;
 
 /** Whether the script task can continue the task `latest`. */
-export function current(
-	latest: TaskRecord<JsonValue, JsonValue, JsonValue>,
-): latest is TaskRecord<ScriptInput, JsonValue, JsonValue> {
+export function current<R>(
+	latest: TaskRecord<JsonValue, JsonValue, R>,
+): latest is TaskRecord<ScriptInput, JsonValue, R> {
 	return latest.kind === TASK.name && latest.version === TASK.version;
 }
 
@@ -198,9 +218,11 @@ export function scriptTask(host: Host): ScriptTask {
 			await endSessions(host, runtime, task.input, false, context);
 			await runtime.commit(async (tx) => {
 				await addProgress(tx, root, [{ kind: "end", run: runId, failed: true }]);
+
 				return { status: "terminal", outcome: { status: "aborted" } };
 			}, context);
 		},
 	});
+
 	return definition;
 }

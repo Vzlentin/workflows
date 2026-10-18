@@ -3,10 +3,13 @@
  * output. The script task is `scriptTask` in `task.ts`.
  */
 import { randomBytes } from "node:crypto";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 
 /** A run ID, `<UTC timestamp>-<8 hex>`, so a sort by name is a sort by start time. */
 export function newRunId(): string {
 	const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
+
 	return `${stamp}-${randomBytes(4).toString("hex")}`;
 }
 
@@ -20,15 +23,22 @@ export class UsageError extends Error {
 	}
 }
 
+const CODED = Type.Object({ code: Type.String(), message: Type.String() });
+
+/** The message of `cause` when it is an error of `parseArgs`, which is bad usage. */
+export function parseArgsMessage(cause: unknown): string | undefined {
+	return Value.Check(CODED, cause) && cause.code.startsWith("ERR_PARSE_ARGS") ? cause.message : undefined;
+}
+
 /** The result of `parse`, a call of `parseArgs`, whose errors become bad usage that prints `usage`. */
 export function withUsage<T>(parse: () => T, usage: string): T {
 	try {
 		return parse();
 	} catch (error) {
-		const code = (error as { code?: unknown }).code;
-		if (typeof code === "string" && code.startsWith("ERR_PARSE_ARGS")) {
-			throw new UsageError((error as Error).message, usage);
-		}
+		const message = parseArgsMessage(error);
+
+		if (message !== undefined) throw new UsageError(message, usage);
+
 		throw error;
 	}
 }
@@ -78,6 +88,7 @@ export class CtrlC {
 
 	press(): void {
 		this.#presses++;
+
 		if (this.#presses === 1) this.#interrupt.abort();
 		else if (this.#presses === 2 && this.#following) this.#stop.abort();
 		else this.#exit();

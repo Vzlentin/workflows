@@ -9,8 +9,10 @@ export type Result = { readonly code: number; readonly stdout: string; readonly 
 export function run(command: string, args: readonly string[], cwd: string, signal?: AbortSignal): Promise<Result> {
 	return new Promise((done, fail) => {
 		execFile(command, args, { cwd, signal, maxBuffer: 1 << 30 }, (error, stdout, stderr) => {
-			if (error !== null && typeof error.code !== "number") fail(error);
-			else done({ code: error === null ? 0 : (error.code as number), stdout, stderr });
+			// A string code, such as ENOENT, means that the command did not run.
+			if (error === null) done({ code: 0, stdout, stderr });
+			else if (Number.isInteger(error.code)) done({ code: Number(error.code), stdout, stderr });
+			else fail(error);
 		});
 	});
 }
@@ -23,7 +25,9 @@ export function failure(argv: readonly string[], result: Result): string {
 /** The trimmed stdout of `git <args>` in `cwd`; throws with the command output when git fails. */
 export async function git(cwd: string, ...args: string[]): Promise<string> {
 	const result = await run("git", args, cwd);
+
 	if (result.code !== 0) throw new Error(failure(["git", ...args], result));
+
 	return result.stdout.replace(/\n$/, "");
 }
 
@@ -38,10 +42,13 @@ async function repositoryAt(path: string): Promise<string | undefined> {
 		(found) => found.isDirectory(),
 		() => false,
 	);
+
 	if (!directory) return undefined;
 	const top = await run("git", ["rev-parse", "--show-toplevel"], path);
+
 	if (top.code !== 0) return undefined;
 	const root = await realpath(top.stdout.trim());
+
 	return root === (await realpath(path)) ? root : undefined;
 }
 
@@ -60,14 +67,20 @@ export async function selectRepository(
 ): Promise<Repository> {
 	if (repo === undefined) {
 		const top = await run("git", ["rev-parse", "--show-toplevel"], cwd);
+
 		if (top.code !== 0) throw new Error(`${cwd} is not in a Git repository`);
 		const path = top.stdout.trim();
+
 		return { path, start: await commitOf(path, base) };
 	}
+
 	const local = await repositoryAt(resolve(cwd, repo));
+
 	if (local !== undefined) return { path: local, start: await commitOf(local, base) };
 	const cloned = await run("gh", ["repo", "clone", repo, clone], cwd);
+
 	if (cloned.code !== 0) throw new Error(`gh repo clone ${repo} failed: ${cloned.stdout}${cloned.stderr}`.trim());
+
 	return { path: clone, start: await commitOf(clone, `refs/remotes/origin/${base}`) };
 }
 

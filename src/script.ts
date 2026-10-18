@@ -17,6 +17,7 @@ import { withCancel } from "@earendil-works/chord/context";
 import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
+	type CommonDocDefinition,
 	type ConversationId,
 	defineDocFamily,
 	type JsonObject,
@@ -25,6 +26,8 @@ import {
 	type Tx,
 } from "@earendil-works/pi-durable";
 import type { Children, Failure, Owner, Place, Spec } from "@vzlentin/harness/children";
+import { type Static, type TSchema, Type } from "typebox";
+import { Value } from "typebox/value";
 import { failure, git, run } from "./git.ts";
 import { PROGRESS_KIND, type ProgressEvent } from "./progress.ts";
 import { instructions, render } from "./prompts.ts";
@@ -46,6 +49,9 @@ export type Bundle = {
 	readonly prompts: Readonly<Record<string, string>>;
 	readonly agents: Readonly<Record<string, Profile>>;
 };
+
+/** `T` with fields that a builder sets one by one. */
+type Writable<T> = { -readonly [K in keyof T]: T[K] };
 
 /** The bundle of a run and its own script, saved in the run's input. */
 export type RunBundle = Bundle & { readonly main: string };
@@ -78,9 +84,11 @@ const PACKAGE = fileURLToPath(new URL("../", import.meta.url));
 export async function readFolder(base: string, folder: string, extension: string): Promise<Record<string, string>> {
 	const directory = join(base, folder);
 	const files = (await readdir(directory).catch(() => [])).filter((file) => file.endsWith(extension)).sort();
+
 	const entries = await Promise.all(
 		files.map(async (file) => [file.slice(0, -extension.length), await readFile(join(directory, file), "utf8")]),
 	);
+
 	return Object.fromEntries(entries);
 }
 
@@ -90,6 +98,7 @@ async function readMerged(project: string, folder: string, extension: string): P
 		readFolder(PACKAGE, folder, extension),
 		readFolder(project, folder, extension),
 	]);
+
 	return { ...own, ...local };
 }
 
@@ -99,27 +108,32 @@ async function overrides(folder: string, templates: Record<string, string>): Pro
 		(entry) => entry.isDirectory(),
 		() => false,
 	);
+
 	if (!found) throw new Error(`no prompts folder ${folder}`);
 	const own = await readFolder(folder, ".", ".md");
+
 	for (const name of Object.keys(own)) {
 		if (templates[name] === undefined) throw new Error(`${folder}/${name}.md replaces no prompt of the package`);
 	}
+
 	return own;
 }
 
 function profileOf(name: string, text: string): Profile {
 	const { frontmatter, body } = parseFrontmatter<{ model?: string; thinking?: string }>(text);
 	const { model, thinking } = frontmatter;
-	if (model === undefined) {
-		return { ...(thinking === undefined ? {} : { thinking }), instructions: instructions(body) };
+	const profile: Writable<Profile> = { instructions: instructions(body) };
+
+	if (model !== undefined) {
+		const [provider = "", ...id] = model.split("/");
+
+		if (provider === "" || id.length === 0) throw new Error(`agents/${name}.md: model must be <provider>/<id>`);
+		profile.model = { provider, modelId: id.join("/") };
 	}
-	const [provider = "", ...id] = model.split("/");
-	if (provider === "" || id.length === 0) throw new Error(`agents/${name}.md: model must be <provider>/<id>`);
-	return {
-		model: { provider, modelId: id.join("/") },
-		...(thinking === undefined ? {} : { thinking }),
-		instructions: instructions(body),
-	};
+
+	if (thinking !== undefined) profile.thinking = thinking;
+
+	return profile;
 }
 
 /**
@@ -129,12 +143,15 @@ function profileOf(name: string, text: string): Profile {
  */
 export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle> {
 	const project = cwd === undefined ? PACKAGE : await projectFolder(cwd);
+
 	const [scripts, merged, profiles] = await Promise.all([
 		loadScripts(project),
 		readMerged(project, "prompts", ".md"),
 		readMerged(project, "agents", ".md"),
 	]);
+
 	const templates = prompts === undefined ? merged : { ...merged, ...(await overrides(prompts, merged)) };
+
 	return {
 		scripts,
 		prompts: Object.fromEntries(Object.entries(templates).map(([name, text]) => [name, instructions(text)])),
@@ -150,6 +167,7 @@ export function loadScripts(project: string): Promise<Record<string, string>> {
 /** `.workflows/` at the root of the Git repository of `cwd`, or in `cwd` outside a repository. */
 export async function projectFolder(cwd: string): Promise<string> {
 	const root = await git(cwd, "rev-parse", "--show-toplevel").catch(() => cwd);
+
 	return join(root, ".workflows");
 }
 
@@ -157,7 +175,7 @@ export async function projectFolder(cwd: string): Promise<string> {
 export const META = /^((?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*)export\s+(const\s+meta\s*=\s*)/;
 
 /** True when a document change is stored as a complete base: after 31 deltas since the last one. */
-const checkpointWhen = (_value: unknown, _ops: unknown, info: { readonly deltasSinceBase: number }): boolean =>
+const checkpointWhen: CommonDocDefinition<JsonObject>["checkpointWhen"] = (_value, _ops, info) =>
 	info.deltasSinceBase >= 31;
 
 /** The sandbox functions that are not host calls. */
@@ -187,8 +205,8 @@ function session(options = "default") {
 	return { ask: async (prompt, options = {}) => __ask(await id, await prompt, options.schema) };
 }
 const agent = (prompt, { schema, ...options } = {}) => session(options).ask(prompt, { schema });
-const sh = async (cmd) => (await __sh(cmd, true)).stdout.replace(/\\n$/, "");
-const ok = async (cmd) => (await __sh(cmd, false)).code === 0;
+const sh = async (cmd) => (await __sh(cmd)).stdout.replace(/\\n$/, "");
+const ok = async (cmd) => (await __ok(cmd)).code === 0;
 const run = async (name, args = {}) => {
 	const { runId: id, result } = await __run(name, args);
 	return result !== null && typeof result === "object" && !Array.isArray(result) ? { ...result, runId: id } : result;
@@ -205,25 +223,54 @@ const pipeline = (items, ...stages) =>
 `;
 }
 
+/** A JSON value. */
+export const JSON_VALUE = Type.Cyclic(
+	{
+		Json: Type.Union([
+			Type.Null(),
+			Type.Boolean(),
+			Type.Number(),
+			Type.String(),
+			Type.Array(Type.Ref("Json")),
+			Type.Record(Type.String(), Type.Ref("Json")),
+		]),
+	},
+	"Json",
+);
+
+const CALL_KINDS = Type.Union([
+	Type.Literal("session"),
+	Type.Literal("ask"),
+	Type.Literal("sh"),
+	Type.Literal("ok"),
+	Type.Literal("run"),
+]);
+
+/** The kinds of script calls. */
+export type CallKind = Static<typeof CALL_KINDS>;
+
 /**
  * One script call: its kind, its args, the phase line that was current when it started, its start and end times as ISO
  * strings, and its result or its error. A call that started and did not end has no `endedAt`. The `conversation` of a
  * `session` call is its session, and the `child` of a `run` call is its child run, so a stopped call reuses them.
  */
-export type CallRecord = {
-	kind: CallKind;
-	args: JsonObject;
-	phase: string | null;
-	startedAt: string;
-	endedAt?: string;
-	result?: JsonValue;
-	error?: string;
-	conversation?: ConversationId;
-	child?: Child;
-};
+export const CALL_RECORD = Type.Object({
+	kind: CALL_KINDS,
+	args: Type.Record(Type.String(), JSON_VALUE),
+	phase: Type.Union([Type.String(), Type.Null()]),
+	startedAt: Type.String(),
+	endedAt: Type.Optional(Type.String()),
+	result: Type.Optional(JSON_VALUE),
+	error: Type.Optional(Type.String()),
+	conversation: Type.Optional(Type.Number()),
+	child: Type.Optional(Type.Object({ task: Type.Number(), runId: Type.String() })),
+});
 
-/** The kinds of script calls. */
-export type CallKind = "session" | "ask" | "sh" | "ok" | "run";
+/** A call record as the command reads it from the store file, where its IDs are plain numbers. */
+export type SavedCall = Static<typeof CALL_RECORD>;
+
+/** A call record, with the pi-durable types of its IDs. */
+export type CallRecord = Omit<SavedCall, "conversation" | "child"> & { conversation?: ConversationId; child?: Child };
 
 /** The document kind of the call records. */
 export const CALL_KIND = "workflows.call";
@@ -278,6 +325,7 @@ export async function addProgress(tx: Tx, root: string, events: readonly Progres
 /** The saved result of the call `key`, if it has one. */
 export async function savedCall(runtime: Runtime, key: string, context: Context): Promise<JsonValue | undefined> {
 	const record = await runtime.snapshot(CallDoc, key, context);
+
 	return record !== undefined && "result" in record ? record.result : undefined;
 }
 
@@ -287,8 +335,10 @@ function keyOf(name: string, args: JsonObject, counters: Map<string, number>): s
 		.update(name + JSON.stringify(args))
 		.digest("hex")
 		.slice(0, 16);
+
 	const n = (counters.get(hash) ?? 0) + 1;
 	counters.set(hash, n);
+
 	return `${hash}.${n}`;
 }
 
@@ -322,6 +372,7 @@ type Calls = {
 /** Takes the waiting lines as progress events of the run. */
 function takeLines(calls: Calls): ProgressEvent[] {
 	const { runId: run, parent } = calls.script;
+
 	return calls.progress.lines
 		.splice(0)
 		.map((line) => ({ kind: line.phase ? "phase" : "log", run, parent, text: line.text }) as const);
@@ -350,10 +401,13 @@ async function memoized(
 	const { runtime, context, progress } = calls;
 	const saved = await savedCall(runtime, key, context);
 	const { lines } = progress;
+
 	if (saved !== undefined) {
 		lines.splice(0, lines.length, ...lines.filter((line) => line.phase));
+
 		return saved;
 	}
+
 	const events = takeLines(calls);
 	await runtime.commit(async (tx) => {
 		await addProgress(tx, calls.script.root, events);
@@ -361,18 +415,23 @@ async function memoized(
 		Object.assign(doc, { ...start, phase: progress.phase, startedAt: new Date().toISOString() });
 		delete doc.endedAt;
 		delete doc.error;
+
 		return undefined;
 	}, context);
 	let value: JsonValue;
+
 	try {
 		value = await effect(key);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+
 		// A call that the end of its script or task cancelled did not fail, and runs again.
 		if (!context.abortSignal?.aborted) await endCall(calls, key, { error: message });
 		throw error;
 	}
+
 	await endCall(calls, key, { result: value });
+
 	return (await savedCall(runtime, key, context)) ?? value;
 }
 
@@ -382,17 +441,20 @@ async function endCall(calls: Calls, key: string, end: { result: JsonValue } | {
 		const doc = await tx.doc(CallDoc, key, null);
 		Object.assign(doc, end);
 		doc.endedAt = new Date().toISOString();
+
 		return undefined;
 	}, calls.context);
 }
 
 /** The args of a `session` call: the profile, and the fields that override it. */
-type SessionArgs = {
-	readonly profile: string;
-	readonly provider?: string;
-	readonly model?: string;
-	readonly thinking?: string;
-};
+const SESSION_ARGS = Type.Object({
+	profile: Type.String(),
+	provider: Type.Optional(Type.String()),
+	model: Type.Optional(Type.String()),
+	thinking: Type.Optional(Type.String()),
+});
+
+type SessionArgs = Readonly<Static<typeof SESSION_ARGS>>;
 
 /**
  * The session of the call `key`, opened in the children library under the key `wf:<key>` in `cwd`. Each field of
@@ -403,18 +465,22 @@ type SessionArgs = {
 async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionArgs): Promise<JsonValue> {
 	const { runtime, context, host, script } = calls;
 	const profile = script.bundle.agents[args.profile];
+
 	if (profile === undefined) throw new Error(`no agent profile ${args.profile}`);
 	const provider = args.provider ?? profile.model?.provider;
 	const model = args.model ?? profile.model?.modelId;
 	const thinking = args.thinking ?? profile.thinking;
-	const spec: Spec = {
-		root: `workflows:${script.root}`,
-		cwd,
-		...(provider === undefined ? {} : { provider }),
-		...(model === undefined ? {} : { model }),
-		...(thinking === undefined ? {} : { thinking }),
-		...(profile.instructions === "" ? {} : { instructions: profile.instructions }),
-	};
+
+	const spec: Writable<Spec> = { root: `workflows:${script.root}`, cwd };
+
+	if (provider !== undefined) spec.provider = provider;
+
+	if (model !== undefined) spec.model = model;
+
+	if (thinking !== undefined) spec.thinking = thinking;
+
+	if (profile.instructions !== "") spec.instructions = profile.instructions;
+
 	const child = await host.children.open(
 		host.place,
 		calls.owner,
@@ -427,6 +493,7 @@ async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionAr
 			opened.sessions.push({ run: script.runId, conversation, task: runtime.taskId });
 		},
 	);
+
 	return child.id;
 }
 
@@ -437,26 +504,33 @@ async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionAr
 async function askTurn(
 	calls: Calls,
 	key: string,
-	conversation: ConversationId,
+	conversation: number,
 	prompt: string,
 	schema: JsonObject | null,
 ): Promise<JsonValue> {
 	const { host, context } = calls;
 	const child = await host.children.find(host.place, calls.owner, { id: String(conversation) }, context);
+
 	if (child === undefined) throw new Error(`Session ${conversation} is missing`);
 	const input = { type: "input", content: prompt, requestId: key } as const;
+
 	if (schema !== null) {
 		const answer = await child.ask(input, context, { schema });
+
 		if (answer.status === "ok") return answer.value;
+
 		return failed(key, answer);
 	}
+
 	const answer = await child.ask(input, context);
+
 	return answer.status === "ok" ? answer.text : failed(key, answer);
 }
 
 /** Throws the error of the turn `key` whose answer does not count. */
 function failed(key: string, answer: Failure): never {
 	if (answer.reason === "cut") throw new Error(`The ${key} turn stopped: ${answer.stopReason}`);
+
 	if (answer.reason === "no-respond") throw new Error("the answer did not call respond");
 	const detail = answer.detail === undefined ? "" : ` ${JSON.stringify(answer.detail)}`;
 	throw new Error(`The ${key} turn was not answered: ${answer.cause}${detail}`);
@@ -465,13 +539,15 @@ function failed(key: string, answer: Failure): never {
 /** The result of a shell command in `cwd`. With `check`, a non-zero exit throws. */
 async function shell(calls: Calls, cwd: string, cmd: string | string[], check: boolean): Promise<JsonValue> {
 	// A string is `sh -c <cmd>`; an array is the program `cmd[0]` with the arguments `cmd.slice(1)` and no shell.
-	const [file = "", ...rest] = typeof cmd === "string" ? ["sh", "-c", cmd] : cmd;
+	const [file = "", ...rest] = Array.isArray(cmd) ? cmd : ["sh", "-c", cmd];
 	const result = await run(file, rest, cwd, calls.context.abortSignal);
+
 	if (check && result.code !== 0) {
-		if (typeof cmd !== "string") throw new Error(failure(cmd, result));
+		if (Array.isArray(cmd)) throw new Error(failure(cmd, result));
 		const stderr = result.stderr.trim();
 		throw new Error(`sh exited with ${result.code}: ${cmd}${stderr === "" ? "" : `\n${stderr}`}`);
 	}
+
 	return result;
 }
 
@@ -494,10 +570,45 @@ async function childResult(
 	const ended = state?.status === "terminal" && state.outcome.status !== "completed";
 	const { task, runId } = ended ? await script.restart(key, started.task) : started;
 	const { outcome } = (await runtime.waitForTask(task, context)).state;
+
 	if (outcome.status !== "completed") {
 		throw new Error(`child run ${runId} failed: ${outcome.error?.message ?? outcome.reason ?? outcome.status}`);
 	}
+
 	return { runId, result: outcome.result };
+}
+
+const JSON_OBJECT = Type.Record(Type.String(), JSON_VALUE);
+const ASK_ARGS = Type.Tuple([Type.Number(), Type.String(), Type.Union([JSON_OBJECT, Type.Null()])]);
+const SH_ARGS = Type.Tuple([Type.Union([Type.String(), Type.Array(Type.String())])]);
+const RUN_ARGS = Type.Tuple([Type.String(), JSON_OBJECT]);
+const LINE_ARGS = Type.Array(JSON_VALUE);
+const PROMPT_ARGS = Type.Tuple([Type.String(), Type.Union([Type.Record(Type.String(), Type.String()), Type.Null()])]);
+
+type ValidationError = ReturnType<typeof Value.Errors>[number];
+
+/**
+ * The deepest of `errors`, as `<path> <problem>`. An `anyOf` error only says that no member matched, so the error of
+ * the member that matched deepest is the specific one.
+ */
+function argumentError(errors: readonly ValidationError[]): string {
+	const specific = errors.filter((error) => error.keyword !== "anyOf");
+
+	const deepest = specific.reduce<ValidationError | undefined>(
+		(found, error) => (found === undefined || error.instancePath.length > found.instancePath.length ? error : found),
+		undefined,
+	);
+
+	return `${deepest?.instancePath} ${deepest?.message}`;
+}
+
+/** A `sh` call when `check` is true, else an `ok` call. */
+function shellCall(calls: Calls, cwd: string, cmd: string | string[], check: boolean): Promise<JsonValue> {
+	const args = { cmd, check };
+
+	return memoized(calls, callKey(calls, "sh", args), { kind: check ? "sh" : "ok", args }, () =>
+		shell(calls, cwd, cmd, check),
+	);
 }
 
 /** The owner of the sessions of the run `runId`, whose task `runtime` runs. */
@@ -527,59 +638,73 @@ export async function runScript(
 	const execution = withCancel(context);
 	const calls: Calls = { script, runtime, context: execution.context, counters: new Map(), progress, host, owner };
 	const running = new Set<Promise<unknown>>();
-	const global = (name: string, execute: (...values: never[]) => unknown): CodemodeTool => ({
+
+	const global = <T extends TSchema>(
+		name: string,
+		schema: T,
+		execute: (values: Static<T>) => Promise<JsonValue> | JsonValue | void,
+	): CodemodeTool => ({
 		name,
 		spread: true,
 		execute: (values) => {
-			const result = execute(...(values as never[]));
+			if (!Value.Check(schema, values)) {
+				throw new Error(`${name.replace(/^__/, "")} got bad arguments: ${argumentError(Value.Errors(schema, values))}`);
+			}
+
+			const result = execute(values);
+
 			if (result instanceof Promise) {
 				running.add(result);
 				const settled = () => running.delete(result);
 				result.then(settled, settled);
 			}
+
 			return result;
 		},
 	});
+
 	const sandbox = new CodemodeSandbox({
 		timeoutMs: Number.POSITIVE_INFINITY,
 		globals: [
-			global("__session", (args: SessionArgs) =>
+			global("__session", Type.Tuple([SESSION_ARGS]), ([args]) =>
 				memoized(calls, callKey(calls, "session", args), { kind: "session", args }, (key) =>
 					sessionOf(calls, key, cwd, args),
 				),
 			),
 			// The sandbox sends a missing schema as null.
-			global("__ask", (conversation: ConversationId, prompt: string, schema: JsonObject | null) => {
+			global("__ask", ASK_ARGS, ([conversation, prompt, schema]) => {
 				const args = { conversation, prompt, schema };
+
 				return memoized(calls, callKey(calls, "ask", args), { kind: "ask", args }, (key) =>
 					askTurn(calls, key, conversation, prompt, schema),
 				);
 			}),
-			global("__sh", (cmd: string | string[], check: boolean) => {
-				const args = { cmd, check };
-				return memoized(calls, callKey(calls, "sh", args), { kind: check ? "sh" : "ok", args }, () =>
-					shell(calls, cwd, cmd, check),
-				);
-			}),
+			global("__sh", SH_ARGS, ([cmd]) => shellCall(calls, cwd, cmd, true)),
+			global("__ok", SH_ARGS, ([cmd]) => shellCall(calls, cwd, cmd, false)),
 			// The name and the args are in the key, so a resume that reorders different `run` calls keeps each child run.
 			// An unfinished saved child task is waited for again; a failed one gets a new child task.
-			global("__run", (name: string, values: JsonObject) => {
+			global("__run", RUN_ARGS, ([name, values]) => {
 				const args = { name, args: values };
+
 				return memoized(calls, callKey(calls, "run", args), { kind: "run", args }, (key) =>
 					childResult(calls, key, script, name, values),
 				);
 			}),
-			global("phase", (title: string) => phaseLine(progress, String(title))),
-			global("log", (line: string) => progress.lines.push({ text: String(line), phase: false })),
-			global("__prompt", (name: string, inputs?: Record<string, string> | null) => {
+			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
+			global("log", LINE_ARGS, ([line]) => progress.lines.push({ text: String(line), phase: false })),
+			global("__prompt", PROMPT_ARGS, ([name, inputs]) => {
 				const body = bundle.prompts[name];
+
 				if (body === undefined) throw new Error(`no prompt ${name}`);
+
 				return render(body, inputs ?? {});
 			}),
 		],
 	});
+
 	const { signal } = runtime;
 	let result: Awaited<ReturnType<CodemodeSandbox["execute"]>>;
+
 	try {
 		const wrapped = `${prelude(args, Object.keys(bundle.prompts), script)}\nreturn await (async () => {\n${source}\n})();`;
 		result = await sandbox.execute(wrapped, { signal });
@@ -588,15 +713,25 @@ export async function runScript(
 		execution.cancel();
 		await Promise.allSettled(running);
 		const events = takeLines(calls);
+
 		// A cancelled task cannot commit; its lines are lost, and a resume shows the phase of its first call again.
 		if (events.length > 0 && !signal.aborted) {
 			await runtime.commit(async (tx) => {
 				await addProgress(tx, script.root, events);
+
 				return undefined;
 			}, context);
 		}
 	}
-	if (result.ok) return (result.value ?? null) as JsonValue;
+
+	if (result.ok) {
+		const value = result.value ?? null;
+
+		if (!Value.Check(JSON_VALUE, value)) throw new Error("the script result is not JSON");
+
+		return value;
+	}
+
 	if (signal.aborted) throw signal.reason;
 	throw new Error(result.error.message);
 }

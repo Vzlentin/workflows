@@ -75,7 +75,7 @@ request. [docs/spec.md](docs/spec.md) describes all the commands, workflow scrip
 
 ```sh
 npm ci
-npm run check                              # Biome, TypeScript, Vitest
+npm run check                              # Biome, oxlint, TypeScript, Vitest
 XDG_STATE_HOME=/tmp/wf-dev/state XDG_CONFIG_HOME=/tmp/wf-dev/config node src/cli.ts list
 ```
 

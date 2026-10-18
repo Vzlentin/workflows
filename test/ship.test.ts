@@ -5,6 +5,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineExtension, defineTask, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { entriesPath } from "@vzlentin/harness/entries";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
@@ -20,7 +22,6 @@ import {
 	sandbox,
 	startHost,
 	storeOf,
-	type Verdict,
 	workflows,
 } from "./support.ts";
 
@@ -37,17 +38,22 @@ beforeEach(async () => {
 afterEach(() => rm(root, { recursive: true, force: true }));
 
 const runs = () => runsOf(root);
+const RUN_ID = Type.Object({ runId: Type.String() });
+
+/** The input of a task of another version: some versions wrapped it as `{ input }`. */
+type SavedInput = { readonly name?: string; readonly input?: { readonly name?: string } };
 
 /**
  * The ID of a new run of the `main` project whose store holds one pending task of `kind` at `version` with `input`, as
  * a run that another version saved.
  */
-async function saveRun(kind: string, version: number, input: object = { input: {} }): Promise<string> {
+async function saveRun(kind: string, version: number, input: SavedInput = { input: {} }): Promise<string> {
 	const id = newRunId();
 	const directory = join(runs(), id);
 	await mkdir(directory, { recursive: true });
 	await writeFile(join(directory, "project"), "main\n");
 	await mkdir(join(root, "state", "harness", "main"), { recursive: true });
+
 	const task = defineTask<object, { phase: string }, null>({
 		name: kind,
 		version,
@@ -55,15 +61,17 @@ async function saveRun(kind: string, version: number, input: object = { input: {
 		phases: { run: async () => {} },
 		abort: async () => {},
 	});
+
 	const registry = createRegistry();
 	registry.install(defineExtension({ name: "workflows", tasks: [task] }));
 	const models = new FakeModel({ interrupt: new AbortController() }).models;
 	const storage = await openNodeSqliteStorage(storeOf());
 	const harness = await Harness.open(storage, { models, registry }, BACKGROUND_CONTEXT);
+
 	try {
 		const conversation = await harness.root(BACKGROUND_CONTEXT);
 		// A script task of some earlier versions wrapped its input as `{ input }`.
-		const saved = "input" in input ? { input: { ...(input.input as object), runId: id } } : { ...input, runId: id };
+		const saved = "input" in input ? { input: { ...input.input, runId: id } } : { ...input, runId: id };
 		await conversation.commit(
 			(tx) => tx.createTask(task, saved, { ownership: { kind: "conversation" } }),
 			BACKGROUND_CONTEXT,
@@ -71,22 +79,27 @@ async function saveRun(kind: string, version: number, input: object = { input: {
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 	}
+
 	return id;
 }
+
 const worktreeOf = (id: string | undefined) => join(runs(), id ?? "missing", "worktree");
 const progress = /^(plan|judge|round \d: (implement|review))$/;
 const FIXED = "# Demo\n\nHello world\n";
 const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|failed), [0-9a-f]+$/;
 const TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash"];
+
 // The tool of the harness host, before the tools of the packages in Pi's settings.
 const HARNESS_TOOLS = ["subagent"];
 const answers = (kind: string) => (["verdict", "judge", "implement", "handoff"].includes(kind) ? ["respond"] : []);
+
 const NOTES = [
 	"#1 planner 0: Handoff 1: one word changes.",
 	"#2 implementer 1: Implement 1: README.md had wrold.",
 	"#3 reviewer 1: Handoff 2: one word changes.",
 	"#4 implementer 2: Implement 2: README.md had wrold.",
 ];
+
 /** The run memory of the first `n` notes of the fake model, as the start of a prompt. */
 const memory = (n: number) => `## memory\n${NOTES.slice(0, n).join("\n")}\n\n`;
 
@@ -106,13 +119,11 @@ describe("workflows ship", () => {
 		git(repo, "add", "notes.txt");
 		await writeFile(join(repo, "README.md"), "# Demo\n\nHello wrold\nunstaged\n");
 
+		const judge = { ...PASSING_JUDGE, status: "blocked", extra: "x" };
+
 		const run = await workflows(["ship", "--json", "item.md"], {
 			cwd: repo,
-			script: {
-				edits: [FIXED, `${FIXED}Thanks.\n`],
-				verdicts: ["FIX", "SHIP"],
-				judge: { ...PASSING_JUDGE, status: "blocked", extra: "x" } as Verdict,
-			},
+			script: { edits: [FIXED, `${FIXED}Thanks.\n`], verdicts: ["FIX", "SHIP"], judge },
 		});
 
 		expect(progressOf(run.stderr)).toEqual([
@@ -164,6 +175,7 @@ describe("workflows ship", () => {
 			"verdict",
 			"judge",
 		]);
+
 		for (const call of calls) {
 			expect(call.thinking).toBe("medium");
 			expect(call.model).toBe("claude-opus-5-5");
@@ -172,11 +184,15 @@ describe("workflows ship", () => {
 			expect(call.sections.project_context).toContain("Run the demo checks.");
 			expect(call.sections.skills).toContain("<name>demo</name>");
 		}
+
 		const [plan, challenge, planned, implement, review, verdict, handoff] = calls;
+
 		for (const call of [plan, challenge, planned]) expect(call?.prompt).not.toContain("## memory");
 		expect(implement?.prompt.startsWith(`${memory(1)}Implement this plan`)).toBe(true);
+
 		for (const call of [review, verdict, handoff]) expect(call?.prompt.startsWith(memory(2))).toBe(true);
 		expect(calls[7]?.prompt.startsWith(`${memory(3)}Implement this plan`)).toBe(true);
+
 		for (const call of [calls[8], calls[9]]) expect(call?.prompt.startsWith(memory(4))).toBe(true);
 		expect(calls[10]?.prompt.startsWith("## Vocabulary")).toBe(true);
 		expect(plan?.prompt).toMatch(
@@ -258,8 +274,15 @@ export default function ({ events }) {
 
 		expect(run.code).toBe(0);
 		expect(run.model.calls.map((call) => call.kind)).toEqual([
-			...["plan", "challenge", "handoff", "implement", "review", "verdict", "judge"],
+			"plan",
+			"challenge",
+			"handoff",
+			"implement",
+			"review",
+			"verdict",
+			"judge",
 		]);
+
 		for (const call of run.model.calls)
 			expect(call.tools).toEqual([...TOOLS, ...HARNESS_TOOLS, "probe", ...answers(call.kind)]);
 		const probed = (await readFile(join(root, "probe.log"), "utf8")).trim().split("\n");
@@ -289,6 +312,7 @@ export default function ({ events }) {
 			cwd: repo,
 			script: { edits: [], interruptAt: { kind: "implement", nth: 1 } },
 		});
+
 		expect(run.code).toBe(130);
 		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, status: "detached" })]);
 
@@ -317,11 +341,13 @@ export default function ({ events }) {
 		expect(run.stdout[0]).toBe(`run ${run.id}`);
 		expect(report).toEqual([`stopped Fix the README typo after 2 rounds: ${worktreeOf(run.id)}`]);
 		expect(result.memory).toEqual(NOTES);
-		expect(run.model.calls.map((call) => call.kind)).toEqual([
-			...["plan", "challenge", "handoff"],
-			...["implement", "review", "verdict", "handoff"],
-			...["implement", "review", "verdict"],
-		]);
+		expect(run.model.calls.map((call) => call.kind)).toEqual(
+			[
+				["plan", "challenge", "handoff"],
+				["implement", "review", "verdict", "handoff"],
+				["implement", "review", "verdict"],
+			].flat(),
+		);
 		expect(git(worktreeOf(run.id), "log", "--format=%s")).toBe("implementer 2\nimplementer 1\ninitial");
 		expect(run.model.calls[4]?.prompt).toContain("round-1.patch");
 		expect(await readFile(join(runs(), run.id ?? "", "round-2-fix.patch"), "utf8")).toContain("+More.");
@@ -333,10 +359,12 @@ export default function ({ events }) {
 		await chmod(hook, 0o755);
 
 		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
+
 		const failed = [
 			"failed Fix the README typo: git commit failed: lint failed",
 			`continue with: workflows resume ${run.id}`,
 		];
+
 		expect(run.code).toBe(1);
 		expect(run.stdout).toEqual([`run ${run.id}`]);
 		expect(run.stderr.slice(-2)).toEqual(failed);
@@ -356,6 +384,7 @@ export default function ({ events }) {
 			cwd: repo,
 			script: { edits: [FIXED], failAt: { kind: "challenge", nth: 1 } },
 		});
+
 		expect(run.code).toBe(1);
 		expect(run.stderr.at(-2)).toMatch(/^failed Fix the README typo: The \S+ turn was not answered: model_error/);
 		expect(run.model.calls.map((call) => call.kind)).toEqual(["plan"]);
@@ -364,7 +393,12 @@ export default function ({ events }) {
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout).toEqual([`run ${run.id}`, expect.stringMatching(SHIPPED)]);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual([
-			...["challenge", "handoff", "implement", "review", "verdict", "judge"],
+			"challenge",
+			"handoff",
+			"implement",
+			"review",
+			"verdict",
+			"judge",
 		]);
 	});
 
@@ -387,6 +421,7 @@ export default function ({ events }) {
 		// The host started before the command set the entry of workflows.
 		await writeFile(entriesPath(), "{}");
 		const host = await startHost();
+
 		const run = await workflows(["ship", "Fix the README typo"], {
 			cwd: repo,
 			script: { edits: [FIXED] },
@@ -433,6 +468,7 @@ export default function ({ events }) {
 			cwd: root,
 			script: { edits: [FIXED], judge: PASSING_JUDGE },
 		});
+
 		expect(owned.code).toBe(0);
 		expect(git(worktreeOf(owned.id), "rev-parse", "HEAD^")).toBe(git(remote, "rev-parse", "main"));
 	});
@@ -516,10 +552,12 @@ export default function ({ events }) {
 			[["resume", "nothing"], `workflows: no run nothing in ${runs()}`, 1],
 			[["nope", "goal.md"], "workflows: unknown command nope", 2],
 		];
+
 		for (const [argv, error, code, stdin] of cases) {
-			const run = await workflows(argv, { cwd: repo, ...(stdin === undefined ? {} : { stdin }) });
+			const run = await workflows(argv, stdin === undefined ? { cwd: repo } : { cwd: repo, stdin });
 			expect([run.code, run.stderr[0]], argv.join(" ")).toEqual([code, expect.stringContaining(error)]);
 		}
+
 		const outside = await workflows(["ship", "Fix it"], { cwd: root });
 		expect(outside.stderr[0]).toBe(`workflows: ${root} is not in a Git repository`);
 		const missing = await workflows(["ship", "--repo", "nowhere", "Fix it"], { cwd: root });
@@ -535,6 +573,7 @@ describe("workflows show", () => {
 			cwd: repo,
 			script: { edits: [FIXED] },
 		});
+
 		expect(run.code).toBe(0);
 		const id = run.id ?? "";
 		const shown = await workflows(["show", id], { cwd: root });
@@ -627,11 +666,20 @@ describe("workflows resume of ship runs", () => {
 				[`workflows: run ${id} was saved by ${word} version of ${name} and cannot be saved`],
 			]);
 		}
+
 		const listed = await workflows(["list"], { cwd: repo });
 		const word = (id: string) => (id === later ? "later-version" : "earlier-version");
 		const all = [run, script, wrapped, later].sort().reverse();
-		const names: Record<string, string> = { [run]: "run", [script]: "ship", [wrapped]: "campaign" };
-		expect(listed.stdout).toEqual(all.map((id) => `${id} ${names[id] ?? "ship"} ${word(id)} ${names[id] ?? "ship"}`));
+
+		const names = new Map([
+			[run, "run"],
+			[script, "ship"],
+			[wrapped, "campaign"],
+		]);
+
+		expect(listed.stdout).toEqual(
+			all.map((id) => `${id} ${names.get(id) ?? "ship"} ${word(id)} ${names.get(id) ?? "ship"}`),
+		);
 		const unknown = await workflows(["show", "20990101T000000-00000000"], { cwd: repo });
 		expect([unknown.code, unknown.stdout, unknown.stderr]).toEqual([
 			1,
@@ -648,33 +696,43 @@ describe("workflows resume of ship runs", () => {
 		expect([run.code, run.stdout]).toEqual([0, [`run ${run.id}`, "Reply to one"]]);
 
 		const storage = await openNodeSqliteStorage(storeOf());
+
 		try {
 			const { items } = await storage.scanTasks({ kind: "workflows.run" }, 256, undefined, BACKGROUND_CONTEXT);
-			const saved = items.filter((task) => [earlier, later].includes((task.input as { runId: string }).runId));
+
+			const saved = items.filter(
+				(task) => Value.Check(RUN_ID, task.input) && [earlier, later].includes(task.input.runId),
+			);
+
 			expect(saved.map((task) => task.state.status)).toEqual(["pending", "pending"]);
 		} finally {
 			await storage.close(BACKGROUND_CONTEXT);
 		}
+
 		const listed = await workflows(["list"], { cwd: repo });
-		const lines: Record<string, string> = {
-			[run.id ?? ""]: `${run.id} stdin done stdin`,
-			[earlier]: `${earlier} ship earlier-version ship`,
-			[later]: `${later} ship later-version ship`,
-		};
+
+		const lines = new Map([
+			[run.id ?? "", `${run.id} stdin done stdin`],
+			[earlier, `${earlier} ship earlier-version ship`],
+			[later, `${later} ship later-version ship`],
+		]);
+
 		expect(listed.stdout).toEqual(
-			Object.keys(lines)
+			[...lines.keys()]
 				.sort()
 				.reverse()
-				.map((id) => lines[id]),
+				.map((id) => lines.get(id)),
 		);
 	});
 
 	it("continues a turn interrupted by Ctrl+C from the saved inputs", async () => {
 		await writeFile(join(repo, "item.md"), "# Fix the README typo\n");
+
 		const first = await workflows(["ship", "--rounds", "2", "item.md"], {
 			cwd: repo,
 			script: { interruptAt: { kind: "implement", nth: 1 } },
 		});
+
 		expect(first.code).toBe(130);
 		expect(first.stderr.at(-1)).toBe(detached(first.id));
 		expect(first.model.calls.map((call) => call.kind)).toEqual(["plan", "challenge", "handoff"]);
@@ -687,6 +745,7 @@ describe("workflows resume of ship runs", () => {
 			cwd: root,
 			script: { edits: [FIXED] },
 		});
+
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout).toEqual([`run ${first.id}`, expect.stringMatching(SHIPPED)]);
 		expect(resumed.stderr).toEqual(["round 1: implement", "round 1: review", "judge"]);
@@ -708,22 +767,24 @@ describe("workflows resume of ship runs", () => {
 	it("lists finished and running runs without continuing them", async () => {
 		const shipped = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
 		expect(shipped.code).toBe(0);
+
 		const stopped = await workflows(["ship", "# Second item"], {
 			cwd: repo,
 			script: { interruptAt: { kind: "implement", nth: 1 } },
 		});
+
 		expect(stopped.code).toBe(130);
 
 		const listed = await workflows(["list", "--json"], { cwd: root });
 		expect(listed.code).toBe(0);
 		expect(listed.stdout).toHaveLength(1);
-		const runs = JSON.parse(listed.stdout[0] ?? "") as { runId: string }[];
-		expect(runs).toEqual(
-			[
-				{ runId: shipped.id, workflow: "ship", title: "Fix the README typo", status: "shipped" },
-				{ runId: stopped.id, workflow: "ship", title: "Second item", status: "running" },
-			].sort((a, b) => (b.runId ?? "").localeCompare(a.runId ?? "")),
-		);
+
+		const runs = [
+			{ runId: shipped.id, workflow: "ship", title: "Fix the README typo", status: "shipped" },
+			{ runId: stopped.id, workflow: "ship", title: "Second item", status: "running" },
+		].sort((a, b) => (b.runId ?? "").localeCompare(a.runId ?? ""));
+
+		expect(JSON.parse(listed.stdout[0] ?? "")).toEqual(runs);
 		const text = await workflows(["list"], { cwd: root });
 		expect(text.stdout).toEqual(runs.map((run) => expect.stringMatching(new RegExp(`^${run.runId} ship `))));
 		expect(text.stdout).toContain(`${shipped.id} ship shipped Fix the README typo`);
@@ -735,10 +796,12 @@ describe("workflows resume of ship runs", () => {
 
 	it("prints the phase of a session that a later turn interrupted", async () => {
 		await writeFile(join(repo, "item.md"), "# Fix the README typo\n");
+
 		const first = await workflows(["ship", "item.md"], {
 			cwd: repo,
 			script: { interruptAt: { kind: "challenge", nth: 1 } },
 		});
+
 		expect(first.code).toBe(130);
 
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
@@ -752,11 +815,13 @@ describe("workflows resume of ship runs", () => {
 		await writeFile(hook, `#!/bin/sh\ntouch "${gate}.reached"\nwhile [ ! -f "${gate}.open" ]; do sleep 0.02; done\n`);
 		await chmod(hook, 0o755);
 		const interrupt = new AbortController();
+
 		const pending = workflows(["ship", "Fix the README typo"], {
 			cwd: repo,
 			interrupt,
 			script: { edits: [FIXED], verdicts: ["SHIP"] },
 		});
+
 		while (!existsSync(`${gate}.reached`)) await new Promise((resolve) => setTimeout(resolve, 10));
 		interrupt.abort();
 		// The command detaches and closes its host, which stops the Git step, before the gate opens.

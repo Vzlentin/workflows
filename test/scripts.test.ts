@@ -11,18 +11,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { REMINDER } from "@vzlentin/harness/answer";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CallDoc } from "../src/script.ts";
-import {
-	childTasks,
-	detached,
-	git,
-	type Kind,
-	repository,
-	rootTasks,
-	runsOf,
-	sandbox,
-	storeOf,
-	workflows,
-} from "./support.ts";
+import { childTasks, detached, git, repository, rootTasks, runsOf, sandbox, storeOf, workflows } from "./support.ts";
 
 let root: string;
 
@@ -44,16 +33,20 @@ const runs = () => runsOf(root);
 /** Runs `argv` in `cwd` and presses Ctrl+C at the `nth` script prompt, or once the `gate` command is reached. */
 async function stopped(argv: string[], stop: { readonly nth: number } | { readonly gate: string }, cwd = root) {
 	if ("nth" in stop) {
-		const interruptAt = { kind: "script" as Kind, nth: stop.nth };
+		const interruptAt = { kind: "script" as const, nth: stop.nth };
+
 		return workflows(argv, { cwd, script: { interruptAt } });
 	}
+
 	const interrupt = new AbortController();
 	const pending = workflows(argv, { cwd, interrupt });
 	const gate = join(cwd, stop.gate);
+
 	while (!existsSync(`${gate}.reached`)) await new Promise((resolve) => setTimeout(resolve, 10));
 	interrupt.abort();
 	const outcome = await pending;
 	await writeFile(`${gate}.open`, "");
+
 	return outcome;
 }
 
@@ -65,14 +58,18 @@ const probe = defineTask<{ key: string; value?: string }, { phase: "run" }, Json
 	phases: {
 		run: async ({ input }, runtime, context) => {
 			const { key, value } = input;
+
 			if (value === undefined) {
 				const result = (await runtime.snapshot(CallDoc, key, context))?.result ?? null;
 				await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
+
 				return;
 			}
+
 			await runtime.commit(async (tx) => {
 				const doc = await tx.doc(CallDoc, key, null);
 				Object.assign(doc, { kind: "sh", args: { cmd: "true" }, startedAt: "2026-01-01T00:00:00.000Z", result: value });
+
 				return { status: "terminal", outcome: { status: "failed", error: { message: "no" } } };
 			}, context);
 		},
@@ -85,17 +82,21 @@ async function runProbe(path: string, input: { key: string; value?: string }) {
 	const extension = defineExtension({ name: "probe", tasks: [probe] });
 	const registry = createRegistry();
 	registry.install(extension);
+
 	const harness = await Harness.open(
 		await openNodeSqliteStorage(path),
 		{ models: createModels(), registry, settings: { extensions: [extension] } },
 		BACKGROUND_CONTEXT,
 	);
+
 	try {
 		const root = await harness.root(BACKGROUND_CONTEXT);
+
 		const task: TaskId<JsonValue> = await root.commit(
 			(tx) => tx.createTask(probe, input, { ownership: { kind: "conversation" } }),
 			BACKGROUND_CONTEXT,
 		);
+
 		return (await harness.waitForTask(task, BACKGROUND_CONTEXT)).state.outcome;
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
@@ -105,8 +106,10 @@ async function runProbe(path: string, input: { key: string; value?: string }) {
 /** Every row of every table in the store of the `main` project, read with `node:sqlite`. */
 function rows() {
 	const database = new DatabaseSync(storeOf(), { readOnly: true });
+
 	try {
 		const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all();
+
 		return tables.map(({ name }) => [name, database.prepare(`SELECT * FROM "${String(name)}"`).all()]);
 	} finally {
 		database.close();
@@ -138,6 +141,7 @@ async function stdinRun() {
 	expect([run.code, run.stdout.at(-1)]).toEqual([0, "word a"]);
 	// Git prints the real path of the repository, which differs from `repo` where the temporary folder is a link.
 	const file = join(await realpath(repo), ".workflows", "workflows", "fix.js");
+
 	return { repo, id: run.id ?? "", file };
 }
 
@@ -159,6 +163,7 @@ describe("workflows save", () => {
 		expect([command.code, command.stderr]).toEqual([1, ["workflows: show is a command and cannot be a workflow name"]]);
 		const unknown = await workflows(["save", "nothing", "other"], { cwd: repo });
 		expect([unknown.code, unknown.stderr]).toEqual([1, [`workflows: no run nothing in ${runs()}`]]);
+
 		const cases = [
 			[id, "Fix"],
 			[id, "-x"],
@@ -168,10 +173,12 @@ describe("workflows save", () => {
 			[id, "fix", "more"],
 			[id, "fix", "--forse"],
 		];
+
 		for (const args of cases) {
 			const bad = await workflows(["save", ...args], { cwd: repo });
 			expect([bad.code, bad.stderr.at(-1)], args.join(" ")).toEqual([2, SAVE]);
 		}
+
 		expect(existsSync(join(repo, ".workflows"))).toBe(false);
 	});
 
@@ -205,6 +212,7 @@ describe("usage errors", () => {
 			[["list", "x"], "usage: workflows list [--json]"],
 			[["check"], "usage: workflows check <workflow>"],
 		];
+
 		for (const [argv, usage] of cases) {
 			const run = await workflows(argv, { cwd: root });
 			expect([run.code, run.stderr], argv.join(" ")).toEqual([2, [expect.stringMatching(/^workflows: /), usage]]);
@@ -270,6 +278,7 @@ describe("workflows show", () => {
 		await writeFile(join(root, "x.js"), `phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")`);
 		const first = await stopped(["x.js"], { nth: 2 });
 		const id = first.id ?? "";
+
 		const lock = [
 			'const { DatabaseSync } = require("node:sqlite");',
 			"const database = new DatabaseSync(process.argv[1]);",
@@ -277,6 +286,7 @@ describe("workflows show", () => {
 			'process.stdout.write("locked\\n");',
 			'setTimeout(() => { database.exec("COMMIT"); database.close(); }, 5500);',
 		].join("\n");
+
 		const holder = spawn(process.execPath, ["-e", lock, storeOf()]);
 		const exited = new Promise((resolve) => holder.on("exit", resolve));
 		await new Promise((resolve) => holder.stdout.once("data", resolve));
@@ -315,12 +325,14 @@ return [one, two, n, args.word].join(", ")`,
 		expect(first.stderr.at(-1)).toBe(detached(first.id));
 		const resume = ["resume", first.id ?? ""];
 		const answered = [...first.model.calls];
+
 		for (const stop of [{ nth: 2 }, { nth: 2 }, { gate: "a" }, { gate: "b" }]) {
 			const again = await stopped(resume, stop);
 			expect(again.code, JSON.stringify(stop)).toBe(130);
 			expect(again.stderr[0], JSON.stringify(stop)).toBe("start");
 			answered.push(...again.model.calls);
 		}
+
 		const last = await workflows(resume, { cwd: root });
 		answered.push(...last.model.calls);
 
@@ -398,6 +410,7 @@ return [n, typeof n, verdict].join(", ")`,
 			},
 			required: ["findings"],
 		};
+
 		// The first attempt sends the object as JSON text, without the required `finding`.
 		const wrongAsText = JSON.stringify(JSON.stringify({ findings: [{ title: "x" }] }));
 		const right = JSON.stringify({ findings: [{ finding: "y" }] });
@@ -420,10 +433,12 @@ return findings[0].finding`,
 			join(root, "x.js"),
 			'const one = await agent("Script: one")\nreturn await agent("Script: two") + ", " + one',
 		);
+
 		const run = await workflows(["x.js"], {
 			cwd: root,
 			script: { failAt: { kind: "script", nth: 2, stopReason: "length" } },
 		});
+
 		expect(run.code).toBe(1);
 		expect(run.stderr[0]).toMatch(/^failed x: The \S+ turn stopped: length$/);
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
@@ -505,10 +520,12 @@ return a.n`,
 			`const { n } = await agent('Script respond: {"n": 3}', { schema: { type: "object", properties: { n: { type: "number" } }, required: ["n"] } })
 return n`,
 		);
+
 		const run = await workflows(["x.js"], {
 			cwd: root,
 			script: { interruptAt: { kind: "script", nth: 2 }, skipRespond: 9 },
 		});
+
 		expect(run.code).not.toBe(0);
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root, script: { skipRespond: 9 } });
 		expect(resumed.code).toBe(1);
@@ -729,6 +746,18 @@ return { branch: await sh(["git", "branch", "--show-current"]), start: args.star
 		expect(git(repo, "worktree", "list", "--porcelain").split("\n\n")).toHaveLength(1);
 	});
 
+	it("fails a run call that gives a worktree script a start that is not a string", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "workflows");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "parent.js"), 'return await run("ship", { item: "x", start: 1 })');
+
+		const run = await workflows(["parent"], { cwd: repo });
+		expect([run.code, run.stderr[0]]).toEqual([1, "failed parent: run ship: start is not a string"]);
+		expect(await readdir(runs())).toHaveLength(1);
+	});
+
 	it("resumes an interrupted child run and repeats no call of a finished one", async () => {
 		await writeFile(
 			join(root, "parent.js"),
@@ -791,12 +820,14 @@ return [one.reply, two.reply].join(", ")`,
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "done"]);
 		const id = first.id ?? "";
 		const storage = await openNodeSqliteStorage(storeOf());
+
 		try {
 			const { items } = await storage.scanConversations({}, 256, undefined, BACKGROUND_CONTEXT);
 			expect(items.filter((conversation) => conversation.owner !== undefined)).toHaveLength(1);
 		} finally {
 			await storage.close(BACKGROUND_CONTEXT);
 		}
+
 		expect(await childTasks(id)).toHaveLength(1);
 		expect((await readdir(runs())).filter((run) => run !== id)).toHaveLength(1);
 	});
@@ -849,6 +880,7 @@ return [one.reply, two.reply].join(", ")`,
 			join(root, "pos.js"),
 			'export const meta = { args: { toString: { type: "string", positional: true } } };\nreturn args.toString',
 		);
+
 		const cases: [string[], string, number][] = [
 			[["ok.js"], "1", 0],
 			[["status.js"], '{"status":"toString"}', 0],
@@ -859,12 +891,24 @@ return [one.reply, two.reply].join(", ")`,
 			[["missing.js"], `workflows: cannot read workflow ${join(root, "missing.js")}`, 1],
 			[["-"], "workflows: missing workflow script on stdin", 2],
 		];
+
 		for (const [argv, error, code] of cases) {
 			const run = await workflows(argv, { cwd: root });
 			expect([run.code, run.stderr[0] ?? run.stdout.at(-1)], argv.join(" ")).toEqual([
 				code,
 				expect.stringContaining(error),
 			]);
+		}
+	});
+
+	it("fails a call with bad arguments at the deepest wrong value", async () => {
+		for (const [code, error] of [
+			['sh(["git", 1])', "sh got bad arguments: /0/1 must be string"],
+			["ok(1)", "ok got bad arguments: /0 must be string"],
+		]) {
+			await writeFile(join(root, "bad.js"), `await ${code}`);
+			const run = await workflows(["bad.js"], { cwd: root });
+			expect([run.code, run.stderr[0]], code).toEqual([1, `failed bad: ${error}`]);
 		}
 	});
 
@@ -935,15 +979,18 @@ return [one.reply, two.reply].join(", ")`,
 			`export const meta = { args: { path: { type: "string", positional: true, required: true }, depth: { type: "number" } } }\nreturn args`,
 		);
 		const usage = "usage: workflows x [--depth <n>] [--prompts <folder>] <path> [--json]";
+
 		const cases: [string[], string][] = [
 			[["x.js", "--depth", "two", "src"], "workflows: --depth must be a positive integer"],
 			[["x.js"], "workflows: missing path"],
 			[["x.js", "--path", "a", "b"], "workflows: give the path once"],
 		];
+
 		for (const [argv, error] of cases) {
 			const run = await workflows(argv, { cwd: root });
 			expect([run.code, run.stderr], argv.join(" ")).toEqual([2, [error, usage]]);
 		}
+
 		await writeFile(join(root, "bad.js"), `export const meta = { args: { n: { type: "integer" } } }\nreturn 1`);
 		const bad = await workflows(["bad.js"], { cwd: root });
 		expect([bad.code, bad.stderr[0]]).toEqual([
