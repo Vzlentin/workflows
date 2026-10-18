@@ -1,13 +1,12 @@
 /**
- * The Pi extension: the `workflow` tool. Each run is a child process of the `workflows` command of the
- * `@vzlentin/workflows` install that this package depends on, so a run started in Pi is a normal run that
- * `workflows resume` also continues.
+ * The Pi extension: the `workflow` tool. Each run is a child process of the `workflows` command of the install that
+ * holds this folder, so a run started in Pi is a normal run that `workflows resume` also continues.
  */
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { createRequire } from "node:module";
 import { basename } from "node:path";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import { type Static, Type } from "@earendil-works/pi-ai";
 import type { AgentToolResult, ExtensionAPI, Theme, ThemeColor, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -96,9 +95,9 @@ function progressLines(line: string): string[] | undefined {
 	}
 }
 
-/** The `workflows` command of the `@vzlentin/workflows` install, with this Node. */
+/** The `workflows` command of the install that holds this folder, with this Node. */
 function cli(): string[] {
-	return [process.execPath, createRequire(import.meta.url).resolve("@vzlentin/workflows/dist/cli.js")];
+	return [process.execPath, fileURLToPath(new URL("../dist/cli.js", import.meta.url))];
 }
 
 /**

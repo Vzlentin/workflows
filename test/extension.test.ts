@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import extension, { workflowTool } from "../pi-workflows/index.ts";
+import extension, { workflowTool } from "../pi/index.ts";
 
 type Tool = ReturnType<typeof workflowTool>;
 

@@ -9,7 +9,6 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -19,6 +18,7 @@ import { type Client, connect } from "@vzlentin/harness/client";
 import { setEntry } from "@vzlentin/harness/entries";
 import { resolveProject } from "@vzlentin/harness/projects";
 import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
+import { ENTRY } from "./harness.ts";
 import * as script from "./meta.ts";
 import { display, type ProgressEvent } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
@@ -32,9 +32,6 @@ const POLL_MS = 500;
 
 /** How long a command that Ctrl+C detached waits for a second Ctrl+C, which stops the run. */
 const STOP_WINDOW_MS = 2000;
-
-/** The entry of workflows that the harness host loads: `dist/entry.js`, or `src/entry.ts` in a checkout. */
-const ENTRY = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./entry.ts" : "./entry.js", import.meta.url));
 
 /** The error of harness's client when the host closes the connection, such as when it stops. */
 const HOST_CLOSED = "The harness host closed the connection";
