@@ -28,6 +28,7 @@ slow)
 	echo "started" >&2
 	while :; do sleep 0.02; done ;;
 stopped) echo "run r8"; echo '{"runId":"r8","status":"stopped"}'; exit 130 ;;
+host) echo "run r9"; echo '{"runId":"r9","status":"host-stopped"}'; exit 1 ;;
 usage) echo "workflows: unknown flag" >&2; exit 2 ;;
 save)
 	if [ "$3" = taken ]; then echo "workflows: a workflow taken exists; replace it with --force" >&2; exit 1; fi
@@ -176,6 +177,18 @@ describe("the workflow tool", () => {
 		expect(result.structuredContent).toEqual({ runId: "r8", status: "stopped" });
 		expect(result.isError).toBe(true);
 		expect(result.content).toEqual([{ type: "text", text: 'run r8 stopped; continue it with resume: "r8"' }]);
+	});
+
+	it("returns a run whose host stopped as an error result that says how to follow it", async () => {
+		const { result } = await call({ name: "host" });
+		expect(result.structuredContent).toEqual({ runId: "r9", status: "host-stopped" });
+		expect(result.isError).toBe(true);
+		expect(result.content).toEqual([
+			{
+				type: "text",
+				text: 'the harness host of run r9 stopped; the run continues when the host starts again, so follow it with resume: "r9"',
+			},
+		]);
 	});
 
 	it("draws the call line of each kind of call", () => {

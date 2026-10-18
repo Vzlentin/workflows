@@ -789,13 +789,14 @@ The tool declares an `outputSchema`. Its `structuredContent` is `{ runId, status
 - `failed`: the run failed, and `error` is its error message.
 - `detached`: Esc detached the command, and the run goes on in the host.
 - `stopped`: `workflows stop` stopped the run.
+- `host-stopped`: the host stopped while the command followed the run, which continues when the host starts again.
 
 These are the fields of the JSON outcome line of the command.
 
 A `save` call returns `{ runId, status: "finished", result: { file }, report: [file] }`, with the absolute path of the
 file that it wrote. A `save` that fails is a normal tool error with the stderr text.
 
-A failed, detached or stopped result is an error result that keeps `structuredContent`. Thus
+A failed, detached, stopped or host-stopped result is an error result that keeps `structuredContent`. Thus
 `await tools.workflow({ name: "ship", args: { item } })` in a codemode script gets this object. A call that fails
 before a run exists, such as an unknown workflow name, is a normal tool error with the stderr text.
 

@@ -32,7 +32,7 @@ type WorkflowOutcome =
 			readonly report: readonly string[];
 	  }
 	| { readonly runId: string; readonly status: "failed"; readonly error: string }
-	| { readonly runId: string; readonly status: "detached" | "stopped" };
+	| { readonly runId: string; readonly status: "detached" | "stopped" | "host-stopped" };
 
 /**
  * The `details` of each update and of the result, so the steps draw the same after a reload. `steps` are the progress
@@ -123,6 +123,8 @@ function summary(outcome: WorkflowOutcome): string {
 			return `run ${outcome.runId} detached and goes on in the harness host; follow it with resume: "${outcome.runId}", or stop it with the command workflows stop ${outcome.runId}`;
 		case "stopped":
 			return `run ${outcome.runId} stopped; continue it with resume: "${outcome.runId}"`;
+		case "host-stopped":
+			return `the harness host of run ${outcome.runId} stopped; the run continues when the host starts again, so follow it with resume: "${outcome.runId}"`;
 	}
 }
 
@@ -171,7 +173,7 @@ const MARKS = { "✓": "success", "◉": "accent", "✗": "error" } as const;
 
 /**
  * The progress lines as the command drew them, with themed marks, then the report lines of a finished run, or the
- * summary of a failed, detached or stopped one.
+ * summary of a failed, detached or stopped one, or of one whose host stopped.
  */
 function detailLines({ steps, outcome }: WorkflowDetails, theme: Theme): string[] {
 	const lines = steps.map((step) => {
@@ -245,6 +247,7 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 				Type.Literal("failed"),
 				Type.Literal("detached"),
 				Type.Literal("stopped"),
+				Type.Literal("host-stopped"),
 			]),
 			result: Type.Optional(Type.Unknown()),
 			report: Type.Optional(Type.Array(Type.String())),
