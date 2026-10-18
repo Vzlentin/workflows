@@ -24,9 +24,11 @@ ok)
 bad) echo "run r3"; echo '{"progress":["✗ one"]}' >&2; echo '{"runId":"r3","status":"failed","error":"boom"}'; exit 1 ;;
 slow)
 	echo "run r4"
-	trap 'echo '"'"'{"runId":"r4","status":"interrupted"}'"'"'; exit 130' INT
+	trap 'echo '"'"'{"runId":"r4","status":"detached"}'"'"'; exit 130' INT
 	echo "started" >&2
 	while :; do sleep 0.02; done ;;
+stopped) echo "run r8"; echo '{"runId":"r8","status":"stopped"}'; exit 130 ;;
+host) echo "run r9"; echo '{"runId":"r9","status":"host-stopped"}'; exit 1 ;;
 usage) echo "workflows: unknown flag" >&2; exit 2 ;;
 save)
 	if [ "$3" = taken ]; then echo "workflows: a workflow taken exists; replace it with --force" >&2; exit 1; fi
@@ -144,7 +146,7 @@ describe("the workflow tool", () => {
 		expect(result.isError).toBe(true);
 	});
 
-	it("stops the run with SIGINT on Esc and returns it as interrupted", async () => {
+	it("detaches from the run with SIGINT on Esc, and says how to follow or stop it", async () => {
 		const esc = new AbortController();
 		const updates: string[] = [];
 		const ctx = { cwd: root } as Parameters<ToolDefinition["execute"]>[4];
@@ -159,9 +161,34 @@ describe("the workflow tool", () => {
 			},
 			ctx,
 		);
-		expect(result.structuredContent).toEqual({ runId: "r4", status: "interrupted" });
+		expect(result.structuredContent).toEqual({ runId: "r4", status: "detached" });
 		expect(result.isError).toBe(true);
+		expect(result.content).toEqual([
+			{
+				type: "text",
+				text: 'run r4 detached and goes on in the harness host; follow it with resume: "r4", or stop it with the command workflows stop r4',
+			},
+		]);
 		expect(updates).toEqual(["started"]);
+	});
+
+	it("returns a stopped run as an error result with the run ID to resume", async () => {
+		const { result } = await call({ name: "stopped" });
+		expect(result.structuredContent).toEqual({ runId: "r8", status: "stopped" });
+		expect(result.isError).toBe(true);
+		expect(result.content).toEqual([{ type: "text", text: 'run r8 stopped; continue it with resume: "r8"' }]);
+	});
+
+	it("returns a run whose host stopped as an error result that says how to follow it", async () => {
+		const { result } = await call({ name: "host" });
+		expect(result.structuredContent).toEqual({ runId: "r9", status: "host-stopped" });
+		expect(result.isError).toBe(true);
+		expect(result.content).toEqual([
+			{
+				type: "text",
+				text: 'the harness host of run r9 stopped; the run continues when the host starts again, so follow it with resume: "r9"',
+			},
+		]);
 	});
 
 	it("draws the call line of each kind of call", () => {

@@ -1,57 +1,42 @@
 /**
- * Workflow scripts. A script is JavaScript that runs in the pi-codemode sandbox in the phase of the run's task. Each
- * call it makes saves its result in a document of the store, keyed by the run ID and the call, so when the script runs
- * again after an interruption or a failure, the finished calls return their saved results and only the rest runs. A call
- * records its kind, args, phase and start time when it starts, and its end time with its result or error when it ends;
- * only a saved result replays, so a failed or stopped call runs again. A failure of the phase ends the task as failed, and a resume runs the script again in a new
- * task of the same run. `run(name, args)` starts a child run as a child task of the caller in the caller's store, with
- * its own run directory, and a resume of the caller continues that child run.
+ * Workflow scripts. A script is JavaScript that runs in the pi-codemode sandbox in the phase of the run's task, in the
+ * harness host of the run's project. Each call it makes saves its result in a document of the project store, keyed by
+ * the run ID and the call, so when the script runs again after an interruption or a failure, the finished calls return
+ * their saved results and only the rest runs. A call records its kind, args, phase and start time when it starts, and
+ * its end time with its result or error when it ends; only a saved result replays, so a failed or stopped call runs
+ * again. A failure of the phase ends the task as failed, and a resume runs the script again in a new task of the same
+ * run. `run(name, args)` starts a child run as a child task of the caller, with its own run directory, and a resume of
+ * the caller continues that child run. Sessions are children of harness's children library, owned by the run's task.
  */
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context, JsonValue } from "@earendil-works/chord";
-import {
-	type AssistantMessage,
-	type Message,
-	type ModelThinkingLevel,
-	type TextContent,
-	type TSchema,
-	Type,
-	type UserMessage,
-	validateToolArguments,
-} from "@earendil-works/pi-ai";
+import { withCancel } from "@earendil-works/chord/context";
 import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
-	AssistantEntry,
 	type ConversationId,
-	configure,
-	defineDoc,
 	defineDocFamily,
-	defineExtension,
-	defineTool,
-	type EntryId,
-	GenerationTask,
-	type HookApi,
-	hook,
 	type JsonObject,
 	type ModelRef,
-	section,
 	type TaskId,
 	type Tx,
 } from "@earendil-works/pi-durable";
-import { sessionAgent } from "./agents.ts";
+import type { Children, Failure, Owner, Place, Spec } from "harness/src/children.ts";
 import { failure, git, run } from "./git.ts";
-import type { ProgressEvent } from "./progress.ts";
+import { PROGRESS_KIND, type ProgressEvent } from "./progress.ts";
 import { instructions, render } from "./prompts.ts";
 import type { Runtime } from "./task.ts";
 
-/** An agent profile from `agents/<name>.md`. */
+/**
+ * An agent profile from `agents/<name>.md`: its model, its thinking level and its body. A session without a model
+ * from its call or its profile takes the model of the project agent.
+ */
 export type Profile = {
-	readonly model: ModelRef;
-	readonly thinkingLevel: ModelThinkingLevel;
+	readonly model?: ModelRef;
+	readonly thinking?: string;
 	readonly instructions: string;
 };
 
@@ -65,20 +50,19 @@ export type Bundle = {
 /** The bundle of a run and its own script, saved in the run's input. */
 export type RunBundle = Bundle & { readonly main: string };
 
-/** What a script run gets from the command. */
-export type ExtensionHost = {
-	/** Shows one `phase` or `log` line, or the end, of a run. */
-	progress(event: ProgressEvent): void;
-};
+/** What the script task gets from the harness host: the children library and the place of the project's children. */
+export type Host = { readonly children: Children; readonly place: Place };
 
 /** A started child run: its task and its run ID. */
 export type Child = { readonly task: TaskId<JsonValue>; readonly runId: string };
 
-/** What a script phase runs: its run ID and directory, bundle and args, and how it starts a child run. */
+/** What a script phase runs: its run IDs and directory, bundle and args, and how it starts a child run. */
 export type ScriptRun = {
 	readonly runId: string;
 	/** The run ID of the caller of a child run, or null for a root run. */
 	readonly parent: string | null;
+	/** The run ID of the root run, which keys the progress of the run and its child runs. */
+	readonly root: string;
 	readonly runDir: string;
 	readonly bundle: RunBundle;
 	readonly args: JsonObject;
@@ -124,12 +108,16 @@ async function overrides(folder: string, templates: Record<string, string>): Pro
 }
 
 function profileOf(name: string, text: string): Profile {
-	const { frontmatter, body } = parseFrontmatter<{ model?: string; thinking?: ModelThinkingLevel }>(text);
-	const [provider = "", ...id] = (frontmatter.model ?? "").split("/");
+	const { frontmatter, body } = parseFrontmatter<{ model?: string; thinking?: string }>(text);
+	const { model, thinking } = frontmatter;
+	if (model === undefined) {
+		return { ...(thinking === undefined ? {} : { thinking }), instructions: instructions(body) };
+	}
+	const [provider = "", ...id] = model.split("/");
 	if (provider === "" || id.length === 0) throw new Error(`agents/${name}.md: model must be <provider>/<id>`);
 	return {
 		model: { provider, modelId: id.join("/") },
-		thinkingLevel: frontmatter.thinking ?? "medium",
+		...(thinking === undefined ? {} : { thinking }),
 		instructions: instructions(body),
 	};
 }
@@ -168,143 +156,9 @@ export async function projectFolder(cwd: string): Promise<string> {
 /** The leading comments and `export const meta =` of a script that declares its `meta`. */
 export const META = /^((?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*)export\s+(const\s+meta\s*=\s*)/;
 
-const text = (value: string): TextContent[] => [{ type: "text", text: value }];
-
-const ANSWER = "workflows-answer";
-
 /** True when a document change is stored as a complete base: after 31 deltas since the last one. */
 const checkpointWhen = (_value: unknown, _ops: unknown, info: { readonly deltasSinceBase: number }): boolean =>
 	info.deltasSinceBase >= 31;
-
-type AnswerState = { schema?: JsonObject; requestId?: string; answer?: JsonValue };
-
-/**
- * The JSON Schema of the current ask's answer, per conversation, the request ID of the turn that sends it, and the
- * answer that `respond` checked and saved in that turn. The schema is absent when the ask has no `schema`, and the
- * answer is absent until `respond` accepts one.
- */
-const AnswerDoc = defineDoc<AnswerState>({
-	kind: "workflows.answer-schema",
-	// No `migrate`: only a task at `TASK.version` runs, and `show` does not read this document.
-	version: 2,
-	scope: "conversation",
-	history: "latest",
-	fork: "current",
-	initial: () => ({}),
-	checkpointWhen,
-});
-
-/** Why a finished turn does not count: its answer was cut, or a `schema` ask got no `respond` answer in the turn. */
-type Failure = "cut" | "no-respond";
-
-/**
- * Why the turn `attempt` with `answer` and the state `doc` does not count, or `undefined` when it counts. A `respond`
- * answer counts only when `doc` saved it in the turn `attempt`.
- */
-function answerFailure(
-	answer: AssistantMessage | undefined,
-	doc: AnswerState | undefined,
-	attempt: string | undefined,
-): Failure | undefined {
-	if (answer !== undefined && cut(answer)) return "cut";
-	if (doc?.schema !== undefined && (doc.requestId !== attempt || !("answer" in doc))) return "no-respond";
-	return undefined;
-}
-
-/**
- * The answer of `args` checked against `schema`, as `validateToolArguments` returns it. A string answer that does not
- * match is parsed as JSON, and an object or array is checked again, because a model can send it as its JSON text. Any
- * other string throws the first error.
- */
-function checkedAnswer(schema: JsonObject, args: JsonObject, id: string): unknown {
-	const parameters = { type: "object", properties: { answer: schema }, required: ["answer"] } as unknown as TSchema;
-	const check = (answer: unknown) =>
-		validateToolArguments(
-			{ name: "respond", description: "", parameters },
-			{ type: "toolCall", id, name: "respond", arguments: { answer } as JsonObject },
-		).answer;
-	try {
-		return check(args.answer);
-	} catch (error) {
-		if (typeof args.answer !== "string") throw error;
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(args.answer);
-		} catch {
-			throw error;
-		}
-		if (typeof parsed !== "object" || parsed === null) throw error;
-		return check(parsed);
-	}
-}
-
-const respond = defineTool({
-	name: "respond",
-	description: "Give the answer of this turn in the structured form the prompt asks for. This ends the turn.",
-	parameters: Type.Object({
-		answer: Type.Unknown({
-			description: "The answer value itself, in the form the prompt asks for. Do not give its JSON text as a string.",
-		}),
-	}),
-	callers: ["model"],
-	execute: async (args, api, context) => {
-		const schema = (await api.snapshot(AnswerDoc, api.conversationId, context))?.schema;
-		if (schema === undefined) return { isError: true, output: text("This turn asks for no structured answer.") };
-		let answer: JsonValue;
-		try {
-			answer = checkedAnswer(schema, args as JsonObject, api.callId) as JsonValue;
-		} catch (error) {
-			return { isError: true, output: text(error instanceof Error ? error.message : String(error)) };
-		}
-		await api.commit(async (tx) => {
-			const doc = await tx.doc(AnswerDoc, api.conversationId);
-			doc.answer = answer;
-			return undefined;
-		}, context);
-		return { output: text("Answer recorded."), control: { terminate: true } };
-	},
-});
-
-/**
- * The user message that asks again for a `respond` call after an answer of a `schema` ask without one. A reminder is
- * known by its exact text, so a user prompt with the same text counts as one.
- */
-export const REMINDER = "Answer with the respond tool, as the schema in answer_schema says.";
-
-/** How many reminders one turn submission gets before its call fails. */
-const MAX_REMINDERS = 2;
-
-/**
- * Saves the number of reminders at the end of `messages` as the memo `reminders` of the generation. A continuation
- * starts a new generation, so each generation counts the reminders of its turn again from its messages. A compaction
- * in the turn can summarize reminders away and reset the count. Each reset needs a compaction, so the turn still ends.
- */
-async function countReminders(
-	request: { readonly messages: readonly Message[] },
-	api: HookApi,
-	context: Context,
-): Promise<undefined> {
-	let count = 0;
-	for (const message of request.messages.toReversed()) {
-		if (message.role !== "user") continue;
-		if (textOf(message) !== REMINDER) break;
-		count++;
-	}
-	await api.memo("reminders", count, context);
-	return undefined;
-}
-
-/** A reminder to call `respond`, when a `schema` ask got a complete answer without one and has reminders left. */
-async function remind(
-	answer: AssistantMessage,
-	api: HookApi,
-	context: Context,
-): Promise<{ readonly continue: string } | undefined> {
-	const doc = await api.snapshot(AnswerDoc, api.conversationId, context);
-	if (answerFailure(answer, doc, doc?.requestId) !== "no-respond") return undefined;
-	const count = (await api.memo<number>("reminders", context)) ?? 0;
-	return count < MAX_REMINDERS ? { continue: REMINDER } : undefined;
-}
 
 /** The sandbox functions that are not host calls. */
 function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun): string {
@@ -323,11 +177,16 @@ const Math = Object.freeze({
 const prompts = Object.fromEntries(
 	${JSON.stringify(prompts)}.map((name) => [name, (inputs) => __prompt(name, inputs)]),
 );
-function session(profile = "default") {
-	const id = __session(profile);
+function session(options = "default") {
+	const { as = "default", provider, model, thinking } = typeof options === "string" ? { as: options } : (options ?? {});
+	const spec = { profile: as };
+	if (provider !== undefined) spec.provider = provider;
+	if (model !== undefined) spec.model = model;
+	if (thinking !== undefined) spec.thinking = thinking;
+	const id = __session(spec);
 	return { ask: async (prompt, options = {}) => __ask(await id, await prompt, options.schema) };
 }
-const agent = (prompt, options = {}) => session(options.as ?? "default").ask(prompt, options);
+const agent = (prompt, { schema, ...options } = {}) => session(options).ask(prompt, { schema });
 const sh = async (cmd) => (await __sh(cmd, true)).stdout.replace(/\\n$/, "");
 const ok = async (cmd) => (await __sh(cmd, false)).code === 0;
 const run = async (name, args = {}) => {
@@ -382,6 +241,40 @@ export const CallDoc = defineDocFamily<CallRecord, null>({
 	checkpointWhen,
 });
 
+/**
+ * The `phase` and `log` lines and the ends of a root run and its child runs, in commit order, keyed by the root run ID.
+ * The command reads them from the store file while it follows the run.
+ */
+export const ProgressDoc = defineDocFamily<{ events: ProgressEvent[] }, null>({
+	kind: PROGRESS_KIND,
+	version: 1,
+	scope: "session",
+	family: true,
+	initial: () => ({ events: [] }),
+	checkpointWhen,
+});
+
+/** One session of a run: its run ID, its conversation, and the task that opened it. */
+export type OpenedSession = { run: string; conversation: ConversationId; task: number };
+
+/**
+ * The sessions of a root run and its child runs, keyed by the root run ID, so the end of a run closes them, also those
+ * of an earlier task of the run.
+ */
+export const SessionsDoc = defineDocFamily<{ sessions: OpenedSession[] }, null>({
+	kind: "workflows.sessions",
+	version: 1,
+	scope: "session",
+	family: true,
+	initial: () => ({ sessions: [] }),
+});
+
+/** Appends `events` to the progress of the root run `root`. */
+export async function addProgress(tx: Tx, root: string, events: readonly ProgressEvent[]): Promise<void> {
+	if (events.length === 0) return;
+	(await tx.doc(ProgressDoc, root, null)).events.push(...events);
+}
+
 /** The saved result of the call `key`, if it has one. */
 export async function savedCall(runtime: Runtime, key: string, context: Context): Promise<JsonValue | undefined> {
 	const record = await runtime.snapshot(CallDoc, key, context);
@@ -403,10 +296,10 @@ function keyOf(name: string, args: JsonObject, counters: Map<string, number>): s
 type Line = { readonly text: string; readonly phase: boolean };
 
 /**
- * The lines of a script that wait for its next call that runs, in order, and where they print. At most one is a phase
- * line: a new phase line replaces it. `phase` is the current phase line, which each call that starts records.
+ * The lines of a script that wait for its next call that runs, in order. At most one is a phase line: a new phase line
+ * replaces it. `phase` is the current phase line, which each call that starts records.
  */
-type Progress = { readonly lines: Line[]; readonly log: (line: Line) => void; phase: string | null };
+type Progress = { readonly lines: Line[]; phase: string | null };
 
 function phaseLine(progress: Progress, text: string): void {
 	progress.phase = text;
@@ -414,91 +307,29 @@ function phaseLine(progress: Progress, text: string): void {
 	lines.splice(0, lines.length, ...lines.filter((line) => !line.phase), { text, phase: true });
 }
 
-function print(progress: Progress): void {
-	for (const line of progress.lines.splice(0)) progress.log(line);
-}
-
-export function textOf(message: AssistantMessage | UserMessage): string {
-	if (typeof message.content === "string") return message.content;
-	return message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
-}
-
-/** True when `message` stopped for a reason other than its end or a tool call, such as its length. */
-function cut(message: AssistantMessage): boolean {
-	return message.stopReason !== "stop" && message.stopReason !== "toolUse";
-}
-
-/** The assistant message of the entry `id`, if it has one. */
-async function answerMessage(tx: Tx, id: EntryId): Promise<AssistantMessage | undefined> {
-	return (await tx.entry(AssistantEntry, id))?.model?.[0] as AssistantMessage | undefined;
-}
-
-/** What `check` of `turn` returns: why the turn `attempt` with `answer` does not count, or `undefined`. */
-type Check = (answer: AssistantMessage | undefined, attempt: string) => Failure | undefined;
-
-/**
- * The answer message to `content` in `conversation`. A turn answered before returns its saved answer. A turn that
- * failed before, or whose answer does not count, is sent again under the next free request ID. A new answer that does
- * not count throws. `check` runs in each transaction that reads an answer and returns the predicate that tells why an
- * answer does not count. `start` runs in the transaction that picks the request ID, with that ID.
- */
-async function turn(
-	runtime: Runtime,
-	conversation: ConversationId,
-	context: Context,
-	requestId: string,
-	content: string,
-	start: (tx: Tx, attempt: string) => Promise<void>,
-	check: (tx: Tx) => Promise<Check>,
-): Promise<AssistantMessage> {
-	const handle = await runtime.conversation(conversation, context);
-	if (handle === undefined) throw new Error(`Session ${conversation} is missing`);
-	let attempt = requestId;
-	await runtime.commit(async (tx) => {
-		const fails = await check(tx);
-		let record = await tx.submissionByRequest(conversation, attempt);
-		for (let n = 2; ; n++) {
-			if (record?.status === "done") {
-				const answer = record.answer === undefined ? undefined : await answerMessage(tx, record.answer);
-				if (fails(answer, attempt) === undefined) break;
-			} else if (record?.status !== "unanswered") break;
-			attempt = `${requestId}#${n}`;
-			record = await tx.submissionByRequest(conversation, attempt);
-		}
-		await start(tx, attempt);
-		return undefined;
-	}, context);
-	const submission = await handle.submit({ type: "input", content, requestId: attempt }, context);
-	const settled = await submission.wait(context);
-	if (settled.type !== "input" || settled.status !== "done") {
-		const detail = settled.detail === undefined ? "" : ` ${JSON.stringify(settled.detail)}`;
-		throw new Error(`The ${requestId} turn was not answered: ${settled.reason ?? settled.status}${detail}`);
-	}
-	let answer: AssistantMessage | undefined;
-	let reason: Failure | undefined;
-	await runtime.commit(async (tx) => {
-		answer = await answerMessage(tx, settled.answer);
-		reason = (await check(tx))(answer, attempt);
-		return undefined;
-	}, context);
-	if (answer === undefined) throw new Error(`The ${requestId} answer ${settled.answer} is missing`);
-	if (reason === "cut") throw new Error(`The ${requestId} turn stopped: ${answer.stopReason}`);
-	if (reason === "no-respond") throw new Error("the answer did not call respond");
-	return answer;
-}
-
 /** What the calls of one script execution share. */
 type Calls = {
-	readonly runId: string;
+	readonly script: ScriptRun;
 	readonly runtime: Runtime;
 	readonly context: Context;
 	readonly counters: Map<string, number>;
 	readonly progress: Progress;
+	readonly host: Host;
+	/** The owner of the run's sessions: the task, in the group of the run ID, so a later task of the run finds them. */
+	readonly owner: Owner;
 };
+
+/** Takes the waiting lines as progress events of the run. */
+function takeLines(calls: Calls): ProgressEvent[] {
+	const { runId: run, parent } = calls.script;
+	return calls.progress.lines
+		.splice(0)
+		.map((line) => ({ kind: line.phase ? "phase" : "log", run, parent, text: line.text }) as const);
+}
 
 /** The document key of the call `name` with `args` in this execution: `<run ID>/<call key>`. */
 function callKey(calls: Calls, name: string, args: JsonObject): string {
-	return `${calls.runId}/${keyOf(name, args, calls.counters)}`;
+	return `${calls.script.runId}/${keyOf(name, args, calls.counters)}`;
 }
 
 /** What a call records when it starts. */
@@ -506,9 +337,9 @@ type Start = { readonly kind: CallKind; readonly args: JsonObject };
 
 /**
  * The result of the call `key`: its saved result, or the value of `effect`, which gets the key. The call records its
- * start before `effect`, and its end with the value or the error after it. A stopped call records no end, and a call
- * that throws saves no result, so both run again. The waiting lines print when the call runs. A call with a saved
- * result drops the log lines and keeps the phase line, so a resume prints the phase of the first call that runs.
+ * start, with the waiting lines, before `effect`, and its end with the value or the error after it. A stopped call
+ * records no end, and a call that throws saves no result, so both run again. A call with a saved result drops the log
+ * lines and keeps the phase line, so a resume shows the phase of the first call that runs.
  */
 async function memoized(
 	calls: Calls,
@@ -523,8 +354,9 @@ async function memoized(
 		lines.splice(0, lines.length, ...lines.filter((line) => line.phase));
 		return saved;
 	}
-	print(progress);
+	const events = takeLines(calls);
 	await runtime.commit(async (tx) => {
+		await addProgress(tx, calls.script.root, events);
 		const doc = await tx.doc(CallDoc, key, null);
 		Object.assign(doc, { ...start, phase: progress.phase, startedAt: new Date().toISOString() });
 		delete doc.endedAt;
@@ -536,7 +368,8 @@ async function memoized(
 		value = await effect(key);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		if (!runtime.signal.aborted) await endCall(calls, key, { error: message });
+		// A call that the end of its script or task cancelled did not fail, and runs again.
+		if (!context.abortSignal?.aborted) await endCall(calls, key, { error: message });
 		throw error;
 	}
 	await endCall(calls, key, { result: value });
@@ -553,40 +386,54 @@ async function endCall(calls: Calls, key: string, end: { result: JsonValue } | {
 	}, calls.context);
 }
 
+/** The args of a `session` call: the profile, and the fields that override it. */
+type SessionArgs = {
+	readonly profile: string;
+	readonly provider?: string;
+	readonly model?: string;
+	readonly thinking?: string;
+};
+
 /**
- * The session of the call `key`: the `conversation` of its record, or a new session of the agent profile `name` in
- * `cwd`, which is saved there in the same commit. The task owns its conversation.
+ * The session of the call `key`, opened in the children library under the key `wf:<key>` in `cwd`. Each field of
+ * `args` overrides the profile, and the profile fills the rest; a field that neither gives comes from the project
+ * agent. The commit that opens it saves its conversation in the call record and in the sessions of the run. The same
+ * key again gives the same session.
  */
-async function sessionOf(
-	calls: Calls,
-	key: string,
-	cwd: string,
-	bundle: RunBundle,
-	name: string,
-): Promise<ConversationId> {
-	const { runtime, context } = calls;
-	const saved = (await runtime.snapshot(CallDoc, key, context))?.conversation;
-	if (saved !== undefined) return saved;
-	const profile = bundle.agents[name];
-	if (profile === undefined) throw new Error(`no agent profile ${name}`);
-	await runtime.commit(async (tx) => {
-		const created = await tx.createConversation({ ownership: { kind: "task", taskId: runtime.taskId } });
-		await configure(tx, created.id, {
-			...sessionAgent(profile, cwd),
-			...(profile.instructions === "" ? {} : { instructions: profile.instructions }),
-			extensions: { add: [{ name: ANSWER }] },
-			modelTools: { remove: [respond] },
-		});
-		const doc = await tx.doc(CallDoc, key, null);
-		doc.conversation = created.id;
-		return undefined;
-	}, context);
-	const id = (await runtime.snapshot(CallDoc, key, context))?.conversation;
-	if (id === undefined) throw new Error(`the session of ${key} is missing`);
-	return id;
+async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionArgs): Promise<JsonValue> {
+	const { runtime, context, host, script } = calls;
+	const profile = script.bundle.agents[args.profile];
+	if (profile === undefined) throw new Error(`no agent profile ${args.profile}`);
+	const provider = args.provider ?? profile.model?.provider;
+	const model = args.model ?? profile.model?.modelId;
+	const thinking = args.thinking ?? profile.thinking;
+	const spec: Spec = {
+		root: `workflows:${script.root}`,
+		cwd,
+		...(provider === undefined ? {} : { provider }),
+		...(model === undefined ? {} : { model }),
+		...(thinking === undefined ? {} : { thinking }),
+		...(profile.instructions === "" ? {} : { instructions: profile.instructions }),
+	};
+	const child = await host.children.open(
+		host.place,
+		calls.owner,
+		`wf:${key}`,
+		spec,
+		context,
+		async (tx, conversation) => {
+			(await tx.doc(CallDoc, key, null)).conversation = conversation;
+			const opened = await tx.doc(SessionsDoc, script.root, null);
+			opened.sessions.push({ run: script.runId, conversation, task: runtime.taskId });
+		},
+	);
+	return child.id;
 }
 
-/** One turn in `conversation`; the call's key is the request ID, so an interrupted ask continues its turn. */
+/**
+ * One turn in the session `conversation`. The call's key is the request ID, so an interrupted ask continues its turn,
+ * and the library sends a failed one again as `<key>#2`, `#3`. A turn without an answer that counts throws.
+ */
 async function askTurn(
 	calls: Calls,
 	key: string,
@@ -594,45 +441,32 @@ async function askTurn(
 	prompt: string,
 	schema: JsonObject | null,
 ): Promise<JsonValue> {
-	const { runtime, context } = calls;
-	const answer = await turn(
-		runtime,
-		conversation,
-		context,
-		key,
-		prompt,
-		async (tx, attempt) => {
-			const doc = await tx.doc(AnswerDoc, conversation);
-			if (schema === null) delete doc.schema;
-			else doc.schema = schema;
-			// Another turn drops the answer of an earlier one. The same turn keeps the answer `respond` saved in it.
-			if (doc.requestId !== attempt) {
-				doc.requestId = attempt;
-				delete doc.answer;
-			}
-			await configure(tx, conversation, {
-				extensions: { add: [{ name: ANSWER }] },
-				modelTools: { remove: schema === null ? [respond] : [] },
-			});
-		},
-		async (tx) => {
-			const doc = await tx.doc(AnswerDoc, conversation);
-			// The state of this ask: a later ask in the session can have changed the schema.
-			const { schema: _, ...rest } = doc;
-			const state: AnswerState = schema === null ? rest : { ...rest, schema };
-			return (answer, attempt) => answerFailure(answer, state, attempt);
-		},
-	);
-	if (schema === null) return textOf(answer).trim();
-	const doc = await runtime.snapshot(AnswerDoc, conversation, context);
-	return doc?.answer as JsonValue;
+	const { host, context } = calls;
+	const child = await host.children.find(host.place, calls.owner, { id: String(conversation) }, context);
+	if (child === undefined) throw new Error(`Session ${conversation} is missing`);
+	const input = { type: "input", content: prompt, requestId: key } as const;
+	if (schema !== null) {
+		const answer = await child.ask(input, context, { schema });
+		if (answer.status === "ok") return answer.value;
+		return failed(key, answer);
+	}
+	const answer = await child.ask(input, context);
+	return answer.status === "ok" ? answer.text : failed(key, answer);
+}
+
+/** Throws the error of the turn `key` whose answer does not count. */
+function failed(key: string, answer: Failure): never {
+	if (answer.reason === "cut") throw new Error(`The ${key} turn stopped: ${answer.stopReason}`);
+	if (answer.reason === "no-respond") throw new Error("the answer did not call respond");
+	const detail = answer.detail === undefined ? "" : ` ${JSON.stringify(answer.detail)}`;
+	throw new Error(`The ${key} turn was not answered: ${answer.cause}${detail}`);
 }
 
 /** The result of a shell command in `cwd`. With `check`, a non-zero exit throws. */
 async function shell(calls: Calls, cwd: string, cmd: string | string[], check: boolean): Promise<JsonValue> {
 	// A string is `sh -c <cmd>`; an array is the program `cmd[0]` with the arguments `cmd.slice(1)` and no shell.
 	const [file = "", ...rest] = typeof cmd === "string" ? ["sh", "-c", cmd] : cmd;
-	const result = await run(file, rest, cwd, calls.runtime.signal);
+	const result = await run(file, rest, cwd, calls.context.abortSignal);
 	if (check && result.code !== 0) {
 		if (typeof cmd !== "string") throw new Error(failure(cmd, result));
 		const stderr = result.stderr.trim();
@@ -666,25 +500,10 @@ async function childResult(
 	return { runId, result: outcome.result };
 }
 
-function global(name: string, execute: (...values: never[]) => unknown): CodemodeTool {
-	return { name, spread: true, execute: (values) => execute(...(values as never[])) };
+/** The owner of the sessions of the run `runId`, whose task `runtime` runs. */
+export function ownerOf(runtime: Runtime, runId: string): Owner {
+	return { kind: "task", taskId: runtime.taskId, conversation: runtime.conversationId, group: runId };
 }
-
-/**
- * `workflows-answer` is for script sessions: the `respond` tool of a `schema` ask, the `answer_schema` section that
- * shows the schema to the model, and the reminders to call `respond`.
- */
-export const answerExtension = defineExtension({
-	name: ANSWER,
-	tools: [respond],
-	hooks: [hook(GenerationTask, { beforeRequest: countReminders, onYield: remind })],
-	sections: [
-		section("answer_schema", async ({ read, conversationId }, context) => {
-			const schema = (await read.snapshot(AnswerDoc, conversationId, context))?.schema;
-			return schema && `The answer of respond must match this JSON Schema:\n${JSON.stringify(schema)}`;
-		}),
-	],
-});
 
 /**
  * Runs `script.bundle.main` with `script.args` in `cwd` and returns its value. It throws the error of a failed script,
@@ -694,26 +513,41 @@ export async function runScript(
 	runtime: Runtime,
 	context: Context,
 	cwd: string,
-	host: ExtensionHost,
+	host: Host,
 	script: ScriptRun,
 ): Promise<JsonValue> {
 	const { bundle, args } = script;
 	// A module export is a syntax error in the function body that the script runs as.
 	const source = bundle.main.replace(META, "$1$2");
-	const { runId, parent } = script;
-	const log = (line: Line) =>
-		host.progress({ kind: line.phase ? "phase" : "log", run: runId, parent, text: line.text });
-	const progress: Progress = { lines: [], log, phase: null };
-	const calls: Calls = { runId: script.runId, runtime, context, counters: new Map(), progress };
+	const progress: Progress = { lines: [], phase: null };
+	const owner = ownerOf(runtime, script.runId);
+	// The sandbox settles when the script ends and drops the host calls that still run, but they would go on: after the
+	// end of the script, the calls are cancelled, and the script ends only once they settled. So a failed run ends its
+	// sessions after its last ask was submitted and its last session opened.
+	const execution = withCancel(context);
+	const calls: Calls = { script, runtime, context: execution.context, counters: new Map(), progress, host, owner };
+	const running = new Set<Promise<unknown>>();
+	const global = (name: string, execute: (...values: never[]) => unknown): CodemodeTool => ({
+		name,
+		spread: true,
+		execute: (values) => {
+			const result = execute(...(values as never[]));
+			if (result instanceof Promise) {
+				running.add(result);
+				const settled = () => running.delete(result);
+				result.then(settled, settled);
+			}
+			return result;
+		},
+	});
 	const sandbox = new CodemodeSandbox({
 		timeoutMs: Number.POSITIVE_INFINITY,
 		globals: [
-			global("__session", (profile: string) => {
-				const args = { profile };
-				return memoized(calls, callKey(calls, "session", args), { kind: "session", args }, (key) =>
-					sessionOf(calls, key, cwd, bundle, profile),
-				);
-			}),
+			global("__session", (args: SessionArgs) =>
+				memoized(calls, callKey(calls, "session", args), { kind: "session", args }, (key) =>
+					sessionOf(calls, key, cwd, args),
+				),
+			),
 			// The sandbox sends a missing schema as null.
 			global("__ask", (conversation: ConversationId, prompt: string, schema: JsonObject | null) => {
 				const args = { conversation, prompt, schema };
@@ -751,7 +585,16 @@ export async function runScript(
 		result = await sandbox.execute(wrapped, { signal });
 	} finally {
 		await sandbox.close();
-		print(progress);
+		execution.cancel();
+		await Promise.allSettled(running);
+		const events = takeLines(calls);
+		// A cancelled task cannot commit; its lines are lost, and a resume shows the phase of its first call again.
+		if (events.length > 0 && !signal.aborted) {
+			await runtime.commit(async (tx) => {
+				await addProgress(tx, script.root, events);
+				return undefined;
+			}, context);
+		}
 	}
 	if (result.ok) return (result.value ?? null) as JsonValue;
 	if (signal.aborted) throw signal.reason;

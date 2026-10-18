@@ -35,11 +35,19 @@ declare const runDir: string;
 /** `prompts.<name>(inputs)`: the instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section. */
 declare const prompts: Record<string, (inputs?: Record<string, string>) => string>;
 
-/** One turn in a new session of profile `as` (default `default`). Returns the reply text, or the answer with `schema`. */
-declare function agent(prompt: string, options?: { as?: string; schema?: object }): Promise<any>;
+/**
+ * The model of a session. `as` names the agent profile `agents/<as>.md` (default `default`). `provider`, `model` and
+ * `thinking` override the profile, and a field that neither gives comes from the project agent.
+ */
+type SessionOptions = { as?: string; provider?: string; model?: string; thinking?: string };
 
-/** A new session of `profile` (default `default`). `.ask(prompt, { schema })` is one turn in it. */
-declare function session(profile?: string): { ask(prompt: string, options?: { schema?: object }): Promise<any> };
+/** One turn in a new session. Returns the reply text, or the answer with `schema`. */
+declare function agent(prompt: string, options?: SessionOptions & { schema?: object }): Promise<any>;
+
+/** A new session of a profile name or of `options` (default `default`). `.ask(prompt, { schema })` is one turn in it. */
+declare function session(
+	options?: string | SessionOptions,
+): { ask(prompt: string, options?: { schema?: object }): Promise<any> };
 
 /**
  * Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a

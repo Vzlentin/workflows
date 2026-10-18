@@ -32,7 +32,7 @@ type WorkflowOutcome =
 			readonly report: readonly string[];
 	  }
 	| { readonly runId: string; readonly status: "failed"; readonly error: string }
-	| { readonly runId: string; readonly status: "interrupted" };
+	| { readonly runId: string; readonly status: "detached" | "stopped" | "host-stopped" };
 
 /**
  * The `details` of each update and of the result, so the steps draw the same after a reload. `steps` are the progress
@@ -72,7 +72,7 @@ function cliArgs({ name, script, resume, save, args = {} }: WorkflowCall): strin
 
 type Output = { readonly code: number | null; readonly stdout: readonly string[]; readonly stderr: readonly string[] };
 
-/** Runs `command` with `args` in `cwd`; each stderr line goes to `progress`, and `signal` sends SIGINT. */
+/** Runs `command` with `args` in `cwd`; each stderr line goes to `progress`, and `signal` sends SIGINT, which detaches. */
 async function runCli(
 	command: readonly string[],
 	args: readonly string[],
@@ -119,8 +119,12 @@ function summary(outcome: WorkflowOutcome): string {
 			return `run ${outcome.runId} finished: ${JSON.stringify(outcome.result)}`;
 		case "failed":
 			return `run ${outcome.runId} failed: ${outcome.error}; continue it with resume: "${outcome.runId}"`;
-		case "interrupted":
-			return `run ${outcome.runId} interrupted; continue it with resume: "${outcome.runId}"`;
+		case "detached":
+			return `run ${outcome.runId} detached and goes on in the harness host; follow it with resume: "${outcome.runId}", or stop it with the command workflows stop ${outcome.runId}`;
+		case "stopped":
+			return `run ${outcome.runId} stopped; continue it with resume: "${outcome.runId}"`;
+		case "host-stopped":
+			return `the harness host of run ${outcome.runId} stopped; the run continues when the host starts again, so follow it with resume: "${outcome.runId}"`;
 	}
 }
 
@@ -169,7 +173,7 @@ const MARKS = { "✓": "success", "◉": "accent", "✗": "error" } as const;
 
 /**
  * The progress lines as the command drew them, with themed marks, then the report lines of a finished run, or the
- * summary of a failed or interrupted one.
+ * summary of a failed, detached or stopped one, or of one whose host stopped.
  */
 function detailLines({ steps, outcome }: WorkflowDetails, theme: Theme): string[] {
 	const lines = steps.map((step) => {
@@ -187,9 +191,11 @@ const GUIDELINES = [
 	"A `workflow` `script` is the body of an async function, so top-level `await` and `return` work. An optional " +
 		'`export const meta = { args: { <name>: { type: "string" | "number" | "boolean" | "text" } } }` at ' +
 		"the top declares the args, which the tool's `args` fill and the script reads as `args.<name>`.",
-	"Script globals: `agent(prompt, { as, schema })` is one turn in a new session and returns the reply, or the " +
-		"checked answer with a JSON Schema. `session(profile).ask(prompt, { schema })` is one turn in a session that " +
-		"keeps its history. `sh(cmd)` returns stdout and throws on a nonzero exit, `ok(cmd)` returns true on exit 0. " +
+	"Script globals: `agent(prompt, { as, provider, model, thinking, schema })` is one turn in a new session and " +
+		"returns the reply, or the checked answer with a JSON Schema. `session(profile)` or " +
+		"`session({ as, provider, model, thinking })` gives a session that keeps its history, and its " +
+		"`.ask(prompt, { schema })` is one turn. `as` names an agent profile (default `default`), and `provider`, " +
+		"`model` and `thinking` override it. `sh(cmd)` returns stdout and throws on a nonzero exit, `ok(cmd)` returns true on exit 0. " +
 		"`run(name, args)` runs a named workflow as a child run. `parallel([() => ...])` and " +
 		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +
 		"and `log(text)` write progress lines. `args`, `runId` and `runDir` are values.",
@@ -213,7 +219,8 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 			"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
 			"`base`, `rounds` and `prompts`. For `optimize`, which searches for better ship prompts over a folder of work " +
 			"items: `workflow` (`ship`) and `items`, and optional `improve` and `trials`. Each `run()` call of a " +
-			"script starts a child run, which a resume of its caller continues. A failed or interrupted run stays resumable.",
+			"script starts a child run, which a resume of its caller continues. A run goes on in the harness host of the " +
+			"project: Esc detaches from it, and `resume` follows it again. A failed or stopped run stays resumable.",
 		promptGuidelines: GUIDELINES,
 		parameters: Type.Object({
 			name: Type.Optional(
@@ -235,7 +242,13 @@ export default function workflows(pi: ExtensionAPI, command: readonly string[] =
 		}),
 		outputSchema: Type.Object({
 			runId: Type.String(),
-			status: Type.Union([Type.Literal("finished"), Type.Literal("failed"), Type.Literal("interrupted")]),
+			status: Type.Union([
+				Type.Literal("finished"),
+				Type.Literal("failed"),
+				Type.Literal("detached"),
+				Type.Literal("stopped"),
+				Type.Literal("host-stopped"),
+			]),
 			result: Type.Optional(Type.Unknown()),
 			report: Type.Optional(Type.Array(Type.String())),
 			error: Type.Optional(Type.String()),

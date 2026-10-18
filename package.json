@@ -22,6 +22,11 @@
 			"./extensions/subagent.ts"
 		]
 	},
+	"piDurable": {
+		"extensions": [
+			"./src/entry.ts"
+		]
+	},
 	"engines": {
 		"node": ">=22.19.0"
 	},
@@ -35,7 +40,7 @@
 		"@earendil-works/chord": "1.3.0",
 		"@earendil-works/pi-codemode": "1.3.0",
 		"@earendil-works/pi-durable": "1.3.0",
-		"harness": "github:Vzlentin/harness#236db91db54dc958e05efadf726aa0066b169483",
+		"harness": "github:Vzlentin/harness#556fb960d024268d716f32a391c81a8d1195acdf",
 		"jiti": "2.7.0"
 	},
 	"optionalDependencies": {

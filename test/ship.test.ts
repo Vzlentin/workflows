@@ -1,22 +1,23 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { createRegistry, defineExtension, defineTask, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
 import {
+	detached,
 	FakeModel,
 	git,
-	lockHolder,
 	PASSING_JUDGE,
+	piSettings,
 	progressOf,
 	repository,
+	runsOf,
 	sandbox,
+	storeOf,
 	type Verdict,
 	workflows,
 } from "./support.ts";
@@ -33,16 +34,18 @@ beforeEach(async () => {
 
 afterEach(() => rm(root, { recursive: true, force: true }));
 
-const runs = () => join(root, "state", "workflows", "runs");
+const runs = () => runsOf(root);
 
 /**
- * The ID of a new run that holds one pending task of `kind` at `version` with `input`, as a run that an earlier version
- * saved.
+ * The ID of a new run of the `main` project whose store holds one pending task of `kind` at `version` with `input`, as
+ * a run that another version saved.
  */
 async function saveRun(kind: string, version: number, input: object = { input: {} }): Promise<string> {
 	const id = newRunId();
 	const directory = join(runs(), id);
 	await mkdir(directory, { recursive: true });
+	await writeFile(join(directory, "project"), "main\n");
+	await mkdir(join(root, "state", "harness", "main"), { recursive: true });
 	const task = defineTask<object, { phase: string }, null>({
 		name: kind,
 		version,
@@ -53,12 +56,14 @@ async function saveRun(kind: string, version: number, input: object = { input: {
 	const registry = createRegistry();
 	registry.install(defineExtension({ name: "workflows", tasks: [task] }));
 	const models = new FakeModel({ interrupt: new AbortController() }).models;
-	const storage = await openNodeSqliteStorage(join(directory, "durable.sqlite"));
+	const storage = await openNodeSqliteStorage(storeOf());
 	const harness = await Harness.open(storage, { models, registry }, BACKGROUND_CONTEXT);
 	try {
 		const conversation = await harness.root(BACKGROUND_CONTEXT);
+		// A script task of some earlier versions wrapped its input as `{ input }`.
+		const saved = "input" in input ? { input: { ...(input.input as object), runId: id } } : { ...input, runId: id };
 		await conversation.commit(
-			(tx) => tx.createTask(task, input, { ownership: { kind: "conversation" } }),
+			(tx) => tx.createTask(task, saved, { ownership: { kind: "conversation" } }),
 			BACKGROUND_CONTEXT,
 		);
 	} finally {
@@ -66,35 +71,12 @@ async function saveRun(kind: string, version: number, input: object = { input: {
 	}
 	return id;
 }
-/**
- * Installs a Pi package with one `piDurable` entry that returns `extensions`, a JavaScript expression of `durable`, and
- * writes a marker file when it closes. Returns the path of the marker.
- */
-async function closingPackage(extensions: string): Promise<string> {
-	const pkg = join(root, "closing-package");
-	const marker = join(root, "closing.closed");
-	await mkdir(pkg);
-	await writeFile(
-		join(pkg, "package.json"),
-		JSON.stringify({ name: "closing", type: "module", piDurable: { extensions: ["./index.ts"] } }),
-	);
-	await writeFile(
-		join(pkg, "index.ts"),
-		`import { writeFileSync } from "node:fs";
-export default function ({ durable }) {
-	return { extensions: ${extensions}, close: async () => writeFileSync(${JSON.stringify(marker)}, "") };
-}
-`,
-	);
-	await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false }, packages: [pkg] }));
-	return marker;
-}
 const worktreeOf = (id: string | undefined) => join(runs(), id ?? "missing", "worktree");
 const progress = /^(plan|judge|round \d: (implement|review))$/;
 const FIXED = "# Demo\n\nHello world\n";
 const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|failed), [0-9a-f]+$/;
 const TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash"];
-// The tool of the harness that workflows installs, loaded after the packages in Pi's settings.
+// The tool of the harness host, before the tools of the packages in Pi's settings.
 const HARNESS_TOOLS = ["subagent"];
 const answers = (kind: string) => (["verdict", "judge", "implement", "handoff"].includes(kind) ? ["respond"] : []);
 const NOTES = [
@@ -218,7 +200,7 @@ describe("workflows ship", () => {
 		expect(calls[10]?.prompt).toMatch(new RegExp(`## base\\n${start}\\n\\n## head\\n[0-9a-f]{40}$`));
 	});
 
-	it("gives every session the tools of the piDurable entries in Pi's packages and closes them", async () => {
+	it("gives every session the tools of the piDurable entries in Pi's packages, which close with the host", async () => {
 		const pkg = join(root, "probe-package");
 		await mkdir(pkg);
 		await writeFile(
@@ -256,10 +238,7 @@ export default function ({ events }) {
 }
 `,
 		);
-		await writeFile(
-			join(root, "agent", "settings.json"),
-			JSON.stringify({ retry: { enabled: false }, packages: [pkg] }),
-		);
+		await piSettings(root, [pkg]);
 		const untrusted = join(root, "untrusted-package");
 		await mkdir(untrusted);
 		await writeFile(
@@ -280,7 +259,7 @@ export default function ({ events }) {
 			...["plan", "challenge", "handoff", "implement", "review", "verdict", "judge"],
 		]);
 		for (const call of run.model.calls)
-			expect(call.tools).toEqual([...TOOLS, "probe", ...HARNESS_TOOLS, ...answers(call.kind)]);
+			expect(call.tools).toEqual([...TOOLS, ...HARNESS_TOOLS, "probe", ...answers(call.kind)]);
 		const probed = (await readFile(join(root, "probe.log"), "utf8")).trim().split("\n");
 		expect(probed).toHaveLength(4);
 		expect(new Set(probed).size).toBe(4);
@@ -309,7 +288,7 @@ export default function ({ events }) {
 			script: { edits: [], interruptAt: { kind: "implement", nth: 1 } },
 		});
 		expect(run.code).toBe(130);
-		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, status: "interrupted" })]);
+		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, status: "detached" })]);
 
 		const resumed = await workflows(["resume", run.id ?? "", "--json"], { cwd: repo, script: { edits: [] } });
 		const result = { status: "blocked", rounds: 1, reply: "I found nothing to change.", memory: NOTES.slice(0, 2) };
@@ -387,83 +366,30 @@ export default function ({ events }) {
 		]);
 	});
 
-	it("reads the retry settings of the project only when Pi trusts it", async () => {
+	it("uses the retry settings of Pi's settings, not those of the project", async () => {
 		await mkdir(join(repo, ".pi"));
 		await writeFile(join(repo, ".pi", "settings.json"), JSON.stringify({ retry: { enabled: true, baseDelayMs: 1 } }));
 		const script = { edits: [FIXED], failAt: { kind: "challenge", nth: 1 } } as const;
 
-		const untrusted = await workflows(["ship", "Fix the README typo"], { cwd: repo, script });
-		expect(untrusted.code).toBe(1);
-		expect(untrusted.model.calls.map((call) => call.kind)).toEqual(["plan"]);
+		const project = await workflows(["ship", "Fix the README typo"], { cwd: repo, script });
+		expect(project.code).toBe(1);
+		expect(project.model.calls.map((call) => call.kind)).toEqual(["plan"]);
 
-		new ProjectTrustStore(join(root, "agent")).set(repo, true);
-		const trusted = await workflows(["ship", "Fix the README typo"], { cwd: repo, script });
-		expect(trusted.code).toBe(0);
-		expect(trusted.stdout[1]).toMatch(SHIPPED);
+		await piSettings(root, [], { retry: { enabled: true, baseDelayMs: 1 } });
+		const user = await workflows(["ship", "Fix the README typo"], { cwd: repo, script });
+		expect(user.code).toBe(0);
+		expect(user.stdout[1]).toMatch(SHIPPED);
 	});
 
-	it("closes the package entries and keeps the run when the resume of a failed run cannot create its task", async () => {
-		const run = await workflows(["ship", "Fix the README typo"], {
-			cwd: repo,
-			script: { edits: [FIXED], failAt: { kind: "challenge", nth: 1 } },
-		});
-		expect(run.code).toBe(1);
-		const marker = await closingPackage("[]");
-		const directory = join(runs(), run.id ?? "");
-		// The store opens, and the insert of the new task fails.
-		const database = new DatabaseSync(join(directory, "durable.sqlite"));
-		database.exec("CREATE TRIGGER refuse BEFORE INSERT ON tasks BEGIN SELECT RAISE(ABORT, 'no new task'); END");
-		database.close();
-
-		const resumed = await workflows(["resume", run.id ?? ""], { cwd: repo, script: { edits: [FIXED] } });
-
-		expect([resumed.code, resumed.stdout, resumed.stderr.at(-1)]).toEqual([1, [], "workflows: no new task"]);
-		expect(existsSync(marker)).toBe(true);
-		expect(existsSync(join(directory, "durable.sqlite"))).toBe(true);
-	});
-
-	it("closes the package entries and removes the run directory when the store cannot open", async () => {
-		const marker = await closingPackage(`[
-		durable.defineExtension({
-			name: "closing",
-			tasks: [
-				durable.defineTask({
-					name: "workflows.run",
-					version: 1,
-					initial: () => ({ phase: "run" }),
-					phases: { run: async () => {} },
-					abort: async () => {},
-				}),
-			],
-		}),
-	]`);
+	it("removes the run directory when the host does not load workflows", async () => {
+		await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false } }));
 
 		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
 
-		expect(run.code).toBe(1);
-		expect(run.stderr).toEqual([expect.stringContaining("workflows.run")]);
-		expect(existsSync(marker)).toBe(true);
-		expect(existsSync(runs()) ? await readdir(runs()) : []).toEqual([]);
-	});
-
-	it("closes the loaded package entries when a later package entry fails to load", async () => {
-		const marker = await closingPackage("[]");
-		const failing = join(root, "failing-package");
-		await mkdir(failing);
-		await writeFile(
-			join(failing, "package.json"),
-			JSON.stringify({ name: "failing", type: "module", piDurable: { extensions: ["./index.ts"] } }),
-		);
-		await writeFile(join(failing, "index.ts"), `export default function () {\n\tthrow new Error("no entry");\n}\n`);
-		await writeFile(
-			join(root, "agent", "settings.json"),
-			JSON.stringify({ retry: { enabled: false }, packages: [join(root, "closing-package"), failing] }),
-		);
-
-		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
-
-		expect([run.code, run.stderr]).toEqual([1, ["workflows: no entry"]]);
-		expect(existsSync(marker)).toBe(true);
+		expect([run.code, run.stdout]).toEqual([1, []]);
+		expect(run.stderr).toEqual([
+			"workflows: Unknown task kind: workflows.run: the harness host does not load workflows; add it to Pi with pi install",
+		]);
 		expect(existsSync(runs()) ? await readdir(runs()) : []).toEqual([]);
 	});
 
@@ -659,9 +585,8 @@ describe("workflows show", () => {
 });
 
 describe("workflows resume of ship runs", () => {
-	it("refuses and does not list a run that the earlier ship or run command saved", async () => {
-		const ship = await saveRun("workflows.ship", TASK.version);
-		// The script task owns the task kind of the earlier `run` command, so only its version can be earlier.
+	it("refuses a run that another version saved, and lists it as such", async () => {
+		// A task without a workflow name in its input is named by its kind.
 		const run = await saveRun("workflows.run", TASK.version - 1);
 		// A script task of an earlier version names its workflow in its input.
 		const script = await saveRun("workflows.run", TASK.version - 1, { name: "ship" });
@@ -671,7 +596,6 @@ describe("workflows resume of ship runs", () => {
 		const later = await saveRun("workflows.run", TASK.version + 1, { name: "ship" });
 
 		for (const [id, name, word] of [
-			[ship, "ship", "an earlier"],
 			[run, "run", "an earlier"],
 			[script, "ship", "an earlier"],
 			[wrapped, "campaign", "an earlier"],
@@ -697,7 +621,10 @@ describe("workflows resume of ship runs", () => {
 			]);
 		}
 		const listed = await workflows(["list"], { cwd: repo });
-		expect(listed.stdout).toEqual([]);
+		const word = (id: string) => (id === later ? "later-version" : "earlier-version");
+		const all = [run, script, wrapped, later].sort().reverse();
+		const names: Record<string, string> = { [run]: "run", [script]: "ship", [wrapped]: "campaign" };
+		expect(listed.stdout).toEqual(all.map((id) => `${id} ${names[id] ?? "ship"} ${word(id)} ${names[id] ?? "ship"}`));
 		const unknown = await workflows(["show", "20990101T000000-00000000"], { cwd: repo });
 		expect([unknown.code, unknown.stdout, unknown.stderr]).toEqual([
 			1,
@@ -706,18 +633,33 @@ describe("workflows resume of ship runs", () => {
 		]);
 	});
 
-	it("refuses a run that a live process runs, and does not open its store", async () => {
-		const id = await saveRun("workflows.run", TASK.version, { name: "ship" });
-		const holder = await lockHolder(join(runs(), id));
-		const marker = await closingPackage("[]");
+	it("starts the host with a pending run of another version, and leaves that run pending", async () => {
+		const earlier = await saveRun("workflows.run", TASK.version - 1, { name: "ship" });
+		const later = await saveRun("workflows.run", TASK.version + 1, { name: "ship" });
 
+		const run = await workflows(["-"], { cwd: repo, stdin: 'return await agent("Script: one")' });
+		expect([run.code, run.stdout]).toEqual([0, [`run ${run.id}`, "Reply to one"]]);
+
+		const storage = await openNodeSqliteStorage(storeOf());
 		try {
-			const resumed = await workflows(["resume", id], { cwd: repo });
-			expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([1, [], [`workflows: run ${id} is running`]]);
-			expect(existsSync(marker)).toBe(false);
+			const { items } = await storage.scanTasks({ kind: "workflows.run" }, 256, undefined, BACKGROUND_CONTEXT);
+			const saved = items.filter((task) => [earlier, later].includes((task.input as { runId: string }).runId));
+			expect(saved.map((task) => task.state.status)).toEqual(["pending", "pending"]);
 		} finally {
-			holder.kill();
+			await storage.close(BACKGROUND_CONTEXT);
 		}
+		const listed = await workflows(["list"], { cwd: repo });
+		const lines: Record<string, string> = {
+			[run.id ?? ""]: `${run.id} stdin done stdin`,
+			[earlier]: `${earlier} ship earlier-version ship`,
+			[later]: `${later} ship later-version ship`,
+		};
+		expect(listed.stdout).toEqual(
+			Object.keys(lines)
+				.sort()
+				.reverse()
+				.map((id) => lines[id]),
+		);
 	});
 
 	it("continues a turn interrupted by Ctrl+C from the saved inputs", async () => {
@@ -727,7 +669,7 @@ describe("workflows resume of ship runs", () => {
 			script: { interruptAt: { kind: "implement", nth: 1 } },
 		});
 		expect(first.code).toBe(130);
-		expect(first.stderr.at(-1)).toBe(`interrupted; continue with: workflows resume ${first.id}`);
+		expect(first.stderr.at(-1)).toBe(detached(first.id));
 		expect(first.model.calls.map((call) => call.kind)).toEqual(["plan", "challenge", "handoff"]);
 
 		await writeFile(join(repo, "item.md"), "# Something else\n");
@@ -756,7 +698,7 @@ describe("workflows resume of ship runs", () => {
 		expect(again.model.calls).toEqual([]);
 	});
 
-	it("lists finished and unfinished runs without continuing them", async () => {
+	it("lists finished and running runs without continuing them", async () => {
 		const shipped = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
 		expect(shipped.code).toBe(0);
 		const stopped = await workflows(["ship", "# Second item"], {
@@ -772,7 +714,7 @@ describe("workflows resume of ship runs", () => {
 		expect(runs).toEqual(
 			[
 				{ runId: shipped.id, workflow: "ship", title: "Fix the README typo", status: "shipped" },
-				{ runId: stopped.id, workflow: "ship", title: "Second item", status: "unfinished" },
+				{ runId: stopped.id, workflow: "ship", title: "Second item", status: "running" },
 			].sort((a, b) => (b.runId ?? "").localeCompare(a.runId ?? "")),
 		);
 		const text = await workflows(["list"], { cwd: root });
@@ -810,8 +752,9 @@ describe("workflows resume of ship runs", () => {
 		});
 		while (!existsSync(`${gate}.reached`)) await new Promise((resolve) => setTimeout(resolve, 10));
 		interrupt.abort();
-		await writeFile(`${gate}.open`, "");
+		// The command detaches and closes its host, which stops the Git step, before the gate opens.
 		const first = await pending;
+		await writeFile(`${gate}.open`, "");
 		expect(first.code).toBe(130);
 		expect(first.model.calls.map((call) => call.kind)).toEqual(["plan", "challenge", "handoff", "implement"]);
 		expect(git(worktreeOf(first.id), "log", "--format=%s")).toBe("initial");
