@@ -303,6 +303,13 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		]);
 	});
 
+	it("follows a run whose start request failed after the host created its task", async () => {
+		await writeFile(join(root, "x.js"), 'phase("one")\nreturn "done"');
+		const run = await workflows(["x.js"], { cwd: root, dropStart: true });
+		expect([run.code, run.stdout, run.stderr]).toEqual([0, [`run ${run.id}`, "done"], ["one"]]);
+		expect(await rootTasks(run.id ?? "")).toEqual([{ status: "terminal", outcome: "completed" }]);
+	});
+
 	it("says to start the host once when the store needs a schema update", async () => {
 		const id = newRunId();
 		await mkdir(join(runsOf(root), id), { recursive: true });
@@ -344,6 +351,37 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x orphaned x`]);
 		const again = await workflows(["stop", id], { cwd: root });
 		expect(again.stderr).toEqual([`workflows: run ${id} is not running`]);
+	});
+
+	it("starts no turn in a session of an earlier task after a failed run ended its sessions", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const s = session()
+await s.ask("Script: one")
+await sh("test -f ok")
+const asks = Array.from({ length: 10 }, (_, n) => s.ask("Script: hang"))
+await Promise.all([...asks, Promise.reject(new Error("no"))])`,
+		);
+		const first = await workflows(["x.js"], { cwd: root });
+		expect(first.code).toBe(1);
+		await writeFile(join(root, "ok"), "");
+		// The second task asks in the session of the first task, and the model does not answer.
+		const run = await workflows(["resume", first.id ?? ""], {
+			cwd: root,
+			keepHost: true,
+			script: { hang: "Script: hang" },
+		});
+		const { host } = run;
+		if (host === undefined) throw new Error("no host");
+		try {
+			expect([run.code, run.stderr.at(-2)]).toEqual([1, "failed x: no"]);
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			// Every turn that the asks started was aborted when the run ended, and none started after.
+			expect(run.model.waiting).toEqual(["Script: hang"]);
+			expect(run.model.aborted).toEqual(["Script: hang"]);
+		} finally {
+			await host.close();
+		}
 	});
 
 	it("closes the sessions and their subagents when a run completes", async () => {

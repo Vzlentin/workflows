@@ -210,6 +210,8 @@ export type Script = {
 	readonly failAt?: { readonly kind: Kind; readonly nth: number; readonly stopReason?: "length" };
 	/** The plan prompt first calls `probe` and `ls`, review and judge call `probe`, and implement calls `probe` next to its edit. */
 	readonly probe?: boolean;
+	/** A prompt whose requests this model never answers: they wait until they are aborted. */
+	readonly hang?: string;
 	/** How many answers of this model to `Script respond: <json>` prompts are text replies with no `respond` call. */
 	readonly skipRespond?: number;
 	/** Ctrl+C: `abort` presses it, and `signal` aborts at the first press. */
@@ -231,7 +233,8 @@ export class FakeModel {
 	readonly calls: Call[] = [];
 	/** The text of every tool result the model received. */
 	readonly results: string[] = [];
-	/** The prompts of the requests that waited after Ctrl+C and were aborted. */
+	/** The prompts of the requests that waited after Ctrl+C or for `hang`, and of those that were aborted. */
+	readonly waiting: string[] = [];
 	readonly aborted: string[] = [];
 	readonly models = createModels();
 	readonly #script: Script;
@@ -292,7 +295,8 @@ export class FakeModel {
 		const nth = this.count(kind) + 1;
 		const { interruptAt, interrupt } = this.#script;
 		if (interruptAt?.kind === kind && interruptAt.nth === nth) interrupt.abort();
-		if (interrupt.signal.aborted) {
+		if (interrupt.signal.aborted || prompt === this.#script.hang) {
+			this.waiting.push(prompt);
 			await new Promise((_, reject) =>
 				options?.signal?.addEventListener("abort", () => {
 					this.aborted.push(prompt);
@@ -465,6 +469,8 @@ export async function workflows(
 		readonly stopWindowMs?: number;
 		readonly host?: Host;
 		readonly keepHost?: boolean;
+		/** The first `start` request fails after the host created its task, as when the connection closes before the reply. */
+		readonly dropStart?: boolean;
 	},
 ): Promise<Outcome> {
 	let exits = 0;
@@ -484,6 +490,7 @@ export async function workflows(
 	const stderr: string[] = [];
 	let host = options.host;
 	let started: Host | undefined;
+	let drop = options.dropStart === true;
 	const code = await main(argv, {
 		cwd: options.cwd,
 		stdin: async () => options.stdin,
@@ -500,7 +507,17 @@ export async function workflows(
 				started = await startHost(project, model.models);
 				host = started;
 			}
-			return connectTo(project);
+			const client = await connectTo(project);
+			const request = client.request.bind(client);
+			client.request = (async (sent: Parameters<typeof request>[0]) => {
+				const reply = await request(sent);
+				if (sent.type !== "start" || !drop) return reply;
+				drop = false;
+				const closed = new Error("The harness host closed the connection");
+				client.abort(closed);
+				throw closed;
+			}) as typeof client.request;
+			return client;
 		},
 	});
 	if (!options.keepHost) await started?.close();
