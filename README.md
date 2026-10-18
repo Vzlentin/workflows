@@ -514,16 +514,19 @@ before runs moved into the harness host stay in their run directories, and no co
 
 The run goes on in the host after the command ends. Ctrl+C detaches the command: it prints `detached; run <run-id>
 goes on. Follow it with: workflows resume <run-id>. Stop it with: workflows stop <run-id>` and waits 2 s for a second
-Ctrl+C. Without one, it exits 130. A second Ctrl+C in those 2 s stops the run: the run's task ends as stopped, and the
-command prints `stopped <title>; continue with: workflows resume <run-id>` and exits 130. A third Ctrl+C exits at once.
+Ctrl+C. Without one, it exits 130, or reports the outcome of a run that ends in those 2 s. A second Ctrl+C in those
+2 s stops the run: the run's task ends as stopped, and the command prints `stopped <title>; continue with: workflows
+resume <run-id>` and exits 130. Any other second Ctrl+C exits at once. A Ctrl+C before the run starts, such as while
+the command clones the repository, starts no run: the command removes the run directory, prints `workflows:
+interrupted before the run started` and exits 130.
 
 ```sh
 workflows stop <run-id>
 ```
 
-`workflows stop` stops a run that runs, from any directory: it starts the run's host when none runs, aborts the run's
-task with its child runs, sessions and Git steps, prints `stopped <title>; continue with: workflows resume <run-id>`
-and exits 0. With `--json`, it prints `{ "runId", "status": "stopped" }`. A run whose last task has ended prints
+`workflows stop` stops a run that runs, from any directory: it aborts the run's task with its child runs, sessions and
+Git steps, prints `stopped <title>; continue with: workflows resume <run-id>` and exits 0. When no host runs, it starts
+the run's host, which continues the run for a moment before the stop reaches it. With `--json`, it prints `{ "runId", "status": "stopped" }`. A run whose last task has ended prints
 `workflows: run <run-id> is not running` and exits 1. A command that follows a run that `stop` stops prints the
 `stopped` line and exits 130. A stopped run resumes in a new task.
 
@@ -568,7 +571,7 @@ argument, such as the work item for ship and the goal for campaign, or else the 
 `unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
 
 `list` reads the project store file and does not start the host, so no run continues. It takes short write locks on
-the store: the host waits up to 60 seconds for them, and `list` waits for the host the same way.
+the store, which the host waits up to 5 seconds for, and `list` waits up to 60 seconds for the host.
 
 ## Show
 
@@ -607,8 +610,7 @@ times. `phase` is `null` before the first phase line. The `result` of a `run` ca
 result of its child run, and its `calls` are the calls of the child run.
 
 `show` exits 0 for every run it can show. It reads the project store through pi-durable's storage functions, as `list`
-does, and does not start the host. It takes short write locks on the store: the host waits up to 60 seconds for them,
-and `show` waits for the host the same way. An unknown run ID, or a run directory without a `project` file, prints the
+does, and does not start the host. It takes short write locks on the store as `list` does. An unknown run ID, or a run directory without a `project` file, prints the
 `no run` error of `resume`. A run saved by an earlier version prints `workflows: run
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such

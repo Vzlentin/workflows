@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, Cursor } from "@earendil-works/pi-durable";
@@ -81,7 +81,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 	it("stops the run on a second Ctrl+C, and a resume continues it", async () => {
 		const interrupt = new AbortController();
 		const stop = new AbortController();
-		const pending = workflows(["gated.js", "--json"], { cwd: root, interrupt, stop, stopWindowMs: 5000 });
+		const pending = workflows(["gated.js", "--json"], { cwd: root, interrupt, stop });
 		await reached("g");
 		interrupt.abort();
 		setTimeout(() => stop.abort(), 50);
@@ -97,6 +97,25 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 			{ status: "terminal", outcome: "aborted" },
 			{ status: "terminal", outcome: "completed" },
 		]);
+	});
+
+	it("reports a run that ends while it waits for a second Ctrl+C", async () => {
+		const interrupt = new AbortController();
+		const pending = workflows(["gated.js"], { cwd: root, interrupt, stop: new AbortController() });
+		await reached("g");
+		interrupt.abort();
+		await writeFile(join(root, "g.open"), "");
+		const run = await pending;
+		expect([run.code, run.stdout, run.stderr]).toEqual([0, [`run ${run.id}`, "done"], [detached(run.id)]]);
+	});
+
+	it("starts no run after a Ctrl+C before the run starts", async () => {
+		const interrupt = new AbortController();
+		interrupt.abort();
+		const run = await workflows(["gated.js"], { cwd: root, interrupt });
+		expect([run.code, run.stdout, run.stderr]).toEqual([130, [], ["workflows: interrupted before the run started"]]);
+		expect(existsSync(runsOf(root)) ? await readdir(runsOf(root)) : []).toEqual([]);
+		expect(existsSync(join(root, "g.reached"))).toBe(false);
 	});
 
 	it("stops a run with workflows stop, and refuses a run that does not run", async () => {

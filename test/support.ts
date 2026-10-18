@@ -447,7 +447,8 @@ async function connectTo(project: string) {
  * Runs `workflows <argv>` in `cwd` against a fresh fake model. The first connection starts a harness host in this
  * process with the fake model, and the host closes when the command ends, as a stopped host does, unless `keepHost`.
  * A later command then gets a new host, which resumes the pending runs. With `host`, the command connects to that host
- * and leaves it open. `interrupt` is the first Ctrl+C and `stop` the second, which counts within `stopWindowMs`.
+ * and leaves it open. `interrupt` is the first Ctrl+C and `stop` the second, which counts in the window after the
+ * first. Without `stop`, no second Ctrl+C comes, and the window ends at once.
  */
 export async function workflows(
 	argv: readonly string[],
@@ -457,7 +458,6 @@ export async function workflows(
 		readonly script?: Omit<Script, "interrupt">;
 		readonly interrupt?: AbortController;
 		readonly stop?: AbortController;
-		readonly stopWindowMs?: number;
 		readonly host?: Host;
 		readonly keepHost?: boolean;
 	},
@@ -474,8 +474,18 @@ export async function workflows(
 		stdout: (line) => stdout.push(line),
 		stderr: (line) => stderr.push(line),
 		interrupt: interrupt.signal,
-		stop: (options.stop ?? new AbortController()).signal,
-		stopWindowMs: options.stopWindowMs ?? 0,
+		secondInterrupt: (ms) => {
+			const { stop } = options;
+			if (stop === undefined) return Promise.resolve(false);
+			return new Promise((resolve) => {
+				const timer = setTimeout(() => resolve(false), ms);
+				stop.signal.addEventListener("abort", () => {
+					clearTimeout(timer);
+					resolve(true);
+				});
+				if (stop.signal.aborted) resolve(true);
+			});
+		},
 		models: async () => model.models,
 		connect: async (project) => {
 			if (host === undefined) {

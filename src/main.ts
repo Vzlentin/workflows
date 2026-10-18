@@ -30,15 +30,16 @@ const STORAGE = { busyTimeoutMs: 60_000 };
 /** How often the command reads the progress of a run that it follows. */
 const POLL_MS = 500;
 
+/** How long a command that Ctrl+C detached waits for a second Ctrl+C, which stops the run. */
+const STOP_WINDOW_MS = 2000;
+
 type Storage = Awaited<ReturnType<typeof openNodeSqliteStorage>>;
 
 export type Terminal = Io & {
 	/** Aborted by the first Ctrl+C: the command detaches, and the run goes on in the host. */
 	readonly interrupt: AbortSignal;
-	/** Aborted by a second Ctrl+C: the command stops the run. */
-	readonly stop: AbortSignal;
-	/** How long the command waits for a second Ctrl+C after the first. */
-	readonly stopWindowMs: number;
+	/** Waits up to `ms` for a second Ctrl+C, which stops the run, and gives whether it came. */
+	readonly secondInterrupt: (ms: number) => Promise<boolean>;
 	/** Pi's model registry, for `check`. */
 	readonly models: () => Promise<Models>;
 	/** Connects to the host of `project`, which it starts when none runs. Default: harness's client. */
@@ -178,12 +179,16 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 	try {
 		input = await script.prepare(parsed, { id, directory, cwd: terminal.cwd });
 		await writeFile(join(directory, "project"), `${project}\n`);
+		terminal.interrupt.throwIfAborted();
 		client = await connectTo(terminal, project);
+		terminal.interrupt.throwIfAborted();
 		await startTask(client, input, key);
 	} catch (error) {
 		client?.close();
 		await rm(directory, { recursive: true, force: true });
-		throw error;
+		if (!terminal.interrupt.aborted) throw error;
+		terminal.stderr("workflows: interrupted before the run started");
+		return 130;
 	}
 	terminal.stdout(`run ${id}`);
 	return follow({ id, project, key, input, client, from: 0 }, terminal, json);
@@ -586,10 +591,14 @@ async function follow(run: Following, terminal: Terminal, json: boolean): Promis
 		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
 		else for (const line of footer) terminal.stderr(line);
 	};
-	const storage = await openNodeSqliteStorage(await storeOf(run.project), STORAGE);
+	const storage = await openNodeSqliteStorage(await storeOf(run.project), STORAGE).catch((error: unknown) => {
+		client.close();
+		throw error;
+	});
 	let seen = run.from;
 	const poll = async () => {
-		const events = await progressEvents(storage, id);
+		// A read that fails, such as one that waited too long for a lock, shows nothing; the next read catches up.
+		const events = await progressEvents(storage, id).catch(() => []);
 		for (const event of events.slice(seen)) shown.event(event);
 		seen = Math.max(seen, events.length);
 	};
@@ -600,8 +609,6 @@ async function follow(run: Following, terminal: Terminal, json: boolean): Promis
 			await abortedWithin(polled.signal, POLL_MS);
 		}
 	})();
-	// A failed read rejects `polling`, which the end of the command awaits.
-	polling.catch(() => undefined);
 	/** Stops the reads, then reads the events that came after the last one. */
 	const stopPolling = async () => {
 		polled.abort();
@@ -613,18 +620,23 @@ async function follow(run: Following, terminal: Terminal, json: boolean): Promis
 		// A detached command closes the connection, which ends the wait.
 		waited.catch(() => undefined);
 		const info = await Promise.race([waited, aborted(terminal.interrupt).then(() => undefined)]);
-		if (info === undefined) {
-			await stopPolling();
-			const follow = `Follow it with: workflows resume ${id}. Stop it with: workflows stop ${id}`;
-			if (!json) terminal.stderr(`detached; run ${id} goes on. ${follow}`);
-			if (!(await abortedWithin(terminal.stop, terminal.stopWindowMs))) {
-				if (json) end("detached", {});
-				return 130;
-			}
-			await abortRun(terminal, run.project, run.key);
-			return await report(await waited);
+		if (info !== undefined) return await report(info);
+		await stopPolling();
+		const next = `Follow it with: workflows resume ${id}. Stop it with: workflows stop ${id}`;
+		if (!json) terminal.stderr(`detached; run ${id} goes on. ${next}`);
+		// A run that ends in the window reports its outcome. A wait that fails leaves the run to the host.
+		const ended = waited.then(
+			(done) => done,
+			() => new Promise<never>(() => {}),
+		);
+		const second = await Promise.race([terminal.secondInterrupt(STOP_WINDOW_MS), ended]);
+		if (typeof second !== "boolean") return await report(second);
+		if (!second) {
+			if (json) end("detached", {});
+			return 130;
 		}
-		return await report(info);
+		await abortRun(terminal, run.project, run.key);
+		return await report(await waited);
 	} catch (error) {
 		await stopPolling().catch(() => undefined);
 		shown.stop(true);
