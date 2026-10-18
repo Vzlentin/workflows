@@ -1,8 +1,11 @@
 {
-	"name": "workflows",
+	"name": "@vzlentin/workflows",
 	"version": "0.1.0",
-	"private": true,
 	"description": "Ship one work item onto a new branch through durable Pi sessions",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Vzlentin/workflows.git"
+	},
 	"type": "module",
 	"bin": {
 		"workflows": "dist/cli.js"
@@ -10,47 +13,28 @@
 	"files": [
 		"agents",
 		"dist",
-		"extensions",
 		"prompts",
-		"scripts",
-		"src",
 		"workflows"
 	],
-	"pi": {
-		"extensions": [
-			"./extensions/workflows.ts",
-			"./extensions/subagent.ts"
-		]
-	},
-	"piDurable": {
-		"extensions": [
-			"./src/entry.ts"
-		]
-	},
 	"engines": {
 		"node": ">=22.19.0"
 	},
+	"publishConfig": {
+		"access": "public"
+	},
 	"scripts": {
-		"build": "tsc -p tsconfig.build.json",
+		"build": "rm -rf dist && tsc -p tsconfig.build.json",
+		"prepack": "npm run build",
 		"check": "biome check . && tsc -p tsconfig.json && tsc -p workflows/jsconfig.json && vitest --run",
-		"test": "vitest --run",
-		"postinstall": "node scripts/link-bins.ts"
+		"test": "vitest --run"
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.3.0",
+		"@earendil-works/pi-ai": "1.3.0",
 		"@earendil-works/pi-codemode": "1.3.0",
+		"@earendil-works/pi-coding-agent": "1.3.0",
 		"@earendil-works/pi-durable": "1.3.0",
-		"harness": "github:Vzlentin/harness#556fb960d024268d716f32a391c81a8d1195acdf",
-		"jiti": "2.7.0"
-	},
-	"optionalDependencies": {
-		"@earendil-works/pi-ai": "^1.3.0",
-		"@earendil-works/pi-coding-agent": "^1.3.0"
-	},
-	"peerDependencies": {
-		"@earendil-works/pi-ai": "*",
-		"@earendil-works/pi-coding-agent": "*",
-		"@earendil-works/pi-tui": "*"
+		"@vzlentin/harness": "0.1.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.15",

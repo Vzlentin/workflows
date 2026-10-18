@@ -1,12 +1,13 @@
 /**
- * The Pi extension: the `workflow` tool. Each run is a child process of this package's
- * `workflows` command, so a run started in Pi is a normal run that `workflows resume` also continues.
+ * The Pi extension: the `workflow` tool. Each run is a child process of the `workflows` command of the
+ * `@vzlentin/workflows` install that this package depends on, so a run started in Pi is a normal run that
+ * `workflows resume` also continues.
  */
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { createRequire } from "node:module";
 import { basename } from "node:path";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentToolResult, ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
@@ -51,7 +52,10 @@ function progressLines(line: string): string[] | undefined {
 	}
 }
 
-const CLI = [process.execPath, fileURLToPath(new URL("../src/cli.ts", import.meta.url))];
+/** The `workflows` command of the `@vzlentin/workflows` install, with this Node. */
+function cli(): string[] {
+	return [process.execPath, createRequire(import.meta.url).resolve("@vzlentin/workflows/dist/cli.js")];
+}
 
 const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
 
@@ -206,7 +210,7 @@ const GUIDELINES = [
 		"`save: { runId, name }` after its run. Add `force: true` to replace a workflow of that name.",
 ];
 
-export default function workflows(pi: ExtensionAPI, command: readonly string[] = CLI) {
+export default function workflows(pi: ExtensionAPI, command: readonly string[] = cli()) {
 	pi.registerTool({
 		name: "workflow",
 		label: "Workflow",

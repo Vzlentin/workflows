@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import extension from "../extensions/workflows.ts";
+import extension from "../pi-workflows/index.ts";
 
 let root: string;
 let tool: ToolDefinition;

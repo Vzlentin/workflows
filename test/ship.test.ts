@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineExtension, defineTask, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { entriesPath } from "@vzlentin/harness/entries";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
@@ -17,6 +18,7 @@ import {
 	repository,
 	runsOf,
 	sandbox,
+	startHost,
 	storeOf,
 	type Verdict,
 	workflows,
@@ -382,13 +384,18 @@ export default function ({ events }) {
 	});
 
 	it("removes the run directory when the host does not load workflows", async () => {
-		await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false } }));
-
-		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
+		// The host started before the command set the entry of workflows.
+		await writeFile(entriesPath(), "{}");
+		const host = await startHost();
+		const run = await workflows(["ship", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED] },
+			host,
+		}).finally(() => host.close());
 
 		expect([run.code, run.stdout]).toEqual([1, []]);
 		expect(run.stderr).toEqual([
-			"workflows: Unknown task kind: workflows.run: the harness host does not load workflows; add it to Pi with pi install",
+			`workflows: Unknown task kind: workflows.run: the harness host started before it had the entry of workflows; stop it so it starts again with the entry (the harness host of project main has pid ${process.pid}: kill ${process.pid})`,
 		]);
 		expect(existsSync(runs()) ? await readdir(runs()) : []).toEqual([]);
 	});

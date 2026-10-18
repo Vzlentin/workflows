@@ -2,7 +2,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
 	test: {
-		// harness is TypeScript under node_modules, which Node does not strip, so Vite transforms it.
-		server: { deps: { inline: ["harness"] } },
+		// Vite transforms harness, so the hosts of the tests load the entry of this checkout in the module graph of the tests.
+		server: { deps: { inline: ["@vzlentin/harness"] } },
 	},
 });

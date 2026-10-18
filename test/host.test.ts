@@ -5,12 +5,22 @@ import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, Cursor } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { request } from "harness/src/client.ts";
-import { addProject } from "harness/src/projects.ts";
+import { request } from "@vzlentin/harness/client";
+import { addProject } from "@vzlentin/harness/projects";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CtrlC, newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
-import { detached, piSettings, rootTasks, runsOf, sandbox, startHost, storeOf, workflows } from "./support.ts";
+import {
+	detached,
+	piSettings,
+	rootTasks,
+	runsOf,
+	sandbox,
+	setEntries,
+	startHost,
+	storeOf,
+	workflows,
+} from "./support.ts";
 
 let root: string;
 
@@ -68,16 +78,13 @@ async function children(): Promise<Record<string, boolean>> {
 }
 
 /**
- * A Pi package whose entry gives the task `workflows.run` at `version`, as an older workflows. Its phase creates the
+ * The path of an entry that gives the task `workflows.run` at `version`, as an older workflows. Its phase creates the
  * file `old-ran` and waits until the task is aborted.
  */
 async function oldWorkflows(version: number): Promise<string> {
 	const pkg = join(root, "old-workflows");
 	await mkdir(pkg, { recursive: true });
-	await writeFile(
-		join(pkg, "package.json"),
-		JSON.stringify({ name: "old-workflows", type: "module", piDurable: { extensions: ["./index.ts"] } }),
-	);
+	await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "old-workflows", type: "module" }));
 	await writeFile(
 		join(pkg, "index.ts"),
 		`import { writeFileSync } from "node:fs";
@@ -99,12 +106,7 @@ export default function ({ durable }) {
 }
 `,
 	);
-	return pkg;
-}
-
-/** Pi's settings with only the package `pkg`, so the hosts load it in place of the workflows checkout. */
-async function onlyPackage(pkg: string): Promise<void> {
-	await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false }, packages: [pkg] }));
+	return join(pkg, "index.ts");
 }
 
 /** The line of a command that a host of the version `version` of the workflows task refused. */
@@ -282,16 +284,21 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		expect(failed.code).toBe(1);
 		const id = failed.id ?? "";
 
-		await onlyPackage(await oldWorkflows(TASK.version - 1));
-		const fresh = await workflows(["x.js"], { cwd: root });
-		expect([fresh.code, fresh.stdout, fresh.stderr]).toEqual([1, [], [refused(TASK.version - 1)]]);
-		expect(await readdir(runsOf(root))).toEqual([id]);
-		const resumed = await workflows(["resume", id], { cwd: root });
-		expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([1, [], [refused(TASK.version - 1)]]);
-		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "failed" }]);
-		expect(existsSync(join(root, "old-ran"))).toBe(false);
+		// The host started before the command set the entry of this workflows.
+		await setEntries({ workflows: await oldWorkflows(TASK.version - 1) });
+		const host = await startHost();
+		try {
+			const fresh = await workflows(["x.js"], { cwd: root, host });
+			expect([fresh.code, fresh.stdout, fresh.stderr]).toEqual([1, [], [refused(TASK.version - 1)]]);
+			expect(await readdir(runsOf(root))).toEqual([id]);
+			const resumed = await workflows(["resume", id], { cwd: root, host });
+			expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([1, [], [refused(TASK.version - 1)]]);
+			expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "failed" }]);
+			expect(existsSync(join(root, "old-ran"))).toBe(false);
+		} finally {
+			await host.close();
+		}
 
-		await piSettings(root);
 		await writeFile(join(root, "ok"), "");
 		const listed = await workflows(["list"], { cwd: root });
 		expect(listed.stdout).toEqual([`${id} x failed x`]);
@@ -326,7 +333,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 	});
 
 	it("stops a pending run of an earlier version, which ends as orphaned", async () => {
-		await onlyPackage(await oldWorkflows(TASK.version - 1));
+		await setEntries({ workflows: await oldWorkflows(TASK.version - 1) });
 		const id = newRunId();
 		await mkdir(join(runsOf(root), id), { recursive: true });
 		await writeFile(join(runsOf(root), id, "project"), "main\n");
@@ -337,7 +344,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		} finally {
 			await old.close();
 		}
-		await piSettings(root);
+		await setEntries();
 
 		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x earlier-version x`]);
 		const resumed = await workflows(["resume", id], { cwd: root });

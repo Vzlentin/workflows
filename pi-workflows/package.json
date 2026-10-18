@@ -1,0 +1,33 @@
+{
+	"name": "@vzlentin/pi-workflows",
+	"version": "0.1.0",
+	"description": "The workflow tool of workflows in Pi",
+	"keywords": [
+		"pi-package"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Vzlentin/workflows.git",
+		"directory": "pi-workflows"
+	},
+	"type": "module",
+	"files": [
+		"index.ts"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"dependencies": {
+		"@vzlentin/workflows": "0.1.0"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	}
+}
