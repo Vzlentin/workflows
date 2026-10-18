@@ -3,6 +3,7 @@
  * read-only: it takes no write lock, and its close runs no checkpoint, which would make the host wait.
  */
 import { existsSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -89,10 +90,21 @@ class ReadOnlyDatabase implements SqliteDatabase {
 
 export type Store = SqliteStorage;
 
-/** The store at `path`, open for reads, or undefined when it does not exist. */
+/**
+ * The store at `path`, open for reads, or undefined when it does not exist. A store whose schema pi-durable must update
+ * first cannot open read-only; the host of its project updates it when it starts.
+ */
 export async function openStore(path: string): Promise<Store | undefined> {
 	if (!existsSync(path)) return undefined;
-	return SqliteStorage.open(new ReadOnlyDatabase(path));
+	try {
+		return await SqliteStorage.open(new ReadOnlyDatabase(path));
+	} catch (error) {
+		if (!String(error).includes("readonly")) throw error;
+		const project = basename(dirname(path));
+		throw new Error(
+			`${path} needs a schema update that only its harness host makes: start the host once, such as with harness --project ${project} host, and run the command again`,
+		);
+	}
 }
 
 /** `read` on the store at `path`, open for reads; `fallback` when the store does not exist. */

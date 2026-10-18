@@ -553,8 +553,9 @@ workflows stop <run-id>
 ```
 
 `workflows stop` stops a run that runs, from any directory: it aborts the run's task with its child runs, sessions and
-Git steps, prints `stopped <title>; continue with: workflows resume <run-id>` and exits 0. When no host runs, it starts
-the run's host, which continues the run for a moment before the stop reaches it. With `--json`, it prints `{ "runId",
+Git steps, prints `stopped <title>; continue with: workflows resume <run-id>` and exits 0. When no host runs, `stop`
+starts the run's host, and the host resumes the run before the abort reaches it: a `sh` or `ok` command that a host
+stop cut runs again from its start, and an ask that was in progress continues its turn, until the abort stops them. With `--json`, it prints `{ "runId",
 "status": "stopped" }`. A run whose last task has ended prints `workflows: run <run-id> is not running` and exits 1.
 `stop` also stops a pending run of another version of workflows, which no host can run: its task ends as `orphaned`,
 and the command prints `stopped <workflow>, which an earlier version saved; it cannot resume` (or `a later version`). A command that follows a run that `stop` stops prints the
@@ -604,7 +605,9 @@ cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "
 Only the runs that have a run directory with a `project` file are listed.
 
 `list` reads the project store file read-only and does not start the host, so no run continues. It takes no lock that
-the host waits for, and runs no checkpoint of the file.
+the host waits for, and runs no checkpoint of the file. A store whose schema pi-durable must update first cannot open
+read-only: `list`, `show` and `save` then fail with `<store> needs a schema update that only its harness host makes:
+start the host once, such as with harness --project <project> host, and run the command again`.
 
 ## Show
 

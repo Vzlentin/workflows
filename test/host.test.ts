@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, Cursor } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -299,6 +300,21 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		expect(await rootTasks(id)).toEqual([
 			{ status: "terminal", outcome: "failed" },
 			{ status: "terminal", outcome: "completed" },
+		]);
+	});
+
+	it("says to start the host once when the store needs a schema update", async () => {
+		const id = newRunId();
+		await mkdir(join(runsOf(root), id), { recursive: true });
+		await writeFile(join(runsOf(root), id, "project"), "main\n");
+		await mkdir(join(root, "state", "harness", "main"), { recursive: true });
+		new DatabaseSync(storeOf()).close();
+		const shown = await workflows(["show", id], { cwd: root });
+		expect([shown.code, shown.stderr]).toEqual([
+			1,
+			[
+				`workflows: ${storeOf()} needs a schema update that only its harness host makes: start the host once, such as with harness --project main host, and run the command again`,
+			],
 		]);
 	});
 
