@@ -506,9 +506,9 @@ A shipped, blocked or stopped run is final: resume prints the same result and ex
 A run saved by another version of workflows cannot resume. Resume prints `workflows: run <run-id> was saved by an
 earlier version of <workflow> and cannot resume`, or `a later version`, and exits 1. `list` shows these runs as
 `earlier-version` or `later-version`. The host still starts with such a run in its store: it leaves the run pending,
-prints a `warning:` line in its log for an earlier version, and continues the others. While such a run is pending, the
-host does not exit when it is idle. Runs saved
-before runs moved into the harness host stay in their run directories, and no command reads them.
+prints a `warning:` line in its log for an earlier version, and continues the others. Such a run does not keep the
+host from exiting when it is idle. Runs saved before runs moved into the harness host stay in their run directories,
+and no command reads them.
 
 ### Ctrl+C and stop
 
@@ -571,7 +571,7 @@ argument, such as the work item for ship and the goal for campaign, or else the 
 `unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
 
 `list` reads the project store file and does not start the host, so no run continues. It takes short write locks on
-the store, which the host waits up to 5 seconds for, and `list` waits up to 60 seconds for the host.
+the store. The host and `list` wait up to 60 seconds for each other's locks.
 
 ## Show
 
