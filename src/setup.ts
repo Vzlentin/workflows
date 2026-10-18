@@ -68,8 +68,8 @@ export function fixPrefix(dir: string): string | undefined {
 
 /**
  * Checks harness for the package in `dir`. When it is missing or older than the range and `dir` is a top-level global
- * install, it installs harness into the prefix of `dir` and checks again. A newer harness is never replaced. Returns the error line that remains, or
- * undefined when harness fits.
+ * install, it installs harness into the prefix of `dir` and checks again. A newer harness is never replaced. Returns
+ * the error line that remains, or undefined when harness fits.
  */
 export function ensureHarness(dir: string): string | undefined {
 	if (harnessProblem(dir) === undefined) return undefined;
