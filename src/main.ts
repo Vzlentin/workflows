@@ -330,7 +330,12 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 	const listed: Listed[] = [];
 	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
 		const latest = tasks.at(-1);
-		if (latest === undefined || !current(latest)) continue;
+		if (latest === undefined) continue;
+		if (!current(latest)) {
+			const { name, later } = savedBy(latest);
+			listed.push({ runId: id, workflow: name, title: name, status: later ? "later-version" : "earlier-version" });
+			continue;
+		}
 		const { input, state } = latest;
 		const done = state.status === "terminal" && state.outcome.status === "completed";
 		const status = done ? (script.statusOf(state.outcome.result) ?? "done") : "unfinished";
@@ -483,13 +488,18 @@ function checked(
 ): TaskRecord<script.ScriptInput, JsonValue, JsonValue> {
 	if (latest === undefined) throw new Error(`run ${id} has no workflow`);
 	if (current(latest)) return latest;
+	const { name, later } = savedBy(latest);
+	throw new Error(`run ${id} was saved by ${later ? "a later" : "an earlier"} version of ${name} and cannot ${verb}`);
+}
+
+/** The workflow of the task `latest` that another version saved, and whether that version is later. */
+function savedBy(latest: TaskRecord<JsonValue, JsonValue, JsonValue>): { name: string; later: boolean } {
 	// A script task of an earlier version names its workflow in its input, which some versions wrapped as `{ input }`;
 	// an earlier task kind names it in the kind.
 	const { input } = latest;
 	const saved = script.isObject(input) && script.isObject(input.input) ? input.input : input;
 	const name = script.isObject(saved) && typeof saved.name === "string" ? saved.name : latest.kind.slice(PREFIX.length);
-	const word = latest.kind === TASK.name && latest.version > TASK.version ? "a later" : "an earlier";
-	throw new Error(`run ${id} was saved by ${word} version of ${name} and cannot ${verb}`);
+	return { name, later: latest.kind === TASK.name && latest.version > TASK.version };
 }
 
 /** `12s`, `3m05s` or `1h02m`. */

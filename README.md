@@ -504,8 +504,10 @@ whose answer did not call `respond`. A resumed ask never returns the answer of a
 A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
 
 A run saved by another version of workflows cannot resume. Resume prints `workflows: run <run-id> was saved by an
-earlier version of <workflow> and cannot resume`, or `a later version`, and exits 1. `list` does not show these runs.
-The host still starts with such a run in its store: it leaves the run pending and continues the others. Runs saved
+earlier version of <workflow> and cannot resume`, or `a later version`, and exits 1. `list` shows these runs as
+`earlier-version` or `later-version`. The host still starts with such a run in its store: it leaves the run pending,
+prints a `warning:` line in its log for an earlier version, and continues the others. While such a run is pending, the
+host does not exit when it is idle. Runs saved
 before runs moved into the harness host stay in their run directories, and no command reads them.
 
 ### Ctrl+C and stop
@@ -561,7 +563,9 @@ workflows list --json
 runs are not listed: they are tasks of their caller. The title is the subject of the first `text`
 argument, such as the work item for ship and the goal for campaign, or else the script name. A finished run has the
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
-`done` when the result has no `status`. Any other run, also a failed one, is `unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
+`done` when the result has no `status`. A run that another version of workflows saved is `earlier-version` or
+`later-version`, with its workflow name as its title: it cannot resume. Any other run, also a failed one, is
+`unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
 
 `list` reads the project store file and does not start the host, so no run continues. It takes short write locks on
 the store: the host waits up to 60 seconds for them, and `list` waits for the host the same way.

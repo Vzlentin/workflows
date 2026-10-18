@@ -585,7 +585,7 @@ describe("workflows show", () => {
 });
 
 describe("workflows resume of ship runs", () => {
-	it("refuses and does not list a run that the earlier ship or run command saved", async () => {
+	it("refuses a run that another version saved, and lists it as such", async () => {
 		const ship = await saveRun("workflows.ship", TASK.version);
 		// The script task owns the task kind of the earlier `run` command, so only its version can be earlier.
 		const run = await saveRun("workflows.run", TASK.version - 1);
@@ -623,7 +623,10 @@ describe("workflows resume of ship runs", () => {
 			]);
 		}
 		const listed = await workflows(["list"], { cwd: repo });
-		expect(listed.stdout).toEqual([]);
+		const word = (id: string) => (id === later ? "later-version" : "earlier-version");
+		const all = [ship, run, script, wrapped, later].sort().reverse();
+		const names: Record<string, string> = { [ship]: "ship", [run]: "run", [script]: "ship", [wrapped]: "campaign" };
+		expect(listed.stdout).toEqual(all.map((id) => `${id} ${names[id] ?? "ship"} ${word(id)} ${names[id] ?? "ship"}`));
 		const unknown = await workflows(["show", "20990101T000000-00000000"], { cwd: repo });
 		expect([unknown.code, unknown.stdout, unknown.stderr]).toEqual([
 			1,
@@ -648,7 +651,17 @@ describe("workflows resume of ship runs", () => {
 			await storage.close(BACKGROUND_CONTEXT);
 		}
 		const listed = await workflows(["list"], { cwd: repo });
-		expect(listed.stdout).toEqual([`${run.id} stdin done stdin`]);
+		const lines: Record<string, string> = {
+			[run.id ?? ""]: `${run.id} stdin done stdin`,
+			[earlier]: `${earlier} ship earlier-version ship`,
+			[later]: `${later} ship later-version ship`,
+		};
+		expect(listed.stdout).toEqual(
+			Object.keys(lines)
+				.sort()
+				.reverse()
+				.map((id) => lines[id]),
+		);
 	});
 
 	it("continues a turn interrupted by Ctrl+C from the saved inputs", async () => {
