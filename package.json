@@ -55,5 +55,8 @@
 		"@vzlentin/harness": {
 			"optional": true
 		}
-	}
+	},
+	"retiredPiPackages": [
+		"npm:@vzlentin/pi-workflows"
+	]
 }

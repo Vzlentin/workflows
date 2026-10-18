@@ -5,14 +5,19 @@ import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { harnessProblem } from "./harness.ts";
 import { terminalRedraw } from "./progress.ts";
 import { CtrlC } from "./run.ts";
+import { ensureHarness, PACKAGE, setupOnce } from "./setup.ts";
 
-// `main.ts` imports harness, so the command checks that the harness install fits before it loads `main.ts`.
-const problem = harnessProblem(import.meta.url);
+// `main.ts` imports harness, so the command checks harness before it loads `main.ts`. An installed command installs a
+// missing harness and finishes the setup once per version, as npm 12 runs no install script; a checkout does neither.
+const installed = import.meta.url.endsWith(".js");
+const problem = installed ? ensureHarness(PACKAGE) : harnessProblem(PACKAGE);
 
 if (problem !== undefined) {
 	process.stderr.write(`${problem}\n`);
 	process.exit(1);
 }
+
+if (installed) await setupOnce(PACKAGE);
 
 const { main } = await import("./main.ts");
 

@@ -21,14 +21,13 @@ npm install -g @vzlentin/workflows
 ```
 
 This gives you the `workflows` command, and the `workflow` tool in Pi. workflows runs on the global install of
-[harness](https://github.com/Vzlentin/harness): the install adds `@vzlentin/harness` when it is missing or too old,
-so you also get the `harness` command and harness's `subagent` tool in Pi. There is only one copy of harness.
+[harness](https://github.com/Vzlentin/harness), so the setup adds `@vzlentin/harness` when it is missing or too old,
+with the `harness` command and harness's `subagent` tool in Pi. There is only one copy of harness.
 
-The install registers the Pi extension of each package with `pi install <path>`, where `<path>` is the `pi` folder of
-the global package, and `pi list` shows it. When `pi` is not on your `PATH`, run
-`pi install "$(realpath "$(npm root -g)")/@vzlentin/workflows/pi"` later. With `--prefix`, give the same prefix to every
-`npm` command. Recent npm versions warn that the install scripts are not in `allow-scripts`; add
-`--allow-scripts=@vzlentin/workflows,@vzlentin/harness` to allow them.
+The setup runs after the install with npm 11. npm 12 runs no install script by default, so your first `workflows`
+command does the setup. It registers the `pi` folder of each global package in Pi with `pi install <path>`. npm shows
+the output of the install only with `--foreground-scripts`, so check the result with `workflows list` and `pi list`.
+When you install with `--prefix`, give the same prefix to every `npm` command.
 
 ### Update and remove
 
@@ -44,11 +43,13 @@ stops by itself after 5 minutes with no work.
 
 ### Move from 0.1.0
 
-0.1.0 had separate Pi packages, and its own copy of harness. Remove the Pi packages, then install again:
+0.1.0 had the separate Pi packages `@vzlentin/pi-workflows` and `@vzlentin/pi-subagent`, and its own copy of harness.
+Install 0.2.0 as above: the setup removes the two Pi packages from Pi. Pi does not start while one of them and the
+new extension are both installed, so run a `workflows` command before you start Pi. To remove them by hand:
 
 ```sh
-pi remove npm:@vzlentin/pi-workflows npm:@vzlentin/pi-subagent
-npm install -g @vzlentin/workflows@latest
+pi remove npm:@vzlentin/pi-workflows
+pi remove npm:@vzlentin/pi-subagent
 ```
 
 ### Move from the Pi git install

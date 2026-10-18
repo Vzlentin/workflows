@@ -1,10 +1,10 @@
 /**
  * The harness install that workflows needs. workflows has no copy of harness: `@vzlentin/harness` is an optional peer
  * dependency, and a global install of workflows finds the global install of harness next to it. The command and the
- * postinstall check it here, before anything imports a harness module.
+ * setup check it here, before anything imports a harness module.
  */
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
@@ -13,7 +13,7 @@ export const HARNESS = "@vzlentin/harness";
 
 /**
  * The entry of workflows that the harness host loads: `dist/entry.js`, or `src/entry.ts` in a checkout. The command and
- * the postinstall set it in harness's `entries.json`.
+ * the setup set it in harness's `entries.json`.
  */
 export const ENTRY = fileURLToPath(
 	new URL(import.meta.url.endsWith(".ts") ? "./entry.ts" : "./entry.js", import.meta.url),
@@ -26,10 +26,10 @@ const MANIFEST = Type.Object({
 
 type Manifest = Static<typeof MANIFEST>;
 
-/** The `package.json` at `url`, or undefined when it is missing or not a manifest. */
-function manifest(url: string | URL): Manifest | undefined {
+/** The `package.json` at `path`, or undefined when it is missing or not a manifest. */
+export function manifest(path: string | URL): Manifest | undefined {
 	try {
-		const parsed = JSON.parse(readFileSync(url, "utf8"));
+		const parsed = JSON.parse(readFileSync(path, "utf8"));
 
 		return Value.Check(MANIFEST, parsed) ? parsed : undefined;
 	} catch {
@@ -46,17 +46,19 @@ export function harnessRange(): string {
 	return range;
 }
 
-/** The version of the harness that a module at `from` (a path or file URL) imports, or undefined when none resolves. */
-export function harnessVersion(from: string | URL): string | undefined {
-	let path: string;
+/**
+ * The folder of the harness that the package in `dir` imports, as Node looks it up in the `node_modules` folders of
+ * `dir` and its parents, or undefined. It reads the folders without Node's resolver, which keeps what it did not find,
+ * so an import after a harness install in the same process still finds harness.
+ */
+export function harnessDir(dir: string): string | undefined {
+	for (let parent = dir; ; parent = dirname(parent)) {
+		const candidate = join(parent, "node_modules", HARNESS);
 
-	try {
-		path = createRequire(from).resolve(`${HARNESS}/package.json`);
-	} catch {
-		return undefined;
+		if (basename(parent) !== "node_modules" && existsSync(join(candidate, "package.json"))) return candidate;
+
+		if (dirname(parent) === parent) return undefined;
 	}
-
-	return manifest(path)?.version;
 }
 
 const VERSION = /^(\d+)\.(\d+)\.(\d+)$/;
@@ -88,22 +90,23 @@ export function inRange(version: string, range: string): boolean {
 	return true;
 }
 
-/** The command that installs a harness in `range`. */
-export function installCommand(range: string): string {
-	return `npm install -g ${HARNESS}@${range}`;
+/** The command that installs a harness in `range`, with `--prefix <prefix>` when `prefix` is given. */
+export function installCommand(range: string, prefix: string | undefined): string {
+	return `npm install -g ${prefix === undefined ? "" : `--prefix ${prefix} `}${HARNESS}@${range}`;
 }
 
 /**
- * The error line when the module at `from` (a path or file URL) cannot import a harness in the range of workflows, or
- * undefined when it can.
+ * The error line when the package in `dir` cannot import a harness in the range of workflows, or undefined when it
+ * can. The install command has `--prefix <prefix>` when `prefix` is given.
  */
-export function harnessProblem(from: string | URL): string | undefined {
+export function harnessProblem(dir: string, prefix?: string): string | undefined {
 	const range = harnessRange();
-	const version = harnessVersion(from);
+	const found = harnessDir(dir);
+	const version = found === undefined ? undefined : manifest(join(found, "package.json"))?.version;
 
-	if (version === undefined) return `workflows needs ${HARNESS} ${range}: ${installCommand(range)}`;
+	if (version === undefined) return `workflows needs ${HARNESS} ${range}: ${installCommand(range, prefix)}`;
 
 	if (inRange(version, range)) return undefined;
 
-	return `workflows needs ${HARNESS} ${range}, found ${version}: ${installCommand(range)}`;
+	return `workflows needs ${HARNESS} ${range}, found ${version}: ${installCommand(range, prefix)}`;
 }
