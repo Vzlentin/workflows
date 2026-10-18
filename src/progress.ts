@@ -6,6 +6,9 @@
  */
 import type { Io } from "./run.ts";
 
+/** The document kind of the progress of a run in the project store. */
+export const PROGRESS_KIND = "workflows.progress";
+
 /** A `phase` or `log` line of the run `run`, whose caller is `parent`, or the end of the run `run`. */
 export type ProgressEvent =
 	| { readonly kind: "phase" | "log"; readonly run: string; readonly parent: string | null; readonly text: string }

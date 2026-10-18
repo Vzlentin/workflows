@@ -22,6 +22,11 @@
 			"./extensions/subagent.ts"
 		]
 	},
+	"piDurable": {
+		"extensions": [
+			"./src/entry.ts"
+		]
+	},
 	"engines": {
 		"node": ">=22.19.0"
 	},

@@ -3,10 +3,11 @@
 `workflows ship` ships one work item onto a new branch through [Pi](https://github.com/earendil-works/pi) sessions.
 `workflows campaign` splits a goal into work items and ships them one after another onto one branch.
 `workflows optimize ship` searches for better ship prompts over a set of work items. The run is
-headless and resumable. [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) runs the sessions,
-model calls and tool calls, and stores the progress of the run.
+headless and resumable. It runs in the [harness](https://github.com/Vzlentin/harness) host of its project, whose
+[pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) store keeps the sessions, model calls, tool
+calls and the progress of the run. See [Runs in the harness host](#runs-in-the-harness-host).
 
-`src/` is the engine that runs workflows: run directories, the durable store, sessions, retries, resume and
+`src/` is the engine that runs workflows: run directories, the script task, sessions, retries, resume and
 workflow scripts. Every workflow script is a command: `workflows <wf>` runs `workflows/<wf>.js`, and the `meta` at
 the top of the script declares its arguments. See [Workflow scripts](#workflow-scripts). `workflows/ship.js` and
 `workflows/campaign.js` are scripts of the package. `ship` selects the repository and creates the worktree, through its
@@ -32,10 +33,14 @@ GitHub repositories also need an authenticated `gh`.
 ```sh
 npm ci
 npm run build
+pi install "$PWD"
 node dist/cli.js ship plan.md
 ```
 
-`npm link` installs the `workflows` command from this checkout.
+`npm link` installs the `workflows` command from this checkout. Runs execute in the harness host, which loads
+workflows as a Pi package, so Pi's settings must list the checkout (`pi install <dir>`) or the
+[Pi package](#pi-package). Otherwise a start fails with `workflows: Unknown task kind: workflows.run: the harness host
+does not load workflows; add it to Pi with pi install`, and no run directory stays.
 
 ## Ship
 
@@ -242,18 +247,18 @@ of the package and of the project folder `.workflows/` of the current directory,
 repository. See [Workflow scripts](#workflow-scripts). A project `agents/planner.md`, for example, gives the planner
 another model.
 
-Sessions use Pi's providers and credentials from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers
-that Pi extension packages register, such as `cursor`. Their system prompt has the `AGENTS.md` instructions and skills
-that Pi loads for the worktree.
+Sessions are children of harness's children library in the harness host of the run's project, and use the host's
+providers and credentials: Pi's, from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers that Pi
+extension packages register, such as `cursor`. Their system prompt has the `AGENTS.md` instructions and skills that Pi
+loads for the worktree, as harness gives its children: project skills only in a project that Pi trusts.
 
-The tools are `read`, `grep`, `find`, `ls`, `write`, `edit` and `bash`, plus the tools of the packages in Pi's
-settings that declare `"piDurable": { "extensions": [...] }`, such as pi-ipython and pi-rlm, and the tools of the harness
-that workflows installs, through jiti, unless Pi's settings have a separate harness package. Git packages and local
-package directories are supported. Packages installed from npm are not supported, because Node does not strip types
-from TypeScript files under `node_modules`. The run does not install missing packages, and it loads the packages
-again at each resume. A package entry that fails to load fails the start or resume with `workflows: <error>`. Each
-entry's `close()` runs when the command ends, also after Ctrl+C and when the start or resume fails, and an error from
-it prints a `warning:` line.
+The tools are `read`, `grep`, `find`, `ls`, `write`, `edit` and `bash`, harness's `subagent` tool, and the tools of
+the packages in Pi's settings that declare `"piDurable": { "extensions": [...] }`, such as pi-ipython and pi-rlm. The
+host loads these packages once, when it starts, so a package installed later reaches the runs of a project after its
+host restarts. A subagent that a session spawns is a child of that session.
+
+A session of a run is at depth 1 of harness's tree of children, under the run, and its subagents at depth 2, the
+deepest that harness allows.
 
 ## Workflow scripts
 
@@ -275,7 +280,7 @@ workflows check review
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `list`, `show`, `save` and `check` are commands, so no script of these names can run. Bad usage of a
+`resume`, `stop`, `list`, `show`, `save` and `check` are commands, so no script of these names can run. Bad usage of a
 command prints `workflows: <error>`, then `usage:` and the usage line of that command, such as `usage: workflows
 show <run-id> [--json]`, and exits 2.
 
@@ -335,7 +340,8 @@ call, and a dynamic call such as `prompts[name]()` is not scanned.
 ### Output
 
 The command prints `run <run-id>` on stdout, then each `phase` and `log` line on stderr when the script's next call
-runs, or when the script ends. See [Progress](#progress). When the script returns a result with `report`, a list of lines, the command prints
+runs, or when the script ends. The script runs in the host, which saves these lines in the project store, and the
+command reads them from the store file about every 0.5 s. See [Progress](#progress). When the script returns a result with `report`, a list of lines, the command prints
 those lines on stdout. Otherwise it prints the return value: a string as it is, and any other value as JSON. The exit
 code comes from `meta.exit`. With `--json`, stdout gets one JSON outcome line in place of the lines. See
 [JSON output](#json-output).
@@ -352,7 +358,7 @@ When the caller has no step then, the child run moves under the caller's next st
 stderr in one of three ways:
 
 - On a terminal, the command draws the tree again in place at each change. A step is `◉` while it runs, `✓` when it
-  is done, and `✗` when its run failed or was interrupted. Each line is cut to the width of the terminal. When another
+  is done, and `✗` when its run failed or was stopped. Each line is cut to the width of the terminal. When another
   line, such as a warning, comes between two draws, the lines above it stay, and the changed lines print again below
   it.
 - When stderr is not a terminal, and without `--json`, each step and log line prints once as it comes, with its indent
@@ -362,9 +368,10 @@ stderr in one of three ways:
   The [Pi tool](#the-workflow-tool) draws the last of these lines, so Pi shows the same steps as a terminal.
 
 When the run ends, the steps that still run become `✓` when the run finished, and `✗` when it failed or was
-interrupted. On a terminal and with `--json`, the tree draws once more then. `<title>` is the subject of the first `text`
-argument, or else the file name without `.js`, the workflow name, or `stdin`. The run's task ends as failed, and its
-saved calls stay in the run's store for the resume. `workflows show <run-id>` shows the failed call. See [Show](#show).
+stopped. A command that Ctrl+C detaches leaves them as they are. On a terminal and with `--json`, the tree draws once
+more then. A command that follows a run shows only the lines that come after it starts or reaches the run. `<title>`
+is the subject of the first `text` argument, or else the file name without `.js`, the workflow name, or `stdin`. The
+run's task ends as failed, and its saved calls stay in the project store for the resume. `workflows show <run-id>` shows the failed call. See [Show](#show).
 
 `workflows/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
 workflows campaign, which give it the start commit`. `run("ship", { repo })` gets its own worktree and `start`, as
@@ -375,10 +382,11 @@ directory and can commit there.
 ### Child runs
 
 `run(name, args)` starts a child run of the script `name` of the caller's saved scripts. The child run has its own run
-ID and run directory, but no store: it is a child task of the caller's task, in the caller's store. So `workflows list`
-does not show it, and `workflows resume <child-id>` prints `workflows: no run <child-id> in <runs>`. A resume of the
-caller continues it. It runs in the same process, and its `phase` and `log` lines go to the same stderr, under the
-caller's current step: see [Progress](#progress). It prints no `run` or report line.
+ID and run directory, but no `project` file: it is a child task of the caller's task. So `workflows list` does not show
+it, and `workflows resume <child-id>` prints `workflows: no run <child-id> in <runs>`. A resume of the caller
+continues it. It runs in the same host, and its `phase` and `log` lines go to the same stderr, under the caller's
+current step: see [Progress](#progress). It prints no `run` or report line. Its sessions belong to the child run, and
+its end ends them as the end of a run does: see [Runs in the harness host](#runs-in-the-harness-host).
 
 - The child's args are the defaults of its `meta.args`, then `args`, without `repo`, `base` and `prompts`. They are not
   checked against `meta`, so an undeclared arg reaches the script.
@@ -404,8 +412,8 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 |---|---|
 | `args` | The argument values of `meta.args`, and `start` with `worktree: true` |
 | `runId`, `runDir` | The run ID and the run directory. A script that `run()` starts gets its own values |
-| `agent(prompt, { as, schema })` | One turn in a new session of profile `as` (default `default`). Returns the reply text, or the answer with `schema` |
-| `session(profile)` | A new session of `profile` (default `default`). `.ask(prompt, { schema })` is one turn in it |
+| `agent(prompt, { as, provider, model, thinking, schema })` | One turn in a new session of profile `as` (default `default`), with the model of [Agent profiles](#agent-profiles). Returns the reply text, or the answer with `schema` |
+| `session(profile)`, `session({ as, provider, model, thinking })` | A new session of the profile (default `default`), with the model of [Agent profiles](#agent-profiles). `.ask(prompt, { schema })` is one turn in it |
 | `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
 | `ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `run(name, args)` | Runs the script `name` of `workflows/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
@@ -432,10 +440,17 @@ the same calls each time it runs.
 
 ### Agent profiles
 
-`agents/<name>.md` is the profile of `agent(..., { as: name })` and `session(name)`. Its frontmatter gives `model`
-as `<provider>/<id>` and `thinking`. Its body, without frontmatter, is added to the session's system prompt. Every
-profile gets the same tools as the ship sessions. `agents/default.md` uses `anthropic/claude-opus-5-5` with thinking
-`medium`.
+`agents/<name>.md` is the profile of `agent(..., { as: name })`, `session(name)` and `session({ as: name })`. Its
+frontmatter gives `model` as `<provider>/<id>` and `thinking`, both optional. Its body, without frontmatter, is the
+session's instructions in its system prompt. Every profile gets the same tools as the ship sessions.
+`agents/default.md` uses `anthropic/claude-opus-5-5` with thinking `medium`.
+
+A call can give `provider`, `model` and `thinking`. Each field that the call gives overrides the profile, and the
+profile fills the rest. A session without a provider or a model from the call or the profile takes the model of the
+project agent of harness (Pi's default model), and without a thinking level it takes the project agent's level,
+cut to the nearest level that the model has. A model that the host's model registry does not have, or a `thinking`
+level that the model does not have, fails the `session` call with harness's error, such as `Unknown model:
+anthropic/nope`.
 
 ### Saved inputs and resume
 
@@ -448,8 +463,8 @@ again. A call is known by its name, its arguments and its position among identic
 continues in its session. A command that was in progress runs again, so commands must be safe to repeat. Each call
 records its kind, arguments, phase and start time when it starts, and its end time with its result or its error when
 it ends. A call that fails saves no result, so every call that failed runs again, also one that the script caught. The
-saved results stay in the run's store also after the run fails. `phase` and `log` lines are not saved. A resume prints the
-phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
+saved results stay in the project store also after the run fails. `phase` and `log` lines are progress, not saved
+results. A resume prints the phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
 lines before it, and keeps the last `phase` line waiting for the next call that runs.
 
 ## Resume
@@ -459,44 +474,54 @@ workflows resume <run-id>
 ```
 
 `workflows resume` finds the workflow that the run saved and continues the run. A run of a workflow script continues
-with the script that the run saved.
+with the script that the run saved. The `project` file of the run directory names the run's project, so resume reaches
+the host of that project from any directory.
 
-Ctrl+C stops the run and keeps it resumable: the command prints `interrupted; continue with: workflows resume
-<run-id>` and exits 130. Ctrl+C also stops a Git step that is
-running, and resume runs that step again. A second Ctrl+C exits at once.
+Resume continues the pending work in the host. For a script, see [Saved inputs and resume](#saved-inputs-and-resume).
+For `ship`, it uses the work item, repository, start commit, `workflows/ship.js`, prompts, profiles and round limit
+that the run saved before it started. `campaign` does the same with its goal and `workflows/campaign.js`: the split,
+the shipped items and the requeues are not run again. It does not read the work item file again, select or clone the
+repository again, or create another branch. Answered turns are not sent to the model again. A turn that was in
+progress is sent again.
 
-Resume opens the run's store and continues the pending work. For a script, see [Saved inputs and
-resume](#saved-inputs-and-resume). For `ship`, it uses the work item, repository, start commit, `workflows/ship.js`,
-prompts, profiles and round limit that the run saved before it started. `campaign` does the same with its goal and
-`workflows/campaign.js`: the split, the shipped items and the requeues are not run again. It does not read the work
-item file again, select or clone the repository again, or create another branch. Answered turns are not sent to the
-model again. A turn that was in progress is sent again.
+A run has one live task at a time. When the run's last task has not ended, because it runs in the host or waits for
+the host to start, resume follows that task: it starts the host when none runs, prints the progress lines that come
+after it, and the outcome. A host that starts continues the unfinished runs of its project on its own.
 
 A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows resume <run-id>`, and
 exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. The run's task ends as
-failed. Resume runs the script again in a new task of the same run: a failed Git step runs again, a failed turn is sent
-again in the same session, saved calls return their results, and child runs continue. A run whose task ended in
-another way, such as an aborted, faulted or orphaned task, resumes in the same way. An ask whose answer stopped for a
-reason other than its end, such as its length, fails its call, and a resume asks again. So does an ask whose answer
-did not call `respond`. A resumed ask never returns the answer of another ask in its session.
+failed. Resume runs the script again in a new task of the same run, with the same input: a failed Git step runs again,
+a failed turn is sent again in the same session, saved calls return their results, and child runs continue. A run whose
+task ended in another way, such as a stopped, faulted or orphaned task, resumes in the same way. An ask whose answer
+stopped for a reason other than its end, such as its length, fails its call, and a resume asks again. So does an ask
+whose answer did not call `respond`. A resumed ask never returns the answer of another ask in its session.
 
 A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
 
-A run saved before every workflow script became a command, such as a run of the earlier `workflows ship`,
-`workflows campaign` or `workflows run`, or before `run()` started child runs, such as an earlier `workflows optimize`
-run, or before a child run became a task in the caller's store, or before a failed run kept its task, or before saved
-calls moved to documents, or before calls recorded their start and end, or before `respond` saved its answer, cannot
-resume:
-resume prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot resume` and exits 1.
-`list` does not show these runs. A run saved by a later version cannot resume either: resume prints `workflows: run
-<run-id> was saved by a later version of <workflow> and cannot resume` and exits 1.
+A run saved by another version of workflows cannot resume. Resume prints `workflows: run <run-id> was saved by an
+earlier version of <workflow> and cannot resume`, or `a later version`, and exits 1. `list` does not show these runs.
+The host still starts with such a run in its store: it leaves the run pending and continues the others. Runs saved
+before runs moved into the harness host stay in their run directories, and no command reads them.
 
-Only one process runs a run at a time. When another process runs the run, `resume` prints `workflows: run <run-id>
-is running` and exits 1, and does not open the run's store. The lock ends with the process that holds it, also when
-that process is killed.
+### Ctrl+C and stop
 
-Model requests use Pi's retry, stream timeout and compaction settings from its `settings.json`. The project's
-`.pi/settings.json`, with its packages and these settings, counts only when Pi trusts the project.
+The run goes on in the host after the command ends. Ctrl+C detaches the command: it prints `detached; run <run-id>
+goes on. Follow it with: workflows resume <run-id>. Stop it with: workflows stop <run-id>` and waits 2 s for a second
+Ctrl+C. Without one, it exits 130. A second Ctrl+C in those 2 s stops the run: the run's task ends as stopped, and the
+command prints `stopped <title>; continue with: workflows resume <run-id>` and exits 130. A third Ctrl+C exits at once.
+
+```sh
+workflows stop <run-id>
+```
+
+`workflows stop` stops a run that runs, from any directory: it starts the run's host when none runs, aborts the run's
+task with its child runs, sessions and Git steps, prints `stopped <title>; continue with: workflows resume <run-id>`
+and exits 0. With `--json`, it prints `{ "runId", "status": "stopped" }`. A run whose last task has ended prints
+`workflows: run <run-id> is not running` and exits 1. A command that follows a run that `stop` stops prints the
+`stopped` line and exits 130. A stopped run resumes in a new task.
+
+Model requests use the retry, stream timeout and compaction settings of Pi's `settings.json` in `~/.pi/agent`, as the
+host reads them. The `.pi/settings.json` of the run's directory does not count.
 
 ## JSON output
 
@@ -512,10 +537,11 @@ line of JSON in place of the report lines, `{ "runId", "status", "result"?, "rep
   for ship. The [Ship](#ship) section lists the fields of a ship result. `report` is the list of report lines that
   the command prints without `--json`, such as `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4"]`.
 - `failed`: `error` is the error message.
-- `interrupted`: Ctrl+C stopped the run.
+- `detached`: Ctrl+C detached the command, and the run goes on in the host.
+- `stopped`: a second Ctrl+C or `workflows stop` stopped the run.
 
-The JSON line replaces the `failed`, `continue with` and `interrupted` lines on stderr, so each stderr line is a
-`{"progress":[...]}` line of the run, see [Progress](#progress), or a warning. The exit codes do not change. An error before the run exists, such as
+The JSON line replaces the `failed`, `continue with`, `detached` and `stopped` lines on stderr, so each stderr line is
+a `{"progress":[...]}` line of the run, see [Progress](#progress), or a warning. The exit codes do not change. An error before the run exists, such as
 bad usage, prints no `run <run-id>` line and no JSON line.
 
 ## List
@@ -525,14 +551,15 @@ workflows list
 workflows list --json
 ```
 
-`workflows list` prints one line for each run in the runs directory, newest run ID first: `<run-id> <workflow>
-<status> <title>`. `<workflow>` is the script name. Child runs are not listed: they are in the store of their caller. The title is the subject of the first `text`
+`workflows list` prints one line for each run of the harness project of the current directory, newest run ID first:
+`<run-id> <workflow> <status> <title>`. Runs of other projects are not listed. `<workflow>` is the script name. Child
+runs are not listed: they are tasks of their caller. The title is the subject of the first `text`
 argument, such as the work item for ship and the goal for campaign, or else the script name. A finished run has the
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
 `done` when the result has no `status`. Any other run, also a failed one, is `unfinished`. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
 
-`list` does not load Pi packages, and no run continues. It takes short write locks on the stores: a live run waits up
-to 60 seconds for them, and `list` waits for the run the same way.
+`list` reads the project store file and does not start the host, so no run continues. It takes short write locks on
+the store: the host waits up to 60 seconds for them, and `list` waits for the host the same way.
 
 ## Show
 
@@ -541,7 +568,7 @@ workflows show <run-id>
 workflows show <run-id> --json
 ```
 
-`workflows show` prints one run as a tree of its phases and calls, from its store:
+`workflows show` prints one run as a tree of its phases and calls, from the store of its project:
 
 ```text
 run <run-id> <workflow> <status> <title>
@@ -570,10 +597,10 @@ object with the same tree: `{ "runId", "workflow", "title", "status", "report"?,
 times. `phase` is `null` before the first phase line. The `result` of a `run` call is `{ "runId", "result" }`, with the
 result of its child run, and its `calls` are the calls of the child run.
 
-`show` exits 0 for every run it can show. It reads the store through pi-durable's storage functions, as `list` does,
-and does not load Pi packages. It takes short write locks on the store: a run that goes on in another process waits up
-to 60 seconds for them, and `show` waits for the run the same way. An
-unknown run ID prints the `no run` error of `resume`. A run saved by an earlier version prints `workflows: run
+`show` exits 0 for every run it can show. It reads the project store through pi-durable's storage functions, as `list`
+does, and does not start the host. It takes short write locks on the store: the host waits up to 60 seconds for them,
+and `show` waits for the host the same way. An unknown run ID, or a run directory without a `project` file, prints the
+`no run` error of `resume`. A run saved by an earlier version prints `workflows: run
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
 as no run ID, prints `usage: workflows show <run-id> [--json]` and exits 2.
@@ -600,13 +627,36 @@ with its `export const meta` header. Only the script is saved: no prompts, agent
   replace it with --force` and exits 1. With `--force`, the file replaces the project script of the name, or adds a
   project script before the package script of the name.
 
-`save` reads the store as `show` does: it takes no run lock and does not load Pi packages. It exits 0 when it wrote
-the file. `--json` has no effect.
+`save` reads the project store as `show` does, and does not start the host. It exits 0 when it wrote the file. `--json`
+has no effect.
+
+## Runs in the harness host
+
+A run executes in the [harness](https://github.com/Vzlentin/harness) host of a project, as a task of the `piDurable`
+entry of workflows, `src/entry.ts`. harness picks the project from the current directory of the command (or
+`HARNESS_PROJECT`): the project with the longest directory that contains it, or `main`. One host runs per project,
+with one store, `$XDG_STATE_HOME/harness/<project>/durable.sqlite`, that holds the project agent, its subagents, and
+the runs of the project with their saved calls and sessions. The command is a client: it prepares the run (the
+arguments, the run ID, the run directory and the worktree), writes the project to the `project` file of the run
+directory, starts the host when none runs, asks it to start the run's task, and follows the run. `resume`, `stop`,
+`show` and `save` read the `project` file, so they reach the run's project from any directory.
+
+- The host loads workflows and the other `piDurable` packages of Pi's settings when it starts. A host that started with
+  another version of workflows runs that version until it restarts. A host of a project inherits the environment of
+  the command that starts it, so `sh` and `ok` calls and the sessions' tools see that environment.
+- `sh` and `ok` run in the host's process. A host that stops, or crashes, stops its runs, and the host continues them
+  when it starts again.
+- The sessions of a run are children of the run's task in harness's children library, keyed `wf:<run-id>/<call
+  key>`. The task of each resume finds the sessions of the earlier tasks of the run. When the run completes, its task
+  closes its sessions and their subagents. When it fails or stops, it closes only what is under its sessions, such as
+  their subagents, and stops the turns of its sessions, which stay for a resume.
+- Each try of a run is a task that harness starts with the key `wf:<run-id>#<n>`, from 1.
 
 ## Pi package
 
 The package is also a Pi package. Its `pi` field in `package.json` declares the extensions `extensions/workflows.ts`
-and `extensions/subagent.ts`.
+and `extensions/subagent.ts`, and its `piDurable` field declares `src/entry.ts`, which the harness hosts load to run
+workflows.
 Add it to Pi from its Git URL, like other Pi packages:
 
 ```sh
@@ -620,7 +670,8 @@ pi update --extension https://github.com/Vzlentin/workflows
 ```
 
 The Pi package needs no build. Pi installs the dependencies, and the extension runs the CLI from its TypeScript
-source. Node strips the types, because a git package is not under `node_modules`. In a checkout, the `workflows`
+source. Node strips the types, because a git package is not under `node_modules`. The CLI loads harness's client from
+`node_modules/harness` through jiti, and starts the host through `node_modules/harness/bin/harness.mjs`. In a checkout, the `workflows`
 command still needs `npm run build`, because its `bin` is `dist/cli.js`. See [Setup](#setup).
 
 The install includes [harness](https://github.com/Vzlentin/harness) as a dependency, at a Git ref in `package.json`.
@@ -635,8 +686,7 @@ workflows includes harness. Remove the separate install with: pi remove <source>
 
 The check follows Pi's package scope and resource filters. A project package (`pi remove <source> -l`) always counts,
 because a session can trust a project for itself or with `--approve`. In a session that does not trust the project,
-the message adds `The subagent tool is off in this session.` A run checks with the saved trust of its directory, as it
-does for the packages it loads.
+the message adds `The subagent tool is off in this session.`
 
 To move from a separate harness install, run `pi remove <source of harness>` and then
 `pi update --extension https://github.com/Vzlentin/workflows`, in either order.
@@ -675,8 +725,8 @@ The script links nothing in a directory that is neither a Pi git install (under 
 They then point to nothing, and the next install replaces them.
 
 The extension runs each workflow as a child process of this package's `node src/cli.ts`, in the session's directory,
-always with `--json`. So a run that starts in Pi is a normal run in the runs directory, and `workflows resume`
-continues it from a terminal. The child process runs outside Pi, so the package has its own copies of `pi-ai` and
+always with `--json`. So a run that starts in Pi is a normal run of the project of the session's directory, and
+`workflows resume` follows or continues it from a terminal. The child process runs outside Pi, so the package has its own copies of `pi-ai` and
 `pi-coding-agent` as optional dependencies, which Pi's git install keeps.
 
 ### The `workflow` tool
@@ -699,8 +749,9 @@ The tool adds guidelines to the system prompt on how to write a `script`: its sh
 the sandbox and resume rules, and `save`. A test checks that they name every global of `workflows/script.d.ts`.
 
 Each stderr line of the run is a progress update of the tool. The text of an update is the last line of a
-`{"progress":[...]}` line, or the stderr line itself. Esc sends SIGINT to the run, as Ctrl+C does, so the run
-stays resumable.
+`{"progress":[...]}` line, or the stderr line itself. Esc sends SIGINT to the command, as Ctrl+C does, so the command
+detaches after 2 s, and the run goes on in the host. The result then says to follow the run with `resume`, or to stop
+it with `workflows stop <run-id>`.
 
 In Pi, the call line is `workflow <name> <slug>`, `workflow <name>`, `workflow script`, `workflow resume <run-id>` or
 `workflow save <run-id> <name>`, such as `workflow ship Fix the README typo` or `workflow optimize ship`. The slug comes from the first string arg: the
@@ -708,8 +759,8 @@ file name of a `.md` file without `.md`, or else the first 40 characters of its 
 command draws them on a terminal, with the marks in the theme's colors, then any other stderr line, such as a warning.
 See [Progress](#progress). So a campaign shows its item steps with the ship steps of each item under them. The tool
 does not make the steps itself. A finished run ends with its `report` lines,
-such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8`. A failed or interrupted run ends with the
-error and the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the
+such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8`. A failed, detached or stopped run ends with
+the error or the state, and the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the
 same after a reload. The model gets the same result text as before.
 
 The tool declares an `outputSchema`. Its `structuredContent` is `{ runId, status, result?, report?, error? }`:
@@ -717,14 +768,15 @@ The tool declares an `outputSchema`. Its `structuredContent` is `{ runId, status
 - `finished`: the run finished, `result` is its result, such as a `blocked` ship result, and `report` is its report
   lines.
 - `failed`: the run failed, and `error` is its error message.
-- `interrupted`: Esc stopped the run.
+- `detached`: Esc detached the command, and the run goes on in the host.
+- `stopped`: `workflows stop` stopped the run.
 
 These are the fields of the JSON outcome line of the command.
 
 A `save` call returns `{ runId, status: "finished", result: { file }, report: [file] }`, with the absolute path of the
 file that it wrote. A `save` that fails is a normal tool error with the stderr text.
 
-A failed or interrupted result is an error result that keeps `structuredContent`. Thus
+A failed, detached or stopped result is an error result that keeps `structuredContent`. Thus
 `await tools.workflow({ name: "ship", args: { item } })` in a codemode script gets this object. A call that fails
 before a run exists, such as an unknown workflow name, is a normal tool error with the stderr text.
 
@@ -732,8 +784,10 @@ before a run exists, such as an unknown workflow name, is a normal tool error wi
 
 Runs live in `$XDG_STATE_HOME/workflows/runs/<run-id>`, by default `~/.local/state/workflows/runs/<run-id>`:
 
-- `durable.sqlite`: the pi-durable store with the saved inputs, the sessions and the progress of the run
-- `lock.sqlite`: the lock of the run, which the process that runs the run holds as an exclusive SQLite transaction
+- `project`: the name of the harness project whose store holds the run: its saved inputs, calls, sessions and progress
+
+The project store is `$XDG_STATE_HOME/harness/<project>/durable.sqlite`. See [Runs in the harness
+host](#runs-in-the-harness-host).
 
 A ship run also has:
 
@@ -750,8 +804,8 @@ An optimize run has:
 - `baseline/<name>.md` and `best/<name>.md`: the baseline texts and the texts of the best candidate
 - `prompts.diff`: the score lines and the diff
 
-A child run that `run()` starts is a run directory of its own, next to the caller's, without `durable.sqlite`: the
-caller's store holds its task. A child run without a worktree can have an empty run directory.
+A child run that `run()` starts is a run directory of its own, next to the caller's, without a `project` file: it is a
+task of the caller's run. A child run without a worktree can have an empty run directory.
 
 ## Prompts
 
@@ -773,17 +827,24 @@ npm run check
 ```
 
 This runs Biome, the TypeScript check and Vitest. The tests use a fake model provider, a fake `gh`, a fake
-`workflows` command for the extension, and temporary Git repositories. They do not call a real model or open Pi.
+`workflows` command for the extension, and temporary Git repositories. Each command of a test runs a harness host in
+the test process, with Pi's settings listing this checkout, and the host closes when the command ends. They do not
+call a real model or open Pi.
 
 The engine files in `src/`:
 
 - `cli.ts`: the `workflows` command entry point.
-- `main.ts`: the commands `start`, `resume`, `list`, `show` and `save`, the run directory and the durable store.
+- `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show` and `save`, a client of the harness host, and the
+  run directory.
+- `entry.ts`: the `piDurable` entry that the harness host loads, with the script task.
 - `progress.ts`: the tree of steps of a run, and how the command draws it on stderr.
-- `meta.ts`: the `meta` of a workflow script, its arguments, its usage, and the report lines and exit code of a run.
-- `task.ts`: the task of every script run, its saved input and checkpoint, its phase, and child runs.
-- `script.ts`: the workflow script calls, agent profiles, prompts for scripts, and sessions.
+- `meta.ts`: the `meta` of a workflow script, its arguments, its usage, `check`, and the report lines and exit code of
+  a run.
+- `task.ts`: the task of every script run, its saved input and checkpoint, its phase, child runs, and the end of its
+  sessions.
+- `script.ts`: the workflow script calls, agent profiles, prompts for scripts, and sessions on harness's children
+  library.
 - `run.ts`: the run ID, usage errors, and what a run gets from the command line.
-- `agents.ts`: the tools and system prompt sections of sessions.
+- `harness.ts`: the check for a separate harness package in Pi, for `extensions/subagent.ts`.
 - `git.ts`: Git commands, repository selection and worktrees.
 - `prompts.ts`: the instructions of a prompt template.

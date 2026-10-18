@@ -261,6 +261,8 @@ type Args = {
 /** Everything a run needs, saved before execution starts. */
 export type ScriptInput = Omit<Args, "repo" | "base"> & {
 	readonly runId: string;
+	/** The run ID of the root run: the run itself, or the root run of the caller of a child run. */
+	readonly root: string;
 	readonly runDir: string;
 	readonly cwd: string;
 	readonly worktree?: {
@@ -353,8 +355,11 @@ export async function parse([word = "", ...argv]: readonly string[], io: Io): Pr
 }
 
 /** The input saved before execution starts; with `meta.worktree`, it selects the repository of the new worktree. */
-export async function prepare({ repo, base, ...args }: Args, run: Run): Promise<ScriptInput> {
-	const own = { ...args, runId: run.id, runDir: run.directory, cwd: run.cwd };
+export async function prepare(
+	{ repo, base, ...args }: Args,
+	run: Run & { readonly root?: string },
+): Promise<ScriptInput> {
+	const own = { ...args, runId: run.id, root: run.root ?? run.id, runDir: run.directory, cwd: run.cwd };
 	if (!args.meta.worktree) return own;
 	const { worktree, ...prepared } = await prepareWorktree(args.name, { repo, base }, run);
 	return { ...own, worktree: { ...prepared, path: worktree } };
@@ -383,7 +388,7 @@ export function report(input: ScriptInput, result: unknown, io: Io): number {
  */
 export async function childInput(
 	request: { readonly name: string; readonly args: JsonObject; readonly bundle: RunBundle },
-	run: Run,
+	run: Run & { readonly root: string },
 ): Promise<ScriptInput> {
 	const { name, bundle } = request;
 	const source = Object.hasOwn(bundle.scripts, name) ? bundle.scripts[name] : undefined;
@@ -401,6 +406,8 @@ export async function childInput(
 	);
 	const args = { ...Object.fromEntries(defaults), ...given };
 	const input = { name, args, meta, bundle: { ...bundle, prompts: replaced, main: source } };
-	if (repo === undefined || !meta.worktree) return { ...input, runId: run.id, runDir: run.directory, cwd: run.cwd };
+	if (repo === undefined || !meta.worktree) {
+		return { ...input, runId: run.id, root: run.root, runDir: run.directory, cwd: run.cwd };
+	}
 	return prepare({ ...input, repo: String(repo), base: String(base) }, run);
 }

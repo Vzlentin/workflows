@@ -1,7 +1,8 @@
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type {
 	AssistantMessage,
 	Message,
@@ -11,36 +12,84 @@ import type {
 } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { REMINDER } from "harness/src/answer.ts";
+import { connect } from "harness/src/client.ts";
+import { type Host, runHost } from "harness/src/host.ts";
+import { projectDir } from "harness/src/projects.ts";
+import { statePaths } from "harness/src/protocol.ts";
 import { main } from "../src/main.ts";
-import { REMINDER } from "../src/script.ts";
+
+/** The workflows checkout, which the hosts of the tests load as a local Pi package. */
+export const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
 
 export function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trimEnd();
 }
 
-/** A process that holds the lock of the run in `directory` until it is killed. */
-export async function lockHolder(directory: string): Promise<ChildProcess> {
-	const code = [
-		'const { DatabaseSync } = require("node:sqlite");',
-		'new DatabaseSync(process.argv[1]).exec("BEGIN EXCLUSIVE");',
-		'process.stdout.write("locked\\n");',
-		"setInterval(() => {}, 1000);",
-	].join("\n");
-	const holder = spawn(process.execPath, ["-e", code, join(directory, "lock.sqlite")]);
-	await new Promise((resolve) => holder.stdout?.once("data", resolve));
-	return holder;
-}
-
 const ENVIRONMENT = { ...process.env };
 
-/** A fresh environment: state, Pi agent and Git configuration under a temporary directory, and a fake `gh`. */
+/** The run directories of the sandbox `root`. */
+export const runsOf = (root: string) => join(root, "state", "workflows", "runs");
+
+/** The line that a command prints when Ctrl+C detaches it from the run `id`. */
+export const detached = (id: string | undefined) =>
+	`detached; run ${id} goes on. Follow it with: workflows resume ${id}. Stop it with: workflows stop ${id}`;
+
+/** The project store of `project` in the sandbox. */
+export const storeOf = (project = "main") => join(statePaths(project).dir, "durable.sqlite");
+
+/** The `workflows.run` tasks in the store of `project`. */
+async function runTasks(project: string) {
+	const storage = await openNodeSqliteStorage(storeOf(project));
+	try {
+		const { items } = await storage.scanTasks({}, 256, undefined, BACKGROUND_CONTEXT);
+		return items.filter((task) => task.kind === "workflows.run");
+	} finally {
+		await storage.close(BACKGROUND_CONTEXT);
+	}
+}
+
+type Input = { readonly runId: string; readonly root: string };
+
+const stateOf = ({ state }: Awaited<ReturnType<typeof runTasks>>[number]) =>
+	state.status === "terminal" ? { status: state.status, outcome: state.outcome.status } : { status: state.status };
+
+/** The state of each task of the run `id` of `project` that no task owns. */
+export async function rootTasks(id: string, project = "main") {
+	return (await runTasks(project))
+		.filter((task) => task.owner === undefined && (task.input as Input).runId === id)
+		.map(stateOf);
+}
+
+/** The run ID and the state of each task of a child run of the run `id` of the `main` project. */
+export async function childTasks(id: string) {
+	return (await runTasks("main"))
+		.filter((task) => task.owner !== undefined && (task.input as Input).root === id)
+		.map((task) => ({ runId: (task.input as Input).runId, ...stateOf(task) }));
+}
+
+/** Writes Pi's settings of the sandbox `root`: the workflows checkout and `packages`, and `settings`. */
+export async function piSettings(root: string, packages: readonly string[] = [], settings: object = {}): Promise<void> {
+	await writeFile(
+		join(root, "agent", "settings.json"),
+		JSON.stringify({ retry: { enabled: false }, ...settings, packages: [PACKAGE, ...packages] }),
+	);
+}
+
+/**
+ * A fresh environment: home, state, configuration, Pi agent and Git configuration under a temporary directory, and a
+ * fake `gh`. Pi's settings list the workflows checkout, so the test hosts load its entry.
+ */
 export async function sandbox(): Promise<string> {
-	const root = await mkdtemp(join(tmpdir(), "workflow2-test-"));
+	// macOS limits a Unix socket path to 104 bytes, and the host's socket is in the state directory.
+	const root = await mkdtemp("/tmp/wf-");
 	const bin = join(root, "bin");
 	await mkdir(bin);
 	await mkdir(join(root, "agent"));
+	await mkdir(join(root, "home"));
 	await writeFile(join(root, "gitconfig"), "[init]\n\tdefaultBranch = main\n");
-	await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false } }));
+	await piSettings(root);
 	await writeFile(
 		join(bin, "gh"),
 		`#!/bin/sh
@@ -54,7 +103,9 @@ exec git clone -q "${root}/github/$source" "$4"
 	await chmod(join(bin, "gh"), 0o755);
 	process.env = {
 		...ENVIRONMENT,
+		HOME: join(root, "home"),
 		XDG_STATE_HOME: join(root, "state"),
+		XDG_CONFIG_HOME: join(root, "config"),
 		PI_CODING_AGENT_DIR: join(root, "agent"),
 		GIT_CONFIG_GLOBAL: join(root, "gitconfig"),
 		GIT_CONFIG_NOSYSTEM: "1",
@@ -64,6 +115,18 @@ exec git clone -q "${root}/github/$source" "$4"
 		GIT_COMMITTER_EMAIL: "test@example.com",
 		PATH: `${bin}:${ENVIRONMENT.PATH}`,
 	};
+	for (const name of [
+		"HARNESS_PROJECT",
+		"PI_SESSION_ID",
+		"PI_PROVIDER",
+		"PI_MODEL",
+		"PI_REASONING_LEVEL",
+		// Node warns on stderr when both are set, and the tests compare stderr.
+		"FORCE_COLOR",
+		"NO_COLOR",
+	]) {
+		delete process.env[name];
+	}
 	return root;
 }
 
@@ -90,9 +153,10 @@ export type Kind =
 	| "reflect"
 	| "script";
 
-/** One answered prompt: its kind, model, thinking level, offered tools, system prompt sections, and text. */
+/** One answered prompt: its kind, provider, model, thinking level, offered tools, system prompt sections, and text. */
 export type Call = {
 	readonly kind: Kind;
+	readonly provider: string;
 	readonly model: string;
 	readonly thinking: string | undefined;
 	readonly tools: readonly string[];
@@ -159,13 +223,15 @@ export const PASSING_JUDGE: Verdict = {
 };
 
 /**
- * A scripted model for the `anthropic` provider. It records every prompt it answers. After Ctrl+C it answers
- * nothing: a request waits until the run closes.
+ * A scripted model for the `anthropic` and `other` providers. It records every prompt it answers. After Ctrl+C it
+ * answers nothing: a request waits until the host closes.
  */
 export class FakeModel {
 	readonly calls: Call[] = [];
 	/** The text of every tool result the model received. */
 	readonly results: string[] = [];
+	/** The prompts of the requests that waited after Ctrl+C and were aborted. */
+	readonly aborted: string[] = [];
 	readonly models = createModels();
 	readonly #script: Script;
 	#failed = false;
@@ -173,12 +239,18 @@ export class FakeModel {
 
 	constructor(script: Script) {
 		this.#script = script;
-		const faux = fauxProvider({
+		const anthropic = fauxProvider({
 			provider: "anthropic",
-			models: [{ id: "claude-opus-5-5", reasoning: true }],
+			models: [
+				{ id: "claude-opus-5-5", reasoning: true },
+				{ id: "claude-haiku-5", reasoning: true },
+			],
 		});
-		faux.setResponses(Array.from({ length: 200 }, () => this.#respond));
-		this.models.setProvider(faux.provider);
+		const other = fauxProvider({ provider: "other", models: [{ id: "o-1", reasoning: true }] });
+		for (const faux of [anthropic, other]) {
+			faux.setResponses(Array.from({ length: 200 }, () => this.#respond));
+			this.models.setProvider(faux.provider);
+		}
 	}
 
 	count(kind: Kind): number {
@@ -189,7 +261,7 @@ export class FakeModel {
 		context: TranscriptContext,
 		options: SimpleStreamOptions | undefined,
 		_state: unknown,
-		model: { readonly id: string },
+		model: { readonly id: string; readonly provider: string },
 	): Promise<AssistantMessage> => {
 		const messages = context.messages;
 		const system = messages.flatMap((message) => (message.role === "system" ? [message] : []));
@@ -220,7 +292,12 @@ export class FakeModel {
 		const { interruptAt, interrupt } = this.#script;
 		if (interruptAt?.kind === kind && interruptAt.nth === nth) interrupt.abort();
 		if (interrupt.signal.aborted) {
-			await new Promise((_, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+			await new Promise((_, reject) =>
+				options?.signal?.addEventListener("abort", () => {
+					this.aborted.push(prompt);
+					reject(new Error("aborted"));
+				}),
+			);
 		}
 		const { failAt } = this.#script;
 		if (failAt?.kind === kind && failAt.nth === nth && !this.#failed) {
@@ -230,6 +307,7 @@ export class FakeModel {
 		}
 		this.calls.push({
 			kind,
+			provider: model.provider,
 			model: model.id,
 			thinking: options?.reasoning,
 			tools,
@@ -279,6 +357,12 @@ export class FakeModel {
 				return fauxAssistantMessage(`${current}\nImproved prompt ${nth}.`);
 			}
 			case "script": {
+				// `Script spawn: <prompt>` spawns a subagent with the prompt `Script: <prompt>` through harness's tool.
+				const spawned = /^Script spawn: (.*)$/s.exec(prompt)?.[1];
+				if (spawned !== undefined) {
+					const spawn = fauxToolCall("subagent", { action: "spawn", prompts: [`Script: ${spawned}`] });
+					return fauxAssistantMessage(spawn, { stopReason: "toolUse" });
+				}
 				// `respond` and a tool call in one message: the tool result then gets a text reply that ends the turn.
 				const both = /^Script respond and ls: (.*)$/s.exec(prompt)?.[1];
 				if (both !== undefined) {
@@ -335,6 +419,8 @@ export type Outcome = {
 	readonly stderr: readonly string[];
 	readonly model: FakeModel;
 	readonly id: string | undefined;
+	/** The host of the command, with `keepHost`. */
+	readonly host: Host | undefined;
 };
 
 /** The lines of the last `{"progress":[...]}` stderr line of a `--json` run, and throws for any other stderr line. */
@@ -343,7 +429,26 @@ export function progressOf(stderr: readonly string[]): string[] {
 	return snapshots.at(-1) ?? [];
 }
 
-/** Runs `workflows <argv>` in `cwd` against a fresh fake model. */
+/** A connection to the host of `project` that runs in this process. */
+async function connectTo(project: string) {
+	const saved = process.env.HARNESS_PROJECT;
+	process.env.HARNESS_PROJECT = project;
+	try {
+		const client = await connect({ start: false });
+		if (client === undefined) throw new Error(`no host for ${project}`);
+		return client;
+	} finally {
+		if (saved === undefined) delete process.env.HARNESS_PROJECT;
+		else process.env.HARNESS_PROJECT = saved;
+	}
+}
+
+/**
+ * Runs `workflows <argv>` in `cwd` against a fresh fake model. The first connection starts a harness host in this
+ * process with the fake model, and the host closes when the command ends, as a stopped host does, unless `keepHost`.
+ * A later command then gets a new host, which resumes the pending runs. With `host`, the command connects to that host
+ * and leaves it open. `interrupt` is the first Ctrl+C and `stop` the second, which counts within `stopWindowMs`.
+ */
 export async function workflows(
 	argv: readonly string[],
 	options: {
@@ -351,20 +456,37 @@ export async function workflows(
 		readonly stdin?: string;
 		readonly script?: Omit<Script, "interrupt">;
 		readonly interrupt?: AbortController;
+		readonly stop?: AbortController;
+		readonly stopWindowMs?: number;
+		readonly host?: Host;
+		readonly keepHost?: boolean;
 	},
 ): Promise<Outcome> {
 	const interrupt = options.interrupt ?? new AbortController();
 	const model = new FakeModel({ ...options.script, interrupt });
 	const stdout: string[] = [];
 	const stderr: string[] = [];
+	let host = options.host;
+	let started: Host | undefined;
 	const code = await main(argv, {
 		cwd: options.cwd,
 		stdin: async () => options.stdin,
 		stdout: (line) => stdout.push(line),
 		stderr: (line) => stderr.push(line),
-		models: model.models,
 		interrupt: interrupt.signal,
+		stop: (options.stop ?? new AbortController()).signal,
+		stopWindowMs: options.stopWindowMs ?? 0,
+		connect: async (project) => {
+			if (host === undefined) {
+				const stateDir = statePaths(project).dir;
+				started = await runHost({ stateDir, project, cwd: projectDir(project), models: model.models });
+				if (started === undefined) throw new Error(`another host has the lock of ${project}`);
+				host = started;
+			}
+			return connectTo(project);
+		},
 	});
+	if (!options.keepHost) await started?.close();
 	const id = stdout.find((line) => line.startsWith("run "))?.slice(4);
-	return { code, stdout, stderr, model, id };
+	return { code, stdout, stderr, model, id, host: options.keepHost ? started : undefined };
 }

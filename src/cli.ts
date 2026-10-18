@@ -1,17 +1,20 @@
 #!/usr/bin/env node
-/** The `workflows` executable: Pi's providers and credentials, the terminal, and Ctrl+C. */
+/** The `workflows` executable: the terminal and Ctrl+C. */
 import { text } from "node:stream/consumers";
-import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { main } from "./main.ts";
 import { terminalRedraw } from "./progress.ts";
 
+/** How long the command waits for a second Ctrl+C, which stops the run, after the first, which detaches. */
+const STOP_WINDOW_MS = 2000;
+
 const interrupt = new AbortController();
+const stop = new AbortController();
 process.on("SIGINT", () => {
-	if (interrupt.signal.aborted) process.exit(130);
-	interrupt.abort();
+	if (stop.signal.aborted) process.exit(130);
+	if (interrupt.signal.aborted) stop.abort();
+	else interrupt.abort();
 });
 
-const { modelRuntime } = await createAgentSessionServices({ cwd: process.cwd() });
 const live = process.stderr.isTTY ? terminalRedraw(process.stderr) : undefined;
 
 process.exitCode = await main(process.argv.slice(2), {
@@ -23,6 +26,7 @@ process.exitCode = await main(process.argv.slice(2), {
 		process.stderr.write(`${line}\n`);
 	},
 	redraw: live?.redraw,
-	models: modelRuntime,
 	interrupt: interrupt.signal,
+	stop: stop.signal,
+	stopWindowMs: STOP_WINDOW_MS,
 });

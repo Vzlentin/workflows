@@ -8,10 +8,21 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { REMINDER } from "harness/src/answer.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CallDoc, REMINDER } from "../src/script.ts";
-import { TASK } from "../src/task.ts";
-import { git, type Kind, lockHolder, repository, sandbox, workflows } from "./support.ts";
+import { CallDoc } from "../src/script.ts";
+import {
+	childTasks,
+	detached,
+	git,
+	type Kind,
+	repository,
+	rootTasks,
+	runsOf,
+	sandbox,
+	storeOf,
+	workflows,
+} from "./support.ts";
 
 let root: string;
 
@@ -28,64 +39,7 @@ beforeEach(async () => {
 afterEach(() => rm(root, { recursive: true, force: true }));
 
 const log = () => readFile(join(root, "log"), "utf8");
-const runs = () => join(root, "state", "workflows", "runs");
-
-/** The `workflows.run` tasks in the store of run `id`. */
-async function runTasks(id: string) {
-	const storage = await openNodeSqliteStorage(join(runs(), id, "durable.sqlite"));
-	try {
-		const { items } = await storage.scanTasks({}, 256, undefined, BACKGROUND_CONTEXT);
-		return items.filter((task) => task.kind === "workflows.run");
-	} finally {
-		await storage.close(BACKGROUND_CONTEXT);
-	}
-}
-
-const stateOf = ({ state }: Awaited<ReturnType<typeof runTasks>>[number]) =>
-	state.status === "terminal" ? { status: state.status, outcome: state.outcome.status } : { status: state.status };
-
-/** The state of each `workflows.run` task that no task owns in the store of run `id`. */
-async function rootTasks(id: string) {
-	return (await runTasks(id)).filter((task) => task.owner === undefined).map(stateOf);
-}
-
-/** The run ID and the state of each `workflows.run` task that a task owns in the store of run `id`. */
-async function childTasks(id: string) {
-	return (await runTasks(id))
-		.filter((task) => task.owner !== undefined)
-		.map((task) => ({ runId: (task.input as { runId: string }).runId, ...stateOf(task) }));
-}
-
-/** A task of the script task's kind and version whose phase ends the task as aborted. */
-const aborting = defineTask<JsonValue, { phase: "run" }, JsonValue>({
-	...TASK,
-	initial: () => ({ phase: "run" }),
-	phases: {
-		run: async (_task, runtime, context) => {
-			await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
-		},
-	},
-	abort: async () => undefined,
-});
-
-/** Opens the store of run `id` with `aborting`, which ends its pending root task as aborted, and closes it. */
-async function abortRun(id: string) {
-	const extension = defineExtension({ name: "workflows", tasks: [aborting] });
-	const registry = createRegistry();
-	registry.install(extension);
-	const path = join(runs(), id, "durable.sqlite");
-	const [pending] = (await runTasks(id)).filter((task) => task.owner === undefined);
-	const harness = await Harness.open(
-		await openNodeSqliteStorage(path),
-		{ models: createModels(), registry, settings: { extensions: [extension] } },
-		BACKGROUND_CONTEXT,
-	);
-	try {
-		await harness.waitForTask(pending?.id as TaskId<JsonValue>, BACKGROUND_CONTEXT);
-	} finally {
-		await harness.close(BACKGROUND_CONTEXT);
-	}
-}
+const runs = () => runsOf(root);
 
 /** Runs `argv` in `cwd` and presses Ctrl+C at the `nth` script prompt, or once the `gate` command is reached. */
 async function stopped(argv: string[], stop: { readonly nth: number } | { readonly gate: string }, cwd = root) {
@@ -148,9 +102,9 @@ async function runProbe(path: string, input: { key: string; value?: string }) {
 	}
 }
 
-/** Every row of every table in the store of run `id`, read with `node:sqlite`. */
-function rows(id: string) {
-	const database = new DatabaseSync(join(runs(), id, "durable.sqlite"), { readOnly: true });
+/** Every row of every table in the store of the `main` project, read with `node:sqlite`. */
+function rows() {
+	const database = new DatabaseSync(storeOf(), { readOnly: true });
 	try {
 		const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all();
 		return tables.map(({ name }) => [name, database.prepare(`SELECT * FROM "${String(name)}"`).all()]);
@@ -294,9 +248,9 @@ describe("workflows show", () => {
 		const first = await stopped(["x.js"], { nth: 2 });
 		expect(first.code).toBe(130);
 		const id = first.id ?? "";
-		const before = rows(id);
+		const before = rows();
 		const shown = await workflows(["show", id], { cwd: root });
-		expect(rows(id)).toEqual(before);
+		expect(rows()).toEqual(before);
 		expect(shown.stdout).toEqual([
 			`run ${id} x unfinished x`,
 			"talk",
@@ -323,7 +277,7 @@ describe("workflows show", () => {
 			'process.stdout.write("locked\\n");',
 			'setTimeout(() => { database.exec("COMMIT"); database.close(); }, 5500);',
 		].join("\n");
-		const holder = spawn(process.execPath, ["-e", lock, join(runs(), id, "durable.sqlite")]);
+		const holder = spawn(process.execPath, ["-e", lock, storeOf()]);
 		const exited = new Promise((resolve) => holder.on("exit", resolve));
 		await new Promise((resolve) => holder.stdout.once("data", resolve));
 		const shown = await workflows(["show", id], { cwd: root });
@@ -358,7 +312,7 @@ return [one, two, n, args.word].join(", ")`,
 		);
 		const first = await stopped(["x.js", "--word", "done"], { nth: 1 });
 		expect(first.code).toBe(130);
-		expect(first.stderr.at(-1)).toBe(`interrupted; continue with: workflows resume ${first.id}`);
+		expect(first.stderr.at(-1)).toBe(detached(first.id));
 		const resume = ["resume", first.id ?? ""];
 		const answered = [...first.model.calls];
 		for (const stop of [{ nth: 2 }, { nth: 2 }, { gate: "a" }, { gate: "b" }]) {
@@ -693,20 +647,6 @@ return [one, two].join(", ")`,
 		]);
 	});
 
-	it("resumes a run whose lock holder was killed", async () => {
-		await writeFile(join(root, "x.js"), `const one = await agent("Script: one")\nreturn one`);
-		const first = await stopped(["x.js"], { nth: 1 });
-		expect(first.code).toBe(130);
-		const id = first.id ?? "";
-		const holder = await lockHolder(join(runs(), id));
-		const exited = new Promise((resolve) => holder.on("exit", resolve));
-		holder.kill("SIGKILL");
-		await exited;
-
-		const resumed = await workflows(["resume", id], { cwd: root });
-		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to one"]);
-	});
-
 	it("resumes an aborted run in a new task with its saved calls", async () => {
 		await writeFile(
 			join(root, "x.js"),
@@ -715,7 +655,13 @@ return [one, two].join(", ")`,
 		const first = await stopped(["x.js"], { nth: 2 });
 		expect(first.code).toBe(130);
 		const id = first.id ?? "";
-		await abortRun(id);
+		// The model of the host that `stop` starts does not answer, so the resumed task cannot finish the turn first.
+		const stop = await workflows(["stop", id], { cwd: root, script: { interruptAt: { kind: "script", nth: 1 } } });
+		expect([stop.code, stop.stdout, stop.stderr]).toEqual([
+			0,
+			[`stopped x; continue with: workflows resume ${id}`],
+			[],
+		]);
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
 
 		const resumed = await workflows(["resume", id], { cwd: root });
@@ -758,7 +704,7 @@ return { runId, runDir, branch, start: args.start, plan: await prompts.plan() }`
 		});
 		expect(plan).toMatch(/^Plan this change\./);
 		expect(existsSync(join(runs(), child.runId, "worktree", "README.md"))).toBe(true);
-		expect(existsSync(join(runs(), child.runId, "durable.sqlite"))).toBe(false);
+		expect(existsSync(join(runs(), child.runId, "project"))).toBe(false);
 		const listed = await workflows(["list"], { cwd: repo });
 		expect(listed.stdout).toEqual([`${run.id} parent done parent`]);
 	});
@@ -798,7 +744,7 @@ return [one.reply, two.reply].join(", ")`,
 
 		const first = await stopped(["parent.js"], { nth: 2 });
 		expect(first.code).toBe(130);
-		expect(first.stderr).toEqual([`interrupted; continue with: workflows resume ${first.id}`]);
+		expect(first.stderr).toEqual([detached(first.id)]);
 		const children = await readdir(runs());
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${first.id}`, "Reply to one, Reply to two"]]);
@@ -844,7 +790,7 @@ return [one.reply, two.reply].join(", ")`,
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "done"]);
 		const id = first.id ?? "";
-		const storage = await openNodeSqliteStorage(join(runs(), id, "durable.sqlite"));
+		const storage = await openNodeSqliteStorage(storeOf());
 		try {
 			const { items } = await storage.scanConversations({}, 256, undefined, BACKGROUND_CONTEXT);
 			expect(items.filter((conversation) => conversation.owner !== undefined)).toHaveLength(1);
