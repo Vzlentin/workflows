@@ -66,7 +66,10 @@ async function children(): Promise<Record<string, boolean>> {
 	}
 }
 
-/** A Pi package whose entry gives the task `workflows.run` at `version`, as an older workflows: it waits until aborted. */
+/**
+ * A Pi package whose entry gives the task `workflows.run` at `version`, as an older workflows. Its phase creates the
+ * file `old-ran` and waits until the task is aborted.
+ */
 async function oldWorkflows(version: number): Promise<string> {
 	const pkg = join(root, "old-workflows");
 	await mkdir(pkg, { recursive: true });
@@ -76,12 +79,18 @@ async function oldWorkflows(version: number): Promise<string> {
 	);
 	await writeFile(
 		join(pkg, "index.ts"),
-		`export default function ({ durable }) {
+		`import { writeFileSync } from "node:fs";
+export default function ({ durable }) {
 	const task = durable.defineTask({
 		name: "workflows.run",
 		version: ${version},
 		initial: () => ({ phase: "run" }),
-		phases: { run: (_task, runtime, context) => runtime.sleep(runtime.now() + 3600000, context) },
+		phases: {
+			run: (_task, runtime, context) => {
+				writeFileSync(${JSON.stringify(join(root, "old-ran"))}, "");
+				return runtime.sleep(runtime.now() + 3600000, context);
+			},
+		},
 		abort: (_task, runtime, context) =>
 			runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 	});
@@ -99,7 +108,7 @@ async function onlyPackage(pkg: string): Promise<void> {
 
 /** The line of a command that a host of the version `version` of the workflows task refused. */
 const refused = (version: number) =>
-	`workflows: the harness host of project main (pid ${process.pid}) runs version ${version} of the workflows task, and this command version ${TASK.version}. Stop the host with kill ${process.pid}; it starts again with the installed workflows`;
+	`workflows: This host has version ${version} of workflows.run, not ${TASK.version}: stop the host so it starts again with the installed version (the harness host of project main has pid ${process.pid}: kill ${process.pid})`;
 
 describe("runs in the harness host", { timeout: 30_000 }, () => {
 	it("goes on in the host after Ctrl+C, and resume follows the same task from the start of its execution", async () => {
@@ -266,7 +275,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
 	});
 
-	it("refuses a host that runs another version of workflows, and aborts the task that it started there", async () => {
+	it("refuses a host that runs another version of workflows, which starts no task", async () => {
 		await writeFile(join(root, "x.js"), 'await sh("test -f ok")\nreturn "done"');
 		const failed = await workflows(["x.js"], { cwd: root });
 		expect(failed.code).toBe(1);
@@ -278,10 +287,8 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		expect(await readdir(runsOf(root))).toEqual([id]);
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([1, [], [refused(TASK.version - 1)]]);
-		expect(await rootTasks(id)).toEqual([
-			{ status: "terminal", outcome: "failed" },
-			{ status: "terminal", outcome: "aborted" },
-		]);
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "failed" }]);
+		expect(existsSync(join(root, "old-ran"))).toBe(false);
 
 		await piSettings(root);
 		await writeFile(join(root, "ok"), "");
@@ -289,7 +296,10 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		expect(listed.stdout).toEqual([`${id} x failed x`]);
 		const again = await workflows(["resume", id], { cwd: root });
 		expect([again.code, again.stdout]).toEqual([0, [`run ${id}`, "done"]]);
-		expect((await rootTasks(id)).at(-1)).toEqual({ status: "terminal", outcome: "completed" });
+		expect(await rootTasks(id)).toEqual([
+			{ status: "terminal", outcome: "failed" },
+			{ status: "terminal", outcome: "completed" },
+		]);
 	});
 
 	it("stops a pending run of an earlier version, which ends as orphaned", async () => {

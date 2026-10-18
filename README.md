@@ -519,17 +519,19 @@ earlier version of <workflow> and cannot resume`, or `a later version`, and exit
 store: it leaves the run pending, prints a `warning:` line in its log for an earlier version, and continues the others.
 Such a run does not keep the host from exiting when it is idle. `workflows stop` ends it as `orphaned`.
 
-A host keeps the version of workflows that it loaded when it started. When the host runs another version of the
-workflows task than the command, the command aborts the task that it just started there, prints `workflows: the
-harness host of project <project> (pid <pid>) runs version <n> of the workflows task, and this command version <m>.
-Stop the host with kill <pid>; it starts again with the installed workflows` and exits 1. A new run then has no run
-directory; a resumed run keeps its earlier tasks, and the next resume goes on from them. A command that follows a
-task checks the version of the task in the same way, without aborting it.
+Runs saved before runs moved into the harness host stay in their run directories, and no command reads them.
+
+A host keeps the version of workflows that it loaded when it started. Each `start` request, of a new run or of a
+resume, gives the version of the workflows task, and a host with another version refuses it before it creates
+anything. The command then prints `workflows: This host has version <n> of workflows.run, not <m>: stop the host so
+it starts again with the installed version (the harness host of project <project> has pid <pid>: kill <pid>)` and
+exits 1. A new run then has no run directory; a resumed run keeps its tasks as they were. When a command follows a task
+that it did not start, it checks the version of that task in the same way.
 
 When the `start` request fails in another way, such as a connection that closes, the command asks the host for the
-task. When the host has it, the run started, and the command follows it. When the command cannot tell, it keeps the
-run directory and prints the error with `run <run-id> may have started: workflows resume <run-id>`. Runs saved before runs moved into the harness host stay in their run directories,
-and no command reads them.
+task. When the host has it, the run started, and the command checks its version and follows it. When the command
+cannot tell, it keeps the run directory and prints the error with `run <run-id> may have started: workflows resume
+<run-id>`.
 
 ### Ctrl+C and stop
 

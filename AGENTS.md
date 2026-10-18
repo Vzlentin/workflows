@@ -20,7 +20,7 @@
 - The end of a run ends its sessions (`endSessions` in `task.ts`): a completed run closes them; a failed or aborted run closes only what is under them and aborts the turns of the sessions that an earlier task of the run opened, which pi-durable's abort of the current task does not reach.
 - Ctrl+C detaches the CLI and the run goes on in the host. A second Ctrl+C while the CLI follows a run, also one that came before the window of `STOP_WINDOW_MS` opened, or `workflows stop`, sends `abort-task`. `CtrlC` in `src/run.ts` counts the presses, and the tests press through the same class.
 - When the script ends, `runScript` cancels the host calls that still run and waits for them, so the end of a run comes after its last call.
-- After `start`, the CLI compares `TaskInfo.version` with `TASK.version`, so a host that loaded another version of workflows is refused.
+- Every `start` sends `version: TASK.version`, so a host that loaded another version of workflows refuses before it creates a task. A command that follows a task it did not start compares `TaskInfo.version` with `TASK.version`.
 - Biome does not check `workflows/*.js`: a script body has a top-level `return`.
 
 ## Durable runs

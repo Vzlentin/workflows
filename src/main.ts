@@ -175,29 +175,33 @@ const taskKey = (id: string, n: number) => `wf:${id}#${n}`;
 class Refused extends Error {}
 
 /** Starts the task of `key` with `input` in the host of `client`, and checks the version of the host's task. */
-async function startTask(client: Client, project: string, input: script.ScriptInput, key: string): Promise<TaskInfo> {
-	let info: TaskInfo;
+async function startTask(client: Client, project: string, input: script.ScriptInput, key: string): Promise<void> {
 	try {
-		info = await client.request({ type: "start", kind: TASK.name, input, key });
+		// A host whose workflows task has another version refuses before it creates anything, so the key stays free.
+		await client.request({ type: "start", kind: TASK.name, version: TASK.version, input, key });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		if (!message.startsWith("Unknown task kind")) throw error;
-		throw new Refused(`${message}: the harness host does not load workflows; add it to Pi with pi install`);
+		if (message.startsWith("Unknown task kind")) {
+			throw new Refused(`${message}: the harness host does not load workflows; add it to Pi with pi install`);
+		}
+		if (message.startsWith("This host has version")) throw new Refused(`${message} (${hostOf(client, project)})`);
+		throw error;
 	}
-	await checkVersion(client, project, info, true);
-	return info;
+}
+
+/** The host of `project` that `client` reached, with how to stop it. */
+function hostOf(client: Client, project: string): string {
+	return `the harness host of project ${project} has pid ${client.pid}: kill ${client.pid}`;
 }
 
 /**
- * Throws when the host ran the task `info` with another version of workflows, after it aborts the task when this command
- * `started` it: a host keeps the version of workflows that it loaded when it started.
+ * Throws when the host ran the task `info`, which this command did not start, with another version of workflows: a
+ * host keeps the version of workflows that it loaded when it started.
  */
-async function checkVersion(client: Client, project: string, info: TaskInfo, started: boolean): Promise<void> {
+function checkVersion(client: Client, project: string, info: TaskInfo): void {
 	if (info.version === TASK.version) return;
-	if (started) await client.request({ type: "abort-task", key: info.key });
-	const pid = client.pid;
 	throw new Refused(
-		`the harness host of project ${project} (pid ${pid}) runs version ${info.version} of the workflows task, and this command version ${TASK.version}. Stop the host with kill ${pid}; it starts again with the installed workflows`,
+		`This host ran version ${info.version} of ${TASK.name}, not ${TASK.version}: stop the host so it starts again with the installed version (${hostOf(client, project)})`,
 	);
 }
 
@@ -243,9 +247,15 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 			const found = await findTask(terminal, project, key).catch(() => null);
 			if (found === null) throw new Error(`${message}; run ${id} may have started: workflows resume ${id}`);
 			if (found !== undefined) {
+				const again = await connectTo(terminal, project, true);
+				try {
+					checkVersion(again, project, found);
+				} catch (refused) {
+					again.close();
+					throw refused;
+				}
 				terminal.following(true);
 				terminal.stdout(`run ${id}`);
-				const again = await connectTo(terminal, project, true);
 				return follow({ id, project, key, input, client: again, from: 0 }, terminal, json);
 			}
 		}
@@ -349,7 +359,7 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 				const started = events.findLastIndex((event) => event.kind === "start" && event.run === run.id);
 				from = started === -1 ? events.length : started;
 			}
-			await checkVersion(client, run.project, await client.request({ type: "task", key }), false);
+			checkVersion(client, run.project, await client.request({ type: "task", key }));
 		}
 	} catch (error) {
 		client?.close();
