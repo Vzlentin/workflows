@@ -289,6 +289,18 @@ return await agent("c", { as: "planner", model: "claude-haiku-5", schema: { type
 			1,
 			["workflows: model uses the model anthropic/nope, which Pi's model registry does not have"],
 		]);
+		await writeFile(join(root, "regex.js"), 'const quote = /"/\nreturn await agent("a", { model: "gone" })');
+		const regex = await workflows(["check", "regex.js"], { cwd: root });
+		expect(regex.stderr).toEqual([
+			"workflows: regex uses the model anthropic/gone, which Pi's model registry does not have",
+		]);
+		await mkdir(join(root, ".workflows", "agents"), { recursive: true });
+		await writeFile(join(root, ".workflows", "agents", "old.md"), "---\nmodel: anthropic/claude-2\n---\nOld.\n");
+		await writeFile(join(root, "profile.js"), 'return await agent("a", { as: "old" })');
+		const profile = await workflows(["check", "profile.js"], { cwd: root });
+		expect(profile.stderr).toEqual([
+			"workflows: profile uses the agent profile old, whose model anthropic/claude-2 Pi's model registry does not have",
+		]);
 		const provider = await workflows(["check", "provider.js"], { cwd: root });
 		expect([provider.code, provider.stderr]).toEqual([
 			1,

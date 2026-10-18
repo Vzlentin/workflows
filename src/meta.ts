@@ -164,12 +164,16 @@ function problem(source: string, name: string, bundle: Bundle, profiles: boolean
 	);
 	if (prompt !== undefined) return `${name} uses prompts.${prompt}, which has no template`;
 	if (!profiles) return undefined;
-	const named = [
+	const profile = namedProfiles(source).find((p) => !Object.hasOwn(bundle.agents, p));
+	return profile === undefined ? undefined : `${name} uses the agent profile ${profile}, which does not exist`;
+}
+
+/** The agent profiles of each literal `session("<profile>")` and `as: "<profile>"` of `source`. */
+function namedProfiles(source: string): string[] {
+	return [
 		...unique(source.matchAll(/\bsession\(\s*(["'`])([^"'`]+)\1/g), 2),
 		...unique(source.matchAll(/\bas:\s*(["'`])([^"'`]+)\1/g), 2),
 	];
-	const profile = named.find((p) => !Object.hasOwn(bundle.agents, p));
-	return profile === undefined ? undefined : `${name} uses the agent profile ${profile}, which does not exist`;
 }
 
 type Found = { readonly name: string; readonly source: string; readonly bundle: Bundle };
@@ -253,6 +257,17 @@ function fieldsOf(text: string, strings: readonly string[]): Fields | undefined 
 }
 
 /**
+ * Whether the `/` at `at` of `source`, which starts no comment, starts a regular expression literal: after an operator,
+ * an opening bracket, a separator or a keyword such as `return`, a value comes, and a `/` there is not a division.
+ */
+function regexStarts(source: string, at: number): boolean {
+	const before = source.slice(0, at).trimEnd();
+	if (before === "") return true;
+	if (/[([{,;:=!&|?+\-*%<>~^]$/.test(before)) return true;
+	return /\b(?:return|typeof|case|do|else|in|of|new|delete|void|throw|yield|await)$/.test(before);
+}
+
+/**
  * The fields of each object literal that `source` passes directly to `session(...)` or `agent(...)`, at the object's
  * own level. Comments, strings and nested objects do not count, and an object with a spread is left out, because its
  * fields are not all known.
@@ -267,6 +282,7 @@ function sessionFields(source: string): Fields[] {
 		const object = open.findLast((entry) => "text" in entry);
 		if (object !== undefined && "text" in object) object.text += text;
 	};
+	let inClass = false;
 	for (let at = 0; at < source.length; at++) {
 		const char = source[at] ?? "";
 		const rest = source.slice(at, at + 2);
@@ -275,7 +291,18 @@ function sessionFields(source: string): Fields[] {
 			at = end === -1 ? source.length : end + (rest === "//" ? 0 : 1);
 			continue;
 		}
-		if (char === '"' || char === "'" || char === "`") {
+		if (char === "/" && regexStarts(source, at)) {
+			// A quote in a regular expression literal does not start a string.
+			for (at++, inClass = false; at < source.length; at++) {
+				const inner = source[at];
+				if (inner === "\\") at++;
+				else if (inner === "[") inClass = true;
+				else if (inner === "]") inClass = false;
+				else if (inner === "/" && !inClass) break;
+				else if (inner === "\n") break;
+			}
+			add("x");
+		} else if (char === '"' || char === "'" || char === "`") {
 			let text = "";
 			let computed = false;
 			for (at++; at < source.length && source[at] !== char; at++) {
@@ -332,6 +359,27 @@ async function unknownModel(
 }
 
 /**
+ * The first agent profile that `source` uses, by name or as `default` for a session or an agent without one, whose
+ * `model:` line names a model that `models` does not have, with that model as `<provider>/<id>`.
+ */
+async function unknownProfileModel(
+	source: string,
+	bundle: Bundle,
+	models: () => Promise<Models>,
+): Promise<{ readonly profile: string; readonly model: string } | undefined> {
+	const names = new Set(namedProfiles(source));
+	if (/\b(?:session|agent)\s*\(/.test(source)) names.add("default");
+	const used = [...names].flatMap((profile) => {
+		const model = bundle.agents[profile]?.model;
+		return model === undefined ? [] : [{ profile, model }];
+	});
+	if (used.length === 0) return undefined;
+	const registry = await models();
+	const found = used.find(({ model }) => registry.getModel(model.provider, model.modelId) === undefined);
+	return found && { profile: found.profile, model: `${found.model.provider}/${found.model.modelId}` };
+}
+
+/**
  * `workflows check <wf>`: reads `meta` and checks the prompts and profiles that the script names, and the literal
  * models of its calls against Pi's model registry; starts no run.
  */
@@ -348,6 +396,12 @@ export async function check(
 	const model = await unknownModel(found.source, found.bundle, io.models);
 	if (model !== undefined)
 		throw new Error(`${found.name} uses the model ${model}, which Pi's model registry does not have`);
+	const profile = await unknownProfileModel(found.source, found.bundle, io.models);
+	if (profile !== undefined) {
+		throw new Error(
+			`${found.name} uses the agent profile ${profile.profile}, whose model ${profile.model} Pi's model registry does not have`,
+		);
+	}
 	io.stdout(`ok ${found.name}`);
 	return 0;
 }

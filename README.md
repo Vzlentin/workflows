@@ -339,8 +339,11 @@ with the profile of its `as` (default `default`) for the field that it leaves ou
 `models.json` and the providers that Pi and its packages register. Only an object literal that the script passes to
 `session(...)` or `agent(...)` counts, without its inner objects. A model that the registry does not have fails with
 `<name> uses the model <provider>/<id>, which Pi's model registry does not have`. A field whose value is not a string
-literal, or an object with a spread, is checked when the session opens. `check` prints `ok <name>` and exits 0, or prints the first problem and
-exits 1. It starts no run and writes nothing.
+literal, or an object with a spread, is checked when the session opens. A regular expression literal is skipped, so a
+quote in it hides no later field. `check` also checks the `model:` line of each agent profile that the script uses,
+by name or as `default` for a `session` or `agent` call, and fails with `<name> uses the agent profile <profile>, whose
+model <provider>/<id> Pi's model registry does not have`. `check` prints `ok <name>` and exits 0, or prints the first
+problem and exits 1. It starts no run and writes nothing.
 
 ### Output
 
