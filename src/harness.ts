@@ -5,10 +5,19 @@
  */
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 
 export const HARNESS = "@vzlentin/harness";
+
+/**
+ * The entry of workflows that the harness host loads: `dist/entry.js`, or `src/entry.ts` in a checkout. The command and
+ * the postinstall set it in harness's `entries.json`.
+ */
+export const ENTRY = fileURLToPath(
+	new URL(import.meta.url.endsWith(".ts") ? "./entry.ts" : "./entry.js", import.meta.url),
+);
 
 const MANIFEST = Type.Object({
 	version: Type.String(),

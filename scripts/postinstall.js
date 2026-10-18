@@ -3,9 +3,13 @@
  * checkout and an install as a dependency do nothing:
  *
  * 1. When no harness in the peer range of workflows resolves from this package, it installs one globally with the npm
- *    that runs this install, which keeps its prefix, and checks again. The install fails when it still finds none.
- * 2. It registers the Pi extension in `pi/` with `pi install <path>`. Without `pi` on PATH, it prints the command to
- *    run later. A failure of Pi is only a warning.
+ *    that runs this install, which keeps its prefix, and checks again.
+ * 2. It sets the entry `workflows` in harness's `entries.json`, so a host that starts before any `workflows` command,
+ *    such as one that Pi starts, already runs workflows.
+ * 3. It registers the Pi extension in `pi/` with `pi install <path>`.
+ *
+ * No step fails the install: a failed npm install of a new package leaves its `bin` link with no package. Each step
+ * prints what to run instead, and the `workflows` command prints the harness install command too.
  */
 import { spawnSync } from "node:child_process";
 import { delimiter, join, sep } from "node:path";
@@ -20,24 +24,39 @@ const USER_PATH = (process.env.PATH ?? "")
 	.filter((entry) => !entry.endsWith(join("node_modules", ".bin")) && !entry.includes(`${sep}node_modules${sep}`))
 	.join(delimiter);
 
-/** Installs the harness of the range globally with the npm of this install, and fails when it still does not fit. */
-async function installHarness() {
-	// `dist/` is in the published package; the import comes after the check of a global install, as a checkout has none.
-	const { HARNESS, harnessProblem, harnessRange } = await import("../dist/harness.js");
-
-	if (harnessProblem(import.meta.url) === undefined) return;
+/**
+ * Installs the harness of the range globally with the npm of this install, through `check`, the module
+ * `dist/harness.js`. Returns whether a harness fits then.
+ */
+function installHarness(check) {
+	if (check.harnessProblem(import.meta.url) === undefined) return true;
 	const npm = process.env.npm_execpath;
-	const spec = `${HARNESS}@${harnessRange()}`;
+	const spec = `${check.HARNESS}@${check.harnessRange()}`;
 	console.log(`workflows: installing ${spec}`);
 	const args = ["install", "-g", spec];
 
 	if (npm === undefined) spawnSync("npm", args, { stdio: "inherit" });
 	else spawnSync(process.execPath, [npm, ...args], { stdio: "inherit" });
-	const problem = harnessProblem(import.meta.url);
+	const problem = check.harnessProblem(import.meta.url);
 
-	if (problem === undefined) return;
-	console.error(problem);
-	process.exit(1);
+	if (problem === undefined) return true;
+	console.warn(problem);
+
+	return false;
+}
+
+/**
+ * Sets the entry `workflows` of harness's `entries.json` to `entry`, through the harness of this install. A new Node
+ * process imports harness, as this one cached the lookups from before harness was installed.
+ */
+function setEntry(entry) {
+	const script = `import { setEntry } from "@vzlentin/harness/entries";\nsetEntry("workflows", ${JSON.stringify(entry)});`;
+	const cwd = fileURLToPath(new URL("..", import.meta.url));
+	const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { cwd, stdio: "inherit" });
+
+	if (result.error !== undefined || result.status !== 0) {
+		console.warn("workflows: could not set the entry of workflows in harness; the first workflows command sets it");
+	}
 }
 
 /** Registers the Pi extension of this install, or prints how to when Pi is missing or fails. */
@@ -63,6 +82,9 @@ function installPi() {
 }
 
 if (process.env.npm_config_global === "true") {
-	await installHarness();
+	// `dist/` is in the published package; the import comes after the check of a global install, as a checkout has none.
+	const check = await import("../dist/harness.js");
+
+	if (installHarness(check)) setEntry(check.ENTRY);
 	installPi();
 }

@@ -682,15 +682,24 @@ it, so the `workflows` command, the harness host and the `harness` command all l
   and exits 1. When the harness that resolves is out of the range, it prints `workflows needs @vzlentin/harness
   <range>, found <version>: npm install -g @vzlentin/harness@<range>` and exits 1.
 - The postinstall, `scripts/postinstall.js`, does something only in a global install (`npm_config_global` is `true`),
-  so a checkout's `npm ci` and an install as a dependency do nothing. When harness does not resolve or is out of the
-  range, it prints `workflows: installing @vzlentin/harness@<range>`, runs `npm install -g @vzlentin/harness@<range>`
-  with the npm of the install, which keeps the prefix, and checks again. When it still does not fit, it prints the error line above and the install fails. Then it runs `pi
-  install <install>/pi`, which registers the Pi extension of the install by its path. `<install>` is the real path
-  of the global package, with no symbolic link, as npm runs the script there. When `pi` is not on `PATH`
-  (without the `node_modules/.bin` folders that npm adds), it prints `workflows: pi is not on PATH; to get the
-  workflow tool in Pi, run: pi install <install>/pi`. When `pi install` fails, it prints `workflows: pi install failed
-  (<reason>); to get the workflow tool in Pi, run: pi install <install>/pi`. Neither fails the install. A repeated
-  install changes nothing: harness fits, and Pi keeps one entry for the path.
+  so a checkout's `npm ci` and an install as a dependency do nothing. It never fails the install: when npm installs a
+  new package and its postinstall fails, npm removes the package and keeps its `bin` link, which then points to
+  nothing. Its steps:
+  1. When harness does not resolve or is out of the range, it prints `workflows: installing
+     @vzlentin/harness@<range>`, runs `npm install -g @vzlentin/harness@<range>` with the npm of the install, which
+     keeps the prefix, and checks again. When harness still does not fit, it prints the error line of the command
+     above and skips step 2.
+  2. It sets the entry `workflows` in harness's `entries.json` to `dist/entry.js` of the install, with the global
+     harness, in a new Node process. So a host that starts before any `workflows` command, such as one that `harness`
+     or Pi starts, runs workflows. The path has no version, so it stays the same across updates. When this fails, it
+     prints `workflows: could not set the entry of workflows in harness; the first workflows command sets it`.
+  3. It runs `pi install <install>/pi`, which registers the Pi extension of the install by its path. `<install>` is
+     the real path of the global package, with no symbolic link, as npm runs the script there. When `pi` is not on
+     `PATH` (without the `node_modules/.bin` folders that npm adds), it prints `workflows: pi is not on PATH; to get
+     the workflow tool in Pi, run: pi install <install>/pi`. When `pi install` fails, it prints `workflows: pi install
+     failed (<reason>); to get the workflow tool in Pi, run: pi install <install>/pi`.
+
+  A repeated install changes nothing: harness fits, the entry is the same, and Pi keeps one entry for the path.
 
 ## Runs in the harness host
 
@@ -705,7 +714,8 @@ directory, starts the host when none runs, asks it to start the run's task, and 
 
 - The host loads its entries when it starts: the `piDurable` entries of the packages in Pi's settings, and the entries
   of harness's `entries.json`. Each command that can start a host sets the entry `workflows` there to `dist/entry.js`
-  of its install, or `src/entry.ts` of a checkout. A host that started with another version of workflows runs that
+  of its install, or `src/entry.ts` of a checkout. The postinstall of a global install sets it too, see
+  [Install](#install). A host that started with another version of workflows runs that
   version until it restarts. A host that started before the entry was set refuses a start with
   `workflows: Unknown task kind: workflows.run: the harness host started before it had the entry of workflows; stop it
   so it starts again with the entry (the harness host of project <project> has pid <pid>: kill <pid>)`, and no run
@@ -824,7 +834,7 @@ uses the profiles as they were when it started.
 The engine files in `src/`:
 
 - `cli.ts`: the `workflows` command entry point.
-- `harness.ts`: the check of the harness install, for the command and the postinstall.
+- `harness.ts`: the check of the harness install and the path of the entry, for the command and the postinstall.
 - `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show` and `save`, a client of the harness host, and the
   run directory.
 - `entry.ts`: the entry that the harness host loads, with the script task.

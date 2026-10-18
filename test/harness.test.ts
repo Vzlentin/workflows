@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,12 +38,12 @@ async function copyCheckout() {
 	}
 }
 
-/** Runs the `workflows` command of the copy in `root` with `args`. */
-async function workflows(...args: string[]) {
+/** Runs `node <script> ...args` in `root` with `env` added to the environment, and returns its exit code and output. */
+async function node(script: string, args: readonly string[], env: Readonly<Record<string, string>>) {
 	try {
-		const { stdout, stderr } = await promisify(execFile)(process.execPath, [join(root, "src", "cli.ts"), ...args], {
+		const { stdout, stderr } = await promisify(execFile)(process.execPath, [script, ...args], {
 			cwd: root,
-			env: { ...process.env, XDG_STATE_HOME: join(root, "state"), XDG_CONFIG_HOME: join(root, "config") },
+			env: { ...process.env, XDG_STATE_HOME: join(root, "state"), XDG_CONFIG_HOME: join(root, "config"), ...env },
 		});
 
 		return { code: 0, stdout, stderr };
@@ -53,6 +53,40 @@ async function workflows(...args: string[]) {
 		return { code, stdout, stderr };
 	}
 }
+
+/** Runs the `workflows` command of the copy in `root` with `args`. */
+const workflows = (...args: string[]) => node(join(root, "src", "cli.ts"), args, {});
+
+/**
+ * A copy of the published layout in `root`: `package.json`, `dist/` built from the checkout, `scripts/postinstall.js`,
+ * and the checkout's `node_modules` except `@vzlentin`. `bin/` has only `node`, so no `pi` is on `PATH`.
+ */
+async function copyPackage() {
+	await copyCheckout();
+	await cp(join(CHECKOUT, "scripts"), join(root, "scripts"), { recursive: true });
+	const tsc = join(CHECKOUT, "node_modules", ".bin", "tsc");
+	await promisify(execFile)(tsc, ["-p", join(CHECKOUT, "tsconfig.build.json"), "--outDir", join(root, "dist")]);
+	await mkdir(join(root, "bin"));
+	await symlink(process.execPath, join(root, "bin", "node"));
+}
+
+/** Links the checkout's harness into `node_modules` of `root`. */
+async function linkHarness() {
+	await mkdir(join(root, "node_modules", "@vzlentin"));
+	const harness = join(CHECKOUT, "node_modules", "@vzlentin", "harness");
+	await symlink(harness, join(root, "node_modules", "@vzlentin", "harness"));
+}
+
+/** Runs the postinstall of the copy in `root` as a global install, with `env` added to the environment. */
+function postinstall(env: Readonly<Record<string, string>> = {}) {
+	return node(join(root, "scripts", "postinstall.js"), [], {
+		npm_config_global: "true",
+		PATH: join(root, "bin"),
+		...env,
+	});
+}
+
+const entries = async () => JSON.parse(await readFile(join(root, "config", "harness", "entries.json"), "utf8"));
 
 describe("the harness range", () => {
 	it("is the peer dependency of the package", () => {
@@ -111,5 +145,68 @@ describe("the harness check", () => {
 			stdout: "",
 			stderr: "workflows needs @vzlentin/harness ^0.2.0, found 0.1.0: npm install -g @vzlentin/harness@^0.2.0\n",
 		});
+	});
+});
+
+describe("the postinstall", () => {
+	it("does nothing outside a global install", async () => {
+		await copyPackage();
+		await linkHarness();
+
+		expect(await postinstall({ npm_config_global: "" })).toEqual({ code: 0, stdout: "", stderr: "" });
+		await expect(entries()).rejects.toThrow("ENOENT");
+	});
+
+	it("sets the entry of workflows in harness, and says how to add the Pi extension when pi is missing", async () => {
+		await copyPackage();
+		await linkHarness();
+		const installed = await realpath(root);
+
+		expect(await postinstall()).toEqual({
+			code: 0,
+			stdout: "",
+			stderr: `workflows: pi is not on PATH; to get the workflow tool in Pi, run: pi install ${join(installed, "pi")}\n`,
+		});
+		expect(await entries()).toEqual({ workflows: join(installed, "dist", "entry.js") });
+	});
+
+	it("installs harness with the npm of the install, then sets the entry with it", async () => {
+		await copyPackage();
+		const npm = join(root, "npm.js");
+		const harness = join(CHECKOUT, "node_modules", "@vzlentin", "harness");
+		await writeFile(
+			npm,
+			[
+				'import { appendFileSync, mkdirSync, symlinkSync } from "node:fs";',
+				'appendFileSync("npm.log", process.argv.slice(2).join(" "));',
+				'mkdirSync("node_modules/@vzlentin");',
+				`symlinkSync(${JSON.stringify(harness)}, "node_modules/@vzlentin/harness");`,
+			].join("\n"),
+		);
+		const installed = await realpath(root);
+
+		expect(await postinstall({ npm_execpath: npm })).toEqual({
+			code: 0,
+			stdout: "workflows: installing @vzlentin/harness@^0.2.0\n",
+			stderr: `workflows: pi is not on PATH; to get the workflow tool in Pi, run: pi install ${join(installed, "pi")}\n`,
+		});
+		expect(await readFile(join(root, "npm.log"), "utf8")).toBe("install -g @vzlentin/harness@^0.2.0");
+		expect(await entries()).toEqual({ workflows: join(installed, "dist", "entry.js") });
+	});
+
+	it("does not fail the install when harness stays missing", async () => {
+		await copyPackage();
+		const npm = join(root, "npm.js");
+		await writeFile(npm, "process.exit(1);\n");
+		const installed = await realpath(root);
+
+		expect(await postinstall({ npm_execpath: npm })).toEqual({
+			code: 0,
+			stdout: "workflows: installing @vzlentin/harness@^0.2.0\n",
+			stderr:
+				"workflows needs @vzlentin/harness ^0.2.0: npm install -g @vzlentin/harness@^0.2.0\n" +
+				`workflows: pi is not on PATH; to get the workflow tool in Pi, run: pi install ${join(installed, "pi")}\n`,
+		});
+		await expect(entries()).rejects.toThrow("ENOENT");
 	});
 });
