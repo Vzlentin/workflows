@@ -14,9 +14,10 @@ import {
 	SqliteStorage,
 	type SqliteValue,
 } from "@earendil-works/pi-durable/storage/sqlite";
-import { isObject } from "./meta.ts";
-import { PROGRESS_KIND, type ProgressEvent } from "./progress.ts";
-import { CALL_KIND, type CallRecord } from "./script.ts";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "./progress.ts";
+import { CALL_KIND, CALL_RECORD, type SavedCall } from "./script.ts";
 import { TASK } from "./task.ts";
 
 /** How long a read waits for the lock of the host's commit. */
@@ -39,10 +40,12 @@ class ReadOnlyDatabase implements SqliteDatabase {
 
 	#statement(sql: string): StatementSync {
 		let statement = this.#statements.get(sql);
+
 		if (statement === undefined) {
 			statement = this.#database.prepare(sql);
 			this.#statements.set(sql, statement);
 		}
+
 		return statement;
 	}
 
@@ -59,26 +62,32 @@ class ReadOnlyDatabase implements SqliteDatabase {
 	}
 
 	async get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined> {
+		// SAFETY: SqliteStorage gives `T` as the row type of the columns that its own `sql` selects.
 		return this.#statement(sql).get(...params) as T | undefined;
 	}
 
 	async all<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T[]> {
+		// SAFETY: SqliteStorage gives `T` as the row type of the columns that its own `sql` selects.
 		return this.#statement(sql).all(...params) as T[];
 	}
 
 	transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
 		const result = this.#transactions.then(async () => {
 			this.#database.exec("BEGIN");
+
 			try {
 				const value = await callback(this);
 				this.#database.exec("COMMIT");
+
 				return value;
 			} catch (error) {
 				this.#database.exec("ROLLBACK");
 				throw error;
 			}
 		});
+
 		this.#transactions = result.catch(() => undefined);
+
 		return result;
 	}
 
@@ -96,6 +105,7 @@ export type Store = SqliteStorage;
  */
 export async function openStore(path: string): Promise<Store | undefined> {
 	if (!existsSync(path)) return undefined;
+
 	try {
 		return await SqliteStorage.open(new ReadOnlyDatabase(path));
 	} catch (error) {
@@ -110,7 +120,9 @@ export async function openStore(path: string): Promise<Store | undefined> {
 /** `read` on the store at `path`, open for reads; `fallback` when the store does not exist. */
 export async function reading<T>(path: string, fallback: T, read: (store: Store) => Promise<T>): Promise<T> {
 	const store = await openStore(path);
+
 	if (store === undefined) return fallback;
+
 	try {
 		return await read(store);
 	} finally {
@@ -118,10 +130,17 @@ export async function reading<T>(path: string, fallback: T, read: (store: Store)
 	}
 }
 
-/** The run ID in the input of a workflow task, also of an earlier version, which some versions wrapped as `{ input }`. */
-function runIdOf(input: JsonValue): string | undefined {
-	const saved = isObject(input) && isObject(input.input) ? input.input : input;
-	return isObject(saved) && typeof saved.runId === "string" ? saved.runId : undefined;
+const WRAPPED = Type.Object({ input: Type.Object({}) });
+
+/**
+ * The string `field` of the input of a workflow task, also of an earlier version, which some versions wrapped as
+ * `{ input }`.
+ */
+export function inputString(input: JsonValue, field: "runId" | "name"): string | undefined {
+	const saved = Value.Check(WRAPPED, input) ? input.input : input;
+	const schema = Type.Object({ [field]: Type.String() });
+
+	return Value.Check(schema, saved) ? saved[field] : undefined;
 }
 
 /**
@@ -131,51 +150,71 @@ function runIdOf(input: JsonValue): string | undefined {
 export async function runTasks(store: Store): Promise<Map<string, RunTask[]>> {
 	const runs = new Map<string, RunTask[]>();
 	let cursor: Cursor | undefined;
+
 	do {
 		const page = await store.scanTasks({ kind: TASK.name }, 256, cursor, BACKGROUND_CONTEXT);
+
 		for (const task of page.items) {
-			const id = runIdOf(task.input);
+			const id = inputString(task.input, "runId");
+
 			if (task.owner !== undefined || id === undefined) continue;
 			runs.set(id, [...(runs.get(id) ?? []), task]);
 		}
+
 		cursor = page.next;
 	} while (cursor !== undefined);
+
 	return runs;
 }
 
-/** The progress events of the root run `id`. */
+const PROGRESS = Type.Object({ events: Type.Array(Type.Unknown()) });
+
+/** The progress events of the root run `id`, without an event that is not valid. */
 export async function progressEvents(store: Store, id: string): Promise<readonly ProgressEvent[]> {
 	const address = { kind: PROGRESS_KIND, scope: { kind: "session" as const }, key: id };
 	const record = await store.findDocument(address, "current", BACKGROUND_CONTEXT);
+
 	if (record === undefined) return [];
 	const stored = await store.document(record.id, "current", BACKGROUND_CONTEXT);
-	return (stored?.value as { events?: ProgressEvent[] } | undefined)?.events ?? [];
+	const value = stored?.value;
+
+	if (!Value.Check(PROGRESS, value)) return [];
+
+	return value.events.filter((event) => Value.Check(PROGRESS_EVENT, event));
 }
 
 /**
  * The call records of the run `runId` and of its child runs, by key. The storage has no scan by key prefix, so it lists
  * the keys of every call record of the store, and reads only those of the run.
  */
-export async function callRecords(store: Store, runId: string): Promise<Map<string, CallRecord>> {
+export async function callRecords(store: Store, runId: string): Promise<Map<string, SavedCall>> {
 	const documents = new Map<string, DocumentId>();
 	let cursor: Cursor | undefined;
+
 	do {
 		const query = { scope: { kind: "session" as const }, at: "current" as const, kind: CALL_KIND };
 		const page = await store.scanDocuments(query, 256, cursor, BACKGROUND_CONTEXT);
+
 		for (const record of page.items) if (record.key !== undefined) documents.set(record.key, record.id);
 		cursor = page.next;
 	} while (cursor !== undefined);
-	const records = new Map<string, CallRecord>();
+
+	const records = new Map<string, SavedCall>();
 	const runs = [runId];
+
 	for (const run of runs) {
 		for (const [key, id] of documents) {
 			if (!key.startsWith(`${run}/`)) continue;
 			const stored = await store.document(id, "current", BACKGROUND_CONTEXT);
-			if (stored === undefined) continue;
-			const record = stored.value as CallRecord;
+
+			const record = stored?.value;
+
+			if (!Value.Check(CALL_RECORD, record)) continue;
 			records.set(key, record);
+
 			if (record.child !== undefined) runs.push(record.child.runId);
 		}
 	}
+
 	return records;
 }

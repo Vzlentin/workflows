@@ -386,6 +386,7 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
 - With `meta.worktree` and `args.repo`, the child gets a new worktree on `<name>/<child-id>` in its run directory, in
   the repository of `args.repo` from the caller's directory, at `args.base` (default `main`), and `args.start`. Without
   `args.repo`, or without `meta.worktree`, the child runs in the caller's directory, and `start` is an ordinary arg.
+  With `meta.worktree`, a `start` that is not a string fails the call with `run <name>: start is not a string`.
 - `args.prompts` maps prompt names to template texts. Each text, without frontmatter and the last `$@`, replaces that
   prompt in the child run only. A name with no prompt fails the call.
 - The child run gets the caller's saved scripts, prompts and profiles.
@@ -414,6 +415,11 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | `parallel(thunks)` | Runs the functions at once and returns their results |
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
+
+A call with an argument of the wrong type, such as a prompt that is not a string, a `sh` command that is not a string
+or an array of strings, or a `prompts.<name>` input that is not a string, fails with
+`<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run` or `prompt`, and
+`<path>` points to the deepest wrong value in the arguments, such as `/0/1` for `sh(["git", 1])`.
 
 `workflows/script.d.ts` declares these globals for editors. A project gets the same completion when it copies
 `script.d.ts` and `jsconfig.json` into `.workflows/workflows/`, and copies them again after an upgrade of the package.

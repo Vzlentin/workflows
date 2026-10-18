@@ -20,11 +20,11 @@ import { setEntry } from "@vzlentin/harness/entries";
 import { resolveProject } from "@vzlentin/harness/projects";
 import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import * as script from "./meta.ts";
-import { display } from "./progress.ts";
-import { type Io, newRunId, UsageError, withUsage } from "./run.ts";
-import type { CallRecord } from "./script.ts";
+import { display, type ProgressEvent } from "./progress.ts";
+import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
+import type { SavedCall } from "./script.ts";
 import { loadScripts, projectFolder } from "./script.ts";
-import { callRecords, openStore, progressEvents, type RunTask, reading, runTasks } from "./store.ts";
+import { callRecords, inputString, openStore, progressEvents, type RunTask, reading, runTasks } from "./store.ts";
 import { current, TASK } from "./task.ts";
 
 /** How often the command reads the progress of a run that it follows. */
@@ -63,10 +63,17 @@ const LIST = "workflows list [--json]";
 const SHOW = "workflows show <run-id> [--json]";
 const SAVE = "workflows save <run-id> <name> [--force]";
 
+type Command = (args: readonly string[], terminal: Terminal, json: boolean) => Promise<number>;
+
 /** The commands by name. No script can have one of these names. */
-const COMMANDS: Readonly<
-	Record<string, (args: readonly string[], terminal: Terminal, json: boolean) => Promise<number>>
-> = { list, resume, stop, show, save, check: script.check };
+const COMMANDS = new Map<string, Command>([
+	["list", list],
+	["resume", resume],
+	["stop", stop],
+	["show", show],
+	["save", save],
+	["check", script.check],
+]);
 
 /** The exit code: 0 for a successful result, 1 for any other result or error, 2 for bad usage, 130 after Ctrl+C. */
 export async function main(argv: readonly string[], terminal: Terminal): Promise<number> {
@@ -83,30 +90,40 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 	]
 		.map((line, index) => `${index === 0 ? "usage: " : "       "}${line}`)
 		.join("\n");
+
 	try {
 		const dashes = argv.indexOf("--");
 		const options = dashes === -1 ? argv.length : dashes;
 		const json = argv.slice(0, options).includes("--json");
 		const [command, ...args] = argv.filter((arg, index) => index >= options || arg !== "--json");
+
 		if (command === undefined) {
 			for (const line of await script.listScripts(terminal)) terminal.stdout(line);
+
 			return 0;
 		}
-		const run = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
+
+		const run = COMMANDS.get(command);
+
 		if (run !== undefined) return await run(args, terminal, json);
 		const flags = args.indexOf("--");
+
 		if (args.slice(0, flags === -1 ? args.length : flags).includes("--help")) {
 			for (const line of await script.help(command, terminal)) terminal.stdout(line);
+
 			return 0;
 		}
+
 		return await start([command, ...args], terminal, json);
 	} catch (error) {
 		terminal.stderr(`workflows: ${error instanceof Error ? error.message : String(error)}`);
-		const code = (error as { code?: unknown } | undefined)?.code;
-		if (error instanceof UsageError || (typeof code === "string" && code.startsWith("ERR_PARSE_ARGS"))) {
+
+		if (error instanceof UsageError || parseArgsMessage(error) !== undefined) {
 			terminal.stderr(error instanceof UsageError && error.usage !== undefined ? `usage: ${error.usage}` : usage);
+
 			return 2;
 		}
+
 		return 1;
 	}
 }
@@ -131,7 +148,9 @@ async function connectTo(terminal: Terminal, project: string, start: boolean): P
 	// A host that starts from here loads this entry. A host that runs already loads it only after it starts again.
 	if (start) setEntry("workflows", ENTRY);
 	const connected = await connectOrNot(terminal, project, start);
+
 	if (start && connected === undefined) throw new Error(`no harness host for ${project}`);
+
 	return connected;
 }
 
@@ -139,6 +158,7 @@ async function connectOrNot(terminal: Terminal, project: string, start: boolean)
 	if (terminal.connect !== undefined) return terminal.connect(project, start);
 	const saved = process.env.HARNESS_PROJECT;
 	process.env.HARNESS_PROJECT = project;
+
 	try {
 		return await connect({ start });
 	} finally {
@@ -149,6 +169,7 @@ async function connectOrNot(terminal: Terminal, project: string, start: boolean)
 
 function runsDirectory(): string {
 	const state = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+
 	return join(state, "workflows", "runs");
 }
 
@@ -165,11 +186,13 @@ async function startTask(client: Client, project: string, input: script.ScriptIn
 		await client.request({ type: "start", kind: TASK.name, version: TASK.version, input, key });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+
 		if (message.startsWith("Unknown task kind")) {
 			throw new Refused(
 				`${message}: the harness host started before it had the entry of workflows; stop it so it starts again with the entry (${hostOf(client, project)})`,
 			);
 		}
+
 		if (message.startsWith("This host has version")) throw new Refused(`${message} (${hostOf(client, project)})`);
 		throw error;
 	}
@@ -194,7 +217,9 @@ function checkVersion(client: Client, project: string, info: TaskInfo): void {
 /** The info of the task of `key` in the host of `project`, undefined when the host has no such task. */
 async function findTask(terminal: Terminal, project: string, key: string): Promise<TaskInfo | undefined> {
 	const client = await connectTo(terminal, project, false);
+
 	if (client === undefined) throw new Error(`no harness host for ${project}`);
+
 	try {
 		return await client.request({ type: "task", key });
 	} catch (error) {
@@ -215,6 +240,7 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 	let client: Client | undefined;
 	let input: script.ScriptInput | undefined;
 	let sent = false;
+
 	try {
 		input = await script.prepare(parsed, { id, directory, cwd: terminal.cwd });
 		await writeFile(join(directory, "project"), `${project}\n`);
@@ -227,37 +253,50 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 	} catch (error) {
 		client?.close();
 		terminal.following(false);
+
 		if (sent && input !== undefined && !(error instanceof Refused)) {
 			// The host may have created the task before the error, such as a closed connection, so the run may exist.
 			const message = error instanceof Error ? error.message : String(error);
 			const found = await findTask(terminal, project, key).catch(() => null);
+
 			if (found === null) throw new Error(`${message}; run ${id} may have started: workflows resume ${id}`);
+
 			if (found !== undefined) {
 				const again = await connectTo(terminal, project, true);
+
 				try {
 					checkVersion(again, project, found);
 				} catch (refused) {
 					again.close();
 					throw refused;
 				}
+
 				terminal.following(true);
 				terminal.stdout(`run ${id}`);
+
 				return follow({ id, project, key, input, client: again, from: 0 }, terminal, json);
 			}
 		}
+
 		await rm(directory, { recursive: true, force: true });
+
 		if (!terminal.interrupt.aborted) throw error;
 		terminal.stderr("workflows: interrupted before the run started");
+
 		return 130;
 	}
+
 	terminal.stdout(`run ${id}`);
+
 	return follow({ id, project, key, input, client, from: 0 }, terminal, json);
 }
 
 /** The one run ID of `args`. Bad usage prints `usage`. */
 function oneRunId(args: readonly string[], usage: string): string {
 	const [id, ...rest] = args;
+
 	if (id === undefined || rest.length > 0 || id.startsWith("-")) throw new UsageError("give one run ID", usage);
+
 	return id;
 }
 
@@ -269,12 +308,15 @@ async function savedRun(id: string, usage: string): Promise<SavedRun> {
 	if (id.includes("/") || id.includes("\\") || id === "." || id === "..") {
 		throw new UsageError(`${id} is not a run ID`, usage);
 	}
+
 	const file = join(runsDirectory(), id, "project");
+
 	const project = (
 		await readFile(file, "utf8").catch(() => {
 			throw new Error(`no run ${id} in ${runsDirectory()}`);
 		})
 	).trim();
+
 	return { id, project, store: await storeOf(project) };
 }
 
@@ -290,24 +332,31 @@ function tasksOf(run: SavedRun): Promise<RunTask[]> {
  */
 function taskOf(tasks: readonly RunTask[]): RunTask | undefined {
 	const latest = tasks.at(-1);
+
 	if (latest === undefined || current(latest) || latest.state.status !== "terminal") return latest;
+
 	return tasks.findLast(current) ?? latest;
 }
 
 /** The status of a run whose task is `task`, for `list` and `show`. */
 function runStatus(task: RunTask): string {
 	const { state } = task;
+
 	if (state.status !== "terminal") {
 		if (current(task)) return "running";
+
 		return savedBy(task).later ? "later-version" : "earlier-version";
 	}
+
 	const { outcome } = state;
+
 	if (outcome.status === "completed") return script.statusOf(outcome.result) ?? "done";
+
 	return outcome.status === "aborted" ? "stopped" : outcome.status;
 }
 
 /** The progress events of the root run `run`. */
-function progressOf(run: SavedRun): Promise<readonly unknown[]> {
+function progressOf(run: SavedRun): Promise<readonly ProgressEvent[]> {
 	return reading(run.store, [], (store) => progressEvents(store, run.id));
 }
 
@@ -320,15 +369,19 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 	const run = await savedRun(oneRunId(args, RESUME), RESUME);
 	const tasks = await tasksOf(run);
 	const { input, state } = checked(taskOf(tasks), run.id, "resume");
+
 	if (state.status === "terminal" && state.outcome.status === "completed") {
 		terminal.stdout(`run ${run.id}`);
+
 		return finished(input, run.id, state.outcome.result, terminal, json);
 	}
+
 	const ended = tasks.at(-1)?.state.status === "terminal";
 	const key = taskKey(run.id, tasks.length + (ended ? 1 : 0));
 	terminal.following(true);
 	let client: Client | undefined;
 	let from: number;
+
 	try {
 		if (ended) {
 			from = (await progressOf(run)).length;
@@ -337,14 +390,16 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 		} else {
 			const before = (await progressOf(run)).length;
 			client = await connectTo(terminal, run.project, false);
+
 			if (client === undefined) {
 				from = before;
 				client = await connectTo(terminal, run.project, true);
 			} else {
-				const events = (await progressOf(run)) as readonly { kind?: string; run?: string }[];
+				const events = await progressOf(run);
 				const started = events.findLastIndex((event) => event.kind === "start" && event.run === run.id);
 				from = started === -1 ? events.length : started;
 			}
+
 			checkVersion(client, run.project, await client.request({ type: "task", key }));
 		}
 	} catch (error) {
@@ -352,7 +407,9 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 		terminal.following(false);
 		throw error;
 	}
+
 	terminal.stdout(`run ${run.id}`);
+
 	return follow({ id: run.id, project: run.project, key, input, client, from }, terminal, json);
 }
 
@@ -364,10 +421,14 @@ async function stop(args: readonly string[], terminal: Terminal, json: boolean):
 	const run = await savedRun(oneRunId(args, STOP), STOP);
 	const tasks = await tasksOf(run);
 	const latest = tasks.at(-1);
+
 	if (latest === undefined) throw new Error(`run ${run.id} has no workflow`);
+
 	if (latest.state.status === "terminal") throw new Error(`run ${run.id} is not running`);
 	const outcome = await abortRun(terminal, run.project, taskKey(run.id, tasks.length));
+
 	if (outcome?.status !== "aborted" && outcome?.status !== "orphaned") throw new Error(`run ${run.id} is not running`);
+
 	if (json) terminal.stdout(JSON.stringify({ runId: run.id, status: "stopped" }));
 	else if (current(latest)) {
 		terminal.stdout(`stopped ${script.title(latest.input)}; continue with: workflows resume ${run.id}`);
@@ -375,14 +436,17 @@ async function stop(args: readonly string[], terminal: Terminal, json: boolean):
 		const { name, later } = savedBy(latest);
 		terminal.stdout(`stopped ${name}, which ${later ? "a later" : "an earlier"} version saved; it cannot resume`);
 	}
+
 	return 0;
 }
 
 /** Aborts the task of `key` in the host of `project`, and gives its outcome once it ended. */
 async function abortRun(terminal: Terminal, project: string, key: string): Promise<TaskInfo["outcome"]> {
 	const client = await connectTo(terminal, project, true);
+
 	try {
 		await client.request({ type: "abort-task", key });
+
 		return (await client.request({ type: "wait-task", key })).outcome;
 	} finally {
 		client.close();
@@ -400,32 +464,40 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 	const store = await storeOf(await projectOf(terminal.cwd));
 	const runs = await reading(store, new Map<string, RunTask[]>(), runTasks);
 	const listed: Listed[] = [];
+
 	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
 		const task = taskOf(tasks);
+
 		if (task === undefined || !existsSync(join(runsDirectory(), id, "project"))) continue;
 		const status = runStatus(task);
+
 		if (current(task)) listed.push({ runId: id, workflow: task.input.name, title: script.title(task.input), status });
 		else listed.push({ runId: id, workflow: savedBy(task).name, title: savedBy(task).name, status });
 	}
+
 	if (json) terminal.stdout(JSON.stringify(listed));
 	else for (const run of listed) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
+
 	return 0;
 }
 
 /** One call of `workflows show`, with the calls of its child run when it is a `run` call. */
-type Shown = Omit<CallRecord, "conversation" | "child"> & {
+type Shown = Omit<SavedCall, "conversation" | "child"> & {
 	readonly label: string;
 	readonly mark: "✓" | "✗" | "◉";
 	readonly calls?: Shown[];
 };
 
 /** The footer lines and the JSON fields of a run that ended with `outcome` without a result. */
-function endOf(outcome: TaskOutcome<JsonValue>, title: string, id: string): { lines: string[]; error?: string } {
+function endOf(outcome: TaskOutcome<JsonValue>, title: string, id: string) {
 	const resume = `continue with: workflows resume ${id}`;
+
 	if (outcome.status === "failed" || outcome.status === "faulted") {
 		return { lines: [`failed ${title}: ${outcome.error.message}`, resume], error: outcome.error.message };
 	}
+
 	if (outcome.status === "orphaned") return { lines: [`orphaned ${title}: ${outcome.reason}`, resume] };
+
 	return { lines: [`stopped ${title}; ${resume}`] };
 }
 
@@ -436,10 +508,12 @@ function endOf(outcome: TaskOutcome<JsonValue>, title: string, id: string): { li
 async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const run = await savedRun(oneRunId(args, SHOW), SHOW);
 	const { id } = run;
+
 	const { task, records } = await reading(run.store, { task: undefined, records: new Map() }, async (store) => ({
 		task: taskOf((await runTasks(store)).get(id) ?? []),
 		records: await callRecords(store, id),
 	}));
+
 	const checkedTask = checked(task, id, "be shown");
 	const { input, state } = checkedTask;
 	const outcome = state.status === "terminal" ? state.outcome : undefined;
@@ -447,22 +521,31 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	const title = script.title(input);
 	const footer: string[] = [];
 	let end: { report: string[] } | { error: string } | undefined;
+
 	if (outcome?.status === "completed") {
 		script.report(input, outcome.result, { ...terminal, stdout: (line) => footer.push(line) });
 		end = { report: footer };
 	} else if (outcome !== undefined) {
 		const ended = endOf(outcome, title, id);
 		footer.push(...ended.lines);
+
 		if (ended.error !== undefined) end = { error: ended.error };
 	}
+
 	const status = runStatus(checkedTask);
+
 	if (json) {
 		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, calls }));
+
 		return 0;
 	}
+
 	terminal.stdout(`run ${id} ${input.name} ${status} ${title}`);
+
 	for (const line of treeLines(calls, "", Date.now())) terminal.stdout(line);
+
 	for (const line of footer) terminal.stdout(line);
+
 	return 0;
 }
 
@@ -472,25 +555,32 @@ async function save(args: readonly string[], terminal: Terminal): Promise<number
 		() => parseArgs({ args: [...args], options: { force: { type: "boolean" } }, allowPositionals: true, strict: true }),
 		SAVE,
 	);
+
 	const [id, name, ...rest] = positionals;
+
 	if (id === undefined || name === undefined || rest.length > 0) {
 		throw new UsageError("give one run ID and one name", SAVE);
 	}
+
 	if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
 		throw new UsageError(`${name} is not a workflow name: use lowercase letters, digits and -`, SAVE);
 	}
-	if (Object.hasOwn(COMMANDS, name)) throw new Error(`${name} is a command and cannot be a workflow name`);
+
+	if (COMMANDS.has(name)) throw new Error(`${name} is a command and cannot be a workflow name`);
 	const run = await savedRun(id, SAVE);
 	const { input } = checked(taskOf(await tasksOf(run)), id, "be saved");
 	const project = await projectFolder(terminal.cwd);
+
 	if (!values.force && Object.hasOwn(await loadScripts(project), name)) {
 		throw new Error(`a workflow ${name} exists; replace it with --force`);
 	}
+
 	const folder = join(project, "workflows");
 	const file = join(folder, `${name}.js`);
 	await mkdir(folder, { recursive: true });
 	await writeFile(file, input.bundle.main);
 	terminal.stdout(file);
+
 	return 0;
 }
 
@@ -498,16 +588,18 @@ async function save(args: readonly string[], terminal: Terminal): Promise<number
  * The calls of the run `runId` in the order they started, each `run` call with the calls of its child run. A call that
  * started and did not end is `◉` while the run's task runs, and `✗` once it `ended`.
  */
-function callTree(records: Map<string, CallRecord>, runId: string, ended: boolean): Shown[] {
-	const own = [...records].filter(([key]) => key.startsWith(`${runId}/`)).map(([, record]) => record);
+function callTree(records: Map<string, SavedCall>, runId: string, ended: boolean): Shown[] {
+	const own = [...records].flatMap(([key, record]) => (key.startsWith(`${runId}/`) ? [record] : []));
+
 	return own
 		.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-		.map(({ conversation: _, child: started, ...record }) => {
+		.map(({ conversation: _conversation, child: started, ...record }) => {
 			const cut = ended && record.endedAt === undefined;
 			const mark = record.error !== undefined || cut ? "✗" : record.endedAt !== undefined ? "✓" : "◉";
 			// A `run` call that failed before its child run started has no `child`.
 			const child = started?.runId;
 			const shown = { ...record, label: labelOf(record, child, records), mark } as const;
+
 			return child === undefined ? shown : { ...shown, calls: callTree(records, child, ended) };
 		});
 }
@@ -521,18 +613,17 @@ function checked(
 	verb: string,
 ): TaskRecord<script.ScriptInput, JsonValue, JsonValue> {
 	if (latest === undefined) throw new Error(`run ${id} has no workflow`);
+
 	if (current(latest)) return latest;
 	const { name, later } = savedBy(latest);
 	throw new Error(`run ${id} was saved by ${later ? "a later" : "an earlier"} version of ${name} and cannot ${verb}`);
 }
 
 /** The workflow of the task `latest` that another version saved, and whether that version is later. */
-function savedBy(latest: TaskRecord<JsonValue, JsonValue, JsonValue>): { name: string; later: boolean } {
-	// A script task of an earlier version names its workflow in its input, which some versions wrapped as `{ input }`;
-	// an earlier task kind names it in the kind.
-	const { input } = latest;
-	const saved = script.isObject(input) && script.isObject(input.input) ? input.input : input;
-	const name = script.isObject(saved) && typeof saved.name === "string" ? saved.name : latest.kind.slice(PREFIX.length);
+function savedBy(latest: TaskRecord<JsonValue, JsonValue, JsonValue>) {
+	// A script task of an earlier version names its workflow in its input; an earlier task kind names it in the kind.
+	const name = inputString(latest.input, "name") ?? latest.kind.slice(PREFIX.length);
+
 	return { name, later: latest.kind === TASK.name && latest.version > TASK.version };
 }
 
@@ -540,8 +631,11 @@ function savedBy(latest: TaskRecord<JsonValue, JsonValue, JsonValue>): { name: s
 function duration(ms: number): string {
 	const seconds = Math.max(0, Math.floor(ms / 1000));
 	const pad = (n: number) => String(n).padStart(2, "0");
+
 	if (seconds < 60) return `${seconds}s`;
+
 	if (seconds < 3600) return `${Math.floor(seconds / 60)}m${pad(seconds % 60)}s`;
+
 	return `${Math.floor(seconds / 3600)}h${pad(Math.floor(seconds / 60) % 60)}m`;
 }
 
@@ -552,6 +646,7 @@ function duration(ms: number): string {
 function treeLines(calls: readonly Shown[], indent: string, now: number): string[] {
 	const lines: string[] = [];
 	let phase: string | null = null;
+
 	for (const call of calls) {
 		if (call.phase !== null && call.phase !== phase) lines.push(`${indent}${call.phase}`);
 		phase = call.phase;
@@ -559,8 +654,10 @@ function treeLines(calls: readonly Shown[], indent: string, now: number): string
 		const end = call.endedAt === undefined ? now : Date.parse(call.endedAt);
 		const time = cut ? "" : `  ${duration(end - Date.parse(call.startedAt))}`;
 		lines.push(`${indent}  ${call.mark} ${call.kind} ${call.label}${time}`);
+
 		if (call.calls !== undefined) lines.push(...treeLines(call.calls, `${indent}    `, now));
 	}
+
 	return lines;
 }
 
@@ -569,18 +666,22 @@ function treeLines(calls: readonly Shown[], indent: string, now: number): string
  * run ID for `run`.
  */
 function labelOf(
-	{ kind, args }: Pick<CallRecord, "kind" | "args">,
+	{ kind, args }: Pick<SavedCall, "kind" | "args">,
 	child: string | undefined,
-	records: Map<string, CallRecord>,
+	records: Map<string, SavedCall>,
 ): string {
 	if (kind === "sh" || kind === "ok") {
 		const { cmd } = args;
+
 		return (Array.isArray(cmd) ? cmd.join(" ") : String(cmd)).replace(/\s+/g, " ").trim().slice(0, 80);
 	}
+
 	if (kind === "run") return [args.name, child].filter((value) => value !== undefined).join(" ");
+
 	if (kind === "session") return String(args.profile);
 	// A linear scan for each ask; an index by conversation if runs get thousands of calls.
 	const session = [...records.values()].find((record) => record.conversation === args.conversation);
+
 	return String(session?.args.profile);
 }
 
@@ -590,21 +691,25 @@ function finished(input: script.ScriptInput, id: string, result: JsonValue, term
 	const report: string[] = [];
 	const code = script.report(input, result, { ...terminal, stdout: (line) => report.push(line) });
 	terminal.stdout(JSON.stringify({ runId: id, status: "finished", result, report }));
+
 	return code;
 }
 
 /** True when `signal` aborts within `ms`. */
 function abortedWithin(signal: AbortSignal, ms: number): Promise<boolean> {
 	if (signal.aborted) return Promise.resolve(true);
+
 	return new Promise((resolve) => {
 		const timer = setTimeout(() => {
 			signal.removeEventListener("abort", done);
 			resolve(false);
 		}, ms);
+
 		const done = () => {
 			clearTimeout(timer);
 			resolve(true);
 		};
+
 		signal.addEventListener("abort", done, { once: true });
 	});
 }
@@ -629,7 +734,7 @@ type Following = {
 };
 
 /** True for the error of a wait whose host stopped: its connection closed. */
-const hostStopped = (error: unknown) => error instanceof Error && error.message === HOST_CLOSED;
+const hostStopped = (cause: unknown) => cause instanceof Error && cause.message === HOST_CLOSED;
 
 /**
  * Shows the progress of the run until its task ends, and reports its outcome. Ctrl+C detaches and leaves the run to
@@ -639,6 +744,7 @@ async function follow(run: Following, terminal: Terminal, json: boolean): Promis
 	const { id, input, client } = run;
 	terminal.following(true);
 	const shown = display(terminal, json);
+
 	// With `--json`, the outcome line replaces the footer lines on stderr, so each stderr line is a progress line.
 	const end = (
 		status: "finished" | "failed" | "detached" | "stopped" | "host-stopped",
@@ -648,61 +754,82 @@ async function follow(run: Following, terminal: Terminal, json: boolean): Promis
 		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
 		else for (const line of footer) terminal.stderr(line);
 	};
-	const store = await openStore(await storeOf(run.project)).catch((error: unknown) => {
+
+	const store = await openStore(await storeOf(run.project)).catch((cause: unknown) => {
 		client.close();
 		terminal.following(false);
-		throw error;
+		throw cause;
 	});
+
 	let seen = run.from;
+
 	const poll = async () => {
 		if (store === undefined) return;
 		// A read that fails, such as one that waited too long for a lock, shows nothing; the next read catches up.
 		const events = await progressEvents(store, id).catch(() => []);
+
 		for (const event of events.slice(seen)) shown.event(event);
 		seen = Math.max(seen, events.length);
 	};
+
 	const polled = new AbortController();
+
 	const polling = (async () => {
 		while (!polled.signal.aborted) {
 			await poll();
 			await abortedWithin(polled.signal, POLL_MS);
 		}
 	})();
+
 	/** Stops the reads, then reads the events that came after the last one. */
 	const stopPolling = async () => {
 		polled.abort();
 		await polling;
 		await poll();
 	};
+
 	try {
 		const waited = client.request({ type: "wait-task", key: run.key });
 		// A detached command closes the connection, which ends the wait.
 		waited.catch(() => undefined);
 		const info = await Promise.race([waited, aborted(terminal.interrupt).then(() => undefined)]);
+
 		if (info !== undefined) return await report(info);
 		await stopPolling();
 		const next = `Follow it with: workflows resume ${id}. Stop it with: workflows stop ${id}`;
+
 		if (!json) terminal.stderr(`detached; run ${id} goes on. ${next}`);
+
 		// A run that ends in the window reports its outcome. A wait that fails leaves the run to the host.
 		const ended = waited.then(
-			(done) => done,
+			(done) => ({ done }),
 			() => new Promise<never>(() => {}),
 		);
-		const second = await Promise.race([abortedWithin(terminal.stop, terminal.stopWindowMs ?? STOP_WINDOW_MS), ended]);
-		if (typeof second !== "boolean") return await report(second);
-		if (!second) {
+
+		const stopping = abortedWithin(terminal.stop, terminal.stopWindowMs ?? STOP_WINDOW_MS);
+		const second = await Promise.race([stopping.then((stopped) => ({ stopped })), ended]);
+
+		if ("done" in second) return await report(second.done);
+
+		if (!second.stopped) {
 			if (json) end("detached", {});
+
 			return 130;
 		}
+
 		await abortRun(terminal, run.project, run.key);
+
 		return await report(await waited);
 	} catch (error) {
 		await stopPolling();
+
 		if (hostStopped(error)) {
 			const line = `the host stopped; the run continues when it starts again: workflows resume ${id}`;
 			end("host-stopped", {}, line);
+
 			return 1;
 		}
+
 		shown.stop(true);
 		end("failed", { error: error instanceof Error ? error.message : String(error) });
 		throw error;
@@ -716,23 +843,32 @@ async function follow(run: Following, terminal: Terminal, json: boolean): Promis
 	async function report(info: TaskInfo): Promise<number> {
 		await stopPolling();
 		const { outcome } = info;
+
 		if (outcome?.status === "completed") {
 			shown.stop(false);
+
 			if (!json) return script.report(input, outcome.result, terminal);
 			const lines: string[] = [];
 			const code = script.report(input, outcome.result, { ...terminal, stdout: (line) => lines.push(line) });
 			end("finished", { result: outcome.result, report: lines });
+
 			return code;
 		}
+
 		shown.stop(true);
+
 		if (outcome === undefined) throw new Error(`run ended ${info.status}`);
 		const ended = endOf(outcome, script.title(input), id);
+
 		if (outcome.status === "aborted") {
 			end("stopped", {}, ...ended.lines);
+
 			return 130;
 		}
+
 		const error = ended.error ?? `the task was orphaned: ${outcome.status === "orphaned" ? outcome.reason : ""}`;
 		end("failed", { error }, ...ended.lines);
+
 		return 1;
 	}
 }

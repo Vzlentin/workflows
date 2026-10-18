@@ -1,16 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { terminalRedraw } from "../src/progress.ts";
 
-const COLOR = new RegExp("\\u001b\\[\\d+m", "g");
+/** The color codes that `terminalRedraw` writes around a mark. */
+const COLORS = ["\x1b[32m", "\x1b[36m", "\x1b[31m", "\x1b[0m"];
+
+/** The text without the color codes. */
+function uncolored(text: string): string {
+	return COLORS.reduce((rest, code) => rest.replaceAll(code, ""), text);
+}
 
 /** A terminal stream that keeps what is written, with the color codes removed. */
 function stream(rows = 24) {
 	const written: string[] = [];
+
 	return {
 		written,
 		columns: 40,
 		rows,
-		write: (text: string) => written.push(text.replace(COLOR, "")),
+		write: (text: string) => written.push(uncolored(text)),
 	};
 }
 

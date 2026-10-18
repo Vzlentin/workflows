@@ -3,10 +3,12 @@ import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ConversationId, Cursor } from "@earendil-works/pi-durable";
+import type { Cursor } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { request } from "@vzlentin/harness/client";
 import { addProject } from "@vzlentin/harness/projects";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CtrlC, newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
@@ -50,27 +52,37 @@ async function detachedRun() {
 	interrupt.abort();
 	const run = await pending;
 	expect([run.code, run.stderr]).toEqual([130, [detached(run.id)]]);
+
 	if (run.host === undefined) throw new Error("no host");
+
 	return { id: run.id ?? "", host: run.host };
 }
+
+const CHILD = Type.Object({ key: Type.String(), closed: Type.Boolean() });
 
 /** The library state of each child conversation in the `main` store, by key: whether it is closed. */
 async function children(): Promise<Record<string, boolean>> {
 	const storage = await openNodeSqliteStorage(storeOf());
+
 	try {
 		const found: Record<string, boolean> = {};
 		let cursor: Cursor | undefined;
+
 		do {
 			const page = await storage.scanConversations({}, 256, cursor, BACKGROUND_CONTEXT);
+
 			for (const { id } of page.items) {
-				const scope = { kind: "conversation" as const, conversationId: id as ConversationId };
+				const scope = { kind: "conversation" as const, conversationId: id };
 				const record = await storage.findDocument({ kind: "pi-subagent.child", scope }, "current", BACKGROUND_CONTEXT);
 				const stored = record && (await storage.document(record.id, "current", BACKGROUND_CONTEXT));
-				const value = stored?.value as { key: string; closed: boolean } | undefined;
-				if (value !== undefined && value.key !== "") found[value.key] = value.closed;
+				const value = stored?.value;
+
+				if (Value.Check(CHILD, value) && value.key !== "") found[value.key] = value.closed;
 			}
+
 			cursor = page.next;
 		} while (cursor !== undefined);
+
 		return found;
 	} finally {
 		await storage.close(BACKGROUND_CONTEXT);
@@ -106,6 +118,7 @@ export default function ({ durable }) {
 }
 `,
 	);
+
 	return join(pkg, "index.ts");
 }
 
@@ -122,9 +135,11 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		interrupt.abort();
 		const first = await pending;
 		const { host } = first;
+
 		if (host === undefined) throw new Error("no host");
 		const id = first.id ?? "";
 		expect([first.code, first.stderr]).toEqual([130, ["gate", "  waits", detached(id)]]);
+
 		try {
 			const resumed = workflows(["resume", id], { cwd: root, host });
 			await new Promise((resolve) => setTimeout(resolve, 100));
@@ -134,6 +149,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		} finally {
 			await host.close();
 		}
+
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
 	});
 
@@ -192,6 +208,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 
 	it("stops a run with workflows stop, and refuses a run that does not run", async () => {
 		const { id, host } = await detachedRun();
+
 		try {
 			const stopped = await workflows(["stop", id], { cwd: root, host });
 			expect([stopped.code, stopped.stdout, stopped.stderr]).toEqual([
@@ -204,6 +221,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		} finally {
 			await host.close();
 		}
+
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
 		const listed = await workflows(["list"], { cwd: root });
 		expect(listed.stdout).toEqual([`${id} gated stopped gated`]);
@@ -228,7 +246,9 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		interrupt.abort();
 		const run = await pending;
 		const { host } = run;
+
 		if (host === undefined) throw new Error("no host");
+
 		try {
 			const stopped = await workflows(["stop", run.id ?? ""], { cwd: root, host });
 			expect(stopped.code).toBe(0);
@@ -236,6 +256,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		} finally {
 			await host.close();
 		}
+
 		await writeFile(join(root, "g.open"), "");
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(existsSync(join(root, "late"))).toBe(false);
@@ -287,6 +308,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		// The host started before the command set the entry of this workflows.
 		await setEntries({ workflows: await oldWorkflows(TASK.version - 1) });
 		const host = await startHost();
+
 		try {
 			const fresh = await workflows(["x.js"], { cwd: root, host });
 			expect([fresh.code, fresh.stdout, fresh.stderr]).toEqual([1, [], [refused(TASK.version - 1)]]);
@@ -338,12 +360,14 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		await mkdir(join(runsOf(root), id), { recursive: true });
 		await writeFile(join(runsOf(root), id, "project"), "main\n");
 		const old = await startHost();
+
 		try {
 			const input = { runId: id, name: "x" };
 			await request({ type: "start", kind: TASK.name, input, key: `wf:${id}#1` }, { start: false });
 		} finally {
 			await old.close();
 		}
+
 		await setEntries();
 
 		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x earlier-version x`]);
@@ -372,14 +396,18 @@ await Promise.all([...asks, Promise.reject(new Error("no"))])`,
 		const first = await workflows(["x.js"], { cwd: root });
 		expect(first.code).toBe(1);
 		await writeFile(join(root, "ok"), "");
+
 		// The second task asks in the session of the first task, and the model does not answer.
 		const run = await workflows(["resume", first.id ?? ""], {
 			cwd: root,
 			keepHost: true,
 			script: { hang: "Script: hang" },
 		});
+
 		const { host } = run;
+
 		if (host === undefined) throw new Error("no host");
+
 		try {
 			expect([run.code, run.stderr.at(-2)]).toEqual([1, "failed x: no"]);
 			await new Promise((resolve) => setTimeout(resolve, 300));
@@ -436,14 +464,18 @@ await Promise.all([...asks, Promise.reject(new Error("no"))])`,
 		expect(run.code).toBe(1);
 		const id = run.id ?? "";
 		await writeFile(join(root, "ok"), "");
+
 		// The second task asks in the session of the first task, and the model does not answer.
 		const resumed = await workflows(["resume", id], {
 			cwd: root,
 			keepHost: true,
 			script: { interruptAt: { kind: "script", nth: 1 } },
 		});
+
 		const { host } = resumed;
+
 		if (host === undefined) throw new Error("no host");
+
 		try {
 			expect(resumed.code).toBe(130);
 			const stopped = await workflows(["stop", id], { cwd: root, host });
@@ -452,6 +484,7 @@ await Promise.all([...asks, Promise.reject(new Error("no"))])`,
 		} finally {
 			await host.close();
 		}
+
 		expect(await rootTasks(id)).toEqual([
 			{ status: "terminal", outcome: "failed" },
 			{ status: "terminal", outcome: "aborted" },

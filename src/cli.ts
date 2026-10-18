@@ -7,6 +7,7 @@ import { terminalRedraw } from "./progress.ts";
 import { CtrlC } from "./run.ts";
 
 const ctrlC = new CtrlC(() => process.exit(130));
+
 process.on("SIGINT", () => ctrlC.press());
 
 const live = process.stderr.isTTY ? terminalRedraw(process.stderr) : undefined;

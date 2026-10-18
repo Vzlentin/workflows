@@ -2,23 +2,25 @@ import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type {
-	AssistantMessage,
-	Message,
-	SimpleStreamOptions,
-	ToolCall,
-	TranscriptContext,
-} from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, ToolCall } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import {
+	type FauxResponseFactory,
+	fauxAssistantMessage,
+	fauxProvider,
+	fauxToolCall,
+} from "@earendil-works/pi-ai/providers/faux";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { REMINDER } from "@vzlentin/harness/answer";
 import { connect } from "@vzlentin/harness/client";
 import { entriesPath } from "@vzlentin/harness/entries";
 import { type Host, runHost } from "@vzlentin/harness/host";
 import { projectDir } from "@vzlentin/harness/projects";
-import { statePaths } from "@vzlentin/harness/protocol";
+import { type Replies, type Request, statePaths } from "@vzlentin/harness/protocol";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { main } from "../src/main.ts";
 import { CtrlC } from "../src/run.ts";
 
@@ -44,15 +46,18 @@ export const storeOf = (project = "main") => join(statePaths(project).dir, "dura
 /** The `workflows.run` tasks in the store of `project`. */
 async function runTasks(project: string) {
 	const storage = await openNodeSqliteStorage(storeOf(project));
+
 	try {
 		const { items } = await storage.scanTasks({}, 256, undefined, BACKGROUND_CONTEXT);
+
 		return items.filter((task) => task.kind === "workflows.run");
 	} finally {
 		await storage.close(BACKGROUND_CONTEXT);
 	}
 }
 
-type Input = { readonly runId: string; readonly root: string };
+const RUN_ID = Type.Object({ runId: Type.String() });
+const CHILD_INPUT = Type.Object({ runId: Type.String(), root: Type.String() });
 
 const stateOf = ({ state }: Awaited<ReturnType<typeof runTasks>>[number]) =>
 	state.status === "terminal" ? { status: state.status, outcome: state.outcome.status } : { status: state.status };
@@ -60,19 +65,25 @@ const stateOf = ({ state }: Awaited<ReturnType<typeof runTasks>>[number]) =>
 /** The state of each task of the run `id` of `project` that no task owns. */
 export async function rootTasks(id: string, project = "main") {
 	return (await runTasks(project))
-		.filter((task) => task.owner === undefined && (task.input as Input).runId === id)
+		.filter((task) => task.owner === undefined && Value.Check(RUN_ID, task.input) && task.input.runId === id)
 		.map(stateOf);
 }
 
 /** The run ID and the state of each task of a child run of the run `id` of the `main` project. */
 export async function childTasks(id: string) {
-	return (await runTasks("main"))
-		.filter((task) => task.owner !== undefined && (task.input as Input).root === id)
-		.map((task) => ({ runId: (task.input as Input).runId, ...stateOf(task) }));
+	return (await runTasks("main")).flatMap((task) =>
+		task.owner !== undefined && Value.Check(CHILD_INPUT, task.input) && task.input.root === id
+			? [{ runId: task.input.runId, ...stateOf(task) }]
+			: [],
+	);
 }
 
 /** Writes Pi's settings of the sandbox `root`: the Pi packages `packages`, and `settings`. */
-export async function piSettings(root: string, packages: readonly string[] = [], settings: object = {}): Promise<void> {
+export async function piSettings(
+	root: string,
+	packages: readonly string[] = [],
+	settings: { readonly [key: string]: JsonValue } = {},
+): Promise<void> {
 	await writeFile(
 		join(root, "agent", "settings.json"),
 		JSON.stringify({ retry: { enabled: false }, ...settings, packages }),
@@ -123,6 +134,7 @@ exec git clone -q "${root}/github/$source" "$4"
 		GIT_COMMITTER_EMAIL: "test@example.com",
 		PATH: `${bin}:${ENVIRONMENT.PATH}`,
 	};
+
 	for (const name of [
 		"HARNESS_PROJECT",
 		"PI_SESSION_ID",
@@ -135,7 +147,9 @@ exec git clone -q "${root}/github/$source" "$4"
 	]) {
 		delete process.env[name];
 	}
+
 	await setEntries();
+
 	return root;
 }
 
@@ -146,6 +160,7 @@ export async function repository(path: string, readme = "# Demo\n\nHello wrold\n
 	await writeFile(join(path, "README.md"), readme);
 	git(path, "add", "README.md");
 	git(path, "commit", "-q", "-m", "initial");
+
 	return git(path, "rev-parse", "HEAD");
 }
 
@@ -192,7 +207,9 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 function textOf(message: Message): string {
 	if (message.role === "system") return "";
 	const { content } = message;
-	if (typeof content === "string") return content;
+
+	if (!Array.isArray(content)) return content;
+
 	return content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 }
 
@@ -251,6 +268,7 @@ export class FakeModel {
 
 	constructor(script: Script) {
 		this.#script = script;
+
 		const anthropic = fauxProvider({
 			provider: "anthropic",
 			models: [
@@ -258,7 +276,9 @@ export class FakeModel {
 				{ id: "claude-haiku-5", reasoning: true },
 			],
 		});
+
 		const other = fauxProvider({ provider: "other", models: [{ id: "o-1", reasoning: true }] });
+
 		for (const faux of [anthropic, other]) {
 			faux.setResponses(Array.from({ length: 200 }, () => this.#respond));
 			this.models.setProvider(faux.provider);
@@ -269,40 +289,47 @@ export class FakeModel {
 		return this.calls.filter((call) => call.kind === kind).length;
 	}
 
-	readonly #respond = async (
-		context: TranscriptContext,
-		options: SimpleStreamOptions | undefined,
-		_state: unknown,
-		model: { readonly id: string; readonly provider: string },
-	): Promise<AssistantMessage> => {
+	readonly #respond: FauxResponseFactory = async (context, options, _state, model) => {
 		const messages = context.messages;
 		const system = messages.flatMap((message) => (message.role === "system" ? [message] : []));
 		const tools: string[] = [];
+
 		for (const message of system) {
 			const removed = new Set((message.toolsRemoved ?? []).map((tool) => tool.name));
 			tools.splice(0, tools.length, ...tools.filter((name) => !removed.has(name)));
 			tools.push(...(message.toolsAdded ?? []).map((tool) => tool.name));
 		}
+
 		const index = asked(messages);
 		const user = messages[index];
 		const prompt = user === undefined ? "" : textOf(user);
 		const lastUser = messages.findLast((message) => message.role === "user");
 		const found = KINDS.find(([start]) => prompt.replace(MEMORY, "").startsWith(start))?.[1];
+
 		if (found === undefined) throw new Error(`unexpected prompt: ${prompt}`);
 		const kind = found === "challenge" && tools.includes("respond") ? "verdict" : found;
 		const last = messages.findLast((message) => message.role !== "system");
+
 		if (last?.role === "toolResult") {
 			const after = messages.slice(messages.findLastIndex((message) => message.role === "assistant") + 1);
+
 			for (const message of after) if (message.role === "toolResult") this.results.push(textOf(message));
 			const scripted = scriptAttempt(messages, index);
+
 			if (scripted !== undefined) return scripted;
+
 			if (kind === "judge") return this.#judge();
+
 			if (kind === "implement") return implemented(this.count(kind), "I fixed the typo in README.md.");
+
 			return fauxAssistantMessage("I fixed the typo in README.md.");
 		}
+
 		const nth = this.count(kind) + 1;
 		const { interruptAt, interrupt } = this.#script;
+
 		if (interruptAt?.kind === kind && interruptAt.nth === nth) interrupt.abort();
+
 		if (interrupt.signal.aborted || prompt === this.#script.hang) {
 			this.waiting.push(prompt);
 			await new Promise((_, reject) =>
@@ -312,12 +339,17 @@ export class FakeModel {
 				}),
 			);
 		}
+
 		const { failAt } = this.#script;
+
 		if (failAt?.kind === kind && failAt.nth === nth && !this.#failed) {
 			this.#failed = true;
+
 			if (failAt.stopReason !== undefined) return fauxAssistantMessage("cut", { stopReason: failAt.stopReason });
+
 			return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" });
 		}
+
 		this.calls.push({
 			kind,
 			provider: model.provider,
@@ -328,12 +360,15 @@ export class FakeModel {
 			prompt: lastUser === undefined ? "" : textOf(lastUser),
 		});
 		const probe = fauxToolCall("probe", {});
+
 		if (this.#script.probe && kind === "plan") {
 			return fauxAssistantMessage([probe, fauxToolCall("ls", {})], { stopReason: "toolUse" });
 		}
+
 		if (this.#script.probe && (kind === "review" || kind === "judge")) {
 			return fauxAssistantMessage(probe, { stopReason: "toolUse" });
 		}
+
 		switch (kind) {
 			case "plan":
 				return fauxAssistantMessage("Problem: README.md says wrold.");
@@ -346,14 +381,18 @@ export class FakeModel {
 				});
 			case "implement": {
 				const edit = this.#script.edits?.[nth - 1];
+
 				if (edit === undefined) return implemented(nth, "I found nothing to change.");
+
 				const call = this.#script.commits
 					? fauxToolCall("bash", {
 							command: `printf '%s' '${edit}' > README.md && git commit -qam 'implementer ${nth}'`,
 						})
 					: fauxToolCall("write", { path: "README.md", content: edit });
+
 				return fauxAssistantMessage(this.#script.probe ? [call, probe] : call, { stopReason: "toolUse" });
 			}
+
 			case "review":
 				return fauxAssistantMessage(`Review ${nth}: the change is small.`);
 			case "verdict":
@@ -367,25 +406,35 @@ export class FakeModel {
 			case "reflect": {
 				// The reply keeps the current text first, so that the prompt keeps its kind.
 				const current = /\n## current\n([\s\S]*?)\n\n## records\n/.exec(prompt)?.[1] ?? "";
+
 				return fauxAssistantMessage(`${current}\nImproved prompt ${nth}.`);
 			}
+
 			case "script": {
 				// `Script spawn: <prompt>` spawns a subagent with the prompt `Script: <prompt>` through harness's tool.
 				const spawned = /^Script spawn: (.*)$/s.exec(prompt)?.[1];
+
 				if (spawned !== undefined) {
 					const spawn = fauxToolCall("subagent", { action: "spawn", prompts: [`Script: ${spawned}`] });
+
 					return fauxAssistantMessage(spawn, { stopReason: "toolUse" });
 				}
+
 				// `respond` and a tool call in one message: the tool result then gets a text reply that ends the turn.
 				const both = /^Script respond and ls: (.*)$/s.exec(prompt)?.[1];
+
 				if (both !== undefined) {
 					const calls = [fauxToolCall("respond", { answer: JSON.parse(both) }), fauxToolCall("ls", {})];
+
 					return fauxAssistantMessage(calls, { stopReason: "toolUse" });
 				}
+
 				if (prompt.startsWith("Script respond: ") && this.#skipped < (this.#script.skipRespond ?? 0)) {
 					this.#skipped++;
+
 					return fauxAssistantMessage("Plain reply");
 				}
+
 				return scriptAttempt(messages, index) ?? fauxAssistantMessage(`Reply to ${prompt.slice("Script: ".length)}`);
 			}
 		}
@@ -394,7 +443,8 @@ export class FakeModel {
 	#judge(): AssistantMessage {
 		const { judge: scripted = PASSING_JUDGE } = this.#script;
 		const judge = Array.isArray(scripted) ? (scripted[this.count("judge") - 1] ?? PASSING_JUDGE) : scripted;
-		return typeof judge === "string" ? fauxAssistantMessage(judge) : respond(judge as Verdict);
+
+		return Value.Check(Type.String(), judge) ? fauxAssistantMessage(judge) : respond(judge);
 	}
 }
 
@@ -410,10 +460,13 @@ function asked(messages: readonly Message[]): number {
 function scriptAttempt(messages: readonly Message[], user: number): AssistantMessage | undefined {
 	const prompt = messages[user];
 	const answers = prompt && /^Script respond: (.*)$/s.exec(textOf(prompt))?.[1]?.split("\n");
+
 	if (answers === undefined) return undefined;
 	const tried = messages.slice(user).filter((message) => message.role === "toolResult").length;
 	const answer = answers[tried];
+
 	if (answer === undefined) throw new Error(`no scripted answer for attempt ${tried + 1}`);
+
 	return respond(JSON.parse(answer));
 }
 
@@ -438,9 +491,18 @@ export type Outcome = {
 	readonly exits: number;
 };
 
+const PROGRESS = Type.Object({ progress: Type.Array(Type.String()) });
+
 /** The lines of the last `{"progress":[...]}` stderr line of a `--json` run, and throws for any other stderr line. */
 export function progressOf(stderr: readonly string[]): string[] {
-	const snapshots = stderr.map((line) => (JSON.parse(line) as { progress: string[] }).progress);
+	const snapshots = stderr.map((line) => {
+		const parsed = JSON.parse(line);
+
+		if (!Value.Check(PROGRESS, parsed)) throw new Error(`not a progress line: ${line}`);
+
+		return parsed.progress;
+	});
+
 	return snapshots.at(-1) ?? [];
 }
 
@@ -448,9 +510,12 @@ export function progressOf(stderr: readonly string[]): string[] {
 async function connectTo(project: string) {
 	const saved = process.env.HARNESS_PROJECT;
 	process.env.HARNESS_PROJECT = project;
+
 	try {
 		const client = await connect({ start: false });
+
 		if (client === undefined) throw new Error(`no host for ${project}`);
+
 		return client;
 	} finally {
 		if (saved === undefined) delete process.env.HARNESS_PROJECT;
@@ -482,23 +547,29 @@ export async function workflows(
 	},
 ): Promise<Outcome> {
 	let exits = 0;
+
 	const ctrlC =
 		options.ctrlC ??
 		new CtrlC(() => {
 			exits++;
 		});
+
 	const { interrupt } = options;
+
 	if (interrupt?.signal.aborted) ctrlC.press();
 	else interrupt?.signal.addEventListener("abort", () => ctrlC.press(), { once: true });
+
 	const model = new FakeModel({
 		...options.script,
 		interrupt: { signal: ctrlC.interrupt, abort: () => ctrlC.press() },
 	});
+
 	const stdout: string[] = [];
 	const stderr: string[] = [];
 	let host = options.host;
 	let started: Host | undefined;
 	let drop = options.dropStart === true;
+
 	const code = await main(argv, {
 		cwd: options.cwd,
 		stdin: async () => options.stdin,
@@ -515,27 +586,34 @@ export async function workflows(
 				started = await startHost(project, model.models);
 				host = started;
 			}
+
 			const client = await connectTo(project);
 			const request = client.request.bind(client);
-			client.request = (async (sent: Parameters<typeof request>[0]) => {
+			client.request = async <T extends Request["type"]>(sent: Extract<Request, { type: T }>): Promise<Replies[T]> => {
 				const reply = await request(sent);
+
 				if (sent.type !== "start" || !drop) return reply;
 				drop = false;
 				const closed = new Error("The harness host closed the connection");
 				client.abort(closed);
 				throw closed;
-			}) as typeof client.request;
+			};
+
 			return client;
 		},
 	});
+
 	if (!options.keepHost) await started?.close();
 	const id = stdout.find((line) => line.startsWith("run "))?.slice(4);
+
 	return { code, stdout, stderr, model, id, host: options.keepHost ? started : undefined, exits };
 }
 
 /** A harness host of `project` in this process, with `models`. */
 export async function startHost(project = "main", models = createModels()): Promise<Host> {
 	const host = await runHost({ stateDir: statePaths(project).dir, project, cwd: projectDir(project), models });
+
 	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
+
 	return host;
 }

@@ -58,14 +58,28 @@ declare function sh(cmd: string | readonly string[]): Promise<string>;
 /** Runs `cmd` as `sh` does. Returns true when the exit code is 0. */
 declare function ok(cmd: string | readonly string[]): Promise<boolean>;
 
+/** A value that a call of a script gives to the host as JSON, which leaves out an object field that is undefined. */
+type Json = null | boolean | number | string | Json[] | { [key: string]: Json | undefined };
+
 /** Runs the script `name` of `workflows/` as a child run and returns its result, with `runId` when it is an object. */
-declare function run(name: string, args?: Record<string, unknown>): Promise<any>;
+declare function run(name: string, args?: { [key: string]: Json | undefined }): Promise<any>;
 
 /** Runs the functions at once and returns their results. */
-declare function parallel<const T extends readonly (() => unknown)[]>(thunks: T): Promise<{ -readonly [K in keyof T]: Awaited<ReturnType<T[K]>> }>;
+declare function parallel<const T extends readonly unknown[]>(thunks: { [K in keyof T]: () => T[K] }): Promise<{ -readonly [K in keyof T]: Awaited<T[K]> }>;
 
-/** Sends each item through the stages in order, and the items at once. */
-declare function pipeline(items: readonly unknown[], ...stages: Array<(value: any) => unknown>): Promise<any[]>;
+/**
+ * Sends each item through the stages in order, and the items at once. Each stage gets the awaited value of the one
+ * before. The types cover up to six stages.
+ */
+declare const pipeline: {
+	<T>(items: readonly T[]): Promise<Awaited<T>[]>;
+	<T, A>(items: readonly T[], a: (value: T) => A): Promise<Awaited<A>[]>;
+	<T, A, B>(items: readonly T[], a: (value: T) => A, b: (value: Awaited<A>) => B): Promise<Awaited<B>[]>;
+	<T, A, B, C>(items: readonly T[], a: (value: T) => A, b: (value: Awaited<A>) => B, c: (value: Awaited<B>) => C): Promise<Awaited<C>[]>;
+	<T, A, B, C, D>(items: readonly T[], a: (value: T) => A, b: (value: Awaited<A>) => B, c: (value: Awaited<B>) => C, d: (value: Awaited<C>) => D): Promise<Awaited<D>[]>;
+	<T, A, B, C, D, E>(items: readonly T[], a: (value: T) => A, b: (value: Awaited<A>) => B, c: (value: Awaited<B>) => C, d: (value: Awaited<C>) => D, e: (value: Awaited<D>) => E): Promise<Awaited<E>[]>;
+	<T, A, B, C, D, E, F>(items: readonly T[], a: (value: T) => A, b: (value: Awaited<A>) => B, c: (value: Awaited<B>) => C, d: (value: Awaited<C>) => D, e: (value: Awaited<D>) => E, f: (value: Awaited<E>) => F): Promise<Awaited<F>[]>;
+};
 
 /** Starts the progress step `title` on stderr before the script's next call that runs. */
 declare function phase(title: string): void;

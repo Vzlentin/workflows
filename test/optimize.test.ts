@@ -26,7 +26,9 @@ const passing = (passes: number): Verdict => ({
 async function promptsHash(): Promise<string> {
 	const folder = fileURLToPath(new URL("../prompts/", import.meta.url));
 	const hash = createHash("sha256");
+
 	for (const file of (await readdir(folder)).sort()) hash.update(file).update(await readFile(join(folder, file)));
+
 	return hash.digest("hex");
 }
 
@@ -34,12 +36,14 @@ describe("workflows optimize", () => {
 	it("evaluates the baseline and one candidate per trial in ship child runs, and resumes a failed one", async () => {
 		const items = join(root, "items");
 		await mkdir(items);
+
 		for (const name of ["First", "Second", "Third"]) {
 			await writeFile(
 				join(items, `${name.toLowerCase()}.md`),
 				`---\nrepo: ../repo\nstart: "${start}"\n---\n# ${name} item\n\nFix the README.\n`,
 			);
 		}
+
 		const before = await promptsHash();
 
 		const first = await workflows(["optimize", "--workflow", "ship", "--items", "items", "--trials", "2"], {

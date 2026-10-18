@@ -1,10 +1,11 @@
-- Check: `npm run check` (Biome, TypeScript, Vitest). The judge session runs the checks listed here.
+- Check: `npm run check` (Biome, oxlint, TypeScript, Vitest). The judge session runs the checks listed here.
+- Lint: oxlint with the anti-slop plugin, vendored in `tools/oxlint/anti-slop/` (see its `UPSTREAM.md`). Biome only formats and sorts imports. Outside data is checked with TypeBox schemas, not `typeof`.
 - `docs/spec.md` is the behaviour spec: output lines, exit codes, run directory layout, commit message format. Update it in the same change as the behaviour. `README.md` has only the install, a short usage and development; keep it short.
 - Two npm packages come from this repository: `@vzlentin/workflows` (the root, with the `workflows` command) and `@vzlentin/pi-workflows` (`pi-workflows/`, the optional Pi extension with the `workflow` tool). Give them the same version, and pin `pi-workflows`'s dependency on `@vzlentin/workflows` to it.
 - The root package publishes `dist/`, `workflows/`, `prompts/` and `agents/`. `prepack` builds `dist/` with `tsconfig.build.json`; `dist/` is not in Git. The checkout runs from source with Node type stripping (`node src/cli.ts`), so keep `src/` runnable that way.
 - Dependency versions are pinned exactly. The `@earendil-works/*` packages share one version; change them together, and keep them at the version of `@vzlentin/harness`, so one copy of each loads in the host. In the root package they are plain `dependencies`.
 - `@vzlentin/harness` is a dependency at an exact version. Import its modules as `@vzlentin/harness/<module>`. The CLI is a client of its host, and sets the entry `workflows` in harness's `entries.json` (`ENTRY` in `src/main.ts`: `dist/entry.js`, or `src/entry.ts` in a checkout) before it can start a host. Vitest inlines harness (`vitest.config.ts`).
-- `pi-workflows/index.ts` runs inside Pi. Pi supplies `pi-ai`, `pi-coding-agent` and `pi-tui`, so they are `peerDependencies` at `"*"` there. It runs the `workflows` command of its `@vzlentin/workflows` dependency as a child process, and imports nothing else from it.
+- `pi-workflows/index.ts` runs inside Pi. Pi supplies `pi-ai`, `pi-coding-agent`, `pi-tui` and `typebox`, so they are `peerDependencies` at `"*"` there. It runs the `workflows` command of its `@vzlentin/workflows` dependency as a child process, and imports nothing else from it.
 - Never verify with a real `workflows` run. It spends model calls, and inside a ship run it starts another run.
 
 ## Engine and workflows
@@ -20,7 +21,7 @@
 - Ctrl+C detaches the CLI and the run goes on in the host. A second Ctrl+C while the CLI follows a run, also one that came before the window of `STOP_WINDOW_MS` opened, or `workflows stop`, sends `abort-task`. `CtrlC` in `src/run.ts` counts the presses, and the tests press through the same class.
 - When the script ends, `runScript` cancels the host calls that still run and waits for them, so the end of a run comes after its last call.
 - Every `start` sends `version: TASK.version`, so a host that loaded another version of workflows refuses before it creates a task. A command that follows a task it did not start compares `TaskInfo.version` with `TASK.version`.
-- Biome does not check `workflows/*.js`: a script body has a top-level `return`.
+- Biome does not format `workflows/*.js`: a script body has a top-level `return`. oxlint lints them.
 
 ## Durable runs
 
