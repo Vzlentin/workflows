@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { REMINDER } from "harness/src/answer.ts";
+import { REMINDER } from "@vzlentin/harness/answer";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CallDoc } from "../src/script.ts";
 import {

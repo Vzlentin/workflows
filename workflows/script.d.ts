@@ -1,4 +1,4 @@
-// The globals of a workflow script, for editors. See "The script API" in README.md.
+// The globals of a workflow script, for editors. See "The script API" in docs/spec.md.
 // The sandbox replaces Date and Math: `Date`, `Date.now()` and `Math.random()` throw, so that a script makes the
 // same calls each time it runs.
 

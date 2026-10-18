@@ -24,7 +24,7 @@ import {
 	type TaskId,
 	type Tx,
 } from "@earendil-works/pi-durable";
-import type { Children, Failure, Owner, Place, Spec } from "harness/src/children.ts";
+import type { Children, Failure, Owner, Place, Spec } from "@vzlentin/harness/children";
 import { failure, git, run } from "./git.ts";
 import { PROGRESS_KIND, type ProgressEvent } from "./progress.ts";
 import { instructions, render } from "./prompts.ts";

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type {
@@ -13,16 +13,17 @@ import type {
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { REMINDER } from "harness/src/answer.ts";
-import { connect } from "harness/src/client.ts";
-import { type Host, runHost } from "harness/src/host.ts";
-import { projectDir } from "harness/src/projects.ts";
-import { statePaths } from "harness/src/protocol.ts";
+import { REMINDER } from "@vzlentin/harness/answer";
+import { connect } from "@vzlentin/harness/client";
+import { entriesPath } from "@vzlentin/harness/entries";
+import { type Host, runHost } from "@vzlentin/harness/host";
+import { projectDir } from "@vzlentin/harness/projects";
+import { statePaths } from "@vzlentin/harness/protocol";
 import { main } from "../src/main.ts";
 import { CtrlC } from "../src/run.ts";
 
-/** The workflows checkout, which the hosts of the tests load as a local Pi package. */
-export const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
+/** The entry of the workflows checkout, which the hosts of the tests load. */
+export const ENTRY = fileURLToPath(new URL("../src/entry.ts", import.meta.url));
 
 export function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trimEnd();
@@ -70,17 +71,23 @@ export async function childTasks(id: string) {
 		.map((task) => ({ runId: (task.input as Input).runId, ...stateOf(task) }));
 }
 
-/** Writes Pi's settings of the sandbox `root`: the workflows checkout and `packages`, and `settings`. */
+/** Writes Pi's settings of the sandbox `root`: the Pi packages `packages`, and `settings`. */
 export async function piSettings(root: string, packages: readonly string[] = [], settings: object = {}): Promise<void> {
 	await writeFile(
 		join(root, "agent", "settings.json"),
-		JSON.stringify({ retry: { enabled: false }, ...settings, packages: [PACKAGE, ...packages] }),
+		JSON.stringify({ retry: { enabled: false }, ...settings, packages }),
 	);
+}
+
+/** Writes harness's entries of the sandbox: the workflows checkout and `entries`, by name. */
+export async function setEntries(entries: Readonly<Record<string, string>> = {}): Promise<void> {
+	await mkdir(dirname(entriesPath()), { recursive: true });
+	await writeFile(entriesPath(), JSON.stringify({ workflows: ENTRY, ...entries }));
 }
 
 /**
  * A fresh environment: home, state, configuration, Pi agent and Git configuration under a temporary directory, and a
- * fake `gh`. Pi's settings list the workflows checkout, so the test hosts load its entry.
+ * fake `gh`. harness's entries list the workflows checkout, so the test hosts load its entry.
  */
 export async function sandbox(): Promise<string> {
 	// macOS limits a Unix socket path to 104 bytes, and the host's socket is in the state directory.
@@ -128,6 +135,7 @@ exec git clone -q "${root}/github/$source" "$4"
 	]) {
 		delete process.env[name];
 	}
+	await setEntries();
 	return root;
 }
 

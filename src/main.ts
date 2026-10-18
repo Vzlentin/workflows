@@ -9,14 +9,16 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { TaskOutcome, TaskRecord } from "@earendil-works/pi-durable";
-import type { Client } from "harness/src/client.ts";
-import type { TaskInfo } from "harness/src/protocol.ts";
-import { createJiti } from "jiti";
+import { type Client, connect } from "@vzlentin/harness/client";
+import { setEntry } from "@vzlentin/harness/entries";
+import { resolveProject } from "@vzlentin/harness/projects";
+import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import * as script from "./meta.ts";
 import { display } from "./progress.ts";
 import { type Io, newRunId, UsageError, withUsage } from "./run.ts";
@@ -30,6 +32,9 @@ const POLL_MS = 500;
 
 /** How long a command that Ctrl+C detached waits for a second Ctrl+C, which stops the run. */
 const STOP_WINDOW_MS = 2000;
+
+/** The entry of workflows that the harness host loads: `dist/entry.js`, or `src/entry.ts` in a checkout. */
+const ENTRY = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./entry.ts" : "./entry.js", import.meta.url));
 
 /** The error of harness's client when the host closes the connection, such as when it stops. */
 const HOST_CLOSED = "The harness host closed the connection";
@@ -106,36 +111,14 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 	}
 }
 
-/** The modules of harness that the command uses. Node does not strip types under `node_modules`, so jiti loads them. */
-type Harness = {
-	readonly client: typeof import("harness/src/client.ts");
-	readonly projects: typeof import("harness/src/projects.ts");
-	readonly protocol: typeof import("harness/src/protocol.ts");
-};
-
-let harnessModules: Promise<Harness> | undefined;
-
-function harness(): Promise<Harness> {
-	harnessModules ??= (async () => {
-		const jiti = createJiti(import.meta.url);
-		const [client, projects, protocol] = await Promise.all([
-			jiti.import<Harness["client"]>("harness/src/client.ts"),
-			jiti.import<Harness["projects"]>("harness/src/projects.ts"),
-			jiti.import<Harness["protocol"]>("harness/src/protocol.ts"),
-		]);
-		return { client, projects, protocol };
-	})();
-	return harnessModules;
-}
-
 /** The project of `cwd`, as harness routes a client there. */
 async function projectOf(cwd: string): Promise<string> {
-	return (await harness()).projects.resolveProject(process.env, cwd);
+	return resolveProject(process.env, cwd);
 }
 
 /** The project store of `project`. */
 async function storeOf(project: string): Promise<string> {
-	return join((await harness()).protocol.statePaths(project).dir, "durable.sqlite");
+	return join(statePaths(project).dir, "durable.sqlite");
 }
 
 /**
@@ -145,6 +128,8 @@ async function storeOf(project: string): Promise<string> {
 async function connectTo(terminal: Terminal, project: string, start: true): Promise<Client>;
 async function connectTo(terminal: Terminal, project: string, start: boolean): Promise<Client | undefined>;
 async function connectTo(terminal: Terminal, project: string, start: boolean): Promise<Client | undefined> {
+	// A host that starts from here loads this entry. A host that runs already loads it only after it starts again.
+	if (start) setEntry("workflows", ENTRY);
 	const connected = await connectOrNot(terminal, project, start);
 	if (start && connected === undefined) throw new Error(`no harness host for ${project}`);
 	return connected;
@@ -152,11 +137,10 @@ async function connectTo(terminal: Terminal, project: string, start: boolean): P
 
 async function connectOrNot(terminal: Terminal, project: string, start: boolean): Promise<Client | undefined> {
 	if (terminal.connect !== undefined) return terminal.connect(project, start);
-	const { client } = await harness();
 	const saved = process.env.HARNESS_PROJECT;
 	process.env.HARNESS_PROJECT = project;
 	try {
-		return await client.connect({ start });
+		return await connect({ start });
 	} finally {
 		if (saved === undefined) delete process.env.HARNESS_PROJECT;
 		else process.env.HARNESS_PROJECT = saved;
@@ -182,7 +166,9 @@ async function startTask(client: Client, project: string, input: script.ScriptIn
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		if (message.startsWith("Unknown task kind")) {
-			throw new Refused(`${message}: the harness host does not load workflows; add it to Pi with pi install`);
+			throw new Refused(
+				`${message}: the harness host started before it had the entry of workflows; stop it so it starts again with the entry (${hostOf(client, project)})`,
+			);
 		}
 		if (message.startsWith("This host has version")) throw new Refused(`${message} (${hostOf(client, project)})`);
 		throw error;
