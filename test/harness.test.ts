@@ -278,7 +278,8 @@ describe("the setup", () => {
 		expect(await log("pi.log")).toEqual(once);
 
 		const json = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
-		await writeFile(join(dir, "package.json"), JSON.stringify({ ...json, version: "0.2.1" }));
+		const next = json.version.replace(/\d+$/, (patch: string) => String(Number(patch) + 1));
+		await writeFile(join(dir, "package.json"), JSON.stringify({ ...json, version: next }));
 		expect(await workflows(dir, env, "list")).toEqual({ code: 0, stdout: "", stderr: "" });
 		expect(await log("pi.log")).toEqual([...once, `install ${join(dir, "pi")}`]);
 	});
