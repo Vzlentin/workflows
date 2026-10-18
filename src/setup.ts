@@ -44,20 +44,25 @@ export function globalPrefix(dir: string): string | undefined {
  * Runs npm with `args`, and keeps its output: in an install script the npm of the install (`npm_execpath`), otherwise
  * the `npm` on `PATH`.
  */
-function runNpm(args: readonly string[]) {
+function runNpm(args: readonly string[], env: NodeJS.ProcessEnv = process.env) {
 	const execpath = process.env.npm_execpath;
 	const own = execpath !== undefined && basename(execpath) === "npm-cli.js";
 	const [program, rest] = own ? [process.execPath, [execpath, ...args]] : ["npm", args];
 
-	return spawnSync(program, rest, { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 600_000 });
+	return spawnSync(program, rest, { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 600_000, env });
 }
 
-/** The prefix that the fix commands of the package in `dir` need: its prefix when that is not npm's global prefix. */
+/**
+ * The prefix that the fix commands of the package in `dir` need: its prefix when that is not npm's global prefix. In
+ * an install script, npm sets `npm_config_prefix` to the `--prefix` of the install, so the global prefix is read
+ * without it.
+ */
 export function fixPrefix(dir: string): string | undefined {
 	const prefix = globalPrefix(dir);
 
 	if (prefix === undefined) return undefined;
-	const result = runNpm(["prefix", "-g"]);
+	const { npm_config_prefix: _, ...outside } = process.env;
+	const result = runNpm(["prefix", "-g"], process.env.npm_lifecycle_event === undefined ? process.env : outside);
 
 	try {
 		return realpathSync(result.stdout.trim()) === prefix ? undefined : prefix;

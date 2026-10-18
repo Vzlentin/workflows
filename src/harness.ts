@@ -90,13 +90,21 @@ export function inRange(version: string, range: string): boolean {
 	return true;
 }
 
-/** Whether `version` is newer than every version in the caret range `range`, such as `0.3.0` for `^0.2.0`. */
-export function newerThanRange(version: string, range: string): boolean {
-	const [low, found] = [VERSION.exec(range.slice(1)), VERSION.exec(version)];
+/** A version, also a prerelease or one with build metadata, such as `0.3.0-rc.1`. */
+const ANY_VERSION = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
-	if (low === null || found === null || inRange(version, range)) return false;
+/**
+ * Whether `version` is newer than every version in the caret range `range`, such as `0.3.0` or `0.3.0-rc.1` for
+ * `^0.2.0`: one of the parts that the range keeps fixed is larger.
+ */
+export function newerThanRange(version: string, range: string): boolean {
+	const [low, found] = [VERSION.exec(range.slice(1)), ANY_VERSION.exec(version)];
+
+	if (low === null || found === null) return false;
 	const [want, have] = [low.slice(1).map(Number), found.slice(1).map(Number)];
-	const index = want.findIndex((part, at) => part !== have[at]);
+	const fixed = want.findIndex((part) => part !== 0);
+	const equal = fixed === -1 ? 3 : fixed + 1;
+	const index = want.findIndex((part, at) => at < equal && part !== have[at]);
 
 	return index !== -1 && (have[index] ?? 0) > (want[index] ?? 0);
 }

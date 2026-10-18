@@ -6,17 +6,20 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { harnessProblem, harnessRange, inRange } from "../src/harness.ts";
+import { harnessProblem, harnessRange, inRange, newerThanRange } from "../src/harness.ts";
 
 const CHECKOUT = fileURLToPath(new URL("..", import.meta.url));
 const HARNESS = join(CHECKOUT, "node_modules", "@vzlentin", "harness");
 
-/** A fake npm: it logs its arguments, prints `NPM_GLOBAL_PREFIX` for `prefix`, and copies `NPM_INSTALLS` on install. */
+/**
+ * A fake npm: it logs its arguments, prints `npm_config_prefix` or else `NPM_GLOBAL_PREFIX` for `prefix`, as npm does,
+ * and copies `NPM_INSTALLS` on install.
+ */
 const FAKE_NPM = `import { appendFileSync, cpSync } from "node:fs";
 import { join } from "node:path";
 const args = process.argv.slice(2);
 appendFileSync(process.env.NPM_LOG, args.join(" ") + "\\n");
-if (args[0] === "prefix") console.log(process.env.NPM_GLOBAL_PREFIX);
+if (args[0] === "prefix") console.log(process.env.npm_config_prefix ?? process.env.NPM_GLOBAL_PREFIX);
 if (args[0] === "install") {
 	if (process.env.NPM_INSTALLS === undefined) process.exit(1);
 	cpSync(process.env.NPM_INSTALLS, join(args[3], "lib", "node_modules", "@vzlentin", "harness"), { recursive: true });
@@ -122,9 +125,15 @@ async function piSettings(...sources: string[]) {
 	await writeFile(join(root, "pi-agent", "settings.json"), JSON.stringify({ packages: sources }));
 }
 
-/** Runs the postinstall of the package in `dir` with `env`. */
-const postinstall = (dir: string, env: Readonly<Record<string, string>> = { npm_config_global: "true" }) =>
-	node(join(dir, "scripts", "postinstall.js"), [], env);
+/** Runs the postinstall of the package in `dir` with `env`, by default the one that npm gives a global install. */
+const postinstall = (
+	dir: string,
+	env: Readonly<Record<string, string>> = {
+		npm_config_global: "true",
+		npm_config_prefix: PREFIX(),
+		npm_lifecycle_event: "postinstall",
+	},
+) => node(join(dir, "scripts", "postinstall.js"), [], env);
 
 /** Runs the installed `workflows` command of the package in `dir`. */
 const workflows = (dir: string, env: Readonly<Record<string, string>>, ...args: string[]) =>
@@ -154,6 +163,23 @@ describe("the harness range", () => {
 
 		expect(cases.map(([version, range]) => inRange(version, range))).toEqual(cases.map(([, , fits]) => fits));
 		expect(() => inRange("0.2.0", "0.2.0")).toThrow("0.2.0 is not a caret range of a version");
+	});
+
+	it("finds the versions that are newer than a caret range, also prereleases", () => {
+		const cases: [string, string, boolean][] = [
+			["0.3.0", "^0.2.0", true],
+			["0.3.0-rc.1", "^0.2.0", true],
+			["1.0.0-beta.2+build.5", "^0.2.0", true],
+			["0.2.9", "^0.2.0", false],
+			["0.2.1-rc.1", "^0.2.0", false],
+			["0.1.9", "^0.2.0", false],
+			["0.0.4", "^0.0.3", true],
+			["1.9.0", "^1.2.0", false],
+			["2.0.0-rc.1", "^1.2.0", true],
+			["main", "^0.2.0", false],
+		];
+
+		expect(cases.map(([version, range]) => newerThanRange(version, range))).toEqual(cases.map(([, , newer]) => newer));
 	});
 });
 
@@ -323,7 +349,14 @@ describe("the setup", () => {
 			stdout: "",
 			stderr: `workflows needs @vzlentin/harness ^0.2.0, found 0.3.0, which is newer. Update workflows: npm install -g --prefix ${PREFIX()} @vzlentin/workflows\n`,
 		});
-		expect(await log("npm.log")).toEqual(["prefix -g"]);
+
+		await writeFile(manifest, JSON.stringify({ ...json, version: "0.3.0-rc.1" }));
+		expect(await workflows(dir, { NPM_INSTALLS: HARNESS }, "list")).toEqual({
+			code: 1,
+			stdout: "",
+			stderr: `workflows needs @vzlentin/harness ^0.2.0, found 0.3.0-rc.1, which is newer. Update workflows: npm install -g --prefix ${PREFIX()} @vzlentin/workflows\n`,
+		});
+		expect(await log("npm.log")).toEqual(["prefix -g", "prefix -g"]);
 	});
 
 	it("does not fail the install when harness stays missing", async () => {

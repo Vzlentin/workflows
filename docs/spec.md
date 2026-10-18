@@ -718,7 +718,7 @@ comes from harness's `setupOnce`, and the command goes on.
 
 Every `workflows` command checks harness before it loads any harness module. When harness is missing or older than
 the range, an installed command runs step 1 of the setup and goes on when harness then fits. A harness newer than the
-range is never replaced. Otherwise it prints one of
+range, also a prerelease such as `0.3.0-rc.1` for `^0.2.0`, is never replaced. Otherwise it prints one of
 these lines and exits 1:
 
 - `workflows needs @vzlentin/harness <range>: npm install -g [--prefix <prefix>] @vzlentin/harness@<range>`
@@ -728,7 +728,8 @@ these lines and exits 1:
   [--prefix <prefix>] @vzlentin/workflows`
 
 `--prefix <prefix>` is there when the install is a top-level global install whose prefix is not the output of `npm
-prefix -g`.
+prefix -g`. In an install script, npm sets `npm_config_prefix` to the `--prefix` of the install, so the setup runs
+`npm prefix -g` without it.
 
 ## Runs in the harness host
 
