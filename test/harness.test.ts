@@ -39,7 +39,7 @@ beforeEach(async (context) => {
 	context.onTestFinished(() => rm(root, { recursive: true, force: true }));
 	await mkdir(join(root, "bin"));
 	await symlink(process.execPath, join(root, "bin", "node"));
-	await writeFile(join(root, "bin", "pi"), '#!/bin/sh\necho "$@" >> "$PI_LOG"\n');
+	await writeFile(join(root, "bin", "pi"), '#!/bin/sh\necho "$@" >> "$PI_LOG"\n[ -z "$PI_FAIL" ]\n');
 	await chmod(join(root, "bin", "pi"), 0o755);
 	await writeFile(join(root, "bin", "npm-cli.js"), FAKE_NPM);
 });
@@ -266,6 +266,26 @@ describe("the setup", () => {
 		await writeFile(join(dir, "package.json"), JSON.stringify({ ...json, version: "0.2.1" }));
 		expect(await workflows(dir, env, "list")).toEqual({ code: 0, stdout: "", stderr: "" });
 		expect(await log("pi.log")).toEqual([...once, `install ${join(dir, "pi")}`]);
+	});
+
+	it("tries the Pi steps again on the next command when pi failed", async () => {
+		const dir = await installWorkflows();
+		await installHarness();
+		const extension = join(LIB(), "@vzlentin", "harness", "pi");
+
+		expect(await workflows(dir, { PI_FAIL: "1" }, "list")).toEqual({
+			code: 0,
+			stdout: "",
+			stderr:
+				`harness: pi install failed (exit 1). To add the Pi extension of harness, run: pi install ${extension}\n` +
+				`workflows: pi install failed (exit 1). To add the Pi extension of workflows, run: pi install ${join(dir, "pi")}\n`,
+		});
+		expect(await entries()).toEqual({ workflows: join(dir, "dist", "entry.js") });
+
+		const installs = [`install ${extension}`, `install ${join(dir, "pi")}`];
+		expect(await workflows(dir, {}, "list")).toEqual({ code: 0, stdout: "", stderr: "" });
+		expect(await workflows(dir, {}, "list")).toEqual({ code: 0, stdout: "", stderr: "" });
+		expect(await log("pi.log")).toEqual([...installs, ...installs]);
 	});
 
 	it("gives the prefix of the install in the fix command when it is not npm's global prefix", async () => {

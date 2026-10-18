@@ -1,15 +1,13 @@
 /**
  * The setup of a top-level global install of workflows. The postinstall runs it when npm runs install scripts, and the
- * installed command runs it once per version and path of the package, as npm 12 runs no install script by default.
+ * installed command runs it on each start, as npm 12 runs no install script by default.
  * Harness modules load here only through dynamic imports, after the harness check.
  */
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { realpathSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENTRY, HARNESS, harnessDir, harnessProblem, harnessRange, installCommand, manifest } from "./harness.ts";
+import { ENTRY, HARNESS, harnessDir, harnessProblem, harnessRange, installCommand } from "./harness.ts";
 
 const NAME = join("@vzlentin", "workflows");
 
@@ -79,49 +77,33 @@ export function ensureHarness(dir: string): string | undefined {
 	return harnessProblem(dir) === undefined ? undefined : harnessProblem(dir, fixPrefix(dir));
 }
 
-/** The stamp of the setup: `$XDG_STATE_HOME/workflows/.setup/<hash of path and version>`. */
-function stampPath(dir: string): string {
-	const version = manifest(join(dir, "package.json"))?.version ?? "";
-	const hash = createHash("sha256").update(`${dir}\n${version}`).digest("hex");
-
-	return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "workflows", ".setup", hash);
-}
-
 /**
  * Sets up the package in `dir` when it is a top-level global install: it ensures harness, runs harness's setup for its
  * own Pi extension, sets the entry `workflows` in harness's `entries.json`, so a host that starts before any
- * `workflows` command runs workflows, and registers `<dir>/pi` in Pi after it removes `npm:@vzlentin/pi-workflows`
- * (the `retiredPiPackages` of `package.json`). Then it writes the stamp. A Pi failure is a warning with the command to
- * run.
+ * `workflows` command runs workflows, and runs harness's setup for `dir`, which removes `npm:@vzlentin/pi-workflows`
+ * (the `retiredPiPackages` of `package.json`) and registers `<dir>/pi` in Pi. harness's setup keeps a stamp for each
+ * package version and path, and writes it only when its `pi` commands worked, so a later run is cheap and a failed one
+ * tries again. It never throws: an error is a warning.
  */
 export async function setup(dir: string): Promise<void> {
-	if (globalPrefix(dir) === undefined) return;
-	const problem = ensureHarness(dir);
-
-	if (problem !== undefined) {
-		process.stderr.write(`${problem}\n`);
-
-		return;
-	}
-
-	const harness = harnessDir(dir);
-
-	if (harness === undefined) return;
-
-	const pi = await import("@vzlentin/harness/setup");
-	const entries = await import("@vzlentin/harness/entries");
-	pi.setupOnce(harness);
-	entries.setEntry("workflows", ENTRY);
-	pi.setup(dir);
-	const stamp = stampPath(dir);
-	mkdirSync(dirname(stamp), { recursive: true });
-	writeFileSync(stamp, `${dir}\n`);
-}
-
-/** `setup` once per version and path of the package. It never throws: an error is a warning. */
-export async function setupOnce(dir: string): Promise<void> {
 	try {
-		if (globalPrefix(dir) !== undefined && !existsSync(stampPath(dir))) await setup(dir);
+		if (globalPrefix(dir) === undefined) return;
+		const problem = ensureHarness(dir);
+
+		if (problem !== undefined) {
+			process.stderr.write(`${problem}\n`);
+
+			return;
+		}
+
+		const harness = harnessDir(dir);
+
+		if (harness === undefined) return;
+		const pi = await import("@vzlentin/harness/setup");
+		const entries = await import("@vzlentin/harness/entries");
+		pi.setupOnce(harness);
+		entries.setEntry("workflows", ENTRY);
+		pi.setupOnce(dir);
 	} catch (error) {
 		process.stderr.write(`workflows: setup failed: ${error instanceof Error ? error.message : String(error)}\n`);
 	}
