@@ -345,7 +345,7 @@ return [one, two, n, args.word].join(", ")`,
 			'<answer_schema>\nThe answer of respond must match this JSON Schema:\n{"type":"object","properties":{"n":{"type":"number"}},"required":["n"]}\n</answer_schema>',
 		]);
 		expect(await log()).toBe("a\nb\n");
-		const tools = ["read", "grep", "find", "ls", "write", "edit", "bash", "subagent"];
+		const tools = ["read", "grep", "find", "ls", "write", "edit", "bash", "subagent", "codemode"];
 		expect(answered.map((call) => [call.model, call.thinking, call.tools])).toEqual([
 			["claude-opus-5-5", "medium", tools],
 			["claude-opus-5-5", "medium", tools],
