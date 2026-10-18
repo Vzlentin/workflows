@@ -137,6 +137,15 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		expect([usage.code, usage.stderr.at(-1)]).toEqual([2, "usage: workflows stop <run-id> [--json]"]);
 	});
 
+	it("cancels the calls of a script that ends before them", async () => {
+		await writeFile(join(root, "x.js"), 'sh("./gate.sh g; touch late")\nawait sh("sleep 0.2; exit 3")');
+		const run = await workflows(["x.js"], { cwd: root });
+		expect([run.code, run.stderr.at(-2)]).toEqual([1, "failed x: sh exited with 3: sleep 0.2; exit 3"]);
+		await writeFile(join(root, "g.open"), "");
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(existsSync(join(root, "late"))).toBe(false);
+	});
+
 	it("closes the sessions and their subagents when a run completes", async () => {
 		await writeFile(join(root, "x.js"), 'const s = session()\nawait s.ask("Script spawn: child")\nreturn "ok"');
 		const run = await workflows(["x.js"], { cwd: root });

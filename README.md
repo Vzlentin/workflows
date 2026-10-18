@@ -472,6 +472,11 @@ saved results stay in the project store also after the run fails. `phase` and `l
 results. A resume prints the phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
 lines before it, and keeps the last `phase` line waiting for the next call that runs.
 
+When the script ends, by its result or by an error, the calls that it did not wait for are cancelled: a `sh` or `ok`
+command is killed, a `run()` call stops waiting for its child run, and an ask stops waiting for its turn. The script's
+task ends only once they stopped, so no call goes on after the run ended. A cancelled call records no end, and runs
+again on resume.
+
 ## Resume
 
 ```sh

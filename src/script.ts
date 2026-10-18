@@ -13,6 +13,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context, JsonValue } from "@earendil-works/chord";
+import { withCancel } from "@earendil-works/chord/context";
 import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
@@ -367,7 +368,8 @@ async function memoized(
 		value = await effect(key);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		if (!runtime.signal.aborted) await endCall(calls, key, { error: message });
+		// A call that the end of its script or task cancelled did not fail, and runs again.
+		if (!context.abortSignal?.aborted) await endCall(calls, key, { error: message });
 		throw error;
 	}
 	await endCall(calls, key, { result: value });
@@ -464,7 +466,7 @@ function failed(key: string, answer: Failure): never {
 async function shell(calls: Calls, cwd: string, cmd: string | string[], check: boolean): Promise<JsonValue> {
 	// A string is `sh -c <cmd>`; an array is the program `cmd[0]` with the arguments `cmd.slice(1)` and no shell.
 	const [file = "", ...rest] = typeof cmd === "string" ? ["sh", "-c", cmd] : cmd;
-	const result = await run(file, rest, cwd, calls.runtime.signal);
+	const result = await run(file, rest, cwd, calls.context.abortSignal);
 	if (check && result.code !== 0) {
 		if (typeof cmd !== "string") throw new Error(failure(cmd, result));
 		const stderr = result.stderr.trim();
@@ -498,10 +500,6 @@ async function childResult(
 	return { runId, result: outcome.result };
 }
 
-function global(name: string, execute: (...values: never[]) => unknown): CodemodeTool {
-	return { name, spread: true, execute: (values) => execute(...(values as never[])) };
-}
-
 /** The owner of the sessions of the run `runId`, whose task `runtime` runs. */
 export function ownerOf(runtime: Runtime, runId: string): Owner {
 	return { kind: "task", taskId: runtime.taskId, conversation: runtime.conversationId, group: runId };
@@ -523,7 +521,25 @@ export async function runScript(
 	const source = bundle.main.replace(META, "$1$2");
 	const progress: Progress = { lines: [], phase: null };
 	const owner = ownerOf(runtime, script.runId);
-	const calls: Calls = { script, runtime, context, counters: new Map(), progress, host, owner };
+	// The sandbox settles when the script ends and drops the host calls that still run, but they would go on: after the
+	// end of the script, the calls are cancelled, and the script ends only once they settled. So a failed run ends its
+	// sessions after its last ask was submitted and its last session opened.
+	const execution = withCancel(context);
+	const calls: Calls = { script, runtime, context: execution.context, counters: new Map(), progress, host, owner };
+	const running = new Set<Promise<unknown>>();
+	const global = (name: string, execute: (...values: never[]) => unknown): CodemodeTool => ({
+		name,
+		spread: true,
+		execute: (values) => {
+			const result = execute(...(values as never[]));
+			if (result instanceof Promise) {
+				running.add(result);
+				const settled = () => running.delete(result);
+				result.then(settled, settled);
+			}
+			return result;
+		},
+	});
 	const sandbox = new CodemodeSandbox({
 		timeoutMs: Number.POSITIVE_INFINITY,
 		globals: [
@@ -569,6 +585,8 @@ export async function runScript(
 		result = await sandbox.execute(wrapped, { signal });
 	} finally {
 		await sandbox.close();
+		execution.cancel();
+		await Promise.allSettled(running);
 		const events = takeLines(calls);
 		// A cancelled task cannot commit; its lines are lost, and a resume shows the phase of its first call again.
 		if (events.length > 0 && !signal.aborted) {
