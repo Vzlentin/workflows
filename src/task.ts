@@ -57,7 +57,9 @@ async function startChild(
 
 	try {
 		const run = { id, directory, cwd: caller.cwd, root: caller.input.root };
-		const input = await childInput({ name, args, bundle: caller.input.bundle }, run);
+		const own = await childInput({ name, args, bundle: caller.input.bundle }, run);
+		const { parent } = caller.input;
+		const input = parent === undefined ? own : { ...own, parent };
 		await runtime.commit(async (tx) => {
 			const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 			const doc = await tx.doc(CallDoc, key, null);
@@ -171,6 +173,7 @@ async function runPhase(
 			root,
 			runDir: input.runDir,
 			bundle: input.bundle,
+			session: input.parent,
 			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },
 			child: (key, name, args) => startChild(definition, runtime, context, { input, cwd }, key, name, args),
 			restart: (key, ended) => restartChild(definition, runtime, context, key, ended),
@@ -197,7 +200,7 @@ async function runPhase(
 }
 
 /** The kind and version of the task of every script run. A run saved by another version cannot resume. */
-export const TASK = { name: "workflows.run", version: 11 } as const;
+export const TASK = { name: "workflows.run", version: 12 } as const;
 
 /** Whether the script task can continue the task `latest`. */
 export function current<R>(

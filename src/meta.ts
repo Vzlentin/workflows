@@ -527,6 +527,8 @@ export type ScriptInput = Omit<Args, "repo" | "base"> & {
 	readonly root: string;
 	readonly runDir: string;
 	readonly cwd: string;
+	/** The conversation whose `workflow` tool started the run, from `PI_SESSION_ID`; a child run has its caller's. */
+	readonly parent?: string;
 	readonly worktree?: {
 		readonly repository: string;
 		readonly start: string;

@@ -7,13 +7,16 @@ import type { Cursor } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { request } from "@vzlentin/harness/client";
 import { addProject } from "@vzlentin/harness/projects";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CtrlC, newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
 import {
 	detached,
+	escAgent,
+	hostModel,
+	nextResult,
 	piSettings,
 	rootTasks,
 	runsOf,
@@ -21,6 +24,7 @@ import {
 	setEntries,
 	startHost,
 	storeOf,
+	tellAgent,
 	workflows,
 } from "./support.ts";
 
@@ -58,14 +62,25 @@ async function detachedRun() {
 	return { id: run.id ?? "", host: run.host };
 }
 
-const CHILD = Type.Object({ key: Type.String(), closed: Type.Boolean() });
+const CHILD = Type.Object({
+	key: Type.String(),
+	closed: Type.Boolean(),
+	root: Type.String(),
+	parent: Type.Union([Type.String(), Type.Null()]),
+	depth: Type.Number(),
+});
 
 /** The library state of each child conversation in the `main` store, by key: whether it is closed. */
 async function children(): Promise<Record<string, boolean>> {
+	return Object.fromEntries(Object.entries(await childDocs()).map(([key, { closed }]) => [key, closed]));
+}
+
+/** The library state of each child conversation in the `main` store, by key: its tree, its depth, and whether it is closed. */
+async function childDocs(): Promise<Record<string, Static<typeof CHILD>>> {
 	const storage = await openNodeSqliteStorage(storeOf());
 
 	try {
-		const found: Record<string, boolean> = {};
+		const found: Record<string, Static<typeof CHILD>> = {};
 		let cursor: Cursor | undefined;
 
 		do {
@@ -77,7 +92,7 @@ async function children(): Promise<Record<string, boolean>> {
 				const stored = record && (await storage.document(record.id, "current", BACKGROUND_CONTEXT));
 				const value = stored?.value;
 
-				if (Value.Check(CHILD, value) && value.key !== "") found[value.key] = value.closed;
+				if (Value.Check(CHILD, value) && value.key !== "") found[value.key] = value;
 			}
 
 			cursor = page.next;
@@ -426,6 +441,8 @@ await Promise.all([...asks, Promise.reject(new Error("no"))])`,
 		const states = await children();
 		expect(Object.keys(states)).toEqual([expect.stringMatching(/^wf:\S+\/\S+$/), expect.stringMatching(/^sub:/)]);
 		expect(Object.values(states)).toEqual([true, true]);
+		// A run without PI_SESSION_ID has its own tree.
+		expect((await lineages())[0]).toEqual({ root: `workflows:${run.id}`, parent: null, depth: 1 });
 	});
 
 	it("closes only the subagents of the sessions when a run fails, and keeps the sessions for a resume", async () => {
@@ -584,5 +601,95 @@ return await agent("c", { as: "planner", model: "claude-haiku-5", schema: { type
 			1,
 			["workflows: provider uses the model gone/claude-opus-5-5, which Pi's model registry does not have"],
 		]);
+	});
+});
+
+/** The tree and the depth of each child conversation in the `main` store. */
+async function lineages() {
+	return Object.values(await childDocs()).map(({ root, parent, depth }) => ({ root, parent, depth }));
+}
+
+/** Polls `check` until it is true. */
+async function until(check: () => Promise<boolean>): Promise<void> {
+	while (!(await check())) await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
+describe("the workflow tool of the harness host", { timeout: 30_000 }, () => {
+	beforeEach(() => piSettings(root, [], { defaultProvider: "anthropic", defaultModel: "claude-haiku-5" }));
+
+	it("runs a script for the project agent, with its sessions under the agent and without the tool", async () => {
+		const model = hostModel();
+		const host = await startHost("main", model.models);
+
+		try {
+			const script = `phase("check")
+log("lists")
+await sh("true")
+const answer = await agent('Script respond: {"ok":true}', { schema: { type: "object" } })
+return { report: ["ran", JSON.stringify(answer)] }`;
+
+			await tellAgent(`Script workflow: ${JSON.stringify({ script })}`);
+			const result = await nextResult(0);
+			expect(result).toEqual({
+				text: expect.stringMatching(/^run \S+ finished: \{.*\}\nran\n\{"ok":true\}$/),
+				details: { steps: ["✓ check", "  lists"] },
+				isError: false,
+			});
+			// The project agent is the root conversation 1, and its PI_SESSION_ID puts the session under it.
+			expect(await lineages()).toEqual([{ root: "1", parent: "1", depth: 1 }]);
+			const [agent, session] = model.calls;
+			expect(agent?.tools).toContain("workflow");
+			expect(session?.prompt).toBe('Script respond: {"ok":true}');
+			expect(session?.tools).toContain("respond");
+			expect(session?.tools).not.toContain("workflow");
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("refuses a subagent of a session, at the depth limit, before it starts a run", async () => {
+		const call = JSON.stringify({ script: 'return "nested"' });
+		await writeFile(
+			join(root, "x.js"),
+			`await session().ask(${JSON.stringify(`Script spawn: workflow: ${call}`)})\nawait sh("./gate.sh g")\nreturn "ok"`,
+		);
+		const pending = workflows(["x.js"], { cwd: root });
+		const refusal = await nextResult(0);
+		await writeFile(join(root, "g.open"), "");
+		const run = await pending;
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, "ok"]);
+		expect(refusal).toEqual({
+			text: expect.stringContaining("a subagent at depth 2 cannot use workflow"),
+			details: undefined,
+			isError: true,
+		});
+		expect(await readdir(runsOf(root))).toEqual([run.id]);
+	});
+
+	it("names the run in the result of an Esc, and the run goes on in the host", async () => {
+		const model = hostModel();
+		const host = await startHost("main", model.models);
+
+		try {
+			const script = `phase("a")\nawait sh(${JSON.stringify(`cd ${root} && ./gate.sh g`)})\nphase("b")\nlog("after")\nreturn "done"`;
+			await tellAgent(`Script workflow: ${JSON.stringify({ script })}`);
+			await reached("g");
+			// The tool's running output reaches the store at most 100 ms after it is written, and the Esc result keeps it.
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			await escAgent();
+			// The run ends inside the stop window, so the CLI still writes stderr lines after the abort.
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			await writeFile(join(root, "g.open"), "");
+			const result = await nextResult(0);
+			const id = /^run (\S+):/.exec(result.text)?.[1] ?? "";
+			expect(result.text).toContain(
+				`the run is detached and goes on in the harness host; follow it with resume: "${id}"`,
+			);
+			expect(result.isError).toBe(true);
+			await until(async () => (await rootTasks(id))[0]?.status === "terminal");
+			expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
+		} finally {
+			await host.close();
+		}
 	});
 });

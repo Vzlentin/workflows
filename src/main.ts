@@ -239,7 +239,10 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 	let sent = false;
 
 	try {
-		input = await script.prepare(parsed, { id, directory, cwd: terminal.cwd });
+		const prepared = await script.prepare(parsed, { id, directory, cwd: terminal.cwd });
+		// The `workflow` tool of a conversation of the host sets `PI_SESSION_ID`, so the run's sessions go under it.
+		const session = process.env.PI_SESSION_ID;
+		input = session ? { ...prepared, parent: session } : prepared;
 		await writeFile(join(directory, "project"), `${project}\n`);
 		terminal.interrupt.throwIfAborted();
 		terminal.following(true);

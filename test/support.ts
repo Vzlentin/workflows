@@ -18,7 +18,7 @@ import { connect } from "@vzlentin/harness/client";
 import { entriesPath } from "@vzlentin/harness/entries";
 import { type Host, runHost } from "@vzlentin/harness/host";
 import { projectDir } from "@vzlentin/harness/projects";
-import { type Replies, type Request, statePaths } from "@vzlentin/harness/protocol";
+import { AGENT_HANDLE, type Replies, type Request, statePaths } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { main } from "../src/main.ts";
@@ -302,7 +302,8 @@ export class FakeModel {
 
 		const index = asked(messages);
 		const user = messages[index];
-		const prompt = user === undefined ? "" : textOf(user);
+		// harness puts `Task:` before the prompt of a spawned subagent.
+		const prompt = user === undefined ? "" : textOf(user).replace(/^Task:\n/, "");
 		const lastUser = messages.findLast((message) => message.role === "user");
 		const found = KINDS.find(([start]) => prompt.replace(MEMORY, "").startsWith(start))?.[1];
 
@@ -418,6 +419,13 @@ export class FakeModel {
 					const spawn = fauxToolCall("subagent", { action: "spawn", prompts: [`Script: ${spawned}`] });
 
 					return fauxAssistantMessage(spawn, { stopReason: "toolUse" });
+				}
+
+				// `Script workflow: <json>` calls the `workflow` tool with the args <json>; a spawned subagent gets `Script: workflow: <json>`.
+				const workflow = /^Script:? workflow: (.*)$/s.exec(prompt)?.[1];
+
+				if (workflow !== undefined) {
+					return fauxAssistantMessage(fauxToolCall("workflow", JSON.parse(workflow)), { stopReason: "toolUse" });
 				}
 
 				// `respond` and a tool call in one message: the tool result then gets a text reply that ends the turn.
@@ -616,4 +624,68 @@ export async function startHost(project = "main", models = createModels()): Prom
 	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
 
 	return host;
+}
+
+/** Sends `request` to the host of `project` that runs in this process. */
+async function send(request: Request, project = "main"): Promise<void> {
+	const client = await connectTo(project);
+
+	try {
+		await client.request(request);
+	} finally {
+		client.close();
+	}
+}
+
+/** Sends `message` to the project agent of the host of `project` that runs in this process. */
+export function tellAgent(message: string, project = "main"): Promise<void> {
+	return send({ type: "input", requestId: `test:${message}`, handle: AGENT_HANDLE, message, followUp: false }, project);
+}
+
+/** Presses Esc in the project agent of the host of `project` that runs in this process: it aborts its turn. */
+export function escAgent(project = "main"): Promise<void> {
+	return send({ type: "abort", handle: AGENT_HANDLE }, project);
+}
+
+/** A result of the `workflow` tool in a transcript: its text, its details, and whether it is an error. */
+export type WorkflowResult = { readonly text: string; readonly details: unknown; readonly isError: boolean };
+
+/** The results of the `workflow` tool in the transcripts of the store of `project`, in entry order of each conversation. */
+export async function workflowResults(project = "main"): Promise<WorkflowResult[]> {
+	const storage = await openNodeSqliteStorage(storeOf(project));
+
+	try {
+		const found: WorkflowResult[] = [];
+		const { items } = await storage.scanConversations({}, 256, undefined, BACKGROUND_CONTEXT);
+
+		for (const { id } of items) {
+			const query = { conversationId: id, order: "ascending" } as const;
+			const entries = await storage.scanEntries(query, 1024, undefined, BACKGROUND_CONTEXT);
+
+			for (const message of entries.items.flatMap((entry) => entry.model ?? [])) {
+				if (message.role !== "toolResult" || message.toolName !== "workflow") continue;
+				found.push({ text: textOf(message), details: message.details, isError: message.isError });
+			}
+		}
+
+		return found;
+	} finally {
+		await storage.close(BACKGROUND_CONTEXT);
+	}
+}
+
+/** Waits until the store of `project` has more than `count` results of the `workflow` tool, and gives the next one. */
+export async function nextResult(count: number, project = "main"): Promise<WorkflowResult> {
+	for (;;) {
+		const results = await workflowResults(project);
+		const next = results[count];
+
+		if (next !== undefined) return next;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
+/** A model for a host that a test starts itself, with no Ctrl+C. */
+export function hostModel(script: Omit<Script, "interrupt"> = {}): FakeModel {
+	return new FakeModel({ ...script, interrupt: { signal: new AbortController().signal, abort: () => {} } });
 }

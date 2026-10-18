@@ -17,6 +17,7 @@ import { withCancel } from "@earendil-works/chord/context";
 import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
+	AgentDoc,
 	type CommonDocDefinition,
 	type ConversationId,
 	defineDocFamily,
@@ -72,11 +73,16 @@ export type ScriptRun = {
 	readonly runDir: string;
 	readonly bundle: RunBundle;
 	readonly args: JsonObject;
+	/** The conversation whose `workflow` tool started the run, from `PI_SESSION_ID`. */
+	readonly session: string | undefined;
 	/** Starts the child run of the `run` call `key` and saves it as the result of the call. */
 	child(key: string, name: string, args: JsonObject): Promise<Child>;
 	/** Starts a new child task with the input of the ended child task `ended`, and saves it as the result of `key`. */
 	restart(key: string, ended: TaskId<JsonValue>): Promise<Child>;
 };
+
+/** The extension of the `workflow` tool, which the entry gives every conversation of the host but the sessions. */
+export const TOOL_EXTENSION = "workflows";
 
 const PACKAGE = fileURLToPath(new URL("../", import.meta.url));
 
@@ -457,10 +463,26 @@ const SESSION_ARGS = Type.Object({
 type SessionArgs = Readonly<Static<typeof SESSION_ARGS>>;
 
 /**
+ * Where the sessions of the run sit in the children tree: under the conversation that started the run, when it is the
+ * project agent or a conversation of the children library, else in the tree `workflows:<root run ID>`.
+ */
+async function treeOf(calls: Calls): Promise<{ parent: string } | { root: string }> {
+	const { runtime, context, host, script } = calls;
+	const { session } = script;
+
+	if (session === undefined) return { root: `workflows:${script.root}` };
+
+	if (session === String(runtime.conversationId)) return { parent: session };
+	const lineage = await host.children.lineage(host.place.store, session, context);
+
+	return lineage === undefined ? { root: `workflows:${script.root}` } : { parent: session };
+}
+
+/**
  * The session of the call `key`, opened in the children library under the key `wf:<key>` in `cwd`. Each field of
  * `args` overrides the profile, and the profile fills the rest; a field that neither gives comes from the project
- * agent. The commit that opens it saves its conversation in the call record and in the sessions of the run. The same
- * key again gives the same session.
+ * agent. The session does not get the `workflow` tool. The commit that opens it saves its conversation in the call
+ * record and in the sessions of the run. The same key again gives the same session.
  */
 async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionArgs): Promise<JsonValue> {
 	const { runtime, context, host, script } = calls;
@@ -471,7 +493,7 @@ async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionAr
 	const model = args.model ?? profile.model?.modelId;
 	const thinking = args.thinking ?? profile.thinking;
 
-	const spec: Writable<Spec> = { root: `workflows:${script.root}`, cwd };
+	const spec: Writable<Spec> = { ...(await treeOf(calls)), cwd };
 
 	if (provider !== undefined) spec.provider = provider;
 
@@ -488,6 +510,14 @@ async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionAr
 		spec,
 		context,
 		async (tx, conversation) => {
+			// The library has set the object form of the selection, which adds its answer extension to the host default.
+			const agent = await tx.doc(AgentDoc, conversation);
+			const selection = agent.extensions;
+
+			if (!Array.isArray(selection)) {
+				agent.extensions = { ...selection, remove: [...(selection?.remove ?? []), TOOL_EXTENSION] };
+			}
+
 			(await tx.doc(CallDoc, key, null)).conversation = conversation;
 			const opened = await tx.doc(SessionsDoc, script.root, null);
 			opened.sessions.push({ run: script.runId, conversation, task: runtime.taskId });
