@@ -1,0 +1,561 @@
+diff --git a/packages/codemode/README.md b/packages/codemode/README.md
+index e4fa877..e302eda 100644
+--- a/packages/codemode/README.md
++++ b/packages/codemode/README.md
+@@ -101,7 +101,7 @@ const source = await tools.read({ path: "package.json" });
+ text(JSON.parse(source).name);
+ ```
+ 
+-Supported fields are `max_output_tokens`, a token budget for the output, and `timeout_ms`, a hard deadline. The sandbox does not act on them; the caller decides. The options line is replaced by an empty line, so line numbers in stack traces still match the input. Empty input, invalid JSON, unknown fields, an options line without code, or an options line on any line but the first throw `CodemodeSourceError`. `CODEMODE_SOURCE_GRAMMAR` is a Lark grammar for providers that support grammar-constrained tool input. Both are also available from the lightweight `@earendil-works/pi-codemode/source` entry.
++Supported fields are `max_output_tokens`, a token budget for the output, `timeout_ms`, a hard deadline, and `background`, a request to run the script after the call returns. The sandbox does not act on them; the caller decides. The options line is replaced by an empty line, so line numbers in stack traces still match the input. Empty input, invalid JSON, unknown fields, an options line without code, or an options line on any line but the first throw `CodemodeSourceError`. `CODEMODE_SOURCE_GRAMMAR` is a Lark grammar for providers that support grammar-constrained tool input. Both are also available from the lightweight `@earendil-works/pi-codemode/source` entry.
+ 
+ ## Bundled Node and Bun hosts
+ 
+diff --git a/packages/codemode/src/source.ts b/packages/codemode/src/source.ts
+index 6d7ba85..bd69d4b 100644
+--- a/packages/codemode/src/source.ts
++++ b/packages/codemode/src/source.ts
+@@ -10,8 +10,8 @@
+ 
+ export const CODEMODE_OPTIONS_PREFIX = "// @options:";
+ 
+-const SUPPORTED_FIELDS = ["max_output_tokens", "timeout_ms"] as const;
+-const SUPPORTED_FIELDS_TEXT = "`max_output_tokens` and `timeout_ms`";
++const SUPPORTED_FIELDS = ["max_output_tokens", "timeout_ms", "background"] as const;
++const SUPPORTED_FIELDS_TEXT = "`max_output_tokens`, `timeout_ms` and `background`";
+ /** Largest delay `setTimeout` supports, which bounds `timeout_ms`. */
+ const MAX_TIMEOUT_MS = 2_147_483_647;
+ 
+@@ -34,6 +34,8 @@ export interface CodemodeSourceOptions {
+ 	maxOutputTokens?: number;
+ 	/** Hard deadline for the whole script in milliseconds, including tool calls. */
+ 	timeoutMs?: number;
++	/** Run the script in the background: the call returns at once, and the result arrives later. */
++	background?: boolean;
+ }
+ 
+ export interface ParsedCodemodeSource {
+@@ -75,7 +77,7 @@ function parseOptions(directive: string): CodemodeSourceOptions {
+ 		}
+ 	}
+ 	const options: CodemodeSourceOptions = {};
+-	const { max_output_tokens, timeout_ms } = fields;
++	const { max_output_tokens, timeout_ms, background } = fields;
+ 	if (max_output_tokens !== undefined) {
+ 		if (!isSafeInteger(max_output_tokens)) {
+ 			throw new CodemodeSourceError("@options field `max_output_tokens` must be a non-negative safe integer");
+@@ -90,6 +92,12 @@ function parseOptions(directive: string): CodemodeSourceOptions {
+ 		}
+ 		options.timeoutMs = timeout_ms;
+ 	}
++	if (background !== undefined) {
++		if (typeof background !== "boolean") {
++			throw new CodemodeSourceError("@options field `background` must be true or false");
++		}
++		options.background = background;
++	}
+ 	return options;
+ }
+ 
+diff --git a/packages/codemode/test/source.test.ts b/packages/codemode/test/source.test.ts
+index 36e7c0b..70c1176 100644
+--- a/packages/codemode/test/source.test.ts
++++ b/packages/codemode/test/source.test.ts
+@@ -22,6 +22,7 @@ describe("parseCodemodeSource", () => {
+ 			},
+ 		);
+ 		expect(parseCodemodeSource("// @options: {}\ntext(1)")).toEqual({ code: "\ntext(1)", options: {} });
++		expect(parseCodemodeSource('// @options: {"background": true}\ntext(1)').options).toEqual({ background: true });
+ 	});
+ 
+ 	it("only treats the first line as an options line", () => {
+@@ -54,8 +55,9 @@ describe("parseCodemodeSource", () => {
+ 			["// @options: [1]\ntext(1)", /@options must be a JSON object with supported fields/],
+ 			[
+ 				'// @options: {"yield": 1}\ntext(1)',
+-				"@options only supports `max_output_tokens` and `timeout_ms`; got `yield`",
++				"@options only supports `max_output_tokens`, `timeout_ms` and `background`; got `yield`",
+ 			],
++			['// @options: {"background": "yes"}\ntext(1)', "@options field `background` must be true or false"],
+ 			[
+ 				'// @options: {"max_output_tokens": 1.5}\ntext(1)',
+ 				"@options field `max_output_tokens` must be a non-negative safe integer",
+diff --git a/packages/coding-agent/src/extensions/codemode/execute.ts b/packages/coding-agent/src/extensions/codemode/execute.ts
+index b363599..1b56ac6 100644
+--- a/packages/coding-agent/src/extensions/codemode/execute.ts
++++ b/packages/coding-agent/src/extensions/codemode/execute.ts
+@@ -18,6 +18,7 @@ import {
+ 	type CodemodeOutputItem,
+ 	type CodemodeResult,
+ 	CodemodeSandbox,
++	CodemodeSourceError,
+ 	type CodemodeTool,
+ 	loadQuickJSWasm,
+ 	parseCodemodeSource,
+@@ -499,6 +500,10 @@ export async function executeCodemode(
+ ): Promise<AgentToolResult<CodemodeToolDetails>> {
+ 	const startedAt = performance.now();
+ 	const { code, options: sourceOptions } = parseCodemodeSource(input.code);
++	// Only durable code mode can outlive the call that starts it.
++	if (sourceOptions.background === true) {
++		throw new CodemodeSourceError("@options field `background` is not supported by this code mode tool");
++	}
+ 	const calls: CodemodeNestedCall[] = [];
+ 	// Usage of the script's `models.*` calls. Nested tool calls report theirs through the session.
+ 	let modelUsage: Usage | undefined;
+diff --git a/packages/coding-agent/test/suite/agent-session-codemode.test.ts b/packages/coding-agent/test/suite/agent-session-codemode.test.ts
+index 4aeeb99..b513bcf 100644
+--- a/packages/coding-agent/test/suite/agent-session-codemode.test.ts
++++ b/packages/coding-agent/test/suite/agent-session-codemode.test.ts
+@@ -492,10 +492,16 @@ describe("codemode options and store", () => {
+ 		expect(invalid.content).toEqual([
+ 			{
+ 				type: "text",
+-				text: "@options only supports `max_output_tokens` and `timeout_ms`; got `yield`",
++				text: "@options only supports `max_output_tokens`, `timeout_ms` and `background`; got `yield`",
+ 			},
+ 		]);
+ 
++		const background = await run(harness, '// @options: {"background": true}\ntext(1)');
++		expect(background.isError).toBe(true);
++		expect(background.content).toEqual([
++			{ type: "text", text: "@options field `background` is not supported by this code mode tool" },
++		]);
++
+ 		// #10631: a misplaced options line fails before the script runs instead of running without a deadline.
+ 		const misplaced = await run(harness, '// count\n// @options: {"timeout_ms": 200}\nwhile (true) {}');
+ 		expect(misplaced.isError).toBe(true);
+diff --git a/packages/durable/README.md b/packages/durable/README.md
+index f43e675..6fdd142 100644
+--- a/packages/durable/README.md
++++ b/packages/durable/README.md
+@@ -363,6 +363,8 @@ registry.install(createCodemodeExtension({ sandbox: new CodemodeSandbox({ memory
+ 
+ The extension also adds a `codemode` prompt section listing the tools scripts can call, as TypeScript declarations within a token budget; scripts find the others with `searchTools()`, `describeTool()`, and `describeNamespace()`. Group tools by name prefix with `namespaces: [{ name, description, prefix }]`, for example an MCP server's `mcp__github__`. The result reads like the coding agent's: a header, the script's output, and on failure the calls already made; text past `max_output_tokens` is cut, with the full text in a temp file. Scripts also get `models.*`: the model catalog, `models.classify()`, and `models.generateImages()`, which run as nested calls of internal tools (`models: false` turns them off). On Cloudflare, pass a `RemoteCodemodeSandbox` instead. Closing the sandbox while a script runs (for example when shutting down) is not an outcome: the script resumes with the next process's sandbox. A failed nested call rejects in the script with its error text, unless the tool declares a schema and returned its own value with the error: `tools.bash` resolves with `{ output, exitCode, ... }` also for a nonzero exit, so scripts check `exitCode`. `store(key, value)` and `load(key)` keep JSON values per conversation; a fork sees them as they were at its entry.
+ 
++A script whose options line says `"background": true` runs in the background: the call returns at once, the model goes on, and the script runs as a background call, which the conversation's Esc and idle waits leave alone and which survives a restart like any script. When it ends, its output arrives in the conversation as a follow-up input, `[Background codemode call <id> finished]` (or `failed`) and the output on the next lines. Any tool can do the same with `api.runInBackground()`; the background call sees `api.background` true.
++
+ How it survives a restart: the sandbox runs the script deterministically (a virtual clock, seeded randomness, UTC), and the tool writes each result the script gets to a journal before handing it over. After a restart, the tool runs the script again and hands it the journaled results in the same order, so it makes the same calls with the same arguments; these reattach to their nested calls by key, and then the script continues. A rerun ends the call with an error instead when the script takes another path than before, when the sandbox's fingerprint or the code mode version changed, or when its `timeout_ms` passed meanwhile. A nested call running at the restart follows its own replay policy.
+ 
+ ## System Prompt
+diff --git a/packages/durable/docs/spec.md b/packages/durable/docs/spec.md
+index 3e206cf..18ceb0a 100644
+--- a/packages/durable/docs/spec.md
++++ b/packages/durable/docs/spec.md
+@@ -3066,6 +3066,10 @@ interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extends Docum
+   readonly taskId: TaskId;
+   readonly conversationId: ConversationId;
+   readonly callId: string;
++  /** Whether this call is a background call (section 8.4). */
++  readonly background: boolean;
++  /** Run this model-issued call again as a background call (section 8.4); the same task on every call. */
++  runInBackground(context: Context): Promise<TaskId>;
+   /** The tool task's phase snapshot. */
+   readonly registry: RegistrySnapshot;
+   /** The calling conversation's agent, as the tool task's phase resolved it. */
+@@ -4311,11 +4315,15 @@ like the abort handler.
+ ```ts
+ type ToolTaskInput =
+   | { kind: "model"; assistant: EntryId; callId: string }
+-  | { kind: "nested"; parent: TaskId; parentCallId: string; key: string; call: ToolCall; progress?: false };
++  | { kind: "nested"; parent: TaskId; parentCallId: string; key: string; call: ToolCall; progress?: false }
++  | { kind: "background"; origin: string; call: ToolCall };
+ type ToolTaskCheckpoint =
+   | { phase: "call" }
+   | { phase: "execute"; arguments: JsonObject; replay: "safe" | "unsafe" };
+-type ToolTaskResult = { kind: "model"; entryId: EntryId; control?: ToolControl } | { kind: "nested" };
++type ToolTaskResult =
++  | { kind: "model"; entryId: EntryId; control?: ToolControl }
++  | { kind: "nested" }
++  | { kind: "background" };
+ ```
+ 
+ `pi.tool` is version 2 and starts at `{ phase: "call" }`; `migrate` gives a
+@@ -4328,6 +4336,21 @@ and settles differently: its result commit records the result's `usage`
+ `NestedCallDoc` (section 7.3), marks its nested slot `done` with its
+ summary, appends no entry, and ends with `{ kind: "nested" }`; `control` does
+ not apply.
++A background call runs a model-issued call again, with the same final
++arguments, after the model-issued call returned. `api.runInBackground()` of the
++model-issued call creates it, owned by the conversation with
++`background: true`, so the conversation's ordinary aborts and idle waits skip
++it; the same commit records its task ID in the calling task's
++`pi.tool.background-call` document, so a rerun after a restart returns the same
++task. Its call ID is `<origin>:background`. It resolves its tool among the
++agent's `tools`, as a model-issued call does, hooks see its call without a
++parent, its tool sees `api.background` true, and it has no slot in `pi.live`.
++Before its terminal commit, unless it was aborted, it submits its result to its
++conversation as a follow-up input, `[Background <tool> call <origin> finished]`
++(or `failed`) and the result's text on the next lines (its error diagnostics
++when it has no text; images are left out), with request ID
++`pi.tool.background:<task ID>`, so a rerun after a restart submits it once. It
++appends no tool result entry and ends with `{ kind: "background" }`.
+ Below, `{ entryId }` is a model-issued call's result.
+ 
+ - `call` reads the call with `runtime.entry()`, resolves the tool among the
+diff --git a/packages/durable/src/codemode/codemode.ts b/packages/durable/src/codemode/codemode.ts
+index d1f04d2..5dc616c 100644
+--- a/packages/durable/src/codemode/codemode.ts
++++ b/packages/durable/src/codemode/codemode.ts
+@@ -243,7 +243,15 @@ export function createCodemodeTool(options: CodemodeToolOptions): ToolRegistrati
+ 		constrainedSampling: { type: "grammar", variants: { openai_lark: CODEMODE_SOURCE_GRAMMAR } },
+ 		callers: ["model"],
+ 		replay: "safe",
+-		execute: (args, api, context) => new CodemodeCall(options, api, context).execute(args.code),
++		execute: async (args, api, context) => {
++			// `background`: the model-issued call starts its background call and returns; that call runs the script.
++			if (!api.background && parseCodemodeSource(args.code).options.background === true) {
++				const task = await api.runInBackground(context);
++				const text = `Started in the background as task ${task}. Its result arrives as a message when the script ends.`;
++				return { output: [{ type: "text", text }] };
++			}
++			return new CodemodeCall(options, api, context).execute(args.code);
++		},
+ 	});
+ }
+ 
+diff --git a/packages/durable/src/codemode/describe.ts b/packages/durable/src/codemode/describe.ts
+index 06d9d54..d860876 100644
+--- a/packages/durable/src/codemode/describe.ts
++++ b/packages/durable/src/codemode/describe.ts
+@@ -29,7 +29,8 @@ const TEXT_OUTPUT_SCHEMA: CodemodeJsonSchema = { type: "string" };
+ const DESCRIPTION_INTRO = `Run JavaScript that calls other tools. The input is raw JavaScript (not JSON, no code fence), run as an async function body in a QuickJS sandbox: top-level \`await\` and \`return\` work. No Node, file system, network, or timers.
+ - \`await tools.<name>({ ...args })\` resolves to a string, or an object if the tool's declaration says so, and rejects with an Error on failure. A tool whose declaration returns an object resolves on failure too when it returned that object; check its fields. Calls still running when the script ends are cancelled.
+ - The script survives a restart: it resumes where it was, without running finished calls again.
+-- Optional first line: \`// @options: {"max_output_tokens": 10000, "timeout_ms": 60000}\``;
++- Optional first line: \`// @options: {"max_output_tokens": 10000, "timeout_ms": 60000}\`
++- \`"background": true\` in the options runs the script in the background: the call returns at once, you go on, and the script's output arrives later as a message starting \`[Background codemode call <id> finished]\` (or \`failed\`).`;
+ 
+ /** The code mode tool's description: the script environment and its globals, the same for every conversation. */
+ export function codemodeDescription(models: boolean): string {
+diff --git a/packages/durable/src/harness/generation.ts b/packages/durable/src/harness/generation.ts
+index c8d2679..5880387 100644
+--- a/packages/durable/src/harness/generation.ts
++++ b/packages/durable/src/harness/generation.ts
+@@ -690,9 +690,10 @@ async function finishToolRound(
+ 	tools.forEach((id, index) => {
+ 		const outcome = outcomes[index]!;
+ 		// Version 1 results have no kind; every result a generation's round reads is a model-issued call's.
++		const result = outcome.status === "completed" ? outcome.result : undefined;
+ 		controls.set(
+ 			id,
+-			outcome.status === "completed" && outcome.result.kind !== "nested" ? outcome.result.control : undefined,
++			result !== undefined && result.kind !== "nested" && result.kind !== "background" ? result.control : undefined,
+ 		);
+ 	});
+ 	const slots = (await runtime.snapshot(LiveDoc, conversationId, context))?.tools ?? [];
+diff --git a/packages/durable/src/harness/tool.ts b/packages/durable/src/harness/tool.ts
+index 52bc4a3..3bdf416 100644
+--- a/packages/durable/src/harness/tool.ts
++++ b/packages/durable/src/harness/tool.ts
+@@ -12,7 +12,7 @@ import {
+ import type { ImageContent, TextContent, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
+ import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
+ import { Compile } from "typebox/compile";
+-import { defineDocFamily } from "../documents.ts";
++import { defineDoc, defineDocFamily } from "../documents.ts";
+ import { AssistantEntry, ToolResultEntry } from "../entries.ts";
+ import type { ExecutionEnv } from "../env/index.ts";
+ import { errorMessage } from "../errors.ts";
+@@ -56,8 +56,9 @@ import { recordUsage } from "./usage.ts";
+ import { optionalExtension } from "./util.ts";
+ 
+ /**
+- * A model-issued call, read from its assistant entry, or a nested call a running tool made through `executeTool()`,
+- * whose call the input carries because no entry holds it.
++ * A model-issued call, read from its assistant entry; a nested call a running tool made through `executeTool()`,
++ * whose call the input carries because no entry holds it; or a background call, which a model-issued call started
++ * through `runInBackground()` and which runs that call again with the same arguments, owned by the conversation.
+  */
+ export type ToolTaskInput =
+ 	| { kind: "model"; assistant: EntryId; callId: string }
+@@ -69,6 +70,12 @@ export type ToolTaskInput =
+ 			call: ToolCall;
+ 			/** `false`: commit no running output, details, or diagnostics to the slot; the result still gets them. */
+ 			progress?: false;
++	  }
++	| {
++			kind: "background";
++			/** The ID of the model-issued call that started it, which its report names. */
++			origin: string;
++			call: ToolCall;
+ 	  };
+ 
+ export type ToolTaskCheckpoint =
+@@ -82,7 +89,11 @@ export type ToolTaskCheckpoint =
+  * already holding its outcome as `completing` when the Harness upgraded finishes with a version 1 result,
+  * `{ entryId, control? }` without `kind`; treat a result without `kind` as a model-issued call's.
+  */
+-export type ToolTaskResult = { kind: "model"; entryId: EntryId; control?: ToolControl } | { kind: "nested" };
++export type ToolTaskResult =
++	| { kind: "model"; entryId: EntryId; control?: ToolControl }
++	| { kind: "nested" }
++	/** A background call's result is the follow-up input that reports it. */
++	| { kind: "background" };
+ 
+ /**
+  * Memo of a tool task that made a nested call, in any attempt, committed before the first admission of each attempt:
+@@ -90,6 +101,18 @@ export type ToolTaskResult = { kind: "model"; entryId: EntryId; control?: ToolCo
+  */
+ const MADE_NESTED_CALLS = "pi.tool.madeNestedCalls";
+ 
++/**
++ * The background call a tool call started, recorded in the commit that creates it, so a rerun of the tool call after a
++ * restart gets the same task instead of starting another. Retires with the tool call's task.
++ */
++const BackgroundCallDoc = defineDoc<{ taskId?: TaskId<ToolTaskResult> }>({
++	kind: "pi.tool.background-call",
++	version: 1,
++	scope: "task",
++	initial: () => ({}),
++	checkpointWhen: () => false,
++});
++
+ /** One nested call of a running tool: its task, and once it ended, its result. */
+ export type NestedCallState = {
+ 	/** Absent only inside the commit that creates the call; a creation that fails leaves no member. */
+@@ -211,7 +234,10 @@ export const ToolTask = defineTask<ToolTaskInput, ToolTaskCheckpoint, ToolTaskRe
+ 	},
+ });
+ 
+-/** The called tool: among the tools the model is offered for a model-issued call, else among those tools may call. */
++/**
++ * The called tool: among the tools the model is offered for a model-issued call and its background call, else among
++ * those tools may call.
++ */
+ async function resolveTool(
+ 	runtime: Runtime,
+ 	input: ToolTaskInput,
+@@ -219,10 +245,13 @@ async function resolveTool(
+ 	context: Context,
+ ): Promise<ToolRegistration | undefined> {
+ 	const agent = await runtime.agent(context);
+-	return (input.kind === "model" ? agent.tools : agent.callable).find((tool) => tool.name === name);
++	return (input.kind === "nested" ? agent.callable : agent.tools).find((tool) => tool.name === name);
+ }
+ 
+-/** The call: from the input for a nested call, which hooks see with its parent, else from the assistant entry. */
++/**
++ * The call: from the input for a nested call, which hooks see with its parent, and for a background call, else from
++ * the assistant entry.
++ */
+ async function readCall(runtime: Runtime, input: ToolTaskInput, context: Context): Promise<ToolHookCall> {
+ 	if (input.kind === "nested") {
+ 		context.telemetry.setAttributes({
+@@ -231,6 +260,13 @@ async function readCall(runtime: Runtime, input: ToolTaskInput, context: Context
+ 		});
+ 		return { ...input.call, parent: { taskId: input.parent, callId: input.parentCallId } };
+ 	}
++	if (input.kind === "background") {
++		context.telemetry.setAttributes({
++			"tool.name": input.call.name,
++			"tool.call_id": input.call.id,
++		});
++		return input.call;
++	}
+ 	const entry = await runtime.entry(AssistantEntry, input.assistant, context);
+ 	const message = entry?.model?.[0];
+ 	const call =
+@@ -296,7 +332,7 @@ async function run(
+ 		retain: tool.outputLimits?.retain ?? "head",
+ 	};
+ 	const reported: Reported = { output: new OutputBuffer(limits), limits, diagnostics: [], details: undefined };
+-	const streams = input.kind === "model" || input.progress !== false;
++	const streams = input.kind !== "nested" || input.progress !== false;
+ 	const progress = publishProgress(runtime, reported, streams, context);
+ 	/** Nested call admissions this invocation started; cleanup waits for them, so it sees every nested call. */
+ 	const admissions: Promise<unknown>[] = [];
+@@ -317,6 +353,31 @@ async function run(
+ 		taskId: runtime.taskId,
+ 		conversationId: runtime.conversationId,
+ 		callId: call.id,
++		background: input.kind === "background",
++		runInBackground: async (callContext) => {
++			assertLive();
++			if (input.kind !== "model")
++				throw new Error(`Tool call ${call.id} is not model-issued, so it cannot run in the background`);
++			let id: TaskId<ToolTaskResult> | undefined;
++			// One commit creates the background call and records it, so a rerun of this call finds it.
++			await runtime.commit(async (tx) => {
++				const state = await tx.doc(BackgroundCallDoc, runtime.taskId);
++				if (state.taskId === undefined) {
++					const background: ToolTaskInput = {
++						kind: "background",
++						origin: call.id,
++						call: { type: "toolCall", id: `${call.id}:background`, name: call.name, arguments: args },
++					};
++					state.taskId = await tx.createTask(ToolTask, background, {
++						ownership: { kind: "conversation" },
++						background: true,
++					});
++				}
++				id = state.taskId;
++				return undefined;
++			}, callContext);
++			return id!;
++		},
+ 		registry: runtime.registry,
+ 		agent: runtime.agent,
+ 		get models() {
+@@ -652,6 +713,10 @@ async function settle(
+ 	const madeNested = (await runtime.memo(MADE_NESTED_CALLS, context)) === true;
+ 	// Mark them all before waiting for any: one may run until a sibling is cancelled.
+ 	await Promise.all(nestedIds.map((id) => runtime.abortOwned(id, context)));
++	// An aborted background call reports nothing: its conversation, or the host, stopped it.
++	if (input.kind === "background" && ending.status !== "aborted") {
++		await reportBackground(runtime, input.origin, call.name, build(undefined), context);
++	}
+ 	await runtime.commit(async (tx) => {
+ 		const conversationId = runtime.conversationId;
+ 		const live = await tx.doc(LiveDoc, conversationId);
+@@ -671,6 +736,8 @@ async function settle(
+ 				slot.summary = summaryOf(nested, result.output ?? []);
+ 			}
+ 			settled = { kind: "nested" };
++		} else if (input.kind === "background") {
++			settled = { kind: "background" };
+ 		} else {
+ 			const timing = { timestamp: runtime.now(), durationMs };
+ 			const entry = await appendToolResult(tx, conversationId, call, result, timing);
+@@ -697,6 +764,33 @@ async function settle(
+ 	}, context);
+ }
+ 
++/**
++ * Post a background call's result to its conversation as a follow-up input: it starts a turn when the agent is idle, or
++ * waits for its current answer. The request ID makes a rerun after a restart post it once. Images are left out.
++ */
++async function reportBackground(
++	runtime: Runtime,
++	origin: string,
++	name: string,
++	result: ToolExecutionResult,
++	context: Context,
++): Promise<void> {
++	const text = (result.output ?? []).flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n");
++	const errors = (result.diagnostics ?? []).filter((diagnostic) => diagnostic.severity === "error");
++	const body = text !== "" ? text : errors.map((diagnostic) => diagnostic.message).join("\n");
++	const status = result.isError === true ? "failed" : "finished";
++	const content = `[Background ${name} call ${origin} ${status}]${body === "" ? "" : `\n${body}`}`;
++	const conversation = await runtime.conversation(runtime.conversationId, context);
++	if (conversation === undefined) throw new Error(`Conversation ${runtime.conversationId} is missing`);
++	const input = {
++		type: "input",
++		content,
++		whenBusy: "followUp",
++		requestId: `pi.tool.background:${runtime.taskId}`,
++	} as const;
++	await conversation.submit(input, context);
++}
++
+ /**
+  * A nested call's result, as stored and returned: strict JSON, without `output`, which only the model reads, and
+  * without `control`, which only model-issued calls apply.
+diff --git a/packages/durable/src/harness/types.ts b/packages/durable/src/harness/types.ts
+index 8b33e2b..e5ad119 100644
+--- a/packages/durable/src/harness/types.ts
++++ b/packages/durable/src/harness/types.ts
+@@ -210,6 +210,15 @@ export interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extend
+ 	readonly taskId: TaskId;
+ 	readonly conversationId: ConversationId;
+ 	readonly callId: string;
++	/** Whether this call is a background call, one that `runInBackground()` started. */
++	readonly background: boolean;
++	/**
++	 * Run this model-issued call again in the background, with the same arguments: a tool task owned by the conversation,
++	 * outside its ordinary aborts and idle waits, whose result arrives in the conversation as a follow-up input when it
++	 * ends. Returns its task; a second call, also after a restart, returns the same one. The tool then returns at once,
++	 * and its result is the model-issued call's; the background call sees `background: true`.
++	 */
++	runInBackground(context: Context): Promise<TaskId>;
+ 	/** The tool task's phase snapshot. */
+ 	readonly registry: RegistrySnapshot;
+ 	/** The calling conversation's agent, as the tool task's phase resolved it. */
+diff --git a/packages/durable/test/codemode.test.ts b/packages/durable/test/codemode.test.ts
+index 650255e..8995ab0 100644
+--- a/packages/durable/test/codemode.test.ts
++++ b/packages/durable/test/codemode.test.ts
+@@ -24,7 +24,7 @@ import {
+ import type { CodemodeNamespace } from "../src/codemode/describe.ts";
+ import { NodeExecutionEnv } from "../src/env/node.ts";
+ import { openNodeSqliteStorage } from "../src/storage/sqlite/node.ts";
+-import { allEntries, type ChatSetup, chatSetup, openChat } from "./chat-support.ts";
++import { allEntries, type ChatSetup, chatSetup, openChat, textOf } from "./chat-support.ts";
+ import { addHooks, addTool } from "./harness-support.ts";
+ import { ControlledStorage, context } from "./session-support.ts";
+ import { aborted, type Deferred, deferred, eventually } from "./task-support.ts";
+@@ -941,6 +941,74 @@ describe("durable code mode", () => {
+ 	});
+ });
+ 
++/** The inputs that report background calls, in order. */
++async function reports(root: Awaited<ReturnType<typeof openChat>>["root"]): Promise<string[]> {
++	return (await allEntries(root)).flatMap((entry) => {
++		const text = textOf(entry.model?.[0]);
++		return entry.model?.[0]?.role === "user" && text?.startsWith("[Background ") === true ? [text] : [];
++	});
++}
++
++/** Polls `check` until it holds, for work that runs outside the test's microtasks, such as a script's VM. */
++async function waitFor(check: () => Promise<boolean>): Promise<void> {
++	for (let attempt = 0; attempt < 500; attempt++) {
++		if (await check()) return;
++		await new Promise((resolve) => setTimeout(resolve, 10));
++	}
++	throw new Error("Condition was not reached");
++}
++
++describe("background code mode", () => {
++	it("returns at once, runs the script after the turn ended, and reports its output as a follow-up input", async () => {
++		const chat = codemodeChat();
++		chat.setup.faux.setResponses([
++			script(`// @options: {"background": true}\nconst a = await tools.slow({ id: 1 }); return a;`),
++			DONE,
++			DONE,
++		]);
++		const { harness, root } = await openChat(await openNodeSqliteStorage(await sqlitePath()), chat.setup);
++		await (await root.submit({ type: "input", content: "go" }, context)).wait(context);
++		const started = await resultText(chat.setup, root);
++		expect(started.isError).toBe(false);
++		expect(started.text).toMatch(/^Started in the background as task \d+\. Its result arrives as a message/);
++		// The turn ended while the script waits for slow 1.
++		expect(chat.slows.finished).toEqual([]);
++		expect(await reports(root)).toEqual([]);
++		chat.slows.release(1);
++		await waitFor(async () => (await reports(root)).length === 1);
++		const [report] = await reports(root);
++		expect(report).toMatch(/^\[Background codemode call s1 finished\]\nScript completed\n/);
++		expect(report).toContain("slow 1");
++		await harness.close(context);
++	});
++
++	it("continues a background script after a restart and reports it once", async () => {
++		const chat = codemodeChat();
++		const path = await sqlitePath();
++		chat.setup.faux.setResponses([
++			script(
++				`// @options: {"background": true}\nconst a = await tools.echo({ text: "a" }); const h = await tools.hold({ id: 1 }); return [a, h];`,
++			),
++			DONE,
++			DONE,
++		]);
++		let opened = await openChat(await openNodeSqliteStorage(path), chat.setup);
++		await (await opened.root.submit({ type: "input", content: "go" }, context)).wait(context);
++		await chat.holds.reached.promise;
++		await opened.harness.close(context);
++		chat.holds.block = false;
++		opened = await openChat(await openNodeSqliteStorage(path), chat.setup);
++		opened.harness.resume();
++		const { root } = opened;
++		await waitFor(async () => (await reports(root)).length === 1);
++		expect((await reports(root))[0]).toContain('["echo a","held 1"]');
++		// echo ran once and was replayed; hold, replay-safe, ran again after the restart.
++		expect(Object.fromEntries(chat.echo)).toEqual({ a: 1 });
++		expect(chat.holds.runs).toBe(2);
++		await opened.harness.close(context);
++	});
++});
++
+ describe("durable code mode output and tool search", () => {
+ 	/** Run `code` once in a chat with a Node environment; the result's content and details. */
+ 	async function runScript(code: string, chat = codemodeChat()) {
