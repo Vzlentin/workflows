@@ -8,13 +8,19 @@
  * run. `run(name, args)` starts a child run as a child task of the caller, with its own run directory, and a resume of
  * the caller continues that child run. Sessions are children of harness's children library, owned by the run's task.
  */
-import { createHash } from "node:crypto";
+import { randomInt } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { withCancel } from "@earendil-works/chord/context";
-import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
+import {
+	type CodemodeHostCall,
+	type CodemodeOutcome,
+	type CodemodeResult,
+	type CodemodeRun,
+	CodemodeSandbox,
+} from "@earendil-works/pi-codemode";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
 	AgentDoc,
@@ -190,14 +196,6 @@ function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun
 const args = ${JSON.stringify(args)};
 const runId = ${JSON.stringify(script.runId)};
 const runDir = ${JSON.stringify(script.runDir)};
-const __unavailable = (name) => function () {
-	throw new Error(name + " is not available in workflow scripts");
-};
-const Date = Object.assign(__unavailable("Date"), { now: __unavailable("Date.now") });
-const Math = Object.freeze({
-	...Object.fromEntries(Object.getOwnPropertyNames(globalThis.Math).map((name) => [name, globalThis.Math[name]])),
-	random: __unavailable("Math.random"),
-});
 const prompts = Object.fromEntries(
 	${JSON.stringify(prompts)}.map((name) => [name, (inputs) => __prompt(name, inputs)]),
 );
@@ -335,17 +333,34 @@ export async function savedCall(runtime: Runtime, key: string, context: Context)
 	return record !== undefined && "result" in record ? record.result : undefined;
 }
 
-/** `<sha256(name + JSON args), 16 hex>.<n>`, n counting identical calls in this execution. */
-function keyOf(name: string, args: JsonObject, counters: Map<string, number>): string {
-	const hash = createHash("sha256")
-		.update(name + JSON.stringify(args))
-		.digest("hex")
-		.slice(0, 16);
+/**
+ * One result that the script got, in the order it got them: the VM's ID of the call, the VM clock while the script
+ * processed it, and the call's name. A host call that has a record also has its key, and `failed` when it failed.
+ */
+type Entry = { id: number; at: number; name: string; key?: string; failed?: true };
 
-	const n = (counters.get(hash) ?? 0) + 1;
-	counters.set(hash, n);
+/**
+ * The journal of a run's script: its start time and seed, the fingerprint of its VM, the cuts, and its results in the
+ * order the script got them. Given the same start time, seed and results in the same order, the VM makes the same
+ * calls with the same IDs, so a new task of the run replays the journal and goes on from there. A cut is the number of
+ * calls that the script had made when a new task dropped the failed results and what came after them: a call made
+ * after a cut is on another path than the call with its ID before the cut, so it gets another key.
+ */
+type Journal = { startedAt: number; seed: number; fingerprint?: string; cuts: number[]; entries: Entry[] };
 
-	return `${hash}.${n}`;
+/** The journal of each run, keyed by its run ID. The store keeps it after its task ends, so a new task of the run finds it. */
+export const JournalDoc = defineDocFamily<Journal, null>({
+	kind: "workflows.journal",
+	version: 1,
+	scope: "session",
+	family: true,
+	initial: () => ({ startedAt: 0, seed: 0, cuts: [], entries: [] }),
+	checkpointWhen,
+});
+
+/** `<generation>.<VM call ID>`, the generation counting the cuts before the call. */
+function keyOf(id: number, cuts: readonly number[]): string {
+	return `${cuts.filter((cut) => cut < id).length}.${id}`;
 }
 
 /** A `phase` or `log` line. */
@@ -368,7 +383,6 @@ type Calls = {
 	readonly script: ScriptRun;
 	readonly runtime: Runtime;
 	readonly context: Context;
-	readonly counters: Map<string, number>;
 	readonly progress: Progress;
 	readonly host: Host;
 	/** The owner of the run's sessions: the task, in the group of the run ID, so a later task of the run finds them. */
@@ -384,19 +398,18 @@ function takeLines(calls: Calls): ProgressEvent[] {
 		.map((line) => ({ kind: line.phase ? "phase" : "log", run, parent, text: line.text }) as const);
 }
 
-/** The document key of the call `name` with `args` in this execution: `<run ID>/<call key>`. */
-function callKey(calls: Calls, name: string, args: JsonObject): string {
-	return `${calls.script.runId}/${keyOf(name, args, calls.counters)}`;
-}
-
 /** What a call records when it starts. */
 type Start = { readonly kind: CallKind; readonly args: JsonObject };
+
+/** The script took another path than the journal of its run. */
+class Diverged extends Error {}
 
 /**
  * The result of the call `key`: its saved result, or the value of `effect`, which gets the key. The call records its
  * start, with the waiting lines, before `effect`, and its end with the value or the error after it. A stopped call
  * records no end, and a call that throws saves no result, so both run again. A call with a saved result drops the log
- * lines and keeps the phase line, so a resume shows the phase of the first call that runs.
+ * lines and keeps the phase line, so a resume shows the phase of the first call that runs. A record of another kind or
+ * args under the key means that the script took another path.
  */
 async function memoized(
 	calls: Calls,
@@ -405,8 +418,18 @@ async function memoized(
 	effect: (key: string) => Promise<JsonValue>,
 ): Promise<JsonValue> {
 	const { runtime, context, progress } = calls;
-	const saved = await savedCall(runtime, key, context);
+	const record = await runtime.snapshot(CallDoc, key, context);
 	const { lines } = progress;
+
+	if (
+		record !== undefined &&
+		record.startedAt !== "" &&
+		(record.kind !== start.kind || !Value.Equal(record.args, start.args))
+	) {
+		throw new Diverged(`the script made another ${start.kind} call than the saved call ${key}`);
+	}
+
+	const saved = record !== undefined && "result" in record ? record.result : undefined;
 
 	if (saved !== undefined) {
 		lines.splice(0, lines.length, ...lines.filter((line) => line.phase));
@@ -633,12 +656,10 @@ function argumentError(errors: readonly ValidationError[]): string {
 }
 
 /** A `sh` call when `check` is true, else an `ok` call. */
-function shellCall(calls: Calls, cwd: string, cmd: string | string[], check: boolean): Promise<JsonValue> {
+function shellCall(calls: Calls, key: string, cwd: string, cmd: string | string[], check: boolean): Promise<JsonValue> {
 	const args = { cmd, check };
 
-	return memoized(calls, callKey(calls, "sh", args), { kind: check ? "sh" : "ok", args }, () =>
-		shell(calls, cwd, cmd, check),
-	);
+	return memoized(calls, key, { kind: check ? "sh" : "ok", args }, () => shell(calls, cwd, cmd, check));
 }
 
 /** The owner of the sessions of the run `runId`, whose task `runtime` runs. */
@@ -646,9 +667,81 @@ export function ownerOf(runtime: Runtime, runId: string): Owner {
 	return { kind: "task", taskId: runtime.taskId, conversation: runtime.conversationId, group: runId };
 }
 
+/** A call with args that its host function does not take. It fails the same way each time, so it has no record. */
+class BadArguments extends Error {}
+
+/** A host function of the script. A pure one gives the same answer to the same args, and keeps no record. */
+type Handler = {
+	readonly effect: boolean;
+	readonly run: (call: CodemodeHostCall, key: string) => Promise<JsonValue> | JsonValue | void;
+};
+
+/** The host function `name`, whose args match `schema`. A call with other args throws `BadArguments`. */
+function handler<T extends TSchema>(
+	name: string,
+	schema: T,
+	effect: boolean,
+	run: (values: Static<T>, key: string) => Promise<JsonValue> | JsonValue | void,
+): Handler {
+	return {
+		effect,
+		run: (call, key) => {
+			if (!Value.Check(schema, call.args)) {
+				throw new BadArguments(`${name} got bad arguments: ${argumentError(Value.Errors(schema, call.args))}`);
+			}
+
+			return run(call.args, key);
+		},
+	};
+}
+
+/**
+ * What the script gets for a call: its outcome, the key of a call that has a record, whether that call failed, and the
+ * divergence that a saved record of another call showed.
+ */
+type Answer = {
+	readonly outcome: CodemodeOutcome;
+	readonly key?: string | undefined;
+	readonly failed: boolean;
+	readonly diverged?: Diverged;
+};
+
+/** The journal of the run `runId`, with its start time and seed set. */
+async function startJournal(runtime: Runtime, runId: string, context: Context): Promise<Journal> {
+	const saved = await runtime.snapshot(JournalDoc, runId, context);
+
+	if (saved !== undefined && saved.startedAt !== 0) return saved;
+	await runtime.commit(async (tx) => {
+		const doc = await tx.doc(JournalDoc, runId, null);
+		doc.startedAt = Date.now();
+		doc.seed = randomInt(2 ** 32);
+
+		return undefined;
+	}, context);
+	const started = await runtime.snapshot(JournalDoc, runId, context);
+
+	if (started === undefined) throw new Error(`the journal of ${runId} is missing`);
+
+	return started;
+}
+
+/** A promise with its settle functions, which the end of the script may reject with nobody waiting. */
+function waiter<T>(): PromiseWithResolvers<T> {
+	const resolvers = Promise.withResolvers<T>();
+	resolvers.promise.catch(() => undefined);
+
+	return resolvers;
+}
+
 /**
  * Runs `script.bundle.main` with `script.args` in `cwd` and returns its value. It throws the error of a failed script,
  * or the reason of the abort when a closing store cancels the script.
+ *
+ * The script runs deterministically in the pi-codemode sandbox: the same start time, seed and results in the same order
+ * make the same calls with the same IDs. Each result is added to the journal of the run before the script gets it. A
+ * new task of the run replays the journal up to its first failed call, and the calls that the script made after that
+ * point get a new generation in their keys. A call that the script made before that point and that has a saved result
+ * returns it and does not run again.
  */
 export async function runScript(
 	runtime: Runtime,
@@ -657,72 +750,61 @@ export async function runScript(
 	host: Host,
 	script: ScriptRun,
 ): Promise<JsonValue> {
-	const { bundle, args } = script;
+	const { bundle, args, runId } = script;
 	// A module export is a syntax error in the function body that the script runs as.
 	const source = bundle.main.replace(META, "$1$2");
 	const progress: Progress = { lines: [], phase: null };
-	const owner = ownerOf(runtime, script.runId);
+	const owner = ownerOf(runtime, runId);
 	// The sandbox settles when the script ends and drops the host calls that still run, but they would go on: after the
 	// end of the script, the calls are cancelled, and the script ends only once they settled. So a failed run ends its
 	// sessions after its last ask was submitted and its last session opened.
 	const execution = withCancel(context);
-	const calls: Calls = { script, runtime, context: execution.context, counters: new Map(), progress, host, owner };
+	const calls: Calls = { script, runtime, context: execution.context, progress, host, owner };
 	const running = new Set<Promise<unknown>>();
+	const journal = await startJournal(runtime, runId, context);
+	const failedAt = journal.entries.findIndex((entry) => entry.failed === true);
+	const kept = failedAt === -1 ? journal.entries : journal.entries.slice(0, failedAt);
+	const replayed = new Set(kept.map((entry) => entry.id));
+	const cuts = [...journal.cuts];
+	const keyFor = (id: number) => `${runId}/${keyOf(id, cuts)}`;
 
-	const global = <T extends TSchema>(
-		name: string,
-		schema: T,
-		execute: (values: Static<T>) => Promise<JsonValue> | JsonValue | void,
-	): CodemodeTool => ({
-		name,
-		spread: true,
-		execute: (values) => {
-			if (!Value.Check(schema, values)) {
-				throw new Error(`${name.replace(/^__/, "")} got bad arguments: ${argumentError(Value.Errors(schema, values))}`);
-			}
-
-			const result = execute(values);
-
-			if (result instanceof Promise) {
-				running.add(result);
-				const settled = () => running.delete(result);
-				result.then(settled, settled);
-			}
-
-			return result;
-		},
-	});
-
-	const sandbox = new CodemodeSandbox({
-		timeoutMs: Number.POSITIVE_INFINITY,
-		globals: [
-			global("__session", Type.Tuple([SESSION_ARGS]), ([args]) =>
-				memoized(calls, callKey(calls, "session", args), { kind: "session", args }, (key) =>
-					sessionOf(calls, key, cwd, args),
+	const handlers = new Map<string, Handler>([
+		[
+			"__session",
+			handler("session", Type.Tuple([SESSION_ARGS]), true, ([args], key) =>
+				memoized(calls, key, { kind: "session", args }, (saved) => sessionOf(calls, saved, cwd, args)),
+			),
+		],
+		[
+			"__ask",
+			// The sandbox sends a missing schema as null.
+			handler("ask", ASK_ARGS, true, ([conversation, prompt, schema], key) =>
+				memoized(calls, key, { kind: "ask", args: { conversation, prompt, schema } }, (saved) =>
+					askTurn(calls, saved, conversation, prompt, schema),
 				),
 			),
-			// The sandbox sends a missing schema as null.
-			global("__ask", ASK_ARGS, ([conversation, prompt, schema]) => {
-				const args = { conversation, prompt, schema };
-
-				return memoized(calls, callKey(calls, "ask", args), { kind: "ask", args }, (key) =>
-					askTurn(calls, key, conversation, prompt, schema),
-				);
-			}),
-			global("__sh", SH_ARGS, ([cmd]) => shellCall(calls, cwd, cmd, true)),
-			global("__ok", SH_ARGS, ([cmd]) => shellCall(calls, cwd, cmd, false)),
-			// The name and the args are in the key, so a resume that reorders different `run` calls keeps each child run.
+		],
+		["__sh", handler("sh", SH_ARGS, true, ([cmd], key) => shellCall(calls, key, cwd, cmd, true))],
+		["__ok", handler("ok", SH_ARGS, true, ([cmd], key) => shellCall(calls, key, cwd, cmd, false))],
+		[
+			"__run",
 			// An unfinished saved child task is waited for again; a failed one gets a new child task.
-			global("__run", RUN_ARGS, ([name, values]) => {
-				const args = { name, args: values };
-
-				return memoized(calls, callKey(calls, "run", args), { kind: "run", args }, (key) =>
-					childResult(calls, key, script, name, values),
-				);
+			handler("run", RUN_ARGS, true, ([name, values], key) =>
+				memoized(calls, key, { kind: "run", args: { name, args: values } }, (saved) =>
+					childResult(calls, saved, script, name, values),
+				),
+			),
+		],
+		["phase", handler("phase", LINE_ARGS, false, ([title]) => phaseLine(progress, String(title)))],
+		[
+			"log",
+			handler("log", LINE_ARGS, false, ([line]) => {
+				progress.lines.push({ text: String(line), phase: false });
 			}),
-			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
-			global("log", LINE_ARGS, ([line]) => progress.lines.push({ text: String(line), phase: false })),
-			global("__prompt", PROMPT_ARGS, ([name, inputs]) => {
+		],
+		[
+			"__prompt",
+			handler("prompt", PROMPT_ARGS, false, ([name, inputs]) => {
 				const body = bundle.prompts[name];
 
 				if (body === undefined) throw new Error(`no prompt ${name}`);
@@ -730,22 +812,196 @@ export async function runScript(
 				return render(body, inputs ?? {});
 			}),
 		],
+	]);
+
+	const answer = async (call: CodemodeHostCall): Promise<Answer> => {
+		const found = handlers.get(call.name);
+
+		if (found === undefined)
+			return { outcome: { ok: false, message: `${call.name} is not a host function` }, failed: false };
+		const key = found.effect ? keyFor(call.id) : undefined;
+
+		try {
+			return { outcome: { ok: true, value: await found.run(call, keyFor(call.id)) }, key, failed: false };
+		} catch (error) {
+			const outcome = { ok: false, message: error instanceof Error ? error.message : String(error) } as const;
+
+			if (error instanceof Diverged) return { outcome, failed: false, diverged: error };
+
+			if (error instanceof BadArguments) return { outcome, failed: false };
+
+			return { outcome, key, failed: found.effect };
+		}
+	};
+
+	const control = new AbortController();
+	let failure: Error | undefined;
+	const arrivals = new Map<number, { call: CodemodeHostCall; answer: Promise<Answer> }>();
+	const waiting = new Map<number, PromiseWithResolvers<void>>();
+	const idle = new Map<number, PromiseWithResolvers<number>>();
+	// The calls that the script had made when it processed each result, so a late wait for one still gets it.
+	const issuedAt = new Map<number, number>();
+	const started = waiter<string>();
+	// Results given to the script so far, so the seq of the next one is `delivered + 1`.
+	let delivered = 0;
+
+	const fail = (error: Error) => {
+		if (failure !== undefined) return;
+		failure = error;
+		control.abort(failure);
+
+		for (const waiter of [...waiting.values(), ...idle.values(), started]) waiter.reject(failure);
+	};
+
+	const arrived = async (id: number) => {
+		const known = arrivals.get(id);
+
+		if (known !== undefined) return known;
+		const arrival = waiting.get(id) ?? waiter<void>();
+		waiting.set(id, arrival);
+		await arrival.promise;
+		const call = arrivals.get(id);
+
+		if (call === undefined) throw new Error(`the call ${id} is missing`);
+
+		return call;
+	};
+
+	const idleAt = async (seq: number) => {
+		const known = issuedAt.get(seq);
+
+		if (known !== undefined) return known;
+		const processed = idle.get(seq) ?? waiter<number>();
+		idle.set(seq, processed);
+
+		return processed.promise;
+	};
+
+	// The journal, replayed: each saved result goes to the script in its order, once the script made its call again.
+	const replay = async (run: CodemodeRun) => {
+		const fingerprint = await started.promise;
+
+		if (journal.fingerprint !== undefined && journal.fingerprint !== fingerprint) {
+			throw new Error("the sandbox changed since the run started, so its script cannot replay; start a new run");
+		}
+
+		if (journal.fingerprint === undefined) {
+			await runtime.commit(async (tx) => {
+				(await tx.doc(JournalDoc, runId, null)).fingerprint = fingerprint;
+
+				return undefined;
+			}, context);
+		}
+
+		for (const entry of kept) {
+			const { call, answer: pending } = await arrived(entry.id);
+
+			if (call.name !== entry.name || (entry.key !== undefined && entry.key !== keyFor(call.id))) {
+				throw new Diverged(`the script made the call ${call.name} where its run saved ${entry.name}`);
+			}
+
+			const { outcome, diverged } = await pending;
+
+			if (diverged !== undefined) throw diverged;
+			delivered += 1;
+			run.deliver(delivered, entry.at, entry.id, outcome);
+		}
+
+		if (failedAt === -1) return;
+		// The calls that the script made by now are the ones that it made before the first failed call; later calls are
+		// on another path, so they get a new generation.
+		const issued = await idleAt(kept.length);
+		cuts.push(issued);
+		await runtime.commit(async (tx) => {
+			const doc = await tx.doc(JournalDoc, runId, null);
+			doc.entries.splice(kept.length);
+			doc.cuts.push(issued);
+
+			return undefined;
+		}, context);
+	};
+
+	// A new result: saved in the journal, then given to the script.
+	const deliverLive = async (run: CodemodeRun, call: CodemodeHostCall, { outcome, key, failed, diverged }: Answer) => {
+		if (diverged !== undefined) fail(diverged);
+
+		if (failure !== undefined || run.finished) return;
+		const entry: Entry = { id: call.id, at: Date.now(), name: call.name };
+
+		if (key !== undefined) entry.key = key;
+
+		if (failed) entry.failed = true;
+		await runtime.commit(async (tx) => {
+			(await tx.doc(JournalDoc, runId, null)).entries.push(entry);
+
+			return undefined;
+		}, context);
+
+		if (run.finished) return;
+		delivered += 1;
+		run.deliver(delivered, entry.at, entry.id, outcome);
+	};
+
+	let commits: Promise<void> = Promise.resolve();
+
+	const enqueue = (step: () => Promise<void>) => {
+		commits = commits.then(async () => {
+			try {
+				await step();
+			} catch (error) {
+				fail(error instanceof Error ? error : new Error(String(error)));
+			}
+		});
+	};
+
+	const sandbox = new CodemodeSandbox({ timeoutMs: Number.POSITIVE_INFINITY });
+	const wrapped = `${prelude(args, Object.keys(bundle.prompts), script)}\nreturn await (async () => {\n${source}\n})();`;
+
+	const run = sandbox.start(wrapped, {
+		startedAt: journal.startedAt,
+		seed: journal.seed,
+		globals: [...handlers.keys()].map((name) => ({ name, spread: true })),
+		signal: AbortSignal.any([runtime.signal, control.signal]),
+		onStarted: (fingerprint) => started.resolve(fingerprint),
+		onCall: (call) => {
+			const pending = answer(call);
+			running.add(pending);
+			const settled = () => running.delete(pending);
+			pending.then(settled, settled);
+			arrivals.set(call.id, { call, answer: pending });
+			waiting.get(call.id)?.resolve();
+
+			if (replayed.has(call.id)) return;
+			pending.then((value) => enqueue(() => deliverLive(run, call, value)));
+		},
+		onIdle: (seq, issued) => {
+			issuedAt.set(seq, issued);
+			idle.get(seq)?.resolve(issued);
+			const next = kept[delivered];
+
+			// The script waits for a result that only a call it did not make again could give: it took another path.
+			if (seq === delivered && next !== undefined && next.id > issued) {
+				fail(new Diverged(`the script did not make again the call ${next.name} of its saved results`));
+			}
+		},
 	});
 
-	const { signal } = runtime;
-	let result: Awaited<ReturnType<CodemodeSandbox["execute"]>>;
+	enqueue(() => replay(run));
+	let result: CodemodeResult;
 
 	try {
-		const wrapped = `${prelude(args, Object.keys(bundle.prompts), script)}\nreturn await (async () => {\n${source}\n})();`;
-		result = await sandbox.execute(wrapped, { signal });
+		result = await run.result;
 	} finally {
 		await sandbox.close();
 		execution.cancel();
+
+		for (const waiter of [...waiting.values(), ...idle.values(), started]) waiter.reject(new Error("the script ended"));
 		await Promise.allSettled(running);
+		await commits;
 		const events = takeLines(calls);
 
 		// A cancelled task cannot commit; its lines are lost, and a resume shows the phase of its first call again.
-		if (events.length > 0 && !signal.aborted) {
+		if (events.length > 0 && !runtime.signal.aborted) {
 			await runtime.commit(async (tx) => {
 				await addProgress(tx, script.root, events);
 
@@ -753,6 +1009,8 @@ export async function runScript(
 			}, context);
 		}
 	}
+
+	if (failure !== undefined) throw failure;
 
 	if (result.ok) {
 		const value = result.value ?? null;
@@ -762,6 +1020,6 @@ export async function runScript(
 		return value;
 	}
 
-	if (signal.aborted) throw signal.reason;
+	if (runtime.signal.aborted) throw runtime.signal.reason;
 	throw new Error(result.error.message);
 }

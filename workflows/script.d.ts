@@ -1,6 +1,5 @@
 // The globals of a workflow script, for editors. See "The script API" in docs/spec.md.
-// The sandbox replaces Date and Math: `Date`, `Date.now()` and `Math.random()` throw, so that a script makes the
-// same calls each time it runs.
+// The sandbox replays `Date` and `Math.random()`: a resume gives the script the same clock and random values.
 
 /** The command line of a script, as `export const meta = { ... }`. A script uses it with the JSDoc tag `@type {Meta}`. */
 type Meta = {

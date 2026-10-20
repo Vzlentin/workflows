@@ -436,8 +436,9 @@ two reminders to call it, and then the call fails with `the answer did not call 
 only for the turn that gave it, and the limit of two reminders holds across an interruption and a resume.
 
 The script runs in the pi-codemode sandbox, with no time limit. It has no file system, network, modules or timers.
-Effects go through `sh` and `ok`. `Date`, `Date.now()` and `Math.random()` throw, so that a script makes
-the same calls each time it runs.
+Effects go through `sh` and `ok`. The sandbox runs the script deterministically, in UTC: `Date` reads a clock that
+starts at the start of the run and moves only when the script gets a result, and `Math.random()` comes from a seed of
+the run. So a script that runs again with the same results makes the same calls with the same values.
 
 ### Agent profiles
 
@@ -459,12 +460,18 @@ Before the run starts, it saves the script, every `workflows/*.js` of the packag
 of every prompt, every profile, the args and the current directory. Resume and `run()` use these saved inputs, so a
 later edit of a script, prompt or profile, in the package or in `.workflows/`, changes only new runs.
 
-Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
-again. A call is known by its name, its arguments and its position among identical calls. A turn that was in progress
-continues in its session. A command that was in progress runs again, so commands must be safe to repeat. Each call
-records its kind, arguments, phase and start time when it starts, and its end time with its result or its error when
-it ends. A call that fails saves no result, so every call that failed runs again, also one that the script caught. The
-saved results stay in the project store also after the run fails. `phase` and `log` lines are progress, not saved
+Resume runs the script again from the top. The run keeps a journal of the results that the script got, in the order
+it got them, and saves each result in it before the script gets it. A resume gives the script the saved results again
+in that order, up to the first call that failed, and then goes on. A call is known by its number in the order the
+script made its calls; a call that the script makes after a failed call gets a new key at each resume that drops the
+failure, since it can be on another path. A call that succeeded before the first failure returns its saved result,
+and is not run again. A turn that was in progress continues in its session. A command that was in progress runs
+again, so commands must be safe to repeat. Each call records its kind, arguments, phase and start time when it starts,
+and its end time with its result or its error when it ends. A call that fails saves no result, so every call that
+failed runs again, also one that the script caught, and so do the calls that the script made after it got the
+failure. A resume whose script makes
+other calls than its journal, or that runs in a sandbox of another version, fails with an error that names the call.
+The saved results stay in the project store also after the run fails. `phase` and `log` lines are progress, not saved
 results. A resume prints the phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
 lines before it, and keeps the last `phase` line waiting for the next call that runs.
 

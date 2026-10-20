@@ -369,6 +369,26 @@ return "ok"`,
 		expect(await log()).toBe("a\na\nb\n");
 	});
 
+	it("gives a resume the same clock and random values", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const values = () => [Math.random(), new Date().toISOString(), Date.now()].join(" ")
+const before = values()
+await sh(\`echo "\${before}" >> log\`)
+const after = values()
+await sh(\`echo "\${after}" >> log\`)
+await sh("./gate.sh g")
+return [before, after, values()].join("\\n")`,
+		);
+		const first = await stopped(["x.js"], { gate: "g" });
+		expect(first.code).toBe(130);
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+		expect(resumed.code).toBe(0);
+		const [before, after, last] = resumed.stdout.at(-1)?.split("\n") ?? [];
+		expect(`${before}\n${after}\n`).toBe(await log());
+		expect(new Set([before, after, last]).size).toBe(3);
+	});
+
 	it("replays pipeline calls whose order changes between runs", async () => {
 		await writeFile(
 			join(root, "x.js"),
@@ -583,6 +603,23 @@ return seen`,
 		expect(first.code).toBe(130);
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "ok"]);
+	});
+
+	it("runs the calls after a caught failure again when the failed call succeeds on resume", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`let seen = "present"
+try { await sh("test -f flag") } catch { seen = "missing" }
+await sh(\`echo \${seen} >> log\`)
+await sh("./gate.sh g")
+return seen`,
+		);
+		const first = await stopped(["x.js"], { gate: "g" });
+		expect(first.code).toBe(130);
+		await writeFile(join(root, "flag"), "");
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "present"]);
+		expect(await log()).toBe("missing\npresent\n");
 	});
 
 	it("runs every failed call again in one resume", async () => {
@@ -857,19 +894,6 @@ return [one.reply, two.reply].join(", ")`,
 	});
 
 	it("rejects bad scripts and arguments", async () => {
-		for (const [code, name] of [
-			["Date.now()", "Date.now"],
-			["new Date()", "Date"],
-			["Math.random()", "Math.random"],
-		]) {
-			await writeFile(join(root, "clock.js"), `return [Math.max(1, 2), ${code}]`);
-			const clock = await workflows(["clock.js"], { cwd: root });
-			expect([clock.code, clock.stderr[0]], code).toEqual([
-				1,
-				`failed clock: ${name} is not available in workflow scripts`,
-			]);
-		}
-
 		await writeFile(join(root, "x.js"), 'await tools.read({ path: "x" })');
 		const tools = await workflows(["x.js"], { cwd: root });
 		expect([tools.code, tools.stderr[0]]).toEqual([1, expect.stringContaining("failed x: tools.read does not exist")]);
