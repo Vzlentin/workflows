@@ -1,6 +1,6 @@
 /**
- * A list to pick one item of on a terminal: typing filters the items, the arrows or Ctrl+N and Ctrl+P move, Enter
- * takes the item, and Esc or Ctrl+C cancels.
+ * A list to pick one item of on a terminal: typed text filters the items, moves change the item under the cursor, and
+ * Enter takes it. The terminal decodes its keys into actions.
  */
 
 /** The state of a pick: the filter text and the item under the cursor among the matching items. */
@@ -16,31 +16,35 @@ export function matching(items: readonly string[], query: string): number[] {
 	return items.flatMap((item, index) => (words.every((word) => item.toLowerCase().includes(word)) ? [index] : []));
 }
 
-/** What the key `key`, as the terminal sends it, does to `pick` over `items`. Any other key changes nothing. */
-export function press(items: readonly string[], pick: Pick, key: string): Step {
+/** A key of the pick, decoded by the terminal: a move, Enter, a cancel, Backspace, or typed text. */
+export type Action =
+	| { readonly type: "move"; readonly by: 1 | -1 }
+	| { readonly type: "enter" | "cancel" | "backspace" }
+	| { readonly type: "text"; readonly text: string };
+
+/** What `action` does to `pick` over `items`. */
+export function press(items: readonly string[], pick: Pick, action: Action): Step {
 	const shown = matching(items, pick.query);
 
-	const move = (by: number) => ({
-		pick: { ...pick, cursor: shown.length === 0 ? 0 : (pick.cursor + by + shown.length) % shown.length },
-	});
+	switch (action.type) {
+		case "text":
+			return { pick: { query: pick.query + action.text, cursor: 0 } };
+		case "backspace":
+			return { pick: { query: pick.query.slice(0, -1), cursor: 0 } };
+		case "cancel":
+			return { cancelled: true };
+		case "enter": {
+			const index = shown[pick.cursor];
 
-	if (key === "\r" || key === "\n") {
-		const index = shown[pick.cursor];
+			return index === undefined ? { pick } : { taken: index };
+		}
 
-		return index === undefined ? { pick } : { taken: index };
+		case "move": {
+			const cursor = shown.length === 0 ? 0 : (pick.cursor + action.by + shown.length) % shown.length;
+
+			return { pick: { ...pick, cursor } };
+		}
 	}
-
-	if (key === "\x1b" || key === "\x03") return { cancelled: true };
-
-	if (key === "\x1b[A" || key === "\x10") return move(-1);
-
-	if (key === "\x1b[B" || key === "\x0e") return move(1);
-
-	if (key === "\x7f" || key === "\b") return { pick: { query: pick.query.slice(0, -1), cursor: 0 } };
-
-	if (/^[^\p{Cc}]+$/u.test(key)) return { pick: { query: pick.query + key, cursor: 0 } };
-
-	return { pick };
 }
 
 /**

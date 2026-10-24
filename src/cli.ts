@@ -3,7 +3,9 @@
 import { createInterface } from "node:readline";
 import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
+import { StdinBuffer } from "@earendil-works/pi-tui";
 import { harnessProblem } from "./harness.ts";
+import { actionOf } from "./keys.ts";
 import type { Choose } from "./main.ts";
 import { type Pick, press, render } from "./pick.ts";
 import { fit, terminalRedraw } from "./progress.ts";
@@ -69,16 +71,25 @@ const choose: Choose = (question, items) => {
 	const drawPick = () => draw(render(question, items, pick, Math.min(stderr.rows ?? 24, 20)));
 
 	return new Promise((resolve) => {
+		// Splits the chunks of stdin into whole keys, so a chunk with several keys or half a key reads right.
+		const keys = new StdinBuffer();
+
 		const done = (index: number | undefined) => {
 			stdin.off("data", onData);
+			keys.destroy();
 			stdin.setRawMode(false);
 			stdin.pause();
 			draw([""]);
 			resolve(index);
 		};
 
-		const onData = (data: Buffer) => {
-			const step = press(items, pick, data.toString("utf8"));
+		const onData = (data: Buffer) => keys.process(data);
+
+		keys.on("data", (key) => {
+			const action = actionOf(key);
+
+			if (action === undefined) return;
+			const step = press(items, pick, action);
 
 			if ("taken" in step) done(step.taken);
 			else if ("cancelled" in step) done(undefined);
@@ -86,7 +97,7 @@ const choose: Choose = (question, items) => {
 				pick = step.pick;
 				drawPick();
 			}
-		};
+		});
 
 		stdin.setRawMode(true);
 		stdin.resume();

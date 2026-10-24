@@ -43,6 +43,12 @@ describe("the progress on a terminal", () => {
 		expect(terminal.written).toEqual([`✓ ${"x".repeat(29)}…  3m05s\n`]);
 	});
 
+	it("cuts a line by the columns that it takes, so wide characters count twice", () => {
+		const terminal = stream();
+		terminalRedraw(terminal).redraw([`◉ ${"界".repeat(30)}`]);
+		expect(terminal.written).toEqual([`◉ ${"界".repeat(18)}…\n`]);
+	});
+
 	it("cuts a line to the width of the terminal", () => {
 		const terminal = stream();
 		terminalRedraw(terminal).redraw([`◉ ${"x".repeat(50)}`]);

@@ -4,6 +4,7 @@
  * comes. The command draws the tree on stderr, and the Pi tool draws the lines that the command sends with `--json`,
  * so both show the same steps.
  */
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import type { Io } from "./run.ts";
 
@@ -295,13 +296,15 @@ export function terminalRedraw(stream: {
 	};
 }
 
-/** `line` cut to `width` with `…`, before the duration at its end when there is room for it. */
+/** `line` cut to `width` terminal columns with `…`, before the duration at its end when there is room for it. */
 export function fit(line: string, width: number): string {
-	if (line.length <= width) return line;
+	if (visibleWidth(line) <= width) return line;
 	const time = TIME.exec(line)?.[0] ?? "";
-	const room = width - time.length - 1;
+	const room = width - visibleWidth(time);
 
-	return room > 10 ? `${line.slice(0, room)}…${time}` : `${line.slice(0, width - 1)}…`;
+	if (room <= 11) return truncateToWidth(line, width, "…");
+
+	return `${truncateToWidth(line.slice(0, line.length - time.length), room, "…")}${time}`;
 }
 
 function colored(_match: string, indent: string, mark: Mark): string {
