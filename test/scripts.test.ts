@@ -12,7 +12,18 @@ import { REMINDER } from "@vzlentin/harness/answer";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { programStatus } from "../src/progress.ts";
 import { CallDoc } from "../src/script.ts";
-import { childTasks, detached, git, repository, rootTasks, runsOf, sandbox, storeOf, workflows } from "./support.ts";
+import {
+	childTasks,
+	conversationOf,
+	detached,
+	git,
+	repository,
+	rootTasks,
+	runsOf,
+	sandbox,
+	storeOf,
+	workflows,
+} from "./support.ts";
 
 let root: string;
 
@@ -368,19 +379,28 @@ describe("workflows show", () => {
 		const before = rows();
 		const shown = await workflows(["show", id], { cwd: root });
 		expect(rows()).toEqual(before);
+		const a = await conversationOf(/Script: one/);
+		const b = await conversationOf(/Script: two/);
 		expect(shown.stdout).toEqual([
 			`run ${id} x running x`,
 			"talk",
-			expect.stringMatching(/^ {2}✓ session default {2}\d+s$/),
+			expect.stringMatching(new RegExp(`^ {2}✓ session default conversation ${a} {2}\\d+s$`)),
 			expect.stringMatching(/^ {2}✓ ask default {2}\d+s$/),
-			expect.stringMatching(/^ {2}✓ session default {2}\d+s$/),
+			expect.stringMatching(new RegExp(`^ {2}◉ session default conversation ${b} {2}\\d+s$`)),
 			expect.stringMatching(/^ {2}◉ ask default {2}\d+s$/),
 		]);
 		const { calls } = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(calls[0].conversation).toBe(a);
+		expect(calls[2]).toMatchObject({ kind: "session", conversation: b, mark: "✓" });
 		expect(calls[3]).toMatchObject({ kind: "ask", label: "default", mark: "◉", args: { prompt: "Script: two" } });
 		expect(calls[3].endedAt).toBeUndefined();
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
+		const done = await workflows(["show", id], { cwd: root });
+		expect(done.stdout.filter((line) => line.includes(`session default conversation ${b} `))).toEqual([
+			expect.stringMatching(new RegExp(`^ {2}✓ session default conversation ${b} {2}\\d+s$`)),
+		]);
+		expect(done.stdout.filter((line) => line.includes("◉"))).toEqual([]);
 	});
 
 	it("reads the store while another process holds its write lock", async () => {

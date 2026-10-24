@@ -2,7 +2,17 @@ import { existsSync } from "node:fs";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { COMMIT, type Commit, git, PASSING_JUDGE, progressOf, repository, sandbox, workflows } from "./support.ts";
+import {
+	COMMIT,
+	type Commit,
+	conversationOf,
+	git,
+	PASSING_JUDGE,
+	progressOf,
+	repository,
+	sandbox,
+	workflows,
+} from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -96,14 +106,16 @@ describe("workflows campaign", () => {
 		const children = result.items.map((item: { result: { runId: string } }) => item.result.runId);
 		const lines = shown.stdout.map((line) => line.replace(/ {2}\d+s$/, ""));
 
+		const researchers: (number | undefined)[] = [];
+
 		for (const [n, child] of children.entries()) {
 			const at = lines.indexOf(`  ✓ run ship ${child}`);
-			expect(lines[at - 3], child).toBe(
-				`item ${n + 1}/${n + 1}: ${n === 0 ? "Fix the README typo" : "Add a thanks line"}`,
-			);
+			const item = n === 0 ? "Fix the README typo" : "Add a thanks line";
+			expect(lines[at - 3], child).toBe(`item ${n + 1}/${n + 1}: ${item}`);
+			researchers.push(await conversationOf(new RegExp(`Research the codebase[\\s\\S]*${item}`)));
 			expect(lines.slice(at + 1, at + 4)).toEqual([
 				"    research",
-				"      ✓ session researcher",
+				`      ✓ session researcher conversation ${researchers[n]}`,
 				"      ✓ ask researcher",
 			]);
 		}
@@ -114,7 +126,13 @@ describe("workflows campaign", () => {
 		expect(shipped.map((call: { label: string }) => call.label)).toEqual(
 			children.map((child: string) => `ship ${child}`),
 		);
-		expect(shipped[0].calls[0]).toMatchObject({ kind: "session", label: "researcher", phase: "research", mark: "✓" });
+		expect(shipped[0].calls[0]).toMatchObject({
+			kind: "session",
+			label: `researcher conversation ${researchers[0]}`,
+			phase: "research",
+			mark: "✓",
+			conversation: researchers[0],
+		});
 		const { runId: _, ...first } = result.items[0].result;
 		expect(shipped[0].result).toMatchObject({ runId: children[0], result: first });
 		expect(shipped[0]).not.toHaveProperty("child");

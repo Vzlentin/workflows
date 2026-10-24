@@ -791,22 +791,25 @@ run <run-id> <workflow> <status> <title>
   `run` or `input`. An `agent` call is a `session` call and an `ask` call.
 - The mark is `✓` for a finished call and `✗` for a failed call. A call that started and did not end is `◉` while the
   run's task has not ended: it runs now, or the host stopped. Once the task ended, such a call is `✗`, without a
-  duration: the end of the task cut it.
-- The label is the profile of the session for `session` and `ask`, and the command on one line, cut at 80 characters,
-  for `sh` and `ok`. For `run`, it is the workflow name and the child run ID. For `input`, it is the question on one line, cut at 80
-  characters. The phase lines and calls of the child run
+  duration: the end of the task cut it. A session is `◉` while one of its asks is `◉`; once the task ended, it keeps
+  its `✓` or `✗`.
+- The label is `<profile> conversation <id>` for a `session` that opened, with the profile and the conversation ID of
+  the session, and the profile only for a `session` that did not open. For `ask`, it is the profile of its session. For
+  `sh` and `ok`, it is the command on one line, cut at 80 characters. For `run`, it is the workflow name and the child
+  run ID. For `input`, it is the question on one line, cut at 80 characters. The phase lines and calls of the child run
   are indented by 2 more under the `run` line.
-- The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, it is the time since the call
-  started.
+- The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, also for a working session, it is
+  the time since the call started.
 - A finished run ends with its report lines. A failed run ends with `failed <title>: <error>` and `continue with:
   workflows resume <run-id>`, a stopped run with `stopped <title>; continue with: workflows resume <run-id>`, and an
   orphaned run with `orphaned <title>: <reason>` and the `continue with` line. Any other run ends after its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
 object with the same tree: `{ "runId", "workflow", "title", "status", "report"?, "error"?, "calls" }`. Each call is
-`{ "kind", "label", "phase", "args", "mark", "startedAt", "endedAt"?, "result"?, "error"?, "calls"? }`, with ISO
-times. `phase` is `null` before the first phase line. The `result` of a `run` call is `{ "runId", "result" }`, with the
-result of its child run, and its `calls` are the calls of the child run.
+`{ "kind", "label", "phase", "args", "mark", "startedAt", "endedAt"?, "conversation"?, "result"?, "error"?, "calls"? }`,
+with ISO times. `conversation` is the conversation ID of a `session` that opened. The JSON `mark` of a working session
+is `✓`: only the text shows it as `◉`. `phase` is `null` before the first phase line. The `result` of a `run` call is
+`{ "runId", "result" }`, with the result of its child run, and its `calls` are the calls of the child run.
 
 `show` exits 0 for every run it can show. It reads the project store through pi-durable's storage functions, as `list`
 does, and does not start the host. It reads the file read-only as `list` does. An unknown run ID, or a run directory

@@ -795,7 +795,7 @@ async function installHook(terminal: Terminal): Promise<number> {
 }
 
 /** One call of `workflows show`, with the calls of its child run when it is a `run` call. */
-type Shown = Omit<SavedCall, "conversation" | "child"> & {
+type Shown = Omit<SavedCall, "child"> & {
 	readonly label: string;
 	readonly mark: "✓" | "✗" | "◉";
 	readonly calls?: Shown[];
@@ -906,7 +906,7 @@ function callTree(records: Map<string, SavedCall>, runId: string, ended: boolean
 
 	return own
 		.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-		.map(({ conversation: _conversation, child: started, ...record }) => {
+		.map(({ child: started, ...record }) => {
 			const cut = ended && record.endedAt === undefined;
 			const mark = record.error !== undefined || cut ? "✗" : record.endedAt !== undefined ? "✓" : "◉";
 			// A `run` call that failed before its child run started has no `child`.
@@ -954,7 +954,7 @@ function duration(ms: number): string {
 
 /**
  * The phase lines at `indent` and the calls under them, the calls of a child run under its `run` line. A call that a
- * stopped or failed task cut has no duration.
+ * stopped or failed task cut has no duration. A working session prints `◉`.
  */
 function treeLines(calls: readonly Shown[], indent: string, now: number): string[] {
 	const lines: string[] = [];
@@ -963,10 +963,10 @@ function treeLines(calls: readonly Shown[], indent: string, now: number): string
 	for (const call of calls) {
 		if (call.phase !== null && call.phase !== phase) lines.push(`${indent}${call.phase}`);
 		phase = call.phase;
-		const cut = call.endedAt === undefined && call.mark === "✗";
-		const end = call.endedAt === undefined ? now : Date.parse(call.endedAt);
-		const time = cut ? "" : `  ${duration(end - Date.parse(call.startedAt))}`;
-		lines.push(`${indent}  ${call.mark} ${call.kind} ${call.label}${time}`);
+		const mark = works(call, calls) ? "◉" : call.mark;
+		const end = mark === "◉" ? now : call.endedAt === undefined ? undefined : Date.parse(call.endedAt);
+		const time = end === undefined ? "" : `  ${duration(end - Date.parse(call.startedAt))}`;
+		lines.push(`${indent}  ${mark} ${call.kind} ${call.label}${time}`);
 
 		if (call.calls !== undefined) lines.push(...treeLines(call.calls, `${indent}    `, now));
 	}
@@ -974,12 +974,20 @@ function treeLines(calls: readonly Shown[], indent: string, now: number): string
 	return lines;
 }
 
+/** Whether `call` is a session that one of its asks among `siblings` works in now. */
+function works(call: Shown, siblings: readonly Shown[]): boolean {
+	return (
+		call.kind === "session" &&
+		siblings.some((ask) => ask.kind === "ask" && ask.mark === "◉" && ask.args.conversation === call.conversation)
+	);
+}
+
 /**
- * The profile of a session, also for an ask in it, the command on one line for `sh` and `ok`, the workflow and child
- * run ID for `run`, and the question on one line for `input`.
+ * The profile and conversation of a session, the profile of the session for an ask, the command on one line for `sh` and
+ * `ok`, the workflow and child run ID for `run`, and the question on one line for `input`.
  */
 function labelOf(
-	{ kind, args }: Pick<SavedCall, "kind" | "args">,
+	{ kind, args, conversation }: Pick<SavedCall, "kind" | "args" | "conversation">,
 	child: string | undefined,
 	records: Map<string, SavedCall>,
 ): string {
@@ -993,7 +1001,10 @@ function labelOf(
 
 	if (kind === "input") return String(args.question).replace(/\s+/g, " ").trim().slice(0, 80);
 
-	if (kind === "session") return String(args.profile);
+	if (kind === "session") {
+		return conversation === undefined ? String(args.profile) : `${args.profile} conversation ${conversation}`;
+	}
+
 	// A linear scan for each ask; an index by conversation if runs get thousands of calls.
 	const session = [...records.values()].find((record) => record.conversation === args.conversation);
 

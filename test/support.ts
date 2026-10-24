@@ -735,6 +735,15 @@ export async function workflowResults(project = "main"): Promise<WorkflowResult[
 	);
 }
 
+/** The conversation ID of the first transcript in the store of `project` with a user message that matches `prompt`. */
+export async function conversationOf(prompt: RegExp, project = "main"): Promise<number | undefined> {
+	const found = (await entriesOf(project)).find((entry) =>
+		(entry.model ?? []).some((message) => message.role === "user" && prompt.test(textOf(message))),
+	);
+
+	return found?.conversationId;
+}
+
 /** A run outcome that a background run posted as a message: its text, its data, and the conversation it went to. */
 export type PostedResult = { readonly text: string; readonly data: unknown; readonly conversation: number };
 
