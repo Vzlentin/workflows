@@ -23,8 +23,8 @@ const FIRST = "# Fix the README typo\n\nThe README says wrold.";
 const SECOND = "# Add a thanks line\n\nEnd the README with Thanks.";
 const FIXED = "# Demo\n\nHello world\n";
 const THANKED = `${FIXED}Thanks.\n`;
-const SHIP = ["plan", "challenge", "handoff", "implement", "review", "verdict", "judge"];
-const ROUND = ["plan", "round 1: implement", "round 1: review", "judge"];
+const SHIP = ["research", "plan", "challenge", "handoff", "implement", "review", "verdict", "judge"];
+const ROUND = ["research", "plan", "round 1: implement", "round 1: review", "judge"];
 
 describe("workflows campaign", () => {
 	it("ships two items as two commits on the campaign branch", async () => {
@@ -49,7 +49,7 @@ describe("workflows campaign", () => {
 		const [split] = run.model.calls;
 		expect(split?.prompt).toMatch(/^Split this goal into work items\.\n[\s\S]*\n\n## goal\n# Fix the README\n/);
 		expect(split?.tools).toContain("respond");
-		expect(run.model.calls[8]?.prompt).toContain(`## done\n${FIRST}\n\n## queue\n[]\n\nAnswer with respond:`);
+		expect(run.model.find("requeue")?.prompt).toContain(`## done\n${FIRST}\n\n## queue\n[]\n\nAnswer with respond:`);
 
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "branch", "--show-current")).toBe(`campaign/${run.id}`);
@@ -77,7 +77,11 @@ describe("workflows campaign", () => {
 			expect(lines[at - 3], child).toBe(
 				`item ${n + 1}/${n + 1}: ${n === 0 ? "Fix the README typo" : "Add a thanks line"}`,
 			);
-			expect(lines.slice(at + 1, at + 4)).toEqual(["    plan", "      ✓ session planner", "      ✓ ask planner"]);
+			expect(lines.slice(at + 1, at + 4)).toEqual([
+				"    research",
+				"      ✓ session researcher",
+				"      ✓ ask researcher",
+			]);
 		}
 
 		expect(lines.at(-1)).toBe(report[0]);
@@ -86,7 +90,7 @@ describe("workflows campaign", () => {
 		expect(shipped.map((call: { label: string }) => call.label)).toEqual(
 			children.map((child: string) => `ship ${child}`),
 		);
-		expect(shipped[0].calls[0]).toMatchObject({ kind: "session", label: "planner", phase: "plan", mark: "✓" });
+		expect(shipped[0].calls[0]).toMatchObject({ kind: "session", label: "researcher", phase: "research", mark: "✓" });
 		const { runId: _, ...first } = result.items[0].result;
 		expect(shipped[0].result).toMatchObject({ runId: children[0], result: first });
 		expect(shipped[0]).not.toHaveProperty("child");
@@ -97,15 +101,22 @@ describe("workflows campaign", () => {
 
 		expect(run.code).toBe(1);
 		expect(run.stdout).toEqual([`run ${run.id}`, `stopped Fix the README at item 1: ${worktreeOf(run.id)}`]);
-		expect(run.stderr).toEqual(["item 1/2: Fix the README typo", "  plan", "  round 1: implement"]);
-		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", "plan", "challenge", "handoff", "implement"]);
+		expect(run.stderr).toEqual(["item 1/2: Fix the README typo", "  research", "  plan", "  round 1: implement"]);
+		expect(run.model.calls.map((call) => call.kind)).toEqual([
+			"split",
+			"research",
+			"plan",
+			"challenge",
+			"handoff",
+			"implement",
+		]);
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
 	});
 
 	it("resumes in the second item and repeats no call of the first", async () => {
 		const first = await workflows(["campaign", GOAL], {
 			cwd: repo,
-			script: { items: [FIRST], edits: [FIXED], queues: [[SECOND]], interruptAt: { kind: "plan", nth: 2 } },
+			script: { items: [FIRST], edits: [FIXED], queues: [[SECOND]], interruptAt: { kind: "research", nth: 2 } },
 		});
 
 		expect(first.code).toBe(130);

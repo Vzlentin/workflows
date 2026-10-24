@@ -169,6 +169,7 @@ export type Kind =
 	| "challenge"
 	| "handoff"
 	| "implement"
+	| "research"
 	| "review"
 	| "verdict"
 	| "judge"
@@ -192,6 +193,7 @@ export type Call = {
 const MEMORY = /^## memory\n[\s\S]*?\n\n/;
 
 const KINDS: readonly (readonly [string, Kind])[] = [
+	["Research the codebase", "research"],
 	["Plan this change.", "plan"],
 	["Challenge the plan", "challenge"],
 	["Write a handoff document", "handoff"],
@@ -289,6 +291,10 @@ export class FakeModel {
 		return this.calls.filter((call) => call.kind === kind).length;
 	}
 
+	find(kind: Kind, nth = 0): Call | undefined {
+		return this.calls.filter((call) => call.kind === kind)[nth];
+	}
+
 	readonly #respond: FauxResponseFactory = async (context, options, _state, model) => {
 		const messages = context.messages;
 		const system = messages.flatMap((message) => (message.role === "system" ? [message] : []));
@@ -371,6 +377,8 @@ export class FakeModel {
 		}
 
 		switch (kind) {
+			case "research":
+				return fauxAssistantMessage("Summary: README.md:1 says wrold.");
 			case "plan":
 				return fauxAssistantMessage("Problem: README.md says wrold.");
 			case "challenge":

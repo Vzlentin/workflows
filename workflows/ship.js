@@ -1,7 +1,8 @@
-// The plan, the rounds, the review, the judge and the squash of `workflows ship` and of each `workflows campaign`
-// item, in its worktree. Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
+// The research, the plan, the rounds, the review, the judge and the squash of `workflows ship` and of each
+// `workflows campaign` item, in its worktree. Every Git step is safe to repeat: a resume runs a step again when its
+// result was not saved.
 export const meta = {
-	description: "Ship one work item onto a new branch: plan, implement and review rounds, judge, and one squashed commit.",
+	description: "Ship one work item onto a new branch: research, plan, implement and review rounds, judge, and one squashed commit.",
 	args: {
 		item: { type: "text", positional: true, label: "work item", required: true },
 		rounds: { type: "number", default: 3 },
@@ -48,11 +49,17 @@ const EVIDENCE =
 // from saved answers only, so a resume builds the same memory and the same prompts.
 const memory = []
 
+// The research documents the code as it is, in a session of its own, so that the plan starts from its document and
+// not from the context of the search.
+phase("research")
+
+const research = await session("researcher").ask(prompts.research({ item }))
+
 phase("plan")
 
 const planner = remembering("planner")
 
-await planner.ask(prompts.plan({ item }))
+await planner.ask(prompts.plan({ item, research }))
 
 await planner.ask(prompts.challenge())
 

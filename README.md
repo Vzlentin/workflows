@@ -2,7 +2,7 @@
 
 `workflows` runs durable, resumable coding workflows on [Pi](https://github.com/earendil-works/pi) sessions:
 
-- `workflows ship` ships one work item onto a new Git branch: plan, implement, review, judge.
+- `workflows ship` ships one work item onto a new Git branch: research, plan, implement, review, judge.
 - `workflows campaign` splits a goal into work items and ships them one after another onto one branch.
 - `workflows optimize ship` searches for better ship prompts over a set of work items.
 - `workflows <script>` runs your own workflow script.

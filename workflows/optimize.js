@@ -12,7 +12,7 @@ export const meta = {
 }
 
 // The prompts that a candidate can change. `judge` is not one: it gives the score.
-const CANDIDATES = ["plan", "challenge", "handoff", "implement", "review"]
+const CANDIDATES = ["research", "plan", "challenge", "handoff", "implement", "review"]
 
 if (args.workflow !== "ship") throw new Error(`optimize takes ship only, not ${args.workflow}`)
 
