@@ -891,9 +891,11 @@ describe("workflows resume of ship runs", () => {
 		expect(listed.code).toBe(0);
 		expect(listed.stdout).toHaveLength(1);
 
+		const repository = git(repo, "rev-parse", "--show-toplevel");
+
 		const runs = [
-			{ runId: shipped.id, workflow: "ship", title: "Fix the README typo", status: "shipped" },
-			{ runId: stopped.id, workflow: "ship", title: "Second item", status: "running" },
+			{ runId: shipped.id, workflow: "ship", title: "Fix the README typo", status: "shipped", repository },
+			{ runId: stopped.id, workflow: "ship", title: "Second item", status: "running", repository },
 		].sort((a, b) => (b.runId ?? "").localeCompare(a.runId ?? ""));
 
 		expect(JSON.parse(listed.stdout[0] ?? "")).toEqual(runs);

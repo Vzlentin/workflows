@@ -245,6 +245,10 @@ describe("input", () => {
 		]);
 		const listed = await workflows(["list"], { cwd: root });
 		expect(listed.stdout).toEqual([`${id} x waiting x`]);
+		const listedJson = await workflows(["list", "--json"], { cwd: root });
+		expect(JSON.parse(listedJson.stdout[0] ?? "")).toEqual([
+			{ runId: id, workflow: "x", title: "x", status: "waiting", repository: null },
+		]);
 		const shown = await workflows(["show", id], { cwd: root });
 		expect(shown.stdout).toEqual([`run ${id} x waiting x`, "  ✗ input A?", "A?"]);
 

@@ -712,7 +712,9 @@ argument, such as the work item for ship and the goal for campaign, or else the 
 `done` when the result has no `status`. A run that waits for an answer to `input()` is `waiting`. A run whose task has not ended is `running`, also when it waits for its host
 to start. A run whose task ended without a result is `stopped`, `failed`, `faulted` or `orphaned`. A pending run that
 another version of workflows saved is `earlier-version` or `later-version`, with its workflow name as its title: it
-cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
+cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status", "repository" }`.
+`repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
+without a worktree.
 Only the runs that have a run directory with a `project` file are listed.
 
 `list` reads the project store file read-only and does not start the host, so no run continues. It takes no lock that

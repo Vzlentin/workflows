@@ -562,7 +562,13 @@ async function abortRun(terminal: Terminal, project: string, key: string): Promi
 	}
 }
 
-type Listed = { readonly runId: string; readonly workflow: string; readonly title: string; readonly status: string };
+type Listed = {
+	readonly runId: string;
+	readonly workflow: string;
+	readonly title: string;
+	readonly status: string;
+	readonly repository: string | null;
+};
 
 /**
  * Prints the runs of the project of the current directory that have a run directory, newest run ID first. It reads the
@@ -579,9 +585,11 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 
 		if (task === undefined || !existsSync(join(runsDirectory(), id, "project"))) continue;
 		const status = runStatus(task);
+		const repository = inputWorktree(task.input)?.repository ?? null;
 
-		if (current(task)) listed.push({ runId: id, workflow: task.input.name, title: script.title(task.input), status });
-		else listed.push({ runId: id, workflow: savedBy(task).name, title: savedBy(task).name, status });
+		if (current(task))
+			listed.push({ runId: id, workflow: task.input.name, title: script.title(task.input), status, repository });
+		else listed.push({ runId: id, workflow: savedBy(task).name, title: savedBy(task).name, status, repository });
 	}
 
 	if (json) terminal.stdout(JSON.stringify(listed));

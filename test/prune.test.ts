@@ -93,6 +93,10 @@ describe("workflows prune", () => {
 	it("removes the worktree and branch of a run that an earlier version saved", async () => {
 		const { id, worktree } = await mergedRun();
 		saveAs(TASK.version - 1, true);
+		const listed = await workflows(["list", "--json"], { cwd: repo });
+		expect(JSON.parse(listed.stdout[0] ?? "")).toEqual([
+			{ runId: id, workflow: "w", title: "w", status: "done", repository: await realpath(repo) },
+		]);
 
 		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
 		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
