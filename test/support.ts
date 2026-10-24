@@ -179,6 +179,7 @@ export type Kind =
 	| "commit"
 	| "split"
 	| "requeue"
+	| "rundown"
 	| "branch"
 	| "reflect"
 	| "script"
@@ -209,6 +210,7 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Write the commit message and the branch name", "commit"],
 	["Split this goal into work items.", "split"],
 	["Update the work item queue", "requeue"],
+	["Give a rundown of the failed work item", "rundown"],
 	["Name the branch of this campaign", "branch"],
 	["Improve this prompt", "reflect"],
 	["Script", "script"],
@@ -436,6 +438,8 @@ export class FakeModel {
 				return respond({ items: [...(this.#script.items ?? [])] });
 			case "requeue":
 				return respond({ items: [...(this.#script.queues?.[nth - 1] ?? [])] });
+			case "rundown":
+				return respond({ rundown: `Rundown ${nth}: the item failed.`, suggestions: ["Split the item."], queue: [] });
 			case "branch":
 				return respond({ branch: this.#script.branch ?? "docs/readme" });
 			case "reflect": {

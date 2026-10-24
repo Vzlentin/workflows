@@ -126,7 +126,8 @@ or `branch <name> is in conflict with an existing branch; kept ship/<run-id>`. T
 
 The result of the run, which `--json` prints, has `status` and `rounds`; `head` and `branch`, the branch that the
 worktree ends on, when shipped; `score`, `answers`, the eight answers in question order, and `findings`, the finding
-lines of the judge, when the judge answered; `judgeError` when the judge failed; `reply` when blocked; and `memory`, the
+lines of the judge, when the judge answered; `judgeError` when the judge failed; `reply` when blocked; `handoff`, the
+handoff that the last round used, when blocked or stopped; and `memory`, the
 memory lines in order or `[]` when there are no notes, for every status.
 
 Blocked and stopped runs keep their branch, worktree and round commits. Delete them when you no longer need them.
@@ -183,13 +184,28 @@ conflict with an existing branch; kept campaign/<run-id>`.
 
 - When the queue is empty, the command prints `done <subject> in <n> items, <commit> on <branch>` with the commit of the
   last item and the branch that the worktree ends on, and exits 0.
-- When an item is blocked or stopped, or ships with a judge score of 0, the campaign stops. The command prints
-  `stopped <subject> at item <n>: <worktree>` and exits 1. A missing score, when the judge failed, does not stop it.
+- When an item is blocked or stopped, or ships with a judge score of 0, the item fails. A missing score, when the judge
+  failed, is not a failure. The run resets the worktree with `git reset --hard` to the commit that the item started
+  from: the last shipped commit, or the start commit when no item shipped. Then a new planner session gets the
+  `rundown` prompt with the inputs `goal`, `shipped` (the shipped items with their commits, as JSON), `item`, `status`
+  (the ship status, or `shipped with judge score 0`), `reply`, `handoff`, `findings`, `memory` and `queue` (the
+  remaining items, as JSON). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and
+  a proposed queue. The run asks the question of [Input](#input): the rundown, `Suggestions:` with one `- <suggestion>`
+  line each, `Proposed queue:` with the numbered items, and `How should the campaign continue? Answer stop, or nothing,
+  to end it.` The command prints the question and exits 3 with the status `waiting`. Continue with `workflows resume
+  <run-id> --answer <text>`.
+- When the answer is `stop`, in any case, or empty, the command prints `stopped <subject> at item <n>: <worktree>`,
+  then the rundown, and exits 1. The branch keeps its name `campaign/<run-id>`.
+- Any other answer goes to a new planner session with the `split` prompt and the inputs `goal`, `shipped`, `rundown`
+  (the whole question summary) and `answer`. Its queue replaces the queue on the same branch, and the next item has
+  the next item number. A later failure asks again. The campaign ends as a campaign with no failed item.
 
-`<subject>` is the first non-empty line of the goal without leading `#`. The result is
-`{ "status": "done", "head", "branch", "items": [{ "item", "result" }] }` or `{ "status": "stopped", "items" }`, with
-the `ship` result of each item that ran, and its child run ID as `result.runId`. `head` is the commit of the last item,
-and `branch` is the branch that the worktree ends on.
+`<subject>` is the first non-empty line of the goal without leading `#`. `<n>` in the `done` line counts the shipped
+items. The number of the item step counts every item that ran. The result is
+`{ "status": "done", "head", "branch", "items": [{ "item", "result" }] }` or
+`{ "status": "stopped", "items", "rundown" }`, with the `ship` result of each shipped item, plus the failed item in a
+stopped result, and its child run ID as `result.runId`. `head` is the commit of the last item, and `branch` is the
+branch that the worktree ends on.
 
 ## Optimize
 
@@ -552,7 +568,7 @@ the host of that project from any directory.
 Resume continues the pending work in the host. For a script, see [Saved inputs and resume](#saved-inputs-and-resume).
 For `ship`, it uses the work item, repository, start commit, `workflows/ship.js`, prompts, profiles and round limit
 that the run saved before it started. `campaign` does the same with its goal and `workflows/campaign.js`: the split,
-the shipped items and the requeues are not run again. It does not read the work item file again, select or clone the
+the shipped items, the requeues, the rundown and the split after an answer are not run again. It does not read the work item file again, select or clone the
 repository again, or create another branch. Answered turns are not sent to the model again. A turn that was in
 progress is sent again.
 
@@ -1057,12 +1073,12 @@ task of the caller's run. A child run without a worktree can have an empty run d
 ## Prompts
 
 `prompts/` holds the Pi prompt templates `research`, `plan`, `challenge`, `handoff`, `implement`, `review`, `judge` and
-`commit`, `split`, `requeue` and `branch` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
+`commit`, `split`, `requeue`, `rundown` and `branch` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
 frontmatter and the last line `$@`: the run removes them, then adds its inputs as `## <name>` sections.
 `workflows/ship.js` adds the evidence rule and the SHIP or FIX answer rule of the review challenge itself, so a template
 edit cannot remove them. It also adds the `respond` answer rules of the handoff and implement turns. In the same way,
 `workflows/campaign.js` adds the `respond` answer rule of `split` and `requeue`. The judge rubric is fixed: its eight
-answers, in question order, make the score. `judge`, `commit` and `branch` hold their own `respond` answer rules. A run uses the
+answers, in question order, make the score. `judge`, `commit`, `rundown` and `branch` hold their own `respond` answer rules. A run uses the
 templates as they were when it started.
 
 Workflow scripts get every template of `prompts/` as `prompts.<name>`, and the agent profiles of `agents/`. A run
