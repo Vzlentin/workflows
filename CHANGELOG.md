@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4](https://github.com/Vzlentin/workflows/compare/v0.3.3...v0.3.4) (2026-10-24)
+
+
+### Features
+
+* Herdr workspaces for runs, and workflows attach to open a run session ([#48](https://github.com/Vzlentin/workflows/issues/48)) ([1ae3bc4](https://github.com/Vzlentin/workflows/commit/1ae3bc447d018a8e7ffb95e4e6ef32e8f17fb2f6))
+
 ## [0.3.3](https://github.com/Vzlentin/workflows/compare/v0.3.2...v0.3.3) (2026-10-24)
 
 
