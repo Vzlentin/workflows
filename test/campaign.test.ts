@@ -49,7 +49,7 @@ describe("workflows campaign", () => {
 		const [split] = run.model.calls;
 		expect(split?.prompt).toMatch(/^Split this goal into work items\.\n[\s\S]*\n\n## goal\n# Fix the README\n/);
 		expect(split?.tools).toContain("respond");
-		expect(run.model.calls[9]?.prompt).toContain(`## done\n${FIRST}\n\n## queue\n[]\n\nAnswer with respond:`);
+		expect(run.model.find("requeue")?.prompt).toContain(`## done\n${FIRST}\n\n## queue\n[]\n\nAnswer with respond:`);
 
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "branch", "--show-current")).toBe(`campaign/${run.id}`);

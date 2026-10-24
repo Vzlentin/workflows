@@ -291,6 +291,10 @@ export class FakeModel {
 		return this.calls.filter((call) => call.kind === kind).length;
 	}
 
+	find(kind: Kind, nth = 0): Call | undefined {
+		return this.calls.filter((call) => call.kind === kind)[nth];
+	}
+
 	readonly #respond: FauxResponseFactory = async (context, options, _state, model) => {
 		const messages = context.messages;
 		const system = messages.flatMap((message) => (message.role === "system" ? [message] : []));

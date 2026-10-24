@@ -1,5 +1,6 @@
 // The research, the plan, the rounds, the review, the judge and the squash of `workflows ship` and of each
-// `workflows campaign` item, in its worktree. Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
+// `workflows campaign` item, in its worktree. Every Git step is safe to repeat: a resume runs a step again when its
+// result was not saved.
 export const meta = {
 	description: "Ship one work item onto a new branch: research, plan, implement and review rounds, judge, and one squashed commit.",
 	args: {
@@ -52,9 +53,7 @@ const memory = []
 // not from the context of the search.
 phase("research")
 
-const research = await session("researcher").ask(await prompts.research({ item }))
-
-await sh(["sh", "-c", 'printf "%s\\n" "$2" > "$1"', "research", `${patches}/research.md`, research])
+const research = await session("researcher").ask(prompts.research({ item }))
 
 phase("plan")
 

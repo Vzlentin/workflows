@@ -64,9 +64,8 @@ prints the phase line of the first call that runs, such as a turn or a Git step,
 
 The research session gets the work item and writes a research document: what the code that the work item touches
 does today, with `path:line` references, the patterns and tests of that area, and open questions. It documents and
-does not suggest changes, and can spawn subagents to search in parallel. Its reply is saved as `research.md` in the
-run directory, and the plan prompt gets it as its `research` section, after the work item. The research prompt has no
-memory and gives no notes.
+does not suggest changes, and if it has a subagent tool, can spawn subagents to search in parallel. The plan prompt
+gets its reply as its `research` section, after the work item. The research prompt has no memory and gives no notes.
 
 The work item ships onto the branch `ship/<run-id>`, in a worktree in the run directory. The selected repository's
 checkout, index and local edits stay unchanged. Ship does not push and does not open a pull request.
@@ -137,11 +136,11 @@ and `--prompts` work as for `ship`. `--rounds` applies to each work item. Errors
 When the judge of an item fails, the command prints `judge failed on <item subject>: <error>` on stderr, as `ship` does.
 
 A planner session splits the goal into work items with the `split` prompt, and answers through `respond`. Then each
-work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the research, the plan, the rounds, the review, the
-judge and the squash of `workflows/ship.js`, from the commit that the item before it made. So each shipped item is one
-commit, with the commit message of `ship`. No `ship/<run-id>` branch is made, and nothing is merged or pushed. Each
-item is a ship child run, with its own run ID and run directory, in the store of the campaign run: see `run` in
-[the script API](#the-script-api).
+work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the research, the plan, the rounds, the
+review, the judge and the squash of `workflows/ship.js`, from the commit that the item before it made. So each shipped
+item is one commit, with the commit message of `ship`. No `ship/<run-id>` branch is made, and nothing is merged or
+pushed. Each item is a ship child run, with its own run ID and run directory, in the store of the campaign run: see
+`run` in [the script API](#the-script-api).
 
 After each shipped item, also the last one, a new planner session gets the goal, the shipped item and the remaining
 items with the `requeue` prompt. Its answer through `respond` is the new queue, which can be empty. The campaign ends
@@ -201,10 +200,10 @@ The README says wrold.
 ```
 
 `--improve` lists the prompts to optimize, separated by commas: any of `research`, `plan`, `challenge`, `handoff`,
-`implement` and `review`. The default is `review,challenge,handoff`. `judge` gives the score, so it is never a candidate. `--trials`
-is the number of candidates that the run evaluates, the baseline included, and defaults to 3. A workflow other than
-`ship`, an unknown prompt name, fewer than 2 items, or an item without `repo` or `start` fails the run after
-`run <run-id>`, with `failed optimize: <error>`, and exits 1, because the script checks them when it runs.
+`implement` and `review`. The default is `review,challenge,handoff`. `judge` gives the score, so it is never a
+candidate. `--trials` is the number of candidates that the run evaluates, the baseline included, and defaults to 3. A
+workflow other than `ship`, an unknown prompt name, fewer than 2 items, or an item without `repo` or `start` fails the
+run after `run <run-id>`, with `failed optimize: <error>`, and exits 1, because the script checks them when it runs.
 
 A candidate is one text for each listed prompt. The baseline is the texts of the run's prompts, so `--prompts
 <folder>` sets it. Each evaluation is the child run
@@ -235,11 +234,11 @@ return their saved results, and the failed ship run continues. `workflows list` 
 ## Sessions
 
 The research, plan, implement, review and judge sessions use the agent profiles `agents/researcher.md`,
-`agents/planner.md`, `agents/implementer.md`, `agents/reviewer.md` and `agents/judge.md`. Each uses `anthropic/claude-opus-5-5` with thinking `medium`, and every
-session gets the same tools. Like every workflow script, `ship` and `campaign` read the scripts, prompts and profiles
-of the package and of the project folder `.workflows/` of the current directory, also when `--repo` selects another
-repository. See [Workflow scripts](#workflow-scripts). A project `agents/planner.md`, for example, gives the planner
-another model.
+`agents/planner.md`, `agents/implementer.md`, `agents/reviewer.md` and `agents/judge.md`. Each uses
+`anthropic/claude-opus-5-5` with thinking `medium`, and every session gets the same tools. Like every workflow script,
+`ship` and `campaign` read the scripts, prompts and profiles of the package and of the project folder `.workflows/` of
+the current directory, also when `--repo` selects another repository. See [Workflow scripts](#workflow-scripts). A
+project `agents/planner.md`, for example, gives the planner another model.
 
 Sessions are children of harness's children library in the harness host of the run's project, and use the host's
 providers and credentials: Pi's, from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers that Pi
@@ -869,12 +868,11 @@ A ship run also has:
 
 - `worktree/`: the worktree on `ship/<run-id>`
 - `repository/`: the clone, for a GitHub repository only
-- `research.md`: the research document that the plan got
 - `round-<n>.patch`, `round-<n>-fix.patch`: the patches each review got
 
 A campaign run has `worktree/` on `campaign/<run-id>` and `repository/` in the same way, plus:
 
-- `item-<n>/`: the `research.md`, `round-<n>.patch` and `round-<n>-fix.patch` files of item `n`
+- `item-<n>/`: the `round-<n>.patch` and `round-<n>-fix.patch` files of item `n`
 
 An optimize run has:
 

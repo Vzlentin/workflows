@@ -8,7 +8,7 @@ Research the codebase for this change. Your only job is to document the code as 
 
 - Describe what exists, where it is, and how it works. Do not suggest changes, improvements or a solution, do not critique the code, and do not plan.
 - Read repository instructions first. Then split the work item into research questions: which files and components it touches, how the current behavior works end to end, and which existing patterns, conventions and tests a change here must follow.
-- Search in parallel where questions are independent: spawn subagents to locate files, to trace a flow, and to find similar code, then read the files they name yourself before you rely on them.
+- Search in parallel where questions are independent. If you have a subagent tool, spawn subagents to locate files, to trace a flow, and to find similar code, then read the files they name yourself before you rely on them.
 - Back every claim with a `path:line` reference. Separate what you read from what you infer, and say what you could not find.
 
 ## Write the research document
