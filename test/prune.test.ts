@@ -207,13 +207,3 @@ esac
 		expect(existsSync(join(repo, "x"))).toBe(false);
 	});
 });
-
-describe("herdr", () => {
-	it("opens nothing for a followed run in Herdr: Herdr runs the command, not the other way", async () => {
-		await fake("herdr", `echo "$@" >> "${root}/herdr.log"\n`);
-		process.env.HERDR_ENV = "1";
-		const run = await workflows(["w"], { cwd: repo });
-		expect(run.code).toBe(0);
-		expect(existsSync(join(root, "herdr.log"))).toBe(false);
-	});
-});

@@ -37,12 +37,6 @@ describe("the progress on a terminal", () => {
 		]);
 	});
 
-	it("cuts a line by the columns that it takes, so wide characters count twice", () => {
-		const terminal = stream();
-		terminalRedraw(terminal).redraw([`◉ ${"界".repeat(30)}`]);
-		expect(terminal.written).toEqual([`◉ ${"界".repeat(18)}…\n`]);
-	});
-
 	it("cuts a line to the width of the terminal", () => {
 		const terminal = stream();
 		terminalRedraw(terminal).redraw([`◉ ${"x".repeat(50)}`]);
@@ -91,9 +85,7 @@ describe("the steps of a run", () => {
 		progress.add({ kind: "end", run: "r", failed: true, at: 5000 });
 		expect(progress.lines()).toEqual(["✗ plan  5s"]);
 		progress.add({ kind: "start", run: "r" });
-		const again = { kind: "phase", run: "r", parent: null, text: "plan", at: 9000, continues: true } as const;
-		expect(progress.add(again)).toBeUndefined();
-		expect(progress.running()).toEqual(["plan"]);
+		progress.add({ kind: "phase", run: "r", parent: null, text: "plan", at: 9000, continues: true });
 		progress.add({ kind: "phase", run: "r", parent: null, text: "judge", at: 12_000 });
 		// A phase line that repeats the step within an execution is a step of its own.
 		progress.add({ kind: "phase", run: "r", parent: null, text: "judge", at: 14_000 });

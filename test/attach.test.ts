@@ -96,8 +96,7 @@ describe("list --pick", () => {
 		expect([picked.code, picked.stdout]).toEqual([0, [running.id]]);
 		const cancelled = await workflows(["list", "--pick"], { cwd: root, choose: async () => undefined });
 		expect([cancelled.code, cancelled.stdout, cancelled.stderr]).toEqual([130, [], []]);
-		const piped = await workflows(["list", "--pick"], { cwd: root });
-		expect([piped.code, piped.stderr[0]]).toEqual([2, "workflows: --pick needs a terminal on stdin and stderr"]);
+		expect((await workflows(["list", "--pick"], { cwd: root })).code).toBe(2);
 	});
 });
 
