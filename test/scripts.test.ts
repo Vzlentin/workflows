@@ -205,9 +205,9 @@ describe("workflows save", () => {
 describe("usage errors", () => {
 	it("print the usage line of their own command", async () => {
 		const cases: [string[], string][] = [
-			[["resume"], "usage: workflows resume <run-id> [--background] [--json]"],
-			[["resume", "a/b"], "usage: workflows resume <run-id> [--background] [--json]"],
-			[["resume", "--background"], "usage: workflows resume <run-id> [--background] [--json]"],
+			[["resume"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
+			[["resume", "a/b"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
+			[["resume", "--background"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
 			[["wait", "r1", "r2"], "usage: workflows wait <run-id> [--json]"],
 			[["show", "r1", "r2"], "usage: workflows show <run-id> [--json]"],
 			[["show", ".."], "usage: workflows show <run-id> [--json]"],
@@ -219,6 +219,58 @@ describe("usage errors", () => {
 			const run = await workflows(argv, { cwd: root });
 			expect([run.code, run.stderr], argv.join(" ")).toEqual([2, [expect.stringMatching(/^workflows: /), usage]]);
 		}
+	});
+});
+
+describe("input", () => {
+	it("waits for each answer, and gives the answers to the script on resume", async () => {
+		await writeFile(join(root, "x.js"), 'const a = await input("A?");\nconst b = await input("B?");\nreturn a + b;');
+		const first = await workflows(["x.js"], { cwd: root });
+		const id = first.id ?? "";
+		expect([first.code, first.stdout]).toEqual([3, [`run ${id}`, "A?"]]);
+
+		const json = await workflows(["resume", id, "--json"], { cwd: root });
+		expect([json.code, json.stdout]).toEqual([
+			3,
+			[
+				`run ${id}`,
+				JSON.stringify({
+					runId: id,
+					status: "finished",
+					result: { status: "waiting", question: "A?", report: ["A?"] },
+					report: ["A?"],
+				}),
+			],
+		]);
+		const listed = await workflows(["list"], { cwd: root });
+		expect(listed.stdout).toEqual([`${id} x waiting x`]);
+		const shown = await workflows(["show", id], { cwd: root });
+		expect(shown.stdout).toEqual([`run ${id} x waiting x`, "  ✗ input A?", "A?"]);
+
+		const second = await workflows(["resume", id, "--answer", "x"], { cwd: root });
+		expect([second.code, second.stdout]).toEqual([3, [`run ${id}`, "B?"]]);
+		const last = await workflows(["resume", id, "--answer", "y"], { cwd: root });
+		expect([last.code, last.stdout]).toEqual([0, [`run ${id}`, "xy"]]);
+		const again = await workflows(["resume", id], { cwd: root });
+		expect([again.code, again.stdout]).toEqual([0, [`run ${id}`, "xy"]]);
+		expect(await rootTasks(id)).toEqual([
+			{ status: "terminal", outcome: "completed" },
+			{ status: "terminal", outcome: "completed" },
+			{ status: "terminal", outcome: "completed" },
+		]);
+	});
+
+	it("refuses an answer to a run that does not wait for one", async () => {
+		await writeFile(join(root, "x.js"), "return 1");
+		const done = await workflows(["x.js"], { cwd: root });
+		const run = await workflows(["resume", done.id ?? "", "--answer", "x"], { cwd: root });
+		expect([run.code, run.stderr]).toEqual([
+			2,
+			[
+				`workflows: run ${done.id} does not wait for an answer`,
+				"usage: workflows resume <run-id> [--answer <text>] [--background] [--json]",
+			],
+		]);
 	});
 });
 
@@ -907,6 +959,7 @@ return [one.reply, two.reply].join(", ")`,
 		for (const [code, error] of [
 			['sh(["git", 1])', "sh got bad arguments: /0/1 must be string"],
 			["ok(1)", "ok got bad arguments: /0 must be string"],
+			["input(1)", "input got bad arguments: /0 must be string"],
 		]) {
 			await writeFile(join(root, "bad.js"), `await ${code}`);
 			const run = await workflows(["bad.js"], { cwd: root });

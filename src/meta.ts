@@ -531,6 +531,8 @@ export type ScriptInput = Omit<Args, "repo" | "base"> & {
 	readonly parent?: string;
 	/** Set by `--background`: the end of the run posts its outcome as a message to the conversation `parent`. */
 	readonly notify?: true;
+	/** Set by `resume --answer`: the answer `text` to the `input` call with the document key `call`. */
+	readonly answer?: { readonly call: string; readonly text: string };
 	readonly worktree?: {
 		readonly repository: string;
 		readonly start: string;
@@ -669,11 +671,13 @@ export function title(input: ScriptInput): string {
 	return text === undefined ? input.name : subject(text);
 }
 
-/** Prints the result's report lines and returns the exit code of its status. */
+/** Prints the result's report lines and returns the exit code of its status: 3 for `waiting`, whatever `meta.exit` says. */
 export function report(input: ScriptInput, result: JsonValue, io: Io): number {
 	if (Value.Check(REPORT, result)) for (const line of result.report) io.stdout(String(line));
 	else io.stdout(Value.Check(Type.String(), result) ? result : JSON.stringify(result));
 	const status = statusOf(result);
+
+	if (status === "waiting") return 3;
 
 	return status !== undefined && Object.hasOwn(input.meta.exit, status) ? (input.meta.exit[status] ?? 0) : 0;
 }

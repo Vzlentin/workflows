@@ -335,7 +335,8 @@ export const meta = {
   - A `required` argument without a value fails with `missing <label>`. `label` defaults to the argument name.
 - `worktree: true` adds `--repo` and `--base`, with the rules of [Ship](#ship). The run gets a new worktree on the
   branch `<wf>/<run-id>` in the run directory, runs the script there, and gives it `args.start`, the start commit.
-- `exit` maps `result.status` to the exit code. Any other status, or a result without `status`, exits 0.
+- `exit` maps `result.status` to the exit code. Any other status, or a result without `status`, exits 0. The status
+  `waiting` always exits 3, whatever `exit` says. See [Input](#input).
 
 Every script also takes `--prompts <folder>`, as `ship` does, `--background`, `--json` and `--help`. `workflows <wf> --help` prints
 the usage line, built from `meta`, and `meta.description` when the script has one, and exits 0. Any other flag is bad usage. Bad usage prints
@@ -364,8 +365,8 @@ The command prints `run <run-id>` on stdout, then each `phase` and `log` line on
 runs, or when the script ends. The script runs in the host, which saves these lines in the project store, and the
 command reads them from the store file about every 0.5 s. See [Progress](#progress). When the script returns a result with `report`, a list of lines, the command prints
 those lines on stdout. Otherwise it prints the return value: a string as it is, and any other value as JSON. The exit
-code comes from `meta.exit`. With `--json`, stdout gets one JSON outcome line in place of the lines. See
-[JSON output](#json-output).
+code comes from `meta.exit`. A run that waits for an answer to `input(question)` prints the question and exits 3. With
+`--json`, stdout gets one JSON outcome line in place of the lines. See [JSON output](#json-output).
 
 A script that throws, or a call in it that fails, stops the run: the command prints `failed <title>: <error>` and
 `continue with: workflows resume <run-id>` on stderr, and exits 1.
@@ -448,6 +449,7 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
 | `ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `run(name, args)` | Runs the script `name` of `workflows/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
+| `input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`. See [Input](#input) |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `parallel(thunks)` | Runs the functions at once and returns their results |
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
@@ -455,7 +457,7 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 
 A call with an argument of the wrong type, such as a prompt that is not a string, a `sh` command that is not a string
 or an array of strings, or a `prompts.<name>` input that is not a string, fails with
-`<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run` or `prompt`, and
+`<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run`, `input` or `prompt`, and
 `<path>` points to the deepest wrong value in the arguments, such as `/0/1` for `sh(["git", 1])`.
 
 `workflows/script.d.ts` declares these globals for editors. A project gets the same completion when it copies
@@ -503,15 +505,34 @@ saved results stay in the project store also after the run fails. `phase` and `l
 results. A resume prints the phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
 lines before it, and keeps the last `phase` line waiting for the next call that runs.
 
+An `input` call with an answer saves the answer as its result, so a later resume returns it, and does not wait again.
+
 When the script ends, by its result or by an error, the calls that it did not wait for are cancelled: a `sh` or `ok`
 command is killed, a `run()` call stops waiting for its child run, and an ask stops waiting for its turn. The script's
 task ends only once they stopped, so no call goes on after the run ended. A cancelled call records no end, and runs
 again on resume.
 
+### Input
+
+`input(question)` asks the user a question. The first time the script reaches it, the call records its start, the
+script stops, and the run's task completes with the result `{ "status": "waiting", "question", "report": [question] }`.
+The command prints the question as the report line and exits 3, also with `wait` and with a resume without
+`--answer`. `list` and `show` give the status `waiting`, and `show` lists the `input` call as `✗`, with the question
+as its label. A waiting run keeps its sessions, as a failed run does.
+
+`workflows resume <run-id> --answer <text>` starts a new task of the run with the answer to the open `input` call: the
+last one that started and did not end. The script runs again from the top, and that call returns `<text>`. A later
+`input` call waits again in the same way. While one `input` call waits, a second one that would wait fails with `the
+run waits for an answer to: <question>`. A run without an open `input` call fails with `workflows: run <run-id> has no
+open input call` and exits 1. A script that returns `{ "status": "waiting" }` itself also exits 3.
+
+`input()` in a child run has no special handling: the caller of `run()` gets the waiting result as the result of the
+child run.
+
 ## Resume
 
 ```sh
-workflows resume <run-id>
+workflows resume <run-id> [--answer <text>]
 ```
 
 `workflows resume` finds the workflow that the run saved and continues the run. A run of a workflow script continues
@@ -547,7 +568,10 @@ task ended in another way, such as a stopped, faulted or orphaned task, resumes 
 stopped for a reason other than its end, such as its length, fails its call, and a resume asks again. So does an ask
 whose answer did not call `respond`. A resumed ask never returns the answer of another ask in its session.
 
-A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code.
+A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code. A waiting
+run without `--answer` prints its question again and exits 3. `--answer` for a run whose last task did not complete
+with the status `waiting` prints `workflows: run <run-id> does not wait for an answer` and `usage: workflows resume
+<run-id> [--answer <text>] [--background] [--json]`, and exits 2. See [Input](#input).
 
 A run saved by another version of workflows cannot resume. Resume prints `workflows: run <run-id> was saved by an
 earlier version of <workflow> and cannot resume`, or `a later version`, and exits 1. `list` shows these runs as
@@ -607,7 +631,7 @@ workflows wait <run-id> [--json]
 ```
 
 `workflows wait` follows a run to its outcome, and never starts a task or stops the run. It prints `run <run-id>`, then
-the same outcome lines, JSON line and exit code as `resume`. A run whose task ended, completed or not, prints its
+the same outcome lines, JSON line and exit code as `resume`. A waiting run prints its question and exits 3. A run whose task ended, completed or not, prints its
 outcome from the project store: `wait` starts no host and no task, so a failed run prints its `failed` and `continue
 with` lines and exits 1. A run whose task has not ended is followed as `resume` follows it, and `wait` starts the host
 when none runs. `wait` checks the version of the host's task as `resume` does, and refuses a run that another version
@@ -631,6 +655,8 @@ line of JSON in place of the report lines, `{ "runId", "status", "result"?, "rep
 - `finished`: `result` is the result of the run, for example `{"status":"shipped","rounds":1,"head":"1a2b3c4",...}`
   for ship. The [Ship](#ship) section lists the fields of a ship result. `report` is the list of report lines that
   the command prints without `--json`, such as `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4 on fix/readme-typo"]`.
+  A run that waits for an answer is `finished` with the result `{"status":"waiting","question":"<question>","report":["<question>"]}`
+  and the exit code 3.
 - `failed`: `error` is the error message.
 - `started`: with `--background`, the host has the run's task, and the command does not follow it. The `workflow`
   tool of the host and the `workflow` tool of Pi give it as a result that is not an error.
@@ -654,7 +680,7 @@ workflows list --json
 runs are not listed: they are tasks of their caller. The title is the subject of the first `text`
 argument, such as the work item for ship and the goal for campaign, or else the script name. A finished run has the
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
-`done` when the result has no `status`. A run whose task has not ended is `running`, also when it waits for its host
+`done` when the result has no `status`. A run that waits for an answer to `input()` is `waiting`. A run whose task has not ended is `running`, also when it waits for its host
 to start. A run whose task ended without a result is `stopped`, `failed`, `faulted` or `orphaned`. A pending run that
 another version of workflows saved is `earlier-version` or `later-version`, with its workflow name as its title: it
 cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
@@ -714,13 +740,14 @@ run <run-id> <workflow> <status> <title>
 
 - The first line has the fields of `workflows list`.
 - The calls are in the order they started. Each call is under the phase line that was current when it started, and is
-  indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `sh`, `ok`
-  or `run`. An `agent` call is a `session` call and an `ask` call.
+  indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `sh`, `ok`,
+  `run` or `input`. An `agent` call is a `session` call and an `ask` call.
 - The mark is `✓` for a finished call and `✗` for a failed call. A call that started and did not end is `◉` while the
   run's task has not ended: it runs now, or the host stopped. Once the task ended, such a call is `✗`, without a
   duration: the end of the task cut it.
 - The label is the profile of the session for `session` and `ask`, and the command on one line, cut at 80 characters,
-  for `sh` and `ok`. For `run`, it is the workflow name and the child run ID. The phase lines and calls of the child run
+  for `sh` and `ok`. For `run`, it is the workflow name and the child run ID. For `input`, it is the question on one line, cut at 80
+  characters. The phase lines and calls of the child run
   are indented by 2 more under the `run` line.
 - The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, it is the time since the call
   started.

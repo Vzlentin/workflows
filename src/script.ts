@@ -9,6 +9,7 @@
  * the caller continues that child run. Sessions are children of harness's children library, owned by the run's task.
  */
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,6 +76,8 @@ export type ScriptRun = {
 	readonly args: JsonObject;
 	/** The conversation whose `workflow` tool started the run, from `PI_SESSION_ID`. */
 	readonly session: string | undefined;
+	/** The answer to the `input` call with the document key `call`, from `resume --answer`. */
+	readonly answer: { readonly call: string; readonly text: string } | undefined;
 	/** Starts the child run of the `run` call `key` and saves it as the result of the call. */
 	child(key: string, name: string, args: JsonObject): Promise<Child>;
 	/** Starts a new child task with the input of the ended child task `ended`, and saves it as the result of `key`. */
@@ -213,6 +216,7 @@ function session(options = "default") {
 const agent = (prompt, { schema, ...options } = {}) => session(options).ask(prompt, { schema });
 const sh = async (cmd) => (await __sh(cmd)).stdout.replace(/\\n$/, "");
 const ok = async (cmd) => (await __ok(cmd)).code === 0;
+const input = (question) => __input(question);
 const run = async (name, args = {}) => {
 	const { runId: id, result } = await __run(name, args);
 	return result !== null && typeof result === "object" && !Array.isArray(result) ? { ...result, runId: id } : result;
@@ -250,6 +254,7 @@ const CALL_KINDS = Type.Union([
 	Type.Literal("sh"),
 	Type.Literal("ok"),
 	Type.Literal("run"),
+	Type.Literal("input"),
 ]);
 
 /** The kinds of script calls. */
@@ -373,6 +378,8 @@ type Calls = {
 	readonly host: Host;
 	/** The owner of the run's sessions: the task, in the group of the run ID, so a later task of the run finds them. */
 	readonly owner: Owner;
+	/** The question of the `input` call that the run waits for an answer to. */
+	waiting?: string;
 };
 
 /** Takes the waiting lines as progress events of the run. */
@@ -612,6 +619,7 @@ const JSON_OBJECT = Type.Record(Type.String(), JSON_VALUE);
 const ASK_ARGS = Type.Tuple([Type.Number(), Type.String(), Type.Union([JSON_OBJECT, Type.Null()])]);
 const SH_ARGS = Type.Tuple([Type.Union([Type.String(), Type.Array(Type.String())])]);
 const RUN_ARGS = Type.Tuple([Type.String(), JSON_OBJECT]);
+const INPUT_ARGS = Type.Tuple([Type.String()]);
 const LINE_ARGS = Type.Array(JSON_VALUE);
 const PROMPT_ARGS = Type.Tuple([Type.String(), Type.Union([Type.Record(Type.String(), Type.String()), Type.Null()])]);
 
@@ -641,13 +649,44 @@ function shellCall(calls: Calls, cwd: string, cmd: string | string[], check: boo
 	);
 }
 
+/**
+ * The `input` call with `question`: the saved answer, or the answer of `resume --answer` to this call. Without one, the
+ * first such call stops the script with `stop` and leaves its record open, so `resume --answer` finds its key. A second
+ * call that would wait only rejects, so the answer has one call.
+ */
+async function inputCall(calls: Calls, question: string, stop: AbortController): Promise<JsonValue> {
+	const args = { question };
+	const key = callKey(calls, "input", args);
+	const start = { kind: "input", args } as const;
+	const { answer } = calls.script;
+
+	if (answer?.call === key) return memoized(calls, key, start, async () => answer.text);
+	const saved = await savedCall(calls.runtime, key, calls.context);
+
+	if (saved !== undefined) return memoized(calls, key, start, async () => saved);
+
+	if (calls.waiting !== undefined) throw new Error(`the run waits for an answer to: ${calls.waiting}`);
+	calls.waiting = question;
+
+	// The effect never resolves: it stops the script, and throws once the end of the script cancels the calls, so the
+	// call records no error and its record stays open.
+	return memoized(calls, key, start, async () => {
+		stop.abort();
+		const signal = calls.context.abortSignal;
+
+		if (signal !== undefined && !signal.aborted) await once(signal, "abort");
+		throw new Error(`the run waits for an answer to: ${question}`);
+	});
+}
+
 /** The owner of the sessions of the run `runId`, whose task `runtime` runs. */
 export function ownerOf(runtime: Runtime, runId: string): Owner {
 	return { kind: "task", taskId: runtime.taskId, conversation: runtime.conversationId, group: runId };
 }
 
 /**
- * Runs `script.bundle.main` with `script.args` in `cwd` and returns its value. It throws the error of a failed script,
+ * Runs `script.bundle.main` with `script.args` in `cwd` and returns its value. When an `input` call waits for an answer,
+ * the value is `{ status: "waiting", question, report: [question] }`. It throws the error of a failed script,
  * or the reason of the abort when a closing store cancels the script.
  */
 export async function runScript(
@@ -668,6 +707,7 @@ export async function runScript(
 	const execution = withCancel(context);
 	const calls: Calls = { script, runtime, context: execution.context, counters: new Map(), progress, host, owner };
 	const running = new Set<Promise<unknown>>();
+	const stop = new AbortController();
 
 	const global = <T extends TSchema>(
 		name: string,
@@ -720,6 +760,7 @@ export async function runScript(
 					childResult(calls, key, script, name, values),
 				);
 			}),
+			global("__input", INPUT_ARGS, ([question]) => inputCall(calls, question, stop)),
 			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
 			global("log", LINE_ARGS, ([line]) => progress.lines.push({ text: String(line), phase: false })),
 			global("__prompt", PROMPT_ARGS, ([name, inputs]) => {
@@ -737,7 +778,7 @@ export async function runScript(
 
 	try {
 		const wrapped = `${prelude(args, Object.keys(bundle.prompts), script)}\nreturn await (async () => {\n${source}\n})();`;
-		result = await sandbox.execute(wrapped, { signal });
+		result = await sandbox.execute(wrapped, { signal: AbortSignal.any([signal, stop.signal]) });
 	} finally {
 		await sandbox.close();
 		execution.cancel();
@@ -752,6 +793,13 @@ export async function runScript(
 				return undefined;
 			}, context);
 		}
+	}
+
+	if (calls.waiting !== undefined) {
+		if (signal.aborted) throw signal.reason;
+		const question = calls.waiting;
+
+		return { status: "waiting", question, report: [question] };
 	}
 
 	if (result.ok) {

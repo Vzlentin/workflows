@@ -17,7 +17,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { ensureWorktree } from "./git.ts";
-import { childInput, report, type ScriptInput } from "./meta.ts";
+import { childInput, report, type ScriptInput, statusOf } from "./meta.ts";
 import { newRunId } from "./run.ts";
 import { addProgress, CallDoc, type Child, type Host, JSON_VALUE, ownerOf, runScript, SessionsDoc } from "./script.ts";
 
@@ -268,12 +268,14 @@ async function runPhase(
 			runDir: input.runDir,
 			bundle: input.bundle,
 			session: input.parent,
+			answer: input.answer,
 			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },
 			child: (key, name, args) => startChild(definition, runtime, context, { input, cwd }, key, name, args),
 			restart: (key, ended) => restartChild(definition, runtime, context, key, ended),
 		});
 
-		await endSessions(host, runtime, input, true, context);
+		// A waiting run keeps its sessions for the task that gets the answer.
+		await endSessions(host, runtime, input, statusOf(result) !== "waiting", context);
 		await notify(runtime, input, finishedOutcome(input, result), context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: false }]);
@@ -296,7 +298,7 @@ async function runPhase(
 }
 
 /** The kind and version of the task of every script run. A run saved by another version cannot resume. */
-export const TASK = { name: "workflows.run", version: 13 } as const;
+export const TASK = { name: "workflows.run", version: 14 } as const;
 
 /** Whether the script task can continue the task `latest`. */
 export function current<R>(

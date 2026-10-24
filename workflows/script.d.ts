@@ -58,6 +58,12 @@ declare function sh(cmd: string | readonly string[]): Promise<string>;
 /** Runs `cmd` as `sh` does. Returns true when the exit code is 0. */
 declare function ok(cmd: string | readonly string[]): Promise<boolean>;
 
+/**
+ * Asks the user `question`. The first time, the run stops and waits: the command prints the question and exits with 3.
+ * `workflows resume <run-id> --answer <text>` runs the script again, and this call returns the text.
+ */
+declare function input(question: string): Promise<string>;
+
 /** A value that a call of a script gives to the host as JSON, which leaves out an object field that is undefined. */
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json | undefined };
 
