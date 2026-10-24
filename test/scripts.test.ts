@@ -10,6 +10,7 @@ import { createRegistry, defineExtension, defineTask, Harness, type TaskId } fro
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { REMINDER } from "@vzlentin/harness/answer";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { programStatus } from "../src/progress.ts";
 import { CallDoc } from "../src/script.ts";
 import { childTasks, detached, git, repository, rootTasks, runsOf, sandbox, storeOf, workflows } from "./support.ts";
 
@@ -258,6 +259,56 @@ describe("input", () => {
 			{ status: "terminal", outcome: "completed" },
 			{ status: "terminal", outcome: "completed" },
 		]);
+	});
+
+	it("asks each question on a terminal, and goes on with the typed answer", async () => {
+		await writeFile(join(root, "x.js"), 'const a = await input("A?");\nconst b = await input("B?");\nreturn a + b;');
+		const run = await workflows(["x.js"], { cwd: root, lines: ["x", "y"] });
+		const id = run.id ?? "";
+		expect([run.code, run.stdout]).toEqual([0, [`run ${id}`, "A?", `run ${id}`, "B?", `run ${id}`, "xy"]]);
+		expect(run.status).toEqual([
+			programStatus("blocked", "A?", "question"),
+			programStatus("blocked", "B?", "question"),
+			programStatus("done", "xy"),
+		]);
+		expect(await rootTasks(id)).toEqual([
+			{ status: "terminal", outcome: "completed" },
+			{ status: "terminal", outcome: "completed" },
+			{ status: "terminal", outcome: "completed" },
+		]);
+	});
+
+	it("gives a typed answer that starts with a dash to the script", async () => {
+		await writeFile(join(root, "x.js"), 'return await input("A?");');
+		const run = await workflows(["x.js"], { cwd: root, lines: ["-x"] });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, "-x"]);
+	});
+
+	it("asks on resume, and prints how to continue at the end of input", async () => {
+		await writeFile(join(root, "x.js"), 'const a = await input("A?");\nconst b = await input("B?");\nreturn a + b;');
+		const first = await workflows(["x.js"], { cwd: root });
+		const id = first.id ?? "";
+		expect([first.code, first.status]).toEqual([3, [programStatus("error", "A?")]]);
+
+		const hint = `run ${id} waits for an answer; continue with: workflows resume ${id} --answer <text>`;
+		const resumed = await workflows(["resume", id], { cwd: root, lines: ["x"] });
+		expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([
+			130,
+			[`run ${id}`, "A?", `run ${id}`, "B?"],
+			[hint],
+		]);
+		expect(resumed.status).toEqual([
+			programStatus("blocked", "A?", "question"),
+			programStatus("blocked", "B?", "question"),
+			programStatus("idle", hint),
+		]);
+		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x waiting x`]);
+
+		const waited = await workflows(["wait", id], { cwd: root, lines: ["y"] });
+		expect([waited.code, waited.stdout]).toEqual([3, [`run ${id}`, "B?"]]);
+		const json = await workflows(["resume", id, "--json"], { cwd: root, lines: ["y"] });
+		expect([json.code, json.status]).toEqual([3, []]);
+		expect(await rootTasks(id)).toHaveLength(2);
 	});
 
 	it("refuses an answer to a run that does not wait for one", async () => {

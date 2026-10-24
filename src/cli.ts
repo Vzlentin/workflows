@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /** The `workflows` executable: the terminal, Ctrl+C, and Pi's models for `check`. */
+import { createInterface } from "node:readline";
 import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { harnessProblem } from "./harness.ts";
@@ -27,6 +28,24 @@ process.on("SIGINT", () => ctrlC.press());
 
 const live = process.stderr.isTTY ? terminalRedraw(process.stderr) : undefined;
 
+/**
+ * Reads one typed line, with its echo on stderr. In raw mode, Ctrl+C reaches the interface and not the process, so it
+ * ends the read and `ctrlC` does not count it. Ctrl+C and the end of input give undefined.
+ */
+function readLine(): Promise<string | undefined> {
+	live?.forget();
+	const lines = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+
+	return new Promise((resolve) => {
+		lines.once("line", (line) => {
+			resolve(line);
+			lines.close();
+		});
+		lines.once("SIGINT", () => lines.close());
+		lines.once("close", () => resolve(undefined));
+	});
+}
+
 process.exitCode = await main(process.argv.slice(2), {
 	cwd: process.cwd(),
 	stdin: async () => (process.stdin.isTTY ? undefined : await text(process.stdin)),
@@ -40,5 +59,6 @@ process.exitCode = await main(process.argv.slice(2), {
 	interrupt: ctrlC.interrupt,
 	stop: ctrlC.stop,
 	following: (active) => ctrlC.following(active),
+	readLine: process.stdin.isTTY && process.stderr.isTTY ? readLine : undefined,
 	models: async () => (await createAgentSessionServices({ cwd: process.cwd() })).modelRuntime,
 });

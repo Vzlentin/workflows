@@ -52,6 +52,11 @@ export type Terminal = Io & {
 	readonly stopWindowMs?: number;
 	/** Writes an OSC 7501 program status report to the terminal, when stderr is one. */
 	readonly status?: ((report: string) => void) | undefined;
+	/**
+	 * Reads one typed line, or gives undefined at Ctrl+C or at the end of input. Given only when stdin and stderr are
+	 * terminals.
+	 */
+	readonly readLine?: (() => Promise<string | undefined>) | undefined;
 	/** Pi's model registry, for `check`. */
 	readonly models: () => Promise<Models>;
 	/**
@@ -409,6 +414,27 @@ async function resume(
 
 	if (answer !== undefined && !waiting) throw new UsageError(`run ${run.id} does not wait for an answer`, RESUME);
 
+	if (waiting && answer === undefined && !wait && !json && !background && terminal.readLine !== undefined) {
+		terminal.stdout(`run ${run.id}`);
+		let first: string | undefined;
+
+		const keep = (print: (line: string) => void) => (line: string) => {
+			first ??= line;
+			print(line);
+		};
+
+		outcomeOf(
+			last,
+			run.id,
+			state.outcome,
+			{ ...terminal, stdout: keep(terminal.stdout), stderr: keep(terminal.stderr) },
+			json,
+		);
+		terminal.status?.(programStatus("blocked", first ?? "", "question"));
+
+		return answering(run.id, terminal);
+	}
+
 	if (state.status === "terminal" && answer === undefined && (wait || state.outcome.status === "completed")) {
 		terminal.stdout(`run ${run.id}`);
 
@@ -418,8 +444,13 @@ async function resume(
 	const input = answer === undefined ? last : { ...last, answer: { call: await openInput(run), text: answer } };
 	const ended = tasks.at(-1)?.state.status === "terminal";
 	const key = taskKey(run.id, tasks.length + (ended ? 1 : 0));
-	// A wait never tells the terminal that it follows a run, so a second Ctrl+C exits rather than stops the run.
-	const followed: Terminal = wait ? { ...terminal, following: () => {}, stopWindowMs: 0 } : terminal;
+
+	// A wait never tells the terminal that it follows a run, so a second Ctrl+C exits rather than stops the run. It
+	// never asks for the answer of a waiting run.
+	const followed: Terminal = wait
+		? { ...terminal, following: () => {}, stopWindowMs: 0, readLine: undefined }
+		: terminal;
+
 	followed.following(true);
 	let client: Client | undefined;
 	let from: number;
@@ -1024,59 +1055,67 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 		await poll();
 	};
 
-	try {
-		const waited = client.request({ type: "wait-task", key: run.key });
-		// A detached command closes the connection, which ends the wait.
-		waited.catch(() => undefined);
-		const info = await Promise.race([waited, aborted(terminal.interrupt).then(() => undefined)]);
+	// Set by `report` when the command asks for the answer of a waiting run, after the client and the store close.
+	let asking = false;
+	const code = await watch();
 
-		if (info !== undefined) return await report(info);
-		await stopPolling();
-		const next = `Follow it with: workflows resume ${id}. Stop it with: workflows stop ${id}`;
+	return asking ? answering(id, terminal) : code;
 
-		const line = `detached; run ${id} goes on. ${next}`;
+	async function watch(): Promise<number> {
+		try {
+			const waited = client.request({ type: "wait-task", key: run.key });
+			// A detached command closes the connection, which ends the wait.
+			waited.catch(() => undefined);
+			const info = await Promise.race([waited, aborted(terminal.interrupt).then(() => undefined)]);
 
-		if (!json) terminal.stderr(line);
-		tell("idle", line);
+			if (info !== undefined) return await report(info);
+			await stopPolling();
+			const next = `Follow it with: workflows resume ${id}. Stop it with: workflows stop ${id}`;
 
-		// A run that ends in the window reports its outcome. A wait that fails leaves the run to the host.
-		const ended = waited.then(
-			(done) => ({ done }),
-			() => new Promise<never>(() => {}),
-		);
+			const line = `detached; run ${id} goes on. ${next}`;
 
-		const stopping = abortedWithin(terminal.stop, terminal.stopWindowMs ?? STOP_WINDOW_MS);
-		const second = await Promise.race([stopping.then((stopped) => ({ stopped })), ended]);
+			if (!json) terminal.stderr(line);
+			tell("idle", line);
 
-		if ("done" in second) return await report(second.done);
+			// A run that ends in the window reports its outcome. A wait that fails leaves the run to the host.
+			const ended = waited.then(
+				(done) => ({ done }),
+				() => new Promise<never>(() => {}),
+			);
 
-		if (!second.stopped) {
-			if (json) end("detached", {});
+			const stopping = abortedWithin(terminal.stop, terminal.stopWindowMs ?? STOP_WINDOW_MS);
+			const second = await Promise.race([stopping.then((stopped) => ({ stopped })), ended]);
 
-			return 130;
+			if ("done" in second) return await report(second.done);
+
+			if (!second.stopped) {
+				if (json) end("detached", {});
+
+				return 130;
+			}
+
+			await abortRun(terminal, run.project, run.key);
+
+			return await report(await waited);
+		} catch (error) {
+			await stopPolling();
+
+			if (hostStopped(error)) {
+				const line = `the host stopped; the run continues when it starts again: workflows resume ${id}`;
+				end("host-stopped", {}, line);
+
+				return 1;
+			}
+
+			shown.stop(true);
+			end("failed", { error: error instanceof Error ? error.message : String(error) });
+			throw error;
+		} finally {
+			polled.abort();
+			client.close();
+			terminal.following(false);
+			await store?.close(BACKGROUND_CONTEXT);
 		}
-
-		await abortRun(terminal, run.project, run.key);
-
-		return await report(await waited);
-	} catch (error) {
-		await stopPolling();
-
-		if (hostStopped(error)) {
-			const line = `the host stopped; the run continues when it starts again: workflows resume ${id}`;
-			end("host-stopped", {}, line);
-
-			return 1;
-		}
-
-		shown.stop(true);
-		end("failed", { error: error instanceof Error ? error.message : String(error) });
-		throw error;
-	} finally {
-		polled.abort();
-		client.close();
-		terminal.following(false);
-		await store?.close(BACKGROUND_CONTEXT);
 	}
 
 	async function report(info: TaskInfo): Promise<number> {
@@ -1097,10 +1136,37 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 
 		const shownTo = { ...terminal, stdout: keep(terminal.stdout), stderr: keep(terminal.stderr) };
 		const code = outcomeOf(input, id, outcome, shownTo, json);
-		tell(code === 0 ? "done" : "error", first ?? "");
+
+		asking =
+			outcome.status === "completed" &&
+			script.statusOf(outcome.result) === "waiting" &&
+			terminal.readLine !== undefined &&
+			!json &&
+			!terminal.interrupt.aborted;
+
+		if (asking) terminal.status?.(programStatus("blocked", first ?? "", "question"));
+		else tell(code === 0 ? "done" : "error", first ?? "");
 
 		return code;
 	}
+}
+
+/**
+ * Reads the answer of the waiting run `id` on the terminal, and continues the run with it. Without an answer, at
+ * Ctrl+C or at the end of input, it prints how to continue and exits 130.
+ */
+async function answering(id: string, terminal: Terminal): Promise<number> {
+	const text = await terminal.readLine?.();
+
+	if (text === undefined) {
+		const line = `run ${id} waits for an answer; continue with: workflows resume ${id} --answer <text>`;
+		terminal.stderr(line);
+		terminal.status?.(programStatus("idle", line));
+
+		return 130;
+	}
+
+	return resume([id, `--answer=${text}`], terminal, false, false);
 }
 
 /**

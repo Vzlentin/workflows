@@ -365,7 +365,9 @@ The command prints `run <run-id>` on stdout, then each `phase` and `log` line on
 runs, or when the script ends. The script runs in the host, which saves these lines in the project store, and the
 command reads them from the store file about every 0.5 s. See [Progress](#progress). When the script returns a result with `report`, a list of lines, the command prints
 those lines on stdout. Otherwise it prints the return value: a string as it is, and any other value as JSON. The exit
-code comes from `meta.exit`. A run that waits for an answer to `input(question)` prints the question and exits 3. With
+code comes from `meta.exit`. A run that waits for an answer to `input(question)` prints the question and exits 3. When
+stdin and stderr are terminals, and without `--json` or `--background`, the command asks the question in place of the
+exit: it reads one line on the terminal and continues the run with it as the answer. See [Input](#input). With
 `--json`, stdout gets one JSON outcome line in place of the lines. See [JSON output](#json-output).
 
 A script that throws, or a call in it that fails, stops the run: the command prints `failed <title>: <error>` and
@@ -404,9 +406,12 @@ directory and can commit there.
 #### Program status
 
 When stderr is a terminal, a command that follows a run also writes OSC 7501 program status reports to stderr:
-`ESC ]7501;state=<state>:app=workflows:msg=<base64 of the message> ESC \`. `working` comes at each `phase` line, also
+`ESC ]7501;state=<state>:app=workflows:msg=<base64 of the message> ESC \`, or
+`ESC ]7501;state=blocked:kind=question:app=workflows:msg=<base64 of the message> ESC \` for a question. `working` comes at each `phase` line, also
 of a child run, with the phase text. `idle` comes at the `detached` line, with that line. `done` or `error` comes when
-the command reports the outcome, by its exit code, with the first line that it prints, which can be empty. With
+the command reports the outcome, by its exit code, with the first line that it prints, which can be empty. When the
+command asks the question of a waiting run, `blocked` with the kind `question` comes in place of `done` or `error`,
+with the question. `idle` comes with the `waits for an answer` line when no answer comes. With
 `--json` or `--background`, or when stderr is not a terminal, no report comes. In the message, each control character
 becomes a space, and the message is cut to 2048 UTF-8 bytes on a character boundary.
 
@@ -517,7 +522,12 @@ again on resume.
 `input(question)` asks the user a question. The first time the script reaches it, the call records its start, the
 script stops, and the run's task completes with the result `{ "status": "waiting", "question", "report": [question] }`.
 The command prints the question as the report line and exits 3, also with `wait` and with a resume without
-`--answer`. `list` and `show` give the status `waiting`, and `show` lists the `input` call as `✗`, with the question
+`--answer`, when it cannot ask. A command can ask when stdin and stderr are terminals, without `--json` or
+`--background`, and not after a Ctrl+C; `wait` never asks. Then the command reads one line on the terminal, with its
+echo on stderr, and continues as `workflows resume <run-id> --answer <line>` does: it prints `run <run-id>` again and
+follows the new task. A later `input` call asks again in the same way. Ctrl+C or the end of input while the command
+reads prints `run <run-id> waits for an answer; continue with: workflows resume <run-id> --answer <text>` on stderr
+and exits 130, and the run still waits. `list` and `show` give the status `waiting`, and `show` lists the `input` call as `✗`, with the question
 as its label. A waiting run keeps its sessions, as a failed run does.
 
 `workflows resume <run-id> --answer <text>` starts a new task of the run with the answer to the open `input` call: the
@@ -569,7 +579,9 @@ stopped for a reason other than its end, such as its length, fails its call, and
 whose answer did not call `respond`. A resumed ask never returns the answer of another ask in its session.
 
 A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code. A waiting
-run without `--answer` prints its question again and exits 3. `--answer` for a run whose last task did not complete
+run without `--answer` prints its question again and exits 3. When the command can ask, it reads the answer on the
+terminal and continues the run with it, or prints the `waits for an answer` line and exits 130 when no answer comes.
+`--answer` for a run whose last task did not complete
 with the status `waiting` prints `workflows: run <run-id> does not wait for an answer` and `usage: workflows resume
 <run-id> [--answer <text>] [--background] [--json]`, and exits 2. See [Input](#input).
 
