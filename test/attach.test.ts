@@ -72,9 +72,45 @@ describe("attach", () => {
 			[1, [`workflows: run ${bare} has no session`]],
 			[1, [`workflows: run ${id} has no session in b c`]],
 			[1, [`workflows: no run nothing in ${runs}`]],
-			[2, ["workflows: give one run ID", "usage: workflows attach <run-id> [<step>]"]],
+			[2, ["workflows: give one run ID", "usage: workflows attach [<run-id> [<step>]]"]],
 		]);
 		expect(await piLog()).toBeUndefined();
+	});
+});
+
+describe("attach without a run ID", () => {
+	it("asks which run to attach on a terminal, the runs that run first, and attaches the one taken", async () => {
+		const done = await ran('phase("a")\nawait agent("Script: done")');
+		await writeFile(join(root, "y.js"), 'phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")');
+		const running = await workflows(["y.js"], { cwd: root, script: { interruptAt: { kind: "script", nth: 2 } } });
+		expect(running.code).toBe(130);
+		const asked: string[][] = [];
+
+		const attached = await workflows(["attach"], {
+			cwd: root,
+			choose: async (question, items) => {
+				asked.push([question, ...items]);
+
+				return 1;
+			},
+		});
+
+		expect(asked).toEqual([
+			[
+				"Attach to which run?",
+				expect.stringMatching(/^◉ y {2}y running: talk {2}\d+s ago$/),
+				expect.stringMatching(/^· x {2}x done {2}\d+s ago$/),
+			],
+		]);
+		const conversation = await conversationOf(/Script: done/);
+		expect([attached.code, await piLog()]).toEqual([7, `--harness main --harness-conversation ${conversation}`]);
+		expect(done).not.toBe(running.id);
+	});
+
+	it("exits 130 and attaches nothing when the pick is cancelled", async () => {
+		await ran('phase("a")\nawait agent("Script: one")');
+		const attached = await workflows(["attach"], { cwd: root, choose: async () => undefined });
+		expect([attached.code, attached.stderr, await piLog()]).toEqual([130, [], undefined]);
 	});
 });
 

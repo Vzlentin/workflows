@@ -726,6 +726,13 @@ on disk, it runs `herdr worktree list --cwd <worktree>`. When no workspace has t
 herdr worktree open --cwd <repository> --path <worktree> --label <title> --no-focus
 ```
 
+The workspace follows the run: the command runs `workflows wait <run-id>` in the pane that `herdr worktree open`
+prints as `result.root_pane`, with this Node and this CLI and the `XDG_STATE_HOME` and `XDG_CONFIG_HOME` of the command,
+through `herdr pane run`. So the pane shows the steps of the run until it ends, and `workflows attach` opens the sessions
+in tabs next to it. When `worktree open` prints no pane, the command finds the workspace with `herdr worktree list`
+and runs `workflows wait` in a new tab `progress` of it, from `herdr tab create --workspace <id> --cwd <worktree>
+--label progress`.
+
 Each command tries once. A herdr failure, or a missing `herdr`, prints the one line `workflows: herdr: <message>` on
 stderr, with each newline of the message as a space, and changes neither the outcome nor the exit code. Ctrl+C stops a
 `herdr` call that runs, and prints no warning for it. `--background` opens nothing; a later `wait` or `resume` of the run,
@@ -883,11 +890,30 @@ as no run ID, prints `usage: workflows show <run-id> [--calls] [--json]` and exi
 ## Attach
 
 ```sh
+workflows attach
 workflows attach <run-id>
 workflows attach <run-id> <step>
 ```
 
-`workflows attach` opens one session of a run in Pi, as `harness attach --conversation <id>` does:
+`workflows attach` opens one session of a run in Pi, as `harness attach --conversation <id>` does.
+
+Without a run ID, when stdin and stderr are terminals, it asks `Attach to which run?` with the runs of the project of the
+current directory: the runs that run or wait for an answer first, then the others, newest first. Each line is
+`<mark> <title>  <workflow> <status>`, then `: <steps>` for a running run, with the steps that run now joined by ` › `,
+then `  <age> ago`. The mark is `◉` running, `?` waiting, `✗` failed, else `·`. Typing filters the lines by each word,
+in any case; the arrows or Ctrl+N and Ctrl+P move, Enter attaches the run under the cursor, and Esc or Ctrl+C exits 130
+and attaches nothing. A project with no run prints `workflows: no runs in the project of <cwd>` and exits 1. A Herdr key
+can open it in a popup:
+
+```toml
+[[keys.command]]
+key = "prefix+w"
+type = "popup"
+description = "attach a workflows run"
+command = "workflows attach"
+```
+
+Then, for the run:
 
 - The sessions are the `session` calls of the run and of its child runs that opened a conversation, in the order they
   started. With `<step>`, only the sessions under the phase line `<step>` count. The step is all the words after the
@@ -905,8 +931,8 @@ workflows attach <run-id> <step>
 A run with no session prints `workflows: run <run-id> has no session`, and a step with no session prints
 `workflows: run <run-id> has no session in <step>`. An unknown run ID prints the `no run` error of `resume`, and a run
 saved by another version prints the error of `show` with `cannot be attached`. A Herdr failure prints
-`workflows: <error>`. These exit 1. Bad usage, such as no run ID, prints `usage: workflows attach <run-id> [<step>]` and
-exits 2.
+`workflows: <error>`. These exit 1. Bad usage, such as no run ID when stdin or stderr is not a terminal, prints
+`usage: workflows attach [<run-id> [<step>]]` and exits 2.
 
 ## Save
 

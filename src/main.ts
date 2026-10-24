@@ -13,6 +13,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -54,6 +55,9 @@ const STOP_WINDOW_MS = 2000;
 /** The error of harness's client when the host closes the connection, such as when it stops. */
 const HOST_CLOSED = "The harness host closed the connection";
 
+/** A question with `items` to pick one of, on a terminal: the index of the item, or undefined when cancelled. */
+export type Choose = (question: string, items: readonly string[]) => Promise<number | undefined>;
+
 export type Terminal = Io & {
 	/** Aborted by the first Ctrl+C: the command detaches, and the run goes on in the host. */
 	readonly interrupt: AbortSignal;
@@ -70,6 +74,8 @@ export type Terminal = Io & {
 	 * terminals.
 	 */
 	readonly readLine?: (() => Promise<string | undefined>) | undefined;
+	/** Asks which of `items` to take, and gives its index, or undefined when cancelled. Given only on a terminal. */
+	readonly choose?: Choose | undefined;
 	/** Pi's model registry, for `check`. */
 	readonly models: () => Promise<Models>;
 	/**
@@ -84,7 +90,7 @@ const WAIT = "workflows wait <run-id> [--json]";
 const STOP = "workflows stop <run-id> [--json]";
 const LIST = "workflows list [--json]";
 const SHOW = "workflows show <run-id> [--calls] [--json]";
-const ATTACH = "workflows attach <run-id> [<step>]";
+const ATTACH = "workflows attach [<run-id> [<step>]]";
 const SAVE = "workflows save <run-id> <name> [--force]";
 const PRUNE = "workflows prune [--yes] [--install-hook] [--json]";
 
@@ -583,7 +589,16 @@ type Listed = {
  */
 async function list(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	if (args.length > 0) throw new UsageError("list takes no arguments", LIST);
-	const store = await storeOf(await projectOf(terminal.cwd));
+	const listed = await listedRuns(await storeOf(await projectOf(terminal.cwd)));
+
+	if (json) terminal.stdout(JSON.stringify(listed));
+	else for (const run of listed) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
+
+	return 0;
+}
+
+/** The runs of the project store file `store` that have a run directory, newest run ID first. */
+async function listedRuns(store: string): Promise<Listed[]> {
 	const runs = await reading(store, new Map<string, RunTask[]>(), runTasks);
 	const listed: Listed[] = [];
 
@@ -599,10 +614,73 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 		else listed.push({ runId: id, workflow: savedBy(task).name, title: savedBy(task).name, status, repository });
 	}
 
-	if (json) terminal.stdout(JSON.stringify(listed));
-	else for (const run of listed) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
+	return listed;
+}
 
-	return 0;
+/** Whether a run with `status` has not ended: it runs, or it waits for an answer. */
+const live = (status: string) => status === "running" || status === "waiting";
+
+/**
+ * Asks on the terminal which run of the project of the current directory to attach, and gives its ID, or undefined
+ * when the person cancels. The runs that have not ended come first, each with the steps that run now.
+ */
+async function pickRun(terminal: Terminal, choose: Choose): Promise<string | undefined> {
+	const store = await storeOf(await projectOf(terminal.cwd));
+	const listed = await listedRuns(store);
+
+	if (listed.length === 0) throw new Error(`no runs in the project of ${terminal.cwd}`);
+	const runs = [...listed.filter((run) => live(run.status)), ...listed.filter((run) => !live(run.status))];
+
+	const steps = await reading(store, new Map<string, string>(), async (opened) => {
+		const found = new Map<string, string>();
+
+		for (const run of runs.filter((each) => each.status === "running")) {
+			const progress = new Progress();
+
+			for (const event of await progressEvents(opened, run.runId)) progress.add(event);
+
+			const running = progress
+				.lines()
+				.flatMap((line) => (line.trimStart().startsWith("◉ ") ? [line.trim().slice(2)] : []));
+
+			if (running.length > 0) found.set(run.runId, running.join(" › "));
+		}
+
+		return found;
+	});
+
+	const now = Date.now();
+
+	const items = runs.map((run) => {
+		const started = startOf(run.runId);
+		const age = started === undefined ? "" : `  ${duration(now - started)} ago`;
+		const step = steps.get(run.runId);
+
+		return `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${step === undefined ? "" : `: ${step}`}${age}`;
+	});
+
+	const index = await choose("Attach to which run?", items);
+
+	return index === undefined ? undefined : runs[index]?.runId;
+}
+
+/** The mark of a run in the picker by its status: `◉` running, `?` waiting for an answer, `✗` failed, else `·`. */
+function markOf(status: string): string {
+	if (status === "running") return "◉";
+
+	if (status === "waiting") return "?";
+
+	return status === "failed" || status === "faulted" ? "✗" : "·";
+}
+
+/** The start time of the run `id`, from its `<yyyymmdd>T<hhmmss>` prefix in UTC, if it has one. */
+function startOf(id: string): number | undefined {
+	const match = /^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)-/.exec(id);
+
+	if (match === null) return undefined;
+	const [, year, month, day, hour, minute, second] = match.map(Number);
+
+	return Date.UTC(year ?? 0, (month ?? 1) - 1, day, hour, minute, second);
 }
 
 /** The line of the post-merge hook that `prune --install-hook` writes. */
@@ -751,11 +829,51 @@ async function removedByHerdr(worktree: Worktree): Promise<boolean> {
 /** The terminals of the commands that tried to open their run's worktree in herdr: each command tries once. */
 const herdrTried = new WeakSet<Terminal>();
 
+/** The pane that a `herdr worktree open` or `herdr tab create` prints. */
+const HERDR_ROOT_PANE = Type.Object({ result: Type.Object({ root_pane: Type.Object({ pane_id: Type.String() }) }) });
+
+/** The pane of `stdout` of a herdr call that prints `root_pane`, if it has one. */
+function rootPane(stdout: string): string | undefined {
+	try {
+		const parsed: unknown = JSON.parse(stdout);
+
+		return Value.Check(HERDR_ROOT_PANE, parsed) ? parsed.result.root_pane.pane_id : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** The CLI of this install: `cli.js` next to `main.js`, or `cli.ts` in a checkout. */
+const CLI = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./cli.ts" : "./cli.js", import.meta.url));
+
 /**
- * Opens `worktree` of the run of `input` as a herdr workspace, unless a workspace has it open. A herdr failure is a
- * warning line on stderr. Ctrl+C stops a herdr call and prints no warning.
+ * The shell command that follows the run `id` with `workflows wait`, with this Node and this CLI, and the
+ * `XDG_STATE_HOME` and `XDG_CONFIG_HOME` of this process, so it finds the same runs from any pane.
  */
-async function openInHerdr(input: script.ScriptInput, worktree: Worktree, terminal: Terminal): Promise<void> {
+function waitCommand(id: string): string {
+	const env = ["XDG_STATE_HOME", "XDG_CONFIG_HOME"].flatMap((name) => {
+		const value = process.env[name];
+
+		return value ? [`${name}=${value}`] : [];
+	});
+
+	return ["env", ...env, process.execPath, CLI, "wait", id]
+		.map((word) => `'${word.replaceAll("'", "'\\''")}'`)
+		.join(" ");
+}
+
+/**
+ * Opens `worktree` of the run `id` of `input` as a herdr workspace whose pane follows the run with `workflows wait`,
+ * unless a workspace has the worktree open. When `herdr worktree open` gives no pane, the run follows in a new tab
+ * `progress` of the workspace. A herdr failure is a warning line on stderr. Ctrl+C stops a herdr call and prints no
+ * warning.
+ */
+async function openInHerdr(
+	id: string,
+	input: script.ScriptInput,
+	worktree: Worktree,
+	terminal: Terminal,
+): Promise<void> {
 	try {
 		if ((await herdrWorkspace(worktree, terminal.interrupt)) !== undefined) return;
 
@@ -771,9 +889,26 @@ async function openInHerdr(input: script.ScriptInput, worktree: Worktree, termin
 			"--no-focus",
 		];
 
-		const opened = await runCommand("herdr", argv, worktree.repository, terminal.interrupt);
+		const herdr = async (words: readonly string[]) => {
+			const result = await runCommand("herdr", words, worktree.repository, terminal.interrupt);
 
-		if (opened.code !== 0) throw new Error(failure(["herdr", ...argv], opened));
+			if (result.code !== 0) throw new Error(failure(["herdr", ...words], result));
+
+			return result.stdout;
+		};
+
+		const pane = rootPane(await herdr(argv)) ?? (await progressTab());
+
+		if (pane !== undefined) await herdr(["pane", "run", pane, waitCommand(id)]);
+
+		async function progressTab(): Promise<string | undefined> {
+			const workspace = await herdrWorkspace(worktree, terminal.interrupt);
+
+			if (workspace === undefined) return undefined;
+			const tab = ["tab", "create", "--workspace", workspace, "--cwd", worktree.path, "--label", "progress"];
+
+			return rootPane(await herdr(tab));
+		}
 	} catch (cause) {
 		if (terminal.interrupt.aborted) return;
 		const message = cause instanceof Error ? cause.message : String(cause);
@@ -888,7 +1023,10 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
  * new tab or pane; else it runs Pi in this terminal and exits with its code.
  */
 async function attach(args: readonly string[], terminal: Terminal): Promise<number> {
-	const [id, ...words] = args;
+	const [given, ...words] = args;
+	const id = given === undefined && terminal.choose !== undefined ? await pickRun(terminal, terminal.choose) : given;
+
+	if (given === undefined && id === undefined && terminal.choose !== undefined) return 130;
 
 	if (id === undefined || id.startsWith("-")) throw new UsageError("give one run ID", ATTACH);
 	const step = words.join(" ") || undefined;
@@ -1191,7 +1329,7 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 		// The host creates the worktree after the run starts, so each read looks for it until the command tries once.
 		if (herdrWorktree !== undefined && !herdrTried.has(terminal) && existsSync(herdrWorktree.path)) {
 			herdrTried.add(terminal);
-			await openInHerdr(input, herdrWorktree, terminal);
+			await openInHerdr(id, input, herdrWorktree, terminal);
 		}
 
 		if (store === undefined) return;

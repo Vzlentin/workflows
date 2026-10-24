@@ -233,10 +233,53 @@ esac
 		const id = run.id ?? "";
 		expect([run.code, run.stdout]).toEqual([0, plain.stdout.map((line) => line.replace(plain.id ?? "", id))]);
 		const worktree = join(runsOf(root), id, "worktree");
+		// This herdr prints no pane for the workspace and lists no workspace for the worktree, so nothing follows the run.
 		expect(await logged()).toEqual([
 			`worktree list --cwd ${worktree}`,
 			`worktree open --cwd ${await realpath(repo)} --path ${worktree} --label w --no-focus`,
+			`worktree list --cwd ${worktree}`,
 		]);
+	});
+
+	it("follows the run with workflows wait in the pane of the workspace that it opens", async () => {
+		await fake(
+			"herdr",
+			`echo "$@" >> "${root}/herdr.log"
+case "$1 $2" in
+"worktree list") echo '{"result":{"worktrees":[]}}' ;;
+"worktree open") echo '{"result":{"workspace":{"workspace_id":"w1"},"root_pane":{"pane_id":"p1"}}}' ;;
+esac
+`,
+		);
+		process.env.HERDR_ENV = "1";
+		const run = await workflows(["w"], { cwd: repo });
+		expect(run.code).toBe(0);
+		const lines = await logged();
+		expect(lines).toHaveLength(3);
+		expect(lines[2]).toMatch(new RegExp(`^pane run p1 'env' 'XDG_STATE_HOME=[^']+' .*'wait' '${run.id}'$`));
+	});
+
+	it("follows the run in a new tab progress when herdr prints no pane for the workspace", async () => {
+		await fake(
+			"herdr",
+			`echo "$@" >> "${root}/herdr.log"
+case "$1 $2" in
+"worktree list") [ -f "${root}/opened" ] && echo '{"result":{"worktrees":[{"path":"'"$4"'","open_workspace_id":"w1"}]}}' || echo '{"result":{"worktrees":[]}}' ;;
+"worktree open") touch "${root}/opened" ;;
+"tab create") echo '{"result":{"root_pane":{"pane_id":"p2"}}}' ;;
+esac
+`,
+		);
+		process.env.HERDR_ENV = "1";
+		const run = await workflows(["w"], { cwd: repo });
+		expect(run.code).toBe(0);
+		const worktree = join(runsOf(root), run.id ?? "", "worktree");
+		const lines = await logged();
+		expect(lines.slice(2, 4)).toEqual([
+			`worktree list --cwd ${worktree}`,
+			`tab create --workspace w1 --cwd ${worktree} --label progress`,
+		]);
+		expect(lines[4]).toMatch(new RegExp(`^pane run p2 .*'wait' '${run.id}'$`));
 	});
 
 	it("opens nothing for a waited run whose worktree a workspace has open", async () => {

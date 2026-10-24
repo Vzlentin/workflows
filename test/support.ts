@@ -611,6 +611,8 @@ export async function workflows(
 		readonly dropStart?: boolean;
 		/** The lines typed on the terminal, one for each read; with none left, the read gives the end of input. */
 		readonly lines?: readonly string[];
+		/** The terminal's pick: gets the question and the items, and gives the index of the taken item. */
+		readonly choose?: (question: string, items: readonly string[]) => Promise<number | undefined>;
 	},
 ): Promise<Outcome> {
 	let exits = 0;
@@ -649,6 +651,7 @@ export async function workflows(
 		stop: ctrlC.stop,
 		following: (active) => ctrlC.following(active),
 		readLine: options.lines && (async () => queue.shift()),
+		choose: options.choose,
 		stopWindowMs: options.stopWindowMs ?? 0,
 		models: async () => model.models,
 		connect: async (project, start) => {

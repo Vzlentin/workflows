@@ -1,0 +1,64 @@
+/**
+ * A list to pick one item of on a terminal: typing filters the items, the arrows or Ctrl+N and Ctrl+P move, Enter
+ * takes the item, and Esc or Ctrl+C cancels.
+ */
+
+/** The state of a pick: the filter text and the item under the cursor among the matching items. */
+export type Pick = { readonly query: string; readonly cursor: number };
+
+/** What a key does: the next state, the index of the taken item, or a cancel. */
+export type Step = { readonly pick: Pick } | { readonly taken: number } | { readonly cancelled: true };
+
+/** The indexes of the items that contain each word of `query`, in any case. */
+export function matching(items: readonly string[], query: string): number[] {
+	const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+
+	return items.flatMap((item, index) => (words.every((word) => item.toLowerCase().includes(word)) ? [index] : []));
+}
+
+/** What the key `key`, as the terminal sends it, does to `pick` over `items`. Any other key changes nothing. */
+export function press(items: readonly string[], pick: Pick, key: string): Step {
+	const shown = matching(items, pick.query);
+
+	const move = (by: number) => ({
+		pick: { ...pick, cursor: shown.length === 0 ? 0 : (pick.cursor + by + shown.length) % shown.length },
+	});
+
+	if (key === "\r" || key === "\n") {
+		const index = shown[pick.cursor];
+
+		return index === undefined ? { pick } : { taken: index };
+	}
+
+	if (key === "\x1b" || key === "\x03") return { cancelled: true };
+
+	if (key === "\x1b[A" || key === "\x10") return move(-1);
+
+	if (key === "\x1b[B" || key === "\x0e") return move(1);
+
+	if (key === "\x7f" || key === "\b") return { pick: { query: pick.query.slice(0, -1), cursor: 0 } };
+
+	if (/^[^\p{Cc}]+$/u.test(key)) return { pick: { query: pick.query + key, cursor: 0 } };
+
+	return { pick };
+}
+
+/**
+ * The lines of `pick` for a terminal of `rows` rows: the question with the filter, then the matching items, the one
+ * under the cursor with `›`, at most enough to fit, scrolled to keep the cursor in view.
+ */
+export function render(question: string, items: readonly string[], pick: Pick, rows: number): string[] {
+	const shown = matching(items, pick.query);
+	const room = Math.max(rows - 2, 1);
+	const first = Math.min(Math.max(pick.cursor - room + 1, 0), Math.max(shown.length - room, 0));
+	const head = `${question} ${pick.query}`;
+
+	if (shown.length === 0) return [head, "  no run matches"];
+
+	return [
+		head,
+		...shown
+			.slice(first, first + room)
+			.map((index, at) => `${first + at === pick.cursor ? "›" : " "} ${items[index] ?? ""}`),
+	];
+}
