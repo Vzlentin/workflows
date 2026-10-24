@@ -787,8 +787,8 @@ Only the runs that have a run directory with a `project` file are listed.
 With `--pick`, when stdin and stderr are terminals, the command asks `Pick a run:` with the runs: the runs that run or
 wait for an answer first, then the others, newest first. Each line is `<mark> <title>  <workflow> <status>`, then
 `: <steps>` for a running run, with the steps that run now joined by ` › `, then `  <age> ago`. The mark is `◉`
-running, `?` waiting, `✗` failed, else `·`. Typing filters the lines by each word, in any case; the arrows or Ctrl+N
-and Ctrl+P move, Enter takes the run under the cursor, and Esc or Ctrl+C exits 130 with no output. The command prints
+running, `?` waiting, `✗` failed, else `·`. Typing filters the lines by each word, in any case; the arrows move,
+Enter takes the run under the cursor, and Esc or Ctrl+C exits 130 with no output. The command prints
 the run ID of the run it takes, or with `--json` its `list` object, so other commands compose with it:
 `workflows show "$(workflows list --pick)" --follow`. A project with no run prints `workflows: no runs in the project of
 <cwd>` and exits 1. `--pick` without a terminal prints `workflows: --pick needs a terminal on stdin and stderr` and the

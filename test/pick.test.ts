@@ -8,8 +8,8 @@ const ITEMS = ["◉ Fix the README  ship running", "· Add a thanks line  ship s
 
 describe("the keys of a pick", () => {
 	it("reads each encoding of a key as the same action", () => {
-		expect(["\x1b[A", "\x1bOA", "\x10"].map(actionOf)).toEqual([UP, UP, UP]);
-		expect(["\x1b[B", "\x1bOB", "\x0e"].map(actionOf)).toEqual([DOWN, DOWN, DOWN]);
+		expect(["\x1b[A", "\x1bOA"].map(actionOf)).toEqual([UP, UP]);
+		expect(["\x1b[B", "\x1bOB"].map(actionOf)).toEqual([DOWN, DOWN]);
 		expect(["\r", "\x1b", "\x03", "\x7f"].map((key) => actionOf(key)?.type)).toEqual([
 			"enter",
 			"cancel",
@@ -18,7 +18,7 @@ describe("the keys of a pick", () => {
 		]);
 		const typed = ["a", "é", "\x1b[97u"].map(actionOf);
 		expect(typed).toEqual(["a", "é", "a"].map((text) => ({ type: "text", text })));
-		expect(["\x1b[C", "\t"].map(actionOf)).toEqual([undefined, undefined]);
+		expect(["\x1b[C", "\t", "\x0e", "\x10"].map(actionOf)).toEqual([undefined, undefined, undefined, undefined]);
 	});
 });
 

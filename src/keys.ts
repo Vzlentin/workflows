@@ -6,8 +6,8 @@ import type { Action } from "./pick.ts";
 const KEYS: readonly (readonly [Action, readonly KeyId[]])[] = [
 	[{ type: "enter" }, [Key.enter]],
 	[{ type: "cancel" }, [Key.escape, Key.ctrl("c")]],
-	[{ type: "move", by: -1 }, [Key.up, Key.ctrl("p")]],
-	[{ type: "move", by: 1 }, [Key.down, Key.ctrl("n")]],
+	[{ type: "move", by: -1 }, [Key.up]],
+	[{ type: "move", by: 1 }, [Key.down]],
 	[{ type: "backspace" }, [Key.backspace]],
 ];
 
