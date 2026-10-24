@@ -36,6 +36,7 @@ process.exitCode = await main(process.argv.slice(2), {
 		process.stderr.write(`${line}\n`);
 	},
 	redraw: live?.redraw,
+	status: live && ((report) => process.stderr.write(report)),
 	interrupt: ctrlC.interrupt,
 	stop: ctrlC.stop,
 	following: (active) => ctrlC.following(active),

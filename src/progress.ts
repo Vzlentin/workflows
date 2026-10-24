@@ -213,3 +213,28 @@ export function terminalRedraw(stream: {
 function colored(_match: string, indent: string, mark: Mark): string {
 	return `${indent}\x1b[${COLORS[mark]}m${mark}\x1b[0m`;
 }
+
+/**
+ * The OSC 7501 program status report of the command: `state`, with `kind` for a `blocked` state, and `message` as its
+ * base64 `msg`. Each control character of `message` becomes a space, and the text is cut to 2048 UTF-8 bytes on a
+ * character boundary.
+ */
+export function programStatus(
+	state: "idle" | "working" | "done" | "blocked" | "error",
+	message: string,
+	kind?: "permission" | "question" | "auth",
+): string {
+	let cut = "";
+	let bytes = 0;
+
+	for (const char of message.replace(/\p{Cc}/gu, " ")) {
+		bytes += Buffer.byteLength(char);
+
+		if (bytes > 2048) break;
+		cut += char;
+	}
+
+	const blocked = state === "blocked" && kind !== undefined ? `:kind=${kind}` : "";
+
+	return `\x1b]7501;state=${state}${blocked}:app=workflows:msg=${Buffer.from(cut).toString("base64")}\x1b\\`;
+}

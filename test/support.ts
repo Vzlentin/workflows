@@ -533,6 +533,8 @@ export type Outcome = {
 	readonly code: number;
 	readonly stdout: readonly string[];
 	readonly stderr: readonly string[];
+	/** The program status reports of the command. */
+	readonly status: readonly string[];
 	readonly model: FakeModel;
 	readonly id: string | undefined;
 	/** The host of the command, with `keepHost`. */
@@ -616,6 +618,7 @@ export async function workflows(
 
 	const stdout: string[] = [];
 	const stderr: string[] = [];
+	const status: string[] = [];
 	let host = options.host;
 	let started: Host | undefined;
 	let drop = options.dropStart === true;
@@ -625,6 +628,7 @@ export async function workflows(
 		stdin: async () => options.stdin,
 		stdout: (line) => stdout.push(line),
 		stderr: (line) => stderr.push(line),
+		status: (report) => status.push(report),
 		interrupt: ctrlC.interrupt,
 		stop: ctrlC.stop,
 		following: (active) => ctrlC.following(active),
@@ -656,7 +660,7 @@ export async function workflows(
 	if (!options.keepHost) await started?.close();
 	const id = stdout.find((line) => line.startsWith("run "))?.slice(4);
 
-	return { code, stdout, stderr, model, id, host: options.keepHost ? started : undefined, exits };
+	return { code, stdout, stderr, status, model, id, host: options.keepHost ? started : undefined, exits };
 }
 
 /** A harness host of `project` in this process, with `models`. */
