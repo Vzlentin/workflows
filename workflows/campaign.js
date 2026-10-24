@@ -21,6 +21,19 @@ const items = (min) => ({
 	properties: { items: { type: "array", minItems: min, items: { type: "string" } } },
 })
 
+const BRANCH = { type: "object", required: ["branch"], properties: { branch: { type: "string" } } }
+
+// Renames the branch `$1` to `$2` when the worktree is on `$1`, with a suffix `-2`, `-3`... when `$2` exists, and
+// prints the branch that the worktree is on. A `$2` that Git rejects keeps `$1`, and a second line gives the reason.
+// A repeat after the rename finds the worktree on another branch and prints it.
+const RENAME = `cur=$(git branch --show-current)
+[ "$cur" = "$1" ] || { printf %s "$cur"; exit 0; }
+git check-ref-format --branch "$2" >/dev/null 2>&1 || { printf '%s\\nis not a valid branch name' "$1"; exit 0; }
+n=$2; i=2
+while git show-ref --verify --quiet "refs/heads/$n"; do n=$2-$i; i=$((i+1)); done
+git branch -m "$n" 2>/dev/null || { printf '%s\\nis in conflict with an existing branch' "$1"; exit 0; }
+printf %s "$n"`
+
 const answer = "\n\nAnswer with respond: the work items, each one as the full text of one work item, in order."
 
 let queue = (await agent(`${await prompts.split({ goal })}${answer}`, { as: "planner", schema: items(1) })).items
@@ -45,5 +58,22 @@ for (let n = 1; queue.length > 0; n++) {
 }
 
 const head = done.at(-1).result.head
+const commits = await sh(["git", "log", "--reverse", "--format=%s", `${args.start}..HEAD`])
+let named
 
-return { status: "done", head, items: done, report: [`done ${name} in ${done.length} items, ${head}`] }
+try {
+	named = await agent(prompts.branch({ goal, commits }), { as: "planner", schema: BRANCH })
+} catch {}
+
+const branchName = named?.branch.trim() ?? ""
+const base = `campaign/${runId}`
+
+const renamed =
+	branchName === "" || branchName === base ? base : await sh(["sh", "-c", RENAME, "rename", base, branchName])
+
+const [branch, rejected] = renamed.split("\n")
+const report = [`done ${name} in ${done.length} items, ${head} on ${branch}`]
+
+if (rejected !== undefined) report.push(`branch ${branchName} ${rejected}; kept ${base}`)
+
+return { status: "done", head, branch, items: done, report }

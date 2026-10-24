@@ -177,6 +177,7 @@ export type Kind =
 	| "commit"
 	| "split"
 	| "requeue"
+	| "branch"
 	| "reflect"
 	| "script"
 	| "result";
@@ -206,6 +207,7 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Write the commit message and the branch name", "commit"],
 	["Split this goal into work items.", "split"],
 	["Update the work item queue", "requeue"],
+	["Name the branch of this campaign", "branch"],
 	["Improve this prompt", "reflect"],
 	["Script", "script"],
 	// The outcome that a background run posts to the conversation of its `workflow` call.
@@ -236,6 +238,8 @@ export type Script = {
 	readonly items?: readonly string[];
 	/** The queue of each requeue answer; a missing answer is an empty queue. */
 	readonly queues?: readonly (readonly string[])[];
+	/** The `respond` answer of the campaign branch turn. */
+	readonly branch?: string;
 	/** The prompt that interrupts the run: Ctrl+C is pressed while it waits for its answer. */
 	readonly interruptAt?: { readonly kind: Kind; readonly nth: number };
 	/**
@@ -430,6 +434,8 @@ export class FakeModel {
 				return respond({ items: [...(this.#script.items ?? [])] });
 			case "requeue":
 				return respond({ items: [...(this.#script.queues?.[nth - 1] ?? [])] });
+			case "branch":
+				return respond({ branch: this.#script.branch ?? "docs/readme" });
 			case "reflect": {
 				// The reply keeps the current text first, so that the prompt keeps its kind.
 				const current = /\n## current\n([\s\S]*?)\n\n## records\n/.exec(prompt)?.[1] ?? "";
