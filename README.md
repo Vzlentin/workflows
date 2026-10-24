@@ -50,6 +50,7 @@ workflows campaign goal.md
 workflows list                             # the runs of this project
 workflows resume <run-id>
 workflows wait <run-id>                    # follow a run to its outcome
+workflows attach <run-id>                  # open its working session in Pi
 workflows stop <run-id>
 workflows prune --yes                      # remove the worktrees of merged runs
 workflows                                  # the workflows that you can run

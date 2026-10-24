@@ -2,11 +2,13 @@
  * The `workflows` command line, a client of the harness host of a project. `workflows <workflow> ...` starts a run of a
  * workflow script in the host and follows it, `workflows resume <run-id>` continues or follows one, `workflows wait
  * <run-id>` follows one to its outcome, `workflows stop <run-id>` stops one, `workflows list` prints the runs of the
- * project, `workflows show <run-id>` prints the calls of one run, and `workflows save <run-id> <name>` keeps the script
- * of one run as a project workflow; `workflows prune` removes the worktrees of the ended runs whose branch GitHub
- * merged. The project store holds the runs; a run directory holds the run's `project` file and whatever the workflow
- * writes there.
+ * project, `workflows show <run-id>` prints the calls of one run, `workflows attach <run-id>` opens a session of one run
+ * in Pi, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow; `workflows prune`
+ * removes the worktrees of the ended runs whose branch GitHub merged. The project store holds the runs; a run directory
+ * holds the run's `project` file and whatever the workflow writes there.
  */
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -18,17 +20,19 @@ import type { Models } from "@earendil-works/pi-ai/models";
 import type { TaskOutcome, TaskRecord } from "@earendil-works/pi-durable";
 import { type Client, connect } from "@vzlentin/harness/client";
 import { setEntry } from "@vzlentin/harness/entries";
+import { openConversationPane } from "@vzlentin/harness/herdr";
 import { resolveProject } from "@vzlentin/harness/projects";
 import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
-import { ENTRY } from "./harness.ts";
+import { ENTRY, harnessDir } from "./harness.ts";
 import * as script from "./meta.ts";
 import { display, type ProgressEvent, programStatus } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
 import type { SavedCall } from "./script.ts";
 import { loadScripts, projectFolder } from "./script.ts";
+import { PACKAGE } from "./setup.ts";
 import {
 	callRecords,
 	inputString,
@@ -80,6 +84,7 @@ const WAIT = "workflows wait <run-id> [--json]";
 const STOP = "workflows stop <run-id> [--json]";
 const LIST = "workflows list [--json]";
 const SHOW = "workflows show <run-id> [--json]";
+const ATTACH = "workflows attach <run-id> [<step>]";
 const SAVE = "workflows save <run-id> <name> [--force]";
 const PRUNE = "workflows prune [--yes] [--install-hook] [--json]";
 
@@ -92,6 +97,7 @@ const COMMANDS = new Map<string, Command>([
 	["wait", (args, terminal, json) => resume(args, terminal, json, false, true)],
 	["stop", stop],
 	["show", show],
+	["attach", attach],
 	["save", save],
 	["prune", prune],
 	["check", script.check],
@@ -110,6 +116,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		STOP,
 		LIST,
 		SHOW,
+		ATTACH,
 		SAVE,
 		PRUNE,
 		script.CHECK,
@@ -860,6 +867,85 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	for (const line of footer) terminal.stdout(line);
 
 	return 0;
+}
+
+/**
+ * Opens a session of a run in Pi: the session that works now, else the last session to start, among the sessions of
+ * `step` when it is given. In a Herdr workspace that has the run's worktree open, or in a Herdr pane, it opens Pi in a
+ * new tab or pane; else it runs Pi in this terminal and exits with its code.
+ */
+async function attach(args: readonly string[], terminal: Terminal): Promise<number> {
+	const [id, ...words] = args;
+
+	if (id === undefined || id.startsWith("-")) throw new UsageError("give one run ID", ATTACH);
+	const step = words.join(" ") || undefined;
+	const run = await savedRun(id, ATTACH);
+
+	const { task, records } = await reading(run.store, { task: undefined, records: new Map() }, async (store) => ({
+		task: taskOf((await runTasks(store)).get(id) ?? []),
+		records: await callRecords(store, id),
+	}));
+
+	const { input, state } = checked(task, id, "be attached");
+	const sessions = sessionsOf(callTree(records, id, state.status === "terminal"));
+	const list = step === undefined ? sessions : sessions.filter((session) => session.phase === step);
+	const session = list.findLast((found) => found.works) ?? list.at(-1);
+
+	if (session === undefined) throw new Error(`run ${id} has no session${step === undefined ? "" : ` in ${step}`}`);
+	const client = await connectTo(terminal, run.project, true);
+
+	try {
+		// The watch fails here for a conversation that the host does not know, and gives the child that Herdr opens.
+		const conversation = String(session.conversation);
+		const { child } = await client.request({ type: "watch", conversation });
+
+		if (process.env.HERDR_ENV) {
+			const { worktree } = input;
+
+			const workspace =
+				worktree !== undefined && existsSync(worktree.path) ? await herdrWorkspace(worktree) : undefined;
+
+			const pane = process.env.HERDR_PANE_ID;
+			const place = workspace !== undefined ? { workspace } : pane ? { pane } : undefined;
+
+			if (place !== undefined) {
+				await openConversationPane(child, place, { ...process.env, HARNESS_PROJECT: run.project });
+
+				return 0;
+			}
+		}
+
+		// cli.ts refused to start without harness, so harness is there.
+		const cli = join(harnessDir(PACKAGE) ?? "", "dist", "cli.js");
+		const argv = [cli, "--project", run.project, "attach", "--conversation", conversation];
+		const [code]: (number | null)[] = await once(spawn(process.execPath, argv, { stdio: "inherit" }), "exit");
+
+		return code ?? 1;
+	} finally {
+		client.close();
+	}
+}
+
+/** The sessions with a conversation in `calls` and in their child runs, in the order they started. */
+function sessionsOf(
+	calls: readonly Shown[],
+): { conversation: number; phase: string | null; profile: string; works: boolean; startedAt: string }[] {
+	return calls
+		.flatMap((call) => [
+			...(call.kind === "session" && call.conversation !== undefined
+				? [
+						{
+							conversation: call.conversation,
+							phase: call.phase,
+							profile: String(call.args.profile),
+							works: works(call, calls),
+							startedAt: call.startedAt,
+						},
+					]
+				: []),
+			...sessionsOf(call.calls ?? []),
+		])
+		.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
 }
 
 /** Writes the script of a saved run to `workflows/<name>.js` of the project folder, and prints the file's path. */

@@ -310,9 +310,9 @@ workflows check review
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `stop`, `list`, `show`, `save`, `prune` and `check` are commands, so no script of these names can run. Bad
-usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command, such as `usage:
-workflows show <run-id> [--json]`, and exits 2.
+`resume`, `wait`, `stop`, `list`, `show`, `attach`, `save`, `prune` and `check` are commands, so no script of these
+names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command,
+such as `usage: workflows show <run-id> [--json]`, and exits 2.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
@@ -819,6 +819,34 @@ without a `project` file, prints the
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
 as no run ID, prints `usage: workflows show <run-id> [--json]` and exits 2.
 
+## Attach
+
+```sh
+workflows attach <run-id>
+workflows attach <run-id> <step>
+```
+
+`workflows attach` opens one session of a run in Pi, as `harness attach --conversation <id>` does:
+
+- The sessions are the `session` calls of the run and of its child runs that opened a conversation, in the order they
+  started. With `<step>`, only the sessions under the phase line `<step>` count. The step is all the words after the
+  run ID, and must be equal to the phase line.
+- The command opens the session that works now, as `show` marks it `◉`. When no session works, it opens the last
+  session that started.
+- It connects to the host of the run's project, and starts the host when none runs. It sends `watch` for the
+  conversation of the session, so an unknown conversation fails before Pi starts.
+- Outside Herdr, or in Herdr with no place to open Pi, it runs `harness --project <project> attach --conversation <id>`
+  in this terminal, and exits with its code. A child that a signal ends exits 1.
+- With `HERDR_ENV`, it opens Pi in a new tab of the Herdr workspace that has the run's worktree open, or else in a new
+  pane to the right of the pane `HERDR_PANE_ID`, and exits 0. A run with no worktree, or whose worktree is gone, uses
+  only the pane.
+
+A run with no session prints `workflows: run <run-id> has no session`, and a step with no session prints
+`workflows: run <run-id> has no session in <step>`. An unknown run ID prints the `no run` error of `resume`, and a run
+saved by another version prints the error of `show` with `cannot be attached`. A Herdr failure prints
+`workflows: <error>`. These exit 1. Bad usage, such as no run ID, prints `usage: workflows attach <run-id> [<step>]` and
+exits 2.
+
 ## Save
 
 ```sh
@@ -1113,8 +1141,8 @@ The engine files in `src/`:
 - `cli.ts`: the `workflows` command entry point.
 - `harness.ts`: the check of the harness install and the path of the entry.
 - `setup.ts`: the setup of a global install, for the command and the postinstall.
-- `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show`, `save` and `prune`, a client of the harness host,
-  and the run directory.
+- `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show`, `attach`, `save` and `prune`, a client of the
+  harness host, and the run directory.
 - `entry.ts`: the entry that the harness host loads, with the script task.
 - `progress.ts`: the tree of steps of a run, and how the command draws it on stderr.
 - `store.ts`: the command's read-only reads of the project store: the tasks of the runs, their progress and calls.
