@@ -3,13 +3,14 @@
  * workflow script in the host and follows it, `workflows resume <run-id>` continues or follows one, `workflows wait
  * <run-id>` follows one to its outcome, `workflows stop <run-id>` stops one, `workflows list` prints the runs of the
  * project, `workflows show <run-id>` prints the calls of one run, and `workflows save <run-id> <name>` keeps the script
- * of one run as a project workflow. The project store holds the runs; a run directory holds the run's `project` file
- * and whatever the workflow writes there.
+ * of one run as a project workflow; `workflows prune` removes the worktrees of the ended runs whose branch GitHub
+ * merged. The project store holds the runs; a run directory holds the run's `project` file and whatever the workflow
+ * writes there.
  */
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -19,6 +20,9 @@ import { type Client, connect } from "@vzlentin/harness/client";
 import { setEntry } from "@vzlentin/harness/entries";
 import { resolveProject } from "@vzlentin/harness/projects";
 import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
 import { ENTRY } from "./harness.ts";
 import * as script from "./meta.ts";
 import { display, type ProgressEvent } from "./progress.ts";
@@ -61,6 +65,7 @@ const STOP = "workflows stop <run-id> [--json]";
 const LIST = "workflows list [--json]";
 const SHOW = "workflows show <run-id> [--json]";
 const SAVE = "workflows save <run-id> <name> [--force]";
+const PRUNE = "workflows prune [--yes] [--install-hook] [--json]";
 
 type Command = (args: readonly string[], terminal: Terminal, json: boolean, background: boolean) => Promise<number>;
 
@@ -72,6 +77,7 @@ const COMMANDS = new Map<string, Command>([
 	["stop", stop],
 	["show", show],
 	["save", save],
+	["prune", prune],
 	["check", script.check],
 ]);
 
@@ -86,6 +92,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		LIST,
 		SHOW,
 		SAVE,
+		PRUNE,
 		script.CHECK,
 		"workflows",
 	]
@@ -499,6 +506,156 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 
 	if (json) terminal.stdout(JSON.stringify(listed));
 	else for (const run of listed) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
+
+	return 0;
+}
+
+/** The line of the post-merge hook that `prune --install-hook` writes. */
+const HOOK_LINE = "workflows prune --yes >/dev/null 2>&1 &";
+
+/** The worktrees that `herdr worktree list` prints, with the workspace that has each one open. */
+const HERDR_WORKTREES = Type.Object({
+	result: Type.Object({
+		worktrees: Type.Array(
+			Type.Object({ path: Type.String(), open_workspace_id: Type.Optional(Type.Union([Type.String(), Type.Null()])) }),
+		),
+	}),
+});
+
+type Worktree = NonNullable<script.ScriptInput["worktree"]>;
+
+type Prunable = { readonly runId: string; readonly branch: string; readonly worktree: Worktree };
+
+/**
+ * Prints the ended runs of the project of the current directory whose worktree is on a branch that GitHub merged. With
+ * `--yes`, it removes their worktrees and branches. With `--install-hook`, it writes a post-merge hook that runs
+ * `prune --yes`. It reads the project store only, and runs every `gh` call before it removes anything.
+ */
+async function prune(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
+	const { values } = withUsage(
+		() =>
+			parseArgs({
+				args: [...args],
+				options: { yes: { type: "boolean" }, "install-hook": { type: "boolean" } },
+				strict: true,
+			}),
+		PRUNE,
+	);
+
+	if (values["install-hook"]) return installHook(terminal);
+	const store = await storeOf(await projectOf(terminal.cwd));
+	const runs = await reading(store, new Map<string, RunTask[]>(), runTasks);
+	const merged: Prunable[] = [];
+
+	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
+		const found = await prunable(id, tasks);
+
+		if (found !== undefined && (await isMerged(found))) merged.push(found);
+	}
+
+	const line = ({ runId, branch, worktree }: Prunable) => `${runId} ${branch} ${worktree.path}`;
+
+	for (const found of merged) {
+		if (values.yes) await removeWorktree(found);
+
+		if (!json) terminal.stdout(line(found));
+	}
+
+	if (json)
+		terminal.stdout(
+			JSON.stringify(merged.map(({ runId, branch, worktree }) => ({ runId, branch, worktree: worktree.path }))),
+		);
+
+	return 0;
+}
+
+/** The run `id` with `tasks` when it has a run directory, has ended, and has a worktree on a branch. */
+async function prunable(id: string, tasks: readonly RunTask[]): Promise<Prunable | undefined> {
+	if (!existsSync(join(runsDirectory(), id, "project"))) return undefined;
+
+	if (tasks.at(-1)?.state.status !== "terminal") return undefined;
+	const task = taskOf(tasks);
+
+	if (task === undefined || !current(task)) return undefined;
+	const { worktree } = task.input;
+
+	if (worktree === undefined || (await repositoryAt(worktree.path)) === undefined) return undefined;
+	const branch = await git(worktree.path, "branch", "--show-current");
+
+	return branch === "" ? undefined : { runId: id, branch, worktree };
+}
+
+const MERGED = Type.Array(Type.Object({ headRefOid: Type.String() }));
+
+/**
+ * Whether GitHub merged a pull request from the branch of `found` at the commit that the branch is on now. A branch name
+ * can come back in a later run, so a merged pull request of an earlier commit does not count.
+ */
+async function isMerged({ branch, worktree }: Prunable): Promise<boolean> {
+	const argv = ["pr", "list", "--head", branch, "--state", "merged", "--json", "headRefOid"];
+	const result = await runCommand("gh", argv, worktree.path);
+
+	if (result.code !== 0) throw new Error(failure(["gh", ...argv], result));
+	const parsed: unknown = JSON.parse(result.stdout);
+
+	if (!Value.Check(MERGED, parsed)) throw new Error(`gh pr list printed no list: ${result.stdout}`);
+	const head = await git(worktree.path, "rev-parse", "HEAD");
+
+	return parsed.some(({ headRefOid }) => headRefOid === head);
+}
+
+/** Removes the worktree of `found`, through herdr when a herdr workspace has it open, and then its branch. */
+async function removeWorktree({ branch, worktree }: Prunable): Promise<void> {
+	if (!(await removedByHerdr(worktree))) await git(worktree.repository, "worktree", "remove", worktree.path);
+
+	if (await gitSucceeds(worktree.repository, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`)) {
+		await git(worktree.repository, "branch", "-D", branch);
+	}
+}
+
+/** Whether herdr removed `worktree` with the workspace that has it open. Any herdr failure is false. */
+async function removedByHerdr(worktree: Worktree): Promise<boolean> {
+	if (!process.env.HERDR_ENV) return false;
+
+	try {
+		const listed = await runCommand("herdr", ["worktree", "list", "--cwd", worktree.path], worktree.path);
+
+		if (listed.code !== 0) return false;
+		const parsed: unknown = JSON.parse(listed.stdout);
+
+		if (!Value.Check(HERDR_WORKTREES, parsed)) return false;
+		const path = await realpath(worktree.path);
+
+		for (const entry of parsed.result.worktrees) {
+			const workspace = entry.open_workspace_id;
+
+			if (!workspace || (await realpath(entry.path).catch(() => undefined)) !== path) continue;
+			const removed = await runCommand("herdr", ["worktree", "remove", "--workspace", workspace], worktree.repository);
+
+			return removed.code === 0;
+		}
+
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+/** Writes the post-merge hook of the repository of the current directory, unless a hook or a hooks path is set. */
+async function installHook(terminal: Terminal): Promise<number> {
+	const hooks = resolve(terminal.cwd, await git(terminal.cwd, "rev-parse", "--git-path", "hooks"));
+	const add = `add this line to it: ${HOOK_LINE}`;
+
+	if (await gitSucceeds(terminal.cwd, "config", "--get", "core.hooksPath")) {
+		throw new Error(`core.hooksPath sets the hooks of this repository; ${add}`);
+	}
+
+	const file = join(hooks, "post-merge");
+
+	if (existsSync(file)) throw new Error(`${file} exists; ${add}`);
+	await mkdir(hooks, { recursive: true });
+	await writeFile(file, `#!/bin/sh\n${HOOK_LINE}\n`, { mode: 0o755 });
+	terminal.stdout(file);
 
 	return 0;
 }

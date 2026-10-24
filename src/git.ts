@@ -37,7 +37,7 @@ export async function gitSucceeds(cwd: string, ...args: string[]): Promise<boole
 }
 
 /** The top level of the Git repository at `path` itself, or undefined when `path` is not one. */
-async function repositoryAt(path: string): Promise<string | undefined> {
+export async function repositoryAt(path: string): Promise<string | undefined> {
 	const directory = await stat(path).then(
 		(found) => found.isDirectory(),
 		() => false,
