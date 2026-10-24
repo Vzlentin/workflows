@@ -908,7 +908,7 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 
 	if (outcome !== undefined) progress.stop(outcome.status !== "completed");
 	const now = Date.now();
-	const steps = progress.lines(now);
+	const steps = progress.lines();
 
 	if (json) {
 		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, steps, calls }));

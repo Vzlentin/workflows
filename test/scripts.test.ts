@@ -391,8 +391,8 @@ describe("workflows show", () => {
 		const id = first.id ?? "";
 		const before = rows();
 		const steps = await workflows(["show", id], { cwd: root });
-		// The task has not ended, so the step runs, with the time since it started.
-		expect(steps.stdout).toEqual([`run ${id} x running x`, expect.stringMatching(/^◉ talk {2}\d+s$/)]);
+		// The task has not ended, so the step runs.
+		expect(steps.stdout).toEqual([`run ${id} x running x`, "◉ talk"]);
 		const shown = await workflows(["show", id, "--calls"], { cwd: root });
 		expect(rows()).toEqual(before);
 		const a = await conversationOf(/Script: one/);

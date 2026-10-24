@@ -63,20 +63,19 @@ describe("the progress on a terminal", () => {
 });
 
 describe("the steps of a run", () => {
-	it("give each step that ended its duration, and a step that runs the time since it started with now", () => {
+	it("give each step that ended its duration", () => {
 		const progress = new Progress();
 		progress.add({ kind: "phase", run: "r", parent: null, text: "plan", at: 0 });
 		progress.add({ kind: "log", run: "r", parent: null, text: "a note", at: 1000 });
 		progress.add({ kind: "phase", run: "r", parent: null, text: "judge", at: 185_000 });
 		expect(progress.lines()).toEqual(["✓ plan  3m05s", "  a note", "◉ judge"]);
-		expect(progress.lines(197_000)).toEqual(["✓ plan  3m05s", "  a note", "◉ judge  12s"]);
 		progress.add({ kind: "end", run: "r", failed: false, at: 3_905_000 });
 		expect(progress.lines()).toEqual(["✓ plan  3m05s", "  a note", "✓ judge  1h02m"]);
 		// Events that an earlier version saved have no time.
 		const earlier = new Progress();
 		earlier.add({ kind: "phase", run: "r", parent: null, text: "plan" });
 		earlier.add({ kind: "end", run: "r", failed: false });
-		expect(earlier.lines(1000)).toEqual(["✓ plan"]);
+		expect(earlier.lines()).toEqual(["✓ plan"]);
 	});
 
 	it("go on with the step that a new execution starts again in, without the time between", () => {

@@ -160,9 +160,9 @@ export class Progress {
 
 	/**
 	 * Each step as `<indent><mark> <text>` and each log line as `<indent><text>`, with 2 spaces for each level. A step
-	 * that ended adds `  <duration>`. With `now`, a step that runs adds the time since it started.
+	 * that ended adds `  <duration>`.
 	 */
-	lines(now?: number): string[] {
+	lines(): string[] {
 		const lines: string[] = [];
 
 		const visit = (items: readonly Item[], indent: string) => {
@@ -170,8 +170,8 @@ export class Progress {
 				if ("run" in item) visit(item.run.items, indent);
 				else if ("log" in item) lines.push(`${indent}${item.log}`);
 				else {
-					const end = item.mark === "◉" ? now : item.ended;
-					const time = end === undefined || item.started === undefined ? "" : `  ${duration(end - item.started)}`;
+					const { started, ended } = item;
+					const time = started === undefined || ended === undefined ? "" : `  ${duration(ended - started)}`;
 					lines.push(`${indent}${item.mark} ${item.text}${time}`);
 					visit(item.items, `${indent}  `);
 				}

@@ -62,27 +62,9 @@ The command prints `run <run-id>`, then one progress step on stderr as each sess
 `round <n>: implement`, `round <n>: review` and `judge`. See [Progress](#progress) for how the steps show. A resume
 prints the phase line of the first call that runs, such as a turn or a Git step, and the lines after it.
 
-Under its step, each step that gives a result logs one line:
-
-- `round <n>: implement` logs the size of the round's change from the commit before the round, `+<insertions>
-  -<deletions> in <n> file(s)`, or `no new changes`.
-- `round <n>: review` logs the answer of its challenge, `SHIP` or `FIX`.
-- `judge` logs `judge <score or failed>: <commit> <commit subject>` after the squash.
-
-```text
-✓ research  41s
-✓ plan  1m12s
-✓ round 1: implement  3m40s
-  +24 -3 in 2 files
-✓ round 1: review  52s
-  FIX
-✓ round 2: implement  1m05s
-  +2 -1 in 1 file
-✓ round 2: review  38s
-  SHIP
-✓ judge  29s
-  judge 0.83: a1b2c3d fix: correct the README typo
-```
+Each implement step logs the size of the round's change, `+<insertions> -<deletions> in <n> file(s)` or `no new
+changes`; each review step logs `SHIP` or `FIX`; the judge step logs `judge <score or failed>: <commit> <subject>`. See
+the example of [Campaign](#campaign).
 
 The research session gets the work item and writes a research document: what the code that the work item touches
 does today, with `path:line` references, the patterns and tests of that area, and open questions. It documents and
@@ -213,13 +195,7 @@ conflict with an existing branch; kept campaign/<run-id>`.
 
 - When the queue is empty, the command prints `done <subject> in <n> item(s), <commit> on <branch>` with the commit of
   the last item and the branch that the worktree ends on, then one line `  <commit> <commit subject>, judge <score or
-  failed>` for each shipped item, in order, and exits 0:
-
-  ```text
-  done Fix the README in 2 items, b4c5d6e on docs/readme
-    a1b2c3d fix: correct the README typo, judge 0.83
-    b4c5d6e docs: thank the reader, judge 1.00
-  ```
+  failed>` for each shipped item, in order, and exits 0.
 
 - When an item is blocked or stopped, or ships with a judge score of 0, the item fails. A missing score, when the judge
   failed, is not a failure. The run resets the worktree with `git reset --hard` to the commit that the item started
@@ -448,11 +424,9 @@ stderr in one of three ways:
   `<indent><text>`. A run without steps prints no progress line.
   The [Pi tool](#the-workflow-tool) draws the last of these lines, so Pi shows the same steps as a terminal.
 
-The project store keeps each line with its time. Lines that an earlier version saved have no time, and their steps
-show no duration. The first `phase` line of each execution of a run, such as after a resume, continues the step that
-runs in its run when it has the same text, and prints nothing: the step goes on, and its duration leaves out the time
-between its last end and the new line. Any other `phase` line, also one that repeats the text of the step, starts a
-new step.
+The store keeps each line with its time; lines that an earlier version saved have none, and show no duration. The
+first `phase` line of an execution of a run, such as after a resume, continues the step of the same text that runs,
+without the time between, and prints nothing. Any other `phase` line starts a new step.
 
 When the run ends, the steps that still run become `✓` when the run finished, and `✗` when it failed or was
 stopped. A command that Ctrl+C detaches leaves them as they are. On a terminal and with `--json`, the tree draws once
@@ -782,14 +756,11 @@ cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "
 without a worktree.
 Only the runs that have a run directory with a `project` file are listed.
 
-With `--pick`, when stdin and stderr are terminals, the command asks `Pick a run:` with the runs: the runs that run or
-wait for an answer first, then the others, newest first. Each line is `<mark> <title>  <workflow> <status>`, then
-`: <steps>` for a running run, with the steps that run now joined by ` › `. The mark is `◉`
-running, `?` waiting, `✗` failed, else `·`. Typing filters the lines by each word, in any case; the arrows move,
-Enter takes the run under the cursor, and Esc or Ctrl+C exits 130 with no output. The command prints
-the run ID of the run it takes, so other commands compose with it: `workflows wait "$(workflows list --pick)"`. A project with no run prints `workflows: no runs in the project of
-<cwd>` and exits 1. `--pick` without a terminal prints `workflows: --pick needs a terminal on stdin and stderr` and the
-usage line `usage: workflows list [--pick] [--json]`, and exits 2.
+With `--pick`, on a terminal, the command asks `Pick a run:` with the runs that run or wait first, each as `<mark>
+<title>  <workflow> <status>`, with `: <steps that run now>` for a running run. The mark is `◉` running, `?` waiting,
+`✗` failed, else `·`. Typing filters by each word, in any case; the arrows move, Enter prints the run ID, and Esc or
+Ctrl+C exits 130. So commands compose: `workflows wait "$(workflows list --pick)"`. A project with no run exits 1, and
+`--pick` without a terminal exits 2.
 
 `list` reads the project store file read-only and does not start the host, so no run continues. It takes no lock that
 the host waits for, and runs no checkpoint of the file. A store whose schema pi-durable must update first cannot open
@@ -836,19 +807,10 @@ workflows show <run-id> --calls
 workflows show <run-id> --json
 ```
 
-`workflows show` prints one run as the tree of its steps, from the store of its project:
-
-```text
-run <run-id> <workflow> <status> <title>
-✓ <step>  <duration>
-  <log line>
-<report lines, or the failed and continue with lines>
-```
-
-The first line has the fields of `workflows list`. The steps are the tree of [Progress](#progress), from the first
-line of the run, as a terminal draws it when the run ends: a step that runs is `◉`, with the time since it started.
-Once the run's task ended, the steps that still ran are `✓` when it completed and `✗` otherwise. A run without steps
-prints its calls, as `--calls` does.
+`workflows show` prints one run from the store of its project: the line `run <run-id> <workflow> <status> <title>`,
+with the fields of `workflows list`, then the steps of [Progress](#progress) from the first line of the run, then the
+report lines, or the `failed` and `continue with` lines. Once the run's task ended, the steps that still ran are `✓`
+when it completed and `✗` otherwise. A run without steps prints its calls, as `--calls` does.
 
 With `--calls`, `show` prints the tree of its phases and calls:
 

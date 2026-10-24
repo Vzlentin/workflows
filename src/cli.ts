@@ -3,7 +3,7 @@
 import { createInterface } from "node:readline";
 import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
-import { StdinBuffer, truncateToWidth } from "@earendil-works/pi-tui";
+import { StdinBuffer } from "@earendil-works/pi-tui";
 import { harnessProblem } from "./harness.ts";
 import { actionOf } from "./keys.ts";
 import type { Choose } from "./main.ts";
@@ -57,18 +57,9 @@ function readLine(): Promise<string | undefined> {
 const choose: Choose = (question, items) => {
 	live?.forget();
 	const { stdin, stderr } = process;
+	const screen = terminalRedraw(stderr);
 	let pick: Pick = { query: "", cursor: 0 };
-	let drawn = 0;
-
-	const draw = (lines: readonly string[]) => {
-		const width = Math.max((stderr.columns ?? 80) - 1, 10);
-		const up = drawn > 1 ? `\x1b[${drawn - 1}A` : "";
-		const cut = lines.map((line) => truncateToWidth(line, width, "…"));
-		stderr.write(`${up}\r\x1b[J${cut.join("\n")}`);
-		drawn = cut.length;
-	};
-
-	const drawPick = () => draw(render(question, items, pick, Math.min(stderr.rows ?? 24, 20)));
+	const drawPick = () => screen.redraw(render(question, items, pick, Math.min(stderr.rows ?? 24, 20)));
 
 	return new Promise((resolve) => {
 		// Splits the chunks of stdin into whole keys, so a chunk with several keys or half a key reads right.
@@ -79,7 +70,7 @@ const choose: Choose = (question, items) => {
 			keys.destroy();
 			stdin.setRawMode(false);
 			stdin.pause();
-			draw([""]);
+			screen.redraw([]);
 			resolve(index);
 		};
 
