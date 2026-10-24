@@ -28,8 +28,8 @@ import { Value } from "typebox/value";
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
 import { ENTRY, harnessDir } from "./harness.ts";
 import * as script from "./meta.ts";
-import { display, duration, Progress, type ProgressEvent, programStatus } from "./progress.ts";
-import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
+import { display, duration, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
+import { type Io, newRunId, parseArgsMessage, runStart, UsageError, withUsage } from "./run.ts";
 import type { SavedCall } from "./script.ts";
 import { loadScripts, projectFolder } from "./script.ts";
 import { PACKAGE } from "./setup.ts";
@@ -42,6 +42,7 @@ import {
 	type RunTask,
 	reading,
 	runTasks,
+	type Store,
 } from "./store.ts";
 import { current, TASK } from "./task.ts";
 
@@ -587,9 +588,9 @@ type Listed = {
  * project store only.
  */
 async function list(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
-	const pick = args.length === 1 && args[0] === "--pick";
+	const pick = args[0] === "--pick";
 
-	if (args.length > 0 && !pick) throw new UsageError("list takes no arguments but --pick", LIST);
+	if (args.length > Number(pick)) throw new UsageError("list takes no arguments but --pick", LIST);
 
 	if (pick) {
 		if (terminal.choose === undefined) throw new UsageError("--pick needs a terminal on stdin and stderr", LIST);
@@ -601,7 +602,7 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 		return 0;
 	}
 
-	const listed = await listedRuns(await storeOf(await projectOf(terminal.cwd)));
+	const listed = await reading(await storeOf(await projectOf(terminal.cwd)), [], listedRuns);
 
 	if (json) terminal.stdout(JSON.stringify(listed));
 	else for (const run of listed) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
@@ -609,9 +610,9 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 	return 0;
 }
 
-/** The runs of the project store file `store` that have a run directory, newest run ID first. */
-async function listedRuns(store: string): Promise<Listed[]> {
-	const runs = await reading(store, new Map<string, RunTask[]>(), runTasks);
+/** The runs of the open project store `store` that have a run directory, newest run ID first. */
+async function listedRuns(store: Store): Promise<Listed[]> {
+	const runs = await runTasks(store);
 	const listed: Listed[] = [];
 
 	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
@@ -629,46 +630,41 @@ async function listedRuns(store: string): Promise<Listed[]> {
 	return listed;
 }
 
-/** Whether a run with `status` has not ended: it runs, or it waits for an answer. */
-const live = (status: string) => status === "running" || status === "waiting";
-
 /**
  * Asks on the terminal which run of the project of the current directory to take, and gives it, or undefined when the
  * person cancels. The runs that have not ended come first, each with the steps that run now.
  */
 async function pickRun(terminal: Terminal, choose: Choose): Promise<Listed | undefined> {
-	const store = await storeOf(await projectOf(terminal.cwd));
-	const listed = await listedRuns(store);
+	const empty = { runs: [], steps: new Map<string, string>() };
 
-	if (listed.length === 0) throw new Error(`no runs in the project of ${terminal.cwd}`);
-	const runs = [...listed.filter((run) => live(run.status)), ...listed.filter((run) => !live(run.status))];
-
-	const steps = await reading(store, new Map<string, string>(), async (opened) => {
+	const { runs, steps } = await reading(await storeOf(await projectOf(terminal.cwd)), empty, async (store) => {
+		const live = (run: Listed) => run.status === "running" || run.status === "waiting";
+		// A stable sort keeps the newest first within each group.
+		const sorted = (await listedRuns(store)).toSorted((a, b) => Number(live(b)) - Number(live(a)));
 		const found = new Map<string, string>();
 
-		for (const run of runs.filter((each) => each.status === "running")) {
+		for (const run of sorted.filter((each) => each.status === "running")) {
 			const progress = new Progress();
 
-			for (const event of await progressEvents(opened, run.runId)) progress.add(event);
-
-			const running = progress
-				.lines()
-				.flatMap((line) => (line.trimStart().startsWith("◉ ") ? [line.trim().slice(2)] : []));
+			for (const event of await progressEvents(store, run.runId)) progress.add(event);
+			const running = progress.running();
 
 			if (running.length > 0) found.set(run.runId, running.join(" › "));
 		}
 
-		return found;
+		return { runs: sorted, steps: found };
 	});
 
+	if (runs.length === 0) throw new Error(`no runs in the project of ${terminal.cwd}`);
 	const now = Date.now();
 
 	const items = runs.map((run) => {
-		const started = startOf(run.runId);
+		const started = runStart(run.runId);
 		const age = started === undefined ? "" : `  ${duration(now - started)} ago`;
 		const step = steps.get(run.runId);
+		const detail = step === undefined ? "" : `: ${step}`;
 
-		return `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${step === undefined ? "" : `: ${step}`}${age}`;
+		return `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${detail}${age}`;
 	});
 
 	const index = await choose("Pick a run:", items);
@@ -677,22 +673,12 @@ async function pickRun(terminal: Terminal, choose: Choose): Promise<Listed | und
 }
 
 /** The mark of a run in the picker by its status: `◉` running, `?` waiting for an answer, `✗` failed, else `·`. */
-function markOf(status: string): string {
+function markOf(status: string): Mark | "?" | "·" {
 	if (status === "running") return "◉";
 
 	if (status === "waiting") return "?";
 
 	return status === "failed" || status === "faulted" ? "✗" : "·";
-}
-
-/** The start time of the run `id`, from its `<yyyymmdd>T<hhmmss>` prefix in UTC, if it has one. */
-function startOf(id: string): number | undefined {
-	const match = /^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)-/.exec(id);
-
-	if (match === null) return undefined;
-	const [, year, month, day, hour, minute, second] = match.map(Number);
-
-	return Date.UTC(year ?? 0, (month ?? 1) - 1, day, hour, minute, second);
 }
 
 /** The line of the post-merge hook that `prune --install-hook` writes. */
@@ -801,10 +787,10 @@ async function removeWorktree({ branch, worktree }: Prunable): Promise<void> {
 	}
 }
 
-/** The ID of the herdr workspace that has `worktree` open, if any. It throws when herdr fails or `signal` aborts. */
-async function herdrWorkspace(worktree: Worktree, signal?: AbortSignal): Promise<string | undefined> {
+/** The ID of the herdr workspace that has `worktree` open, if any. It throws when herdr fails. */
+async function herdrWorkspace(worktree: Worktree): Promise<string | undefined> {
 	const argv = ["worktree", "list", "--cwd", worktree.path];
-	const listed = await runCommand("herdr", argv, worktree.path, signal);
+	const listed = await runCommand("herdr", argv, worktree.path);
 
 	if (listed.code !== 0) throw new Error(failure(["herdr", ...argv], listed));
 	const parsed: unknown = JSON.parse(listed.stdout);
@@ -887,51 +873,45 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	const following = args.includes("--follow");
 	const rest = args.filter((arg) => arg !== "--calls" && arg !== "--follow");
 	const run = await savedRun(oneRunId(rest, SHOW), SHOW);
-	let shown = await snapshot(run, terminal, withCalls);
+	// On a terminal the tree draws in place on stderr; elsewhere the command prints it once the run ended.
+	const draw = following && !json ? terminal.redraw : undefined;
+	let shown = await snapshot(run, terminal, withCalls || json);
 
-	if (following) {
-		// On a terminal the tree draws in place on stderr; elsewhere the command prints it once the run ended.
-		const draw = json ? undefined : terminal.redraw;
+	if (draw !== undefined) terminal.stdout(shown.header);
 
-		if (draw !== undefined) terminal.stdout(shown.header);
+	while (following && !shown.ended) {
+		draw?.(shown.body);
 
-		while (true) {
-			draw?.(shown.body);
-
-			if (shown.ended) break;
-
-			if (await abortedWithin(terminal.interrupt, POLL_MS)) return 130;
-			shown = await snapshot(run, terminal, withCalls);
-		}
-
-		if (draw !== undefined) {
-			for (const line of shown.footer) terminal.stdout(line);
-
-			return 0;
-		}
+		if (await abortedWithin(terminal.interrupt, POLL_MS)) return 130;
+		shown = await snapshot(run, terminal, withCalls || json);
 	}
 
-	if (json) {
-		terminal.stdout(JSON.stringify(shown.json));
+	if (json) terminal.stdout(JSON.stringify(shown.json));
+	else if (draw !== undefined) {
+		draw(shown.body);
 
-		return 0;
-	}
-
-	for (const line of [shown.header, ...shown.body, ...shown.footer]) terminal.stdout(line);
+		for (const line of shown.footer) terminal.stdout(line);
+	} else for (const line of [shown.header, ...shown.body, ...shown.footer]) terminal.stdout(line);
 
 	return 0;
 }
 
-/** What `show` prints of `run` now: its first line, its tree, its footer, the JSON tree, and whether its task ended. */
+/**
+ * What `show` prints of `run` now: its first line, its tree, its footer, the JSON tree, and whether its task ended.
+ * It reads the call records only `withCalls`, or when the run has no step.
+ */
 async function snapshot(run: SavedRun, terminal: Terminal, withCalls: boolean) {
 	const { id } = run;
-	const empty = { task: undefined, records: new Map(), events: [] };
+	const empty = { task: undefined, records: new Map<string, SavedCall>(), progress: new Progress() };
 
-	const { task, records, events } = await reading(run.store, empty, async (store) => ({
-		task: taskOf((await runTasks(store)).get(id) ?? []),
-		records: await callRecords(store, id),
-		events: await progressEvents(store, id),
-	}));
+	const { task, records, progress } = await reading(run.store, empty, async (store) => {
+		const read = new Progress();
+
+		for (const event of await progressEvents(store, id)) read.add(event);
+		const calls = withCalls || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
+
+		return { task: taskOf((await runTasks(store)).get(id) ?? []), records: calls, progress: read };
+	});
 
 	const checkedTask = checked(task, id, "be shown");
 	const { input, state } = checkedTask;
@@ -952,9 +932,6 @@ async function snapshot(run: SavedRun, terminal: Terminal, withCalls: boolean) {
 	}
 
 	const status = runStatus(checkedTask);
-	const progress = new Progress();
-
-	for (const event of events) progress.add(event);
 
 	if (outcome !== undefined) progress.stop(outcome.status !== "completed");
 	const now = Date.now();
@@ -962,7 +939,7 @@ async function snapshot(run: SavedRun, terminal: Terminal, withCalls: boolean) {
 
 	return {
 		header: `run ${id} ${input.name} ${status} ${title}`,
-		body: withCalls || steps.length === 0 ? treeLines(calls, "", now) : steps,
+		body: withCalls || !progress.stepped ? treeLines(calls, "", now) : steps,
 		footer,
 		json: { runId: id, workflow: input.name, title, status, ...end, steps, calls },
 		ended: outcome !== undefined,

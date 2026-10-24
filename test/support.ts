@@ -22,7 +22,8 @@ import { projectDir } from "@vzlentin/harness/projects";
 import { AGENT_HANDLE, type Replies, type Request, statePaths } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { main } from "../src/main.ts";
+import { type Choose, main } from "../src/main.ts";
+import { untimed } from "../src/progress.ts";
 import { CtrlC } from "../src/run.ts";
 
 /** The entry of the workflows checkout, which the hosts of the tests load. */
@@ -551,9 +552,7 @@ export type Outcome = {
 const PROGRESS = Type.Object({ progress: Type.Array(Type.String()) });
 
 /** `line` without the duration at the end of a step line, which depends on how fast the test runs. */
-export function untimed(line: string): string {
-	return line.replace(/ {2}\d+(?:s|m\d\ds|h\d\dm)$/, "");
-}
+export { untimed };
 
 /**
  * The lines of the last `{"progress":[...]}` stderr line of a `--json` run, without durations, and throws for any
@@ -612,7 +611,7 @@ export async function workflows(
 		/** The lines typed on the terminal, one for each read; with none left, the read gives the end of input. */
 		readonly lines?: readonly string[];
 		/** The terminal's pick: gets the question and the items, and gives the index of the taken item. */
-		readonly choose?: (question: string, items: readonly string[]) => Promise<number | undefined>;
+		readonly choose?: Choose;
 		/** Draws the progress lines in place, as on a terminal. */
 		readonly redraw?: (lines: readonly string[]) => void;
 	},

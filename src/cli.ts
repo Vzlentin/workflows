@@ -4,8 +4,9 @@ import { createInterface } from "node:readline";
 import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { harnessProblem } from "./harness.ts";
+import type { Choose } from "./main.ts";
 import { type Pick, press, render } from "./pick.ts";
-import { terminalRedraw } from "./progress.ts";
+import { fit, terminalRedraw } from "./progress.ts";
 import { CtrlC } from "./run.ts";
 import { ensureHarness, PACKAGE, setup } from "./setup.ts";
 
@@ -51,7 +52,7 @@ function readLine(): Promise<string | undefined> {
  * Asks which of `items` to take, on stderr, with the keys of stdin in raw mode, and gives its index, or undefined when
  * cancelled. It clears its lines before it returns.
  */
-function choose(question: string, items: readonly string[]): Promise<number | undefined> {
+const choose: Choose = (question, items) => {
 	live?.forget();
 	const { stdin, stderr } = process;
 	let pick: Pick = { query: "", cursor: 0 };
@@ -60,10 +61,12 @@ function choose(question: string, items: readonly string[]): Promise<number | un
 	const draw = (lines: readonly string[]) => {
 		const width = Math.max((stderr.columns ?? 80) - 1, 10);
 		const up = drawn > 1 ? `\x1b[${drawn - 1}A` : "";
-		const cut = lines.map((line) => (line.length > width ? `${line.slice(0, width - 1)}…` : line));
+		const cut = lines.map((line) => fit(line, width));
 		stderr.write(`${up}\r\x1b[J${cut.join("\n")}`);
 		drawn = cut.length;
 	};
+
+	const drawPick = () => draw(render(question, items, pick, Math.min(stderr.rows ?? 24, 20)));
 
 	return new Promise((resolve) => {
 		const done = (index: number | undefined) => {
@@ -81,16 +84,16 @@ function choose(question: string, items: readonly string[]): Promise<number | un
 			else if ("cancelled" in step) done(undefined);
 			else {
 				pick = step.pick;
-				draw(render(question, items, pick, Math.min(stderr.rows ?? 24, 20)));
+				drawPick();
 			}
 		};
 
 		stdin.setRawMode(true);
 		stdin.resume();
 		stdin.on("data", onData);
-		draw(render(question, items, pick, Math.min(stderr.rows ?? 24, 20)));
+		drawPick();
 	});
-}
+};
 
 process.exitCode = await main(process.argv.slice(2), {
 	cwd: process.cwd(),

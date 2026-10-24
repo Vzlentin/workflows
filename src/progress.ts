@@ -13,7 +13,8 @@ export const PROGRESS_KIND = "workflows.progress";
 /**
  * A `phase` or `log` line of the run `run`, whose caller is `parent`, the end of the run `run`, or the start of an
  * execution of the root run `run`, from which a command that reaches the running task shows the lines. `at` is the
- * time of the line or the end in ms since the epoch; events that an earlier version saved have none.
+ * time of the line or the end in ms since the epoch; events that an earlier version saved have none. `continues` marks
+ * the first phase line of an execution of the run, which goes on with the step of that text when it is the current one.
  */
 export const PROGRESS_EVENT = Type.Union([
 	Type.Object({
@@ -22,6 +23,7 @@ export const PROGRESS_EVENT = Type.Union([
 		parent: Type.Union([Type.String(), Type.Null()]),
 		text: Type.String(),
 		at: Type.Optional(Type.Number()),
+		continues: Type.Optional(Type.Boolean()),
 	}),
 	Type.Object({
 		kind: Type.Literal("end"),
@@ -82,8 +84,12 @@ export class Progress {
 			return `${"  ".repeat(depth(run) + (current === undefined ? 0 : 1))}${event.text}`;
 		}
 
-		// A resume starts again at the step that it stopped in, so the step goes on.
-		if (current?.text === event.text) {
+		// A new execution starts again at the step that it stopped in, so the step goes on, without the time between.
+		if (event.kind === "phase" && event.continues === true && current?.text === event.text) {
+			if (current.started !== undefined && current.ended !== undefined && event.at !== undefined) {
+				current.started += event.at - current.ended;
+			}
+
 			current.mark = "◉";
 			delete current.ended;
 
@@ -109,6 +115,30 @@ export class Progress {
 		run.items.push(step);
 
 		return `${"  ".repeat(depth(run))}${event.text}`;
+	}
+
+	/** The texts of the steps that run now, outermost first. */
+	running(): string[] {
+		const texts: string[] = [];
+
+		const visit = (items: readonly Item[]) => {
+			for (const item of items) {
+				if ("run" in item) visit(item.run.items);
+				else if ("mark" in item) {
+					if (item.mark === "◉") texts.push(item.text);
+					visit(item.items);
+				}
+			}
+		};
+
+		visit(this.#top);
+
+		return texts;
+	}
+
+	/** Whether the run has a step. */
+	get stepped(): boolean {
+		return [...this.#runs.values()].some((run) => run.current !== undefined);
 	}
 
 	/** Marks each step that runs as failed, or as done. */
@@ -179,6 +209,11 @@ export function duration(ms: number): string {
 
 /** The `  <duration>` at the end of a step line. */
 const TIME = / {2}\d+(?:s|m\d\ds|h\d\dm)$/;
+
+/** `line` without the duration at its end. */
+export function untimed(line: string): string {
+	return line.replace(TIME, "");
+}
 
 /** The level of the steps of `run`. */
 function depth(run: RunNode): number {
@@ -261,7 +296,7 @@ export function terminalRedraw(stream: {
 }
 
 /** `line` cut to `width` with `…`, before the duration at its end when there is room for it. */
-function fit(line: string, width: number): string {
+export function fit(line: string, width: number): string {
 	if (line.length <= width) return line;
 	const time = TIME.exec(line)?.[0] ?? "";
 	const room = width - time.length - 1;

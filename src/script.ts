@@ -360,7 +360,7 @@ type Line = { readonly text: string; readonly phase: boolean; readonly at: numbe
  * The lines of a script that wait for its next call that runs, in order. At most one is a phase line: a new phase line
  * replaces it. `phase` is the current phase line, which each call that starts records.
  */
-type Progress = { readonly lines: Line[]; phase: string | null };
+type Progress = { readonly lines: Line[]; phase: string | null; continued?: boolean };
 
 function phaseLine(progress: Progress, text: string): void {
 	progress.phase = text;
@@ -382,13 +382,20 @@ type Calls = {
 	waiting?: string;
 };
 
-/** Takes the waiting lines as progress events of the run. */
+/** Takes the waiting lines as progress events of the run. The first phase line of the execution `continues`. */
 function takeLines(calls: Calls): ProgressEvent[] {
 	const { runId: run, parent } = calls.script;
+	const { progress } = calls;
 
-	return calls.progress.lines
-		.splice(0)
-		.map((line) => ({ kind: line.phase ? "phase" : "log", run, parent, text: line.text, at: line.at }) as const);
+	return progress.lines.splice(0).map((line) => {
+		if (!line.phase) return { kind: "log", run, parent, text: line.text, at: line.at };
+		const event: ProgressEvent = { kind: "phase", run, parent, text: line.text, at: line.at };
+
+		if (progress.continued === true) return event;
+		progress.continued = true;
+
+		return { ...event, continues: true };
+	});
 }
 
 /** The document key of the call `name` with `args` in this execution: `<run ID>/<call key>`. */

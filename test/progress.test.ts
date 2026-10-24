@@ -80,15 +80,24 @@ describe("the steps of a run", () => {
 		expect(progress.lines()).toEqual(["✓ plan  3m05s", "  a note", "✓ judge  1h02m"]);
 	});
 
-	it("go on with the step that a resume starts again in", () => {
+	it("go on with the step that a new execution starts again in, without the time between", () => {
 		const progress = new Progress();
-		progress.add({ kind: "phase", run: "r", parent: null, text: "plan", at: 0 });
+		progress.add({ kind: "phase", run: "r", parent: null, text: "plan", at: 0, continues: true });
 		progress.add({ kind: "end", run: "r", failed: true, at: 5000 });
 		expect(progress.lines()).toEqual(["✗ plan  5s"]);
 		progress.add({ kind: "start", run: "r" });
-		expect(progress.add({ kind: "phase", run: "r", parent: null, text: "plan", at: 9000 })).toBeUndefined();
+		const again = { kind: "phase", run: "r", parent: null, text: "plan", at: 9000, continues: true } as const;
+		expect(progress.add(again)).toBeUndefined();
+		expect(progress.running()).toEqual(["plan"]);
 		progress.add({ kind: "phase", run: "r", parent: null, text: "judge", at: 12_000 });
-		expect(progress.lines()).toEqual(["✓ plan  12s", "◉ judge"]);
+		expect(progress.lines()).toEqual(["✓ plan  8s", "◉ judge"]);
+	});
+
+	it("keep a phase line that repeats the step within an execution as a step of its own", () => {
+		const progress = new Progress();
+		progress.add({ kind: "phase", run: "r", parent: null, text: "poll", at: 0, continues: true });
+		progress.add({ kind: "phase", run: "r", parent: null, text: "poll", at: 2000 });
+		expect(progress.lines()).toEqual(["✓ poll  2s", "◉ poll"]);
 	});
 
 	it("give no duration to steps that an earlier version saved without times", () => {

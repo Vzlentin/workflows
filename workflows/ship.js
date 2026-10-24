@@ -170,7 +170,7 @@ async function judgeAndSquash(round) {
 
 	const valid = answer !== undefined && answer.subject.trim() !== ""
 	const commitSubject = valid ? answer.subject.trim() : subject
-	const commitMessage = valid ? `${commitSubject}\n\n${answer.body.trim()}` : subject
+	const commitMessage = valid ? `${commitSubject}\n\n${answer.body.trim()}` : commitSubject
 	const name = args.branch ?? (valid ? answer.branch.trim() : "")
 
 	// One command, so that a repeat resets a squash commit that was made but not saved.

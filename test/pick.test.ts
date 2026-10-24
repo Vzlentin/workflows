@@ -36,6 +36,6 @@ describe("the pick of a run", () => {
 			`  ${ITEMS[1]}`,
 			`› ${ITEMS[2]}`,
 		]);
-		expect(render("Attach?", ITEMS, { query: "zzz", cursor: 0 }, 4)).toEqual(["Attach? zzz", "  no run matches"]);
+		expect(render("Attach?", ITEMS, { query: "zzz", cursor: 0 }, 4)).toEqual(["Attach? zzz", "  nothing matches"]);
 	});
 });

@@ -133,7 +133,7 @@ describe("workflows campaign", () => {
 		expect(steps.stdout.slice(1).map(untimed)).toEqual([...progressOf(run.stderr), ...report]);
 		const shown = await workflows(["show", run.id ?? "", "--calls"], { cwd: root });
 		const children = result.items.map((item: { result: { runId: string } }) => item.result.runId);
-		const lines = shown.stdout.map((line) => line.replace(/ {2}\d+s$/, ""));
+		const lines = shown.stdout.map((line) => untimed(line));
 
 		const researchers: (number | undefined)[] = [];
 

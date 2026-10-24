@@ -7,7 +7,7 @@
 export type Pick = { readonly query: string; readonly cursor: number };
 
 /** What a key does: the next state, the index of the taken item, or a cancel. */
-export type Step = { readonly pick: Pick } | { readonly taken: number } | { readonly cancelled: true };
+type Step = { readonly pick: Pick } | { readonly taken: number } | { readonly cancelled: true };
 
 /** The indexes of the items that contain each word of `query`, in any case. */
 export function matching(items: readonly string[], query: string): number[] {
@@ -53,7 +53,7 @@ export function render(question: string, items: readonly string[], pick: Pick, r
 	const first = Math.min(Math.max(pick.cursor - room + 1, 0), Math.max(shown.length - room, 0));
 	const head = `${question} ${pick.query}`;
 
-	if (shown.length === 0) return [head, "  no run matches"];
+	if (shown.length === 0) return [head, "  nothing matches"];
 
 	return [
 		head,

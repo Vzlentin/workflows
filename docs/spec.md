@@ -451,8 +451,10 @@ stderr in one of three ways:
   The [Pi tool](#the-workflow-tool) draws the last of these lines, so Pi shows the same steps as a terminal.
 
 The project store keeps each line with its time. Lines that an earlier version saved have no time, and their steps
-show no duration. A `phase` line with the text of the step that runs in its run continues that step, as a resume does
-when it starts again in the step that it stopped in, and prints nothing.
+show no duration. The first `phase` line of each execution of a run, such as after a resume, continues the step that
+runs in its run when it has the same text, and prints nothing: the step goes on, and its duration leaves out the time
+between its last end and the new line. Any other `phase` line, also one that repeats the text of the step, starts a
+new step.
 
 When the run ends, the steps that still run become `✓` when the run finished, and `✗` when it failed or was
 stopped. A command that Ctrl+C detaches leaves them as they are. On a terminal and with `--json`, the tree draws once
