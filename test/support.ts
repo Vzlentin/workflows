@@ -613,6 +613,8 @@ export async function workflows(
 		readonly lines?: readonly string[];
 		/** The terminal's pick: gets the question and the items, and gives the index of the taken item. */
 		readonly choose?: (question: string, items: readonly string[]) => Promise<number | undefined>;
+		/** Draws the progress lines in place, as on a terminal. */
+		readonly redraw?: (lines: readonly string[]) => void;
 	},
 ): Promise<Outcome> {
 	let exits = 0;
@@ -652,6 +654,7 @@ export async function workflows(
 		following: (active) => ctrlC.following(active),
 		readLine: options.lines && (async () => queue.shift()),
 		choose: options.choose,
+		redraw: options.redraw,
 		stopWindowMs: options.stopWindowMs ?? 0,
 		models: async () => model.models,
 		connect: async (project, start) => {

@@ -13,7 +13,6 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -88,9 +87,9 @@ export type Terminal = Io & {
 const RESUME = "workflows resume <run-id> [--answer <text>] [--background] [--json]";
 const WAIT = "workflows wait <run-id> [--json]";
 const STOP = "workflows stop <run-id> [--json]";
-const LIST = "workflows list [--json]";
-const SHOW = "workflows show <run-id> [--calls] [--json]";
-const ATTACH = "workflows attach [<run-id> [<step>]]";
+const LIST = "workflows list [--pick] [--json]";
+const SHOW = "workflows show <run-id> [--calls] [--follow] [--json]";
+const ATTACH = "workflows attach <run-id> [<step>]";
 const SAVE = "workflows save <run-id> <name> [--force]";
 const PRUNE = "workflows prune [--yes] [--install-hook] [--json]";
 
@@ -588,7 +587,20 @@ type Listed = {
  * project store only.
  */
 async function list(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
-	if (args.length > 0) throw new UsageError("list takes no arguments", LIST);
+	const pick = args.length === 1 && args[0] === "--pick";
+
+	if (args.length > 0 && !pick) throw new UsageError("list takes no arguments but --pick", LIST);
+
+	if (pick) {
+		if (terminal.choose === undefined) throw new UsageError("--pick needs a terminal on stdin and stderr", LIST);
+		const run = await pickRun(terminal, terminal.choose);
+
+		if (run === undefined) return 130;
+		terminal.stdout(json ? JSON.stringify(run) : run.runId);
+
+		return 0;
+	}
+
 	const listed = await listedRuns(await storeOf(await projectOf(terminal.cwd)));
 
 	if (json) terminal.stdout(JSON.stringify(listed));
@@ -621,10 +633,10 @@ async function listedRuns(store: string): Promise<Listed[]> {
 const live = (status: string) => status === "running" || status === "waiting";
 
 /**
- * Asks on the terminal which run of the project of the current directory to attach, and gives its ID, or undefined
- * when the person cancels. The runs that have not ended come first, each with the steps that run now.
+ * Asks on the terminal which run of the project of the current directory to take, and gives it, or undefined when the
+ * person cancels. The runs that have not ended come first, each with the steps that run now.
  */
-async function pickRun(terminal: Terminal, choose: Choose): Promise<string | undefined> {
+async function pickRun(terminal: Terminal, choose: Choose): Promise<Listed | undefined> {
 	const store = await storeOf(await projectOf(terminal.cwd));
 	const listed = await listedRuns(store);
 
@@ -659,9 +671,9 @@ async function pickRun(terminal: Terminal, choose: Choose): Promise<string | und
 		return `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${step === undefined ? "" : `: ${step}`}${age}`;
 	});
 
-	const index = await choose("Attach to which run?", items);
+	const index = await choose("Pick a run:", items);
 
-	return index === undefined ? undefined : runs[index]?.runId;
+	return index === undefined ? undefined : runs[index];
 }
 
 /** The mark of a run in the picker by its status: `◉` running, `?` waiting for an answer, `✗` failed, else `·`. */
@@ -826,97 +838,6 @@ async function removedByHerdr(worktree: Worktree): Promise<boolean> {
 	}
 }
 
-/** The terminals of the commands that tried to open their run's worktree in herdr: each command tries once. */
-const herdrTried = new WeakSet<Terminal>();
-
-/** The pane that a `herdr worktree open` or `herdr tab create` prints. */
-const HERDR_ROOT_PANE = Type.Object({ result: Type.Object({ root_pane: Type.Object({ pane_id: Type.String() }) }) });
-
-/** The pane of `stdout` of a herdr call that prints `root_pane`, if it has one. */
-function rootPane(stdout: string): string | undefined {
-	try {
-		const parsed: unknown = JSON.parse(stdout);
-
-		return Value.Check(HERDR_ROOT_PANE, parsed) ? parsed.result.root_pane.pane_id : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/** The CLI of this install: `cli.js` next to `main.js`, or `cli.ts` in a checkout. */
-const CLI = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./cli.ts" : "./cli.js", import.meta.url));
-
-/**
- * The shell command that follows the run `id` with `workflows wait`, with this Node and this CLI, and the
- * `XDG_STATE_HOME` and `XDG_CONFIG_HOME` of this process, so it finds the same runs from any pane.
- */
-function waitCommand(id: string): string {
-	const env = ["XDG_STATE_HOME", "XDG_CONFIG_HOME"].flatMap((name) => {
-		const value = process.env[name];
-
-		return value ? [`${name}=${value}`] : [];
-	});
-
-	return ["env", ...env, process.execPath, CLI, "wait", id]
-		.map((word) => `'${word.replaceAll("'", "'\\''")}'`)
-		.join(" ");
-}
-
-/**
- * Opens `worktree` of the run `id` of `input` as a herdr workspace whose pane follows the run with `workflows wait`,
- * unless a workspace has the worktree open. When `herdr worktree open` gives no pane, the run follows in a new tab
- * `progress` of the workspace. A herdr failure is a warning line on stderr. Ctrl+C stops a herdr call and prints no
- * warning.
- */
-async function openInHerdr(
-	id: string,
-	input: script.ScriptInput,
-	worktree: Worktree,
-	terminal: Terminal,
-): Promise<void> {
-	try {
-		if ((await herdrWorkspace(worktree, terminal.interrupt)) !== undefined) return;
-
-		const argv = [
-			"worktree",
-			"open",
-			"--cwd",
-			worktree.repository,
-			"--path",
-			worktree.path,
-			"--label",
-			script.title(input),
-			"--no-focus",
-		];
-
-		const herdr = async (words: readonly string[]) => {
-			const result = await runCommand("herdr", words, worktree.repository, terminal.interrupt);
-
-			if (result.code !== 0) throw new Error(failure(["herdr", ...words], result));
-
-			return result.stdout;
-		};
-
-		const pane = rootPane(await herdr(argv)) ?? (await progressTab());
-
-		if (pane !== undefined) await herdr(["pane", "run", pane, waitCommand(id)]);
-
-		async function progressTab(): Promise<string | undefined> {
-			const workspace = await herdrWorkspace(worktree, terminal.interrupt);
-
-			if (workspace === undefined) return undefined;
-			const tab = ["tab", "create", "--workspace", workspace, "--cwd", worktree.path, "--label", "progress"];
-
-			return rootPane(await herdr(tab));
-		}
-	} catch (cause) {
-		if (terminal.interrupt.aborted) return;
-		const message = cause instanceof Error ? cause.message : String(cause);
-
-		terminal.stderr(`workflows: herdr: ${message.replace(/\s*\n\s*/g, " ")}`);
-	}
-}
-
 /** Writes the post-merge hook of the repository of the current directory, unless a hook or a hooks path is set. */
 async function installHook(terminal: Terminal): Promise<number> {
 	const hooks = resolve(terminal.cwd, await git(terminal.cwd, "rev-parse", "--git-path", "hooks"));
@@ -958,14 +879,51 @@ function endOf(outcome: TaskOutcome<JsonValue>, title: string, id: string) {
 
 /**
  * Prints the steps of a run as a tree, or with `--calls` its phases and calls, then its report lines, or how it ended.
- * A run without steps prints its calls. It reads the task records, the call records and the progress from the project
- * store only.
+ * A run without steps prints its calls. With `--follow`, it draws the tree again as the run goes on, until the run's
+ * task ends or Ctrl+C. It reads the task records, the call records and the progress from the project store only.
  */
 async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const withCalls = args.includes("--calls");
-	const rest = args.filter((arg) => arg !== "--calls");
-	const runId = oneRunId(rest, SHOW);
-	const run = await savedRun(runId, SHOW);
+	const following = args.includes("--follow");
+	const rest = args.filter((arg) => arg !== "--calls" && arg !== "--follow");
+	const run = await savedRun(oneRunId(rest, SHOW), SHOW);
+	let shown = await snapshot(run, terminal, withCalls);
+
+	if (following) {
+		// On a terminal the tree draws in place on stderr; elsewhere the command prints it once the run ended.
+		const draw = json ? undefined : terminal.redraw;
+
+		if (draw !== undefined) terminal.stdout(shown.header);
+
+		while (true) {
+			draw?.(shown.body);
+
+			if (shown.ended) break;
+
+			if (await abortedWithin(terminal.interrupt, POLL_MS)) return 130;
+			shown = await snapshot(run, terminal, withCalls);
+		}
+
+		if (draw !== undefined) {
+			for (const line of shown.footer) terminal.stdout(line);
+
+			return 0;
+		}
+	}
+
+	if (json) {
+		terminal.stdout(JSON.stringify(shown.json));
+
+		return 0;
+	}
+
+	for (const line of [shown.header, ...shown.body, ...shown.footer]) terminal.stdout(line);
+
+	return 0;
+}
+
+/** What `show` prints of `run` now: its first line, its tree, its footer, the JSON tree, and whether its task ended. */
+async function snapshot(run: SavedRun, terminal: Terminal, withCalls: boolean) {
 	const { id } = run;
 	const empty = { task: undefined, records: new Map(), events: [] };
 
@@ -1002,19 +960,13 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	const now = Date.now();
 	const steps = progress.lines(now);
 
-	if (json) {
-		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, steps, calls }));
-
-		return 0;
-	}
-
-	terminal.stdout(`run ${id} ${input.name} ${status} ${title}`);
-
-	for (const line of withCalls || steps.length === 0 ? treeLines(calls, "", now) : steps) terminal.stdout(line);
-
-	for (const line of footer) terminal.stdout(line);
-
-	return 0;
+	return {
+		header: `run ${id} ${input.name} ${status} ${title}`,
+		body: withCalls || steps.length === 0 ? treeLines(calls, "", now) : steps,
+		footer,
+		json: { runId: id, workflow: input.name, title, status, ...end, steps, calls },
+		ended: outcome !== undefined,
+	};
 }
 
 /**
@@ -1023,10 +975,7 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
  * new tab or pane; else it runs Pi in this terminal and exits with its code.
  */
 async function attach(args: readonly string[], terminal: Terminal): Promise<number> {
-	const [given, ...words] = args;
-	const id = given === undefined && terminal.choose !== undefined ? await pickRun(terminal, terminal.choose) : given;
-
-	if (given === undefined && id === undefined && terminal.choose !== undefined) return 130;
+	const [id, ...words] = args;
 
 	if (id === undefined || id.startsWith("-")) throw new UsageError("give one run ID", ATTACH);
 	const step = words.join(" ") || undefined;
@@ -1305,7 +1254,6 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 
 	terminal.following(true);
 	const shown = display(terminal, json);
-	const herdrWorktree = process.env.HERDR_ENV ? input.worktree : undefined;
 
 	const tell = (state: "idle" | "working" | "done" | "error", message: string) => {
 		if (!json) terminal.status?.(programStatus(state, message));
@@ -1326,12 +1274,6 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 	let seen = run.from;
 
 	const poll = async () => {
-		// The host creates the worktree after the run starts, so each read looks for it until the command tries once.
-		if (herdrWorktree !== undefined && !herdrTried.has(terminal) && existsSync(herdrWorktree.path)) {
-			herdrTried.add(terminal);
-			await openInHerdr(id, input, herdrWorktree, terminal);
-		}
-
 		if (store === undefined) return;
 		// A read that fails, such as one that waited too long for a lock, shows nothing; the next read catches up.
 		const events = await progressEvents(store, id).catch(() => []);

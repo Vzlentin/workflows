@@ -351,7 +351,7 @@ workflows check review
 
 `resume`, `wait`, `stop`, `list`, `show`, `attach`, `save`, `prune` and `check` are commands, so no script of these
 names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command,
-such as `usage: workflows show <run-id> [--calls] [--json]`, and exits 2.
+such as `usage: workflows show <run-id> [--calls] [--follow] [--json]`, and exits 2.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
@@ -716,27 +716,23 @@ Ctrl+C detaches `wait` at once: it prints the `detached` line, or the `detached`
 on in the host. A second Ctrl+C exits and never stops the run. Bad usage prints `usage: workflows wait <run-id>
 [--json]` and exits 2.
 
-## Herdr workspaces
+## Herdr
 
-When `HERDR_ENV` is set, a command that follows a root run with a worktree (a start, `resume` or `wait`) opens the
-worktree as a Herdr workspace. It reads progress about every 0.5 s, and on the first read that finds the worktree path
-on disk, it runs `herdr worktree list --cwd <worktree>`. When no workspace has the worktree open, it runs:
+The command opens nothing in Herdr by itself. A Herdr key composes the commands instead, such as one that picks a run
+and follows it in a new pane, from which `workflows attach <run-id>` opens a session:
 
-```sh
-herdr worktree open --cwd <repository> --path <worktree> --label <title> --no-focus
+```toml
+[[keys.command]]
+key = "prefix+w"
+type = "shell"
+description = "follow a workflows run"
+command = '''
+pane=$("$HERDR_BIN_PATH" pane split $HERDR_ACTIVE_PANE_ID --direction right --focus | jq -r '.result.pane.pane_id')
+[ -n "$pane" ] && "$HERDR_BIN_PATH" pane run "$pane" 'id=$(workflows list --pick) && workflows show "$id" --follow'
+'''
 ```
 
-The workspace follows the run: the command runs `workflows wait <run-id>` in the pane that `herdr worktree open`
-prints as `result.root_pane`, with this Node and this CLI and the `XDG_STATE_HOME` and `XDG_CONFIG_HOME` of the command,
-through `herdr pane run`. So the pane shows the steps of the run until it ends, and `workflows attach` opens the sessions
-in tabs next to it. When `worktree open` prints no pane, the command finds the workspace with `herdr worktree list`
-and runs `workflows wait` in a new tab `progress` of it, from `herdr tab create --workspace <id> --cwd <worktree>
---label progress`.
-
-Each command tries once. A herdr failure, or a missing `herdr`, prints the one line `workflows: herdr: <message>` on
-stderr, with each newline of the message as a space, and changes neither the outcome nor the exit code. Ctrl+C stops a
-`herdr` call that runs, and prints no warning for it. `--background` opens nothing; a later `wait` or `resume` of the run,
-while it has not ended, opens it. A run whose task ended, and the child runs, open nothing.
+`prune` and `attach` use Herdr when `HERDR_ENV` is set: see [Prune](#prune) and [Attach](#attach).
 
 ## JSON output
 
@@ -770,6 +766,7 @@ bad usage, prints no `run <run-id>` line and no JSON line.
 ```sh
 workflows list
 workflows list --json
+workflows list --pick
 ```
 
 `workflows list` prints one line for each run of the harness project of the current directory, newest run ID first:
@@ -784,6 +781,16 @@ cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
 without a worktree.
 Only the runs that have a run directory with a `project` file are listed.
+
+With `--pick`, when stdin and stderr are terminals, the command asks `Pick a run:` with the runs: the runs that run or
+wait for an answer first, then the others, newest first. Each line is `<mark> <title>  <workflow> <status>`, then
+`: <steps>` for a running run, with the steps that run now joined by ` › `, then `  <age> ago`. The mark is `◉`
+running, `?` waiting, `✗` failed, else `·`. Typing filters the lines by each word, in any case; the arrows or Ctrl+N
+and Ctrl+P move, Enter takes the run under the cursor, and Esc or Ctrl+C exits 130 with no output. The command prints
+the run ID of the run it takes, or with `--json` its `list` object, so other commands compose with it:
+`workflows show "$(workflows list --pick)" --follow`. A project with no run prints `workflows: no runs in the project of
+<cwd>` and exits 1. `--pick` without a terminal prints `workflows: --pick needs a terminal on stdin and stderr` and the
+usage line `usage: workflows list [--pick] [--json]`, and exits 2.
 
 `list` reads the project store file read-only and does not start the host, so no run continues. It takes no lock that
 the host waits for, and runs no checkpoint of the file. A store whose schema pi-durable must update first cannot open
@@ -826,6 +833,7 @@ hook exists, it writes nothing, prints an error with the line to add, and exits 
 
 ```sh
 workflows show <run-id>
+workflows show <run-id> --follow
 workflows show <run-id> --calls
 workflows show <run-id> --json
 ```
@@ -843,6 +851,12 @@ The first line has the fields of `workflows list`. The steps are the tree of [Pr
 line of the run, as a terminal draws it when the run ends: a step that runs is `◉`, with the time since it started.
 Once the run's task ended, the steps that still ran are `✓` when it completed and `✗` otherwise. A run without steps
 prints its calls, as `--calls` does.
+
+With `--follow`, on a terminal, `show` prints the first line, then draws the tree again in place on stderr about every
+0.5 s, with the time of the steps that run, until the run's task ends; then it prints the footer. Ctrl+C ends it with
+exit 130 and leaves the run alone. When stderr is not a terminal, or with `--json`, it waits until the task ends and
+prints as `show` does. It reads the store only, as `show` does, so it follows a run that no command follows and shows
+every step from the first.
 
 With `--calls`, `show` prints the tree of its phases and calls:
 
@@ -885,35 +899,16 @@ without a `project` file, prints the
 `no run` error of `resume`. A run saved by an earlier version prints `workflows: run
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
-as no run ID, prints `usage: workflows show <run-id> [--calls] [--json]` and exits 2.
+as no run ID, prints `usage: workflows show <run-id> [--calls] [--follow] [--json]` and exits 2.
 
 ## Attach
 
 ```sh
-workflows attach
 workflows attach <run-id>
 workflows attach <run-id> <step>
 ```
 
-`workflows attach` opens one session of a run in Pi, as `harness attach --conversation <id>` does.
-
-Without a run ID, when stdin and stderr are terminals, it asks `Attach to which run?` with the runs of the project of the
-current directory: the runs that run or wait for an answer first, then the others, newest first. Each line is
-`<mark> <title>  <workflow> <status>`, then `: <steps>` for a running run, with the steps that run now joined by ` › `,
-then `  <age> ago`. The mark is `◉` running, `?` waiting, `✗` failed, else `·`. Typing filters the lines by each word,
-in any case; the arrows or Ctrl+N and Ctrl+P move, Enter attaches the run under the cursor, and Esc or Ctrl+C exits 130
-and attaches nothing. A project with no run prints `workflows: no runs in the project of <cwd>` and exits 1. A Herdr key
-can open it in a popup:
-
-```toml
-[[keys.command]]
-key = "prefix+w"
-type = "popup"
-description = "attach a workflows run"
-command = "workflows attach"
-```
-
-Then, for the run:
+`workflows attach` opens one session of a run in Pi, as `harness attach --conversation <id>` does:
 
 - The sessions are the `session` calls of the run and of its child runs that opened a conversation, in the order they
   started. With `<step>`, only the sessions under the phase line `<step>` count. The step is all the words after the
@@ -931,8 +926,8 @@ Then, for the run:
 A run with no session prints `workflows: run <run-id> has no session`, and a step with no session prints
 `workflows: run <run-id> has no session in <step>`. An unknown run ID prints the `no run` error of `resume`, and a run
 saved by another version prints the error of `show` with `cannot be attached`. A Herdr failure prints
-`workflows: <error>`. These exit 1. Bad usage, such as no run ID when stdin or stderr is not a terminal, prints
-`usage: workflows attach [<run-id> [<step>]]` and exits 2.
+`workflows: <error>`. These exit 1. Bad usage, such as no run ID, prints `usage: workflows attach <run-id> [<step>]` and
+exits 2.
 
 ## Save
 

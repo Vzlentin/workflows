@@ -72,45 +72,77 @@ describe("attach", () => {
 			[1, [`workflows: run ${bare} has no session`]],
 			[1, [`workflows: run ${id} has no session in b c`]],
 			[1, [`workflows: no run nothing in ${runs}`]],
-			[2, ["workflows: give one run ID", "usage: workflows attach [<run-id> [<step>]]"]],
+			[2, ["workflows: give one run ID", "usage: workflows attach <run-id> [<step>]"]],
 		]);
 		expect(await piLog()).toBeUndefined();
 	});
 });
 
-describe("attach without a run ID", () => {
-	it("asks which run to attach on a terminal, the runs that run first, and attaches the one taken", async () => {
-		const done = await ran('phase("a")\nawait agent("Script: done")');
+describe("list --pick and show --follow", () => {
+	it("prints the run ID that the pick takes, the runs that run first, each with its steps that run", async () => {
+		await ran('phase("a")\nawait agent("Script: done")');
 		await writeFile(join(root, "y.js"), 'phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")');
 		const running = await workflows(["y.js"], { cwd: root, script: { interruptAt: { kind: "script", nth: 2 } } });
 		expect(running.code).toBe(130);
 		const asked: string[][] = [];
 
-		const attached = await workflows(["attach"], {
+		const picked = await workflows(["list", "--pick"], {
 			cwd: root,
 			choose: async (question, items) => {
 				asked.push([question, ...items]);
 
-				return 1;
+				return 0;
 			},
 		});
 
 		expect(asked).toEqual([
 			[
-				"Attach to which run?",
+				"Pick a run:",
 				expect.stringMatching(/^◉ y {2}y running: talk {2}\d+s ago$/),
 				expect.stringMatching(/^· x {2}x done {2}\d+s ago$/),
 			],
 		]);
-		const conversation = await conversationOf(/Script: done/);
-		expect([attached.code, await piLog()]).toEqual([7, `--harness main --harness-conversation ${conversation}`]);
-		expect(done).not.toBe(running.id);
+		expect([picked.code, picked.stdout]).toEqual([0, [running.id]]);
+		const json = await workflows(["list", "--pick", "--json"], { cwd: root, choose: async () => 0 });
+		expect(JSON.parse(json.stdout[0] ?? "")).toMatchObject({ runId: running.id, status: "running", title: "y" });
 	});
 
-	it("exits 130 and attaches nothing when the pick is cancelled", async () => {
+	it("exits 130 with no output when the pick is cancelled, and needs a terminal", async () => {
 		await ran('phase("a")\nawait agent("Script: one")');
-		const attached = await workflows(["attach"], { cwd: root, choose: async () => undefined });
-		expect([attached.code, attached.stderr, await piLog()]).toEqual([130, [], undefined]);
+		const cancelled = await workflows(["list", "--pick"], { cwd: root, choose: async () => undefined });
+		expect([cancelled.code, cancelled.stdout, cancelled.stderr]).toEqual([130, [], []]);
+		const piped = await workflows(["list", "--pick"], { cwd: root });
+		expect([piped.code, piped.stderr]).toEqual([
+			2,
+			["workflows: --pick needs a terminal on stdin and stderr", "usage: workflows list [--pick] [--json]"],
+		]);
+	});
+
+	it("draws the steps of a run in place until Ctrl+C, and prints a run that ended as show does", async () => {
+		await writeFile(join(root, "y.js"), 'phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")');
+		const running = await workflows(["y.js"], { cwd: root, script: { interruptAt: { kind: "script", nth: 2 } } });
+		const id = running.id ?? "";
+		const drawn: string[][] = [];
+		const interrupt = new AbortController();
+
+		const following = workflows(["show", id, "--follow"], {
+			cwd: root,
+			interrupt,
+			redraw: (lines) => {
+				drawn.push([...lines]);
+
+				if (drawn.length === 2) interrupt.abort();
+			},
+		});
+
+		const followed = await following;
+		expect([followed.code, followed.stdout]).toEqual([130, [`run ${id} y running y`]]);
+		expect(drawn[1]).toEqual([expect.stringMatching(/^◉ talk {2}\d+s$/)]);
+
+		const done = await ran('phase("a")\nawait agent("Script: one")');
+		const shown = await workflows(["show", done], { cwd: root });
+		const plain = await workflows(["show", done, "--follow"], { cwd: root });
+		expect(plain.stdout).toEqual(shown.stdout);
 	});
 });
 
