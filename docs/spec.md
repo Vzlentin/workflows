@@ -454,7 +454,7 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
 | `ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `run(name, args)` | Runs the script `name` of `workflows/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
-| `input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`. See [Input](#input) |
+| `input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`, or of the `workflow` tool with `resume` and `answer`. See [Input](#input) |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `parallel(thunks)` | Runs the functions at once and returns their results |
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
@@ -904,7 +904,8 @@ project of the host and `PI_SESSION_ID` to the conversation ID.
   run is detached and goes on in the harness host; follow it with resume: "<run-id>"`. Each stderr line appends a line to the running output, the last progress line or the line itself,
   and sets the `details` of the call to `{ steps }`, the progress lines of the command then any other stderr line.
   The result keeps the last `details`.
-- The result text of a finished run is the summary of Pi's tool, then the `report` lines. A failed, detached, stopped
+- The result text of a finished run is the summary of Pi's tool, then the `report` lines. A run that waits for an
+  answer has only the summary, `run <run-id> waits for an answer: <question>; answer it with resume: "<run-id>" and answer: "<your answer>"`, and is not an error. A failed, detached, stopped
   or host-stopped run is an error result with its summary, and keeps the structured output
   `{ runId, status, result?, report?, error? }`.
 - `background: true`, with `name`, `script` or `resume`, adds `--background` to the command. With `save`, it is an
@@ -914,7 +915,8 @@ project of the host and `PI_SESSION_ID` to the conversation ID.
 - A task whose input has `notify` posts its outcome to the conversation `parent` when it ends, after it ends its
   sessions and before its end commits. The post is a follow-up input of the entry kind `workflows.result`, with the
   data `{ runId, status }` and the text of the tool result for that outcome: `finished` with the report lines,
-  `failed` with the error, or `stopped`. Its request ID is `workflows.result:<run-id>/<task-id>`, so a rerun of the
+  `finished` with the question and how to answer it for a run that waits for an answer, `failed` with the error, or
+  `stopped`. Its request ID is `workflows.result:<run-id>/<task-id>`, so a rerun of the
   phase posts once, and each later task of the run posts again. A child run never has `notify`. Nothing is posted
   when `parent` is not a conversation ID of the host, such as the session ID of Pi, or when the host stops: the task
   stays pending and posts when it ends after the restart. A failed post goes to the host's report and does not
@@ -954,14 +956,16 @@ The tool takes one of `name`, `script`, `resume` or `save`, plus `args` with `na
   `{ name: "optimize", args: { workflow: "ship", items: "items/" } }` runs
   `workflows optimize --workflow=ship --items=items/ --json`.
 - `script` runs `workflows - --<key>=<value>... --json` with the script on stdin, and each arg as a flag as for `name`.
-- `resume` runs `workflows resume <run-id>`.
+- `resume` runs `workflows resume <run-id>`. `answer`, with `resume` only, adds `--answer=<text>` and answers the
+  question of a waiting run. With `name`, `script` or `save`, it is the error `answer works only with resume`, and no
+  command starts. `answer` works with `background`.
 - `save: { runId, name, force? }` runs `workflows save <run-id> <name>`, with `--force` when `force` is true. See
   [Save](#save).
 - `background: true`, with `name`, `script` or `resume`, adds `--background` before `--json`. With `save`, it is the
   error `background works only with name, script or resume`, and no command starts.
 
 The tool adds guidelines to the system prompt on how to write a `script`: its shape and `meta`, the script globals,
-the sandbox and resume rules, `save`, and `background`. A test checks that they name every global of
+the sandbox and resume rules, `input` and how to answer a `waiting` result, `save`, and `background`. A test checks that they name every global of
 `workflows/script.d.ts`.
 
 Each stderr line of the run is a progress update of the tool. The text of an update is the last line of a
@@ -982,7 +986,8 @@ same after a reload. The model gets the same result text as before.
 The tool declares an `outputSchema`. Its `structuredContent` is `{ runId, status, result?, report?, error? }`:
 
 - `finished`: the run finished, `result` is its result, such as a `blocked` ship result, and `report` is its report
-  lines.
+  lines. For a run that waits for an answer, `result` is `{"status":"waiting","question":"<question>",...}`, and the
+  text is `run <run-id> waits for an answer: <question>; answer it with resume: "<run-id>" and answer: "<your answer>"`.
 - `failed`: the run failed, and `error` is its error message.
 - `started`: a `background` call started the run, or a new task of it, and does not follow it. It is not an error,
   its text is `run <run-id> started in the background; its result comes as a message in this conversation when it
@@ -999,7 +1004,8 @@ These are the fields of the JSON outcome line of the command.
 After a `started` result, the extension appends the session entry `workflow-background` with the data
 `{ runId, cwd }`, and follows the run with `workflows wait <run-id> --json` in `cwd`. When the wait prints a
 `finished`, `failed` or `stopped` outcome, the extension sends the message `workflow-result`, with the text of a
-call without `background` for that outcome (the summary, with no report lines), the `details` `{ steps, outcome }`,
+call without `background` for that outcome (the summary, with no report lines; for a waiting run, the question and
+how to answer it), the `details` `{ steps, outcome }`,
 `display: true`, `triggerTurn: true` and `deliverAs: "followUp"`. It then appends the session entry
 `workflow-background-end` with the data `{ runId }`. The renderer of `workflow-result` draws the steps and the outcome
 as the tool result draws them, or the text of the message when its `details` are not valid.

@@ -16,6 +16,7 @@ import {
 	type TaskRuntime,
 } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
+import { Value } from "typebox/value";
 import { ensureWorktree } from "./git.ts";
 import { childInput, report, type ScriptInput, statusOf } from "./meta.ts";
 import { newRunId } from "./run.ts";
@@ -126,9 +127,16 @@ export const OUTCOME = Type.Union([
 
 export type WorkflowOutcome = Static<typeof OUTCOME>;
 
+/** The result of a run that waits on `input(question)`. */
+const WAITING = Type.Object({ status: Type.Literal("waiting"), question: Type.String() });
+
 function summary(outcome: WorkflowOutcome): string {
 	switch (outcome.status) {
 		case "finished":
+			if (Value.Check(WAITING, outcome.result)) {
+				return `run ${outcome.runId} waits for an answer: ${outcome.result.question}; answer it with resume: "${outcome.runId}" and answer: "<your answer>"`;
+			}
+
 			return `run ${outcome.runId} finished: ${JSON.stringify(outcome.result)}`;
 		case "failed":
 			return `run ${outcome.runId} failed: ${outcome.error}; continue it with resume: "${outcome.runId}"`;
@@ -143,9 +151,11 @@ function summary(outcome: WorkflowOutcome): string {
 	}
 }
 
-/** The text of `outcome` for the model: its summary, then the report lines of a finished run. */
+/** The text of `outcome` for the model: its summary, then the report lines of a finished run that does not wait. */
 export function outcomeText(outcome: WorkflowOutcome): string {
-	return outcome.status === "finished" ? [summary(outcome), ...outcome.report].join("\n") : summary(outcome);
+	if (outcome.status !== "finished" || Value.Check(WAITING, outcome.result)) return summary(outcome);
+
+	return [summary(outcome), ...outcome.report].join("\n");
 }
 
 /** The outcome of the finished run `input` with `result`, with the report lines that the command prints. */

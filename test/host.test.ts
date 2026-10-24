@@ -746,7 +746,33 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 				details: undefined,
 				isError: true,
 			});
+			await tellAgent(`Script workflow: ${JSON.stringify({ name: "x", answer: "y" })}`);
+			expect(await nextResult(2)).toEqual({
+				text: expect.stringContaining("answer works only with resume"),
+				details: undefined,
+				isError: true,
+			});
 			expect(await readdir(runsOf(root))).toEqual([id]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("gives the question of a waiting run, and continues the run with the answer", async () => {
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			const script = 'const a = await input("Q?")\nreturn a';
+			await tellAgent(`Script workflow: ${JSON.stringify({ script })}`);
+			const waiting = await nextResult(0);
+			const id = /^run (\S+) /.exec(waiting.text)?.[1] ?? "";
+			expect([waiting.text, waiting.isError]).toEqual([
+				`run ${id} waits for an answer: Q?; answer it with resume: "${id}" and answer: "<your answer>"`,
+				false,
+			]);
+			await tellAgent(`Script workflow: ${JSON.stringify({ resume: id, answer: "yes" })}`);
+			const answered = await nextResult(1);
+			expect([answered.text, answered.isError]).toEqual([`run ${id} finished: "yes"\nyes`, false]);
 		} finally {
 			await host.close();
 		}
