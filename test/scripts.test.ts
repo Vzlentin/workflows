@@ -29,10 +29,11 @@ let root: string;
 
 beforeEach(async () => {
 	root = await sandbox();
-	// `./gate.sh <name>` waits until `<name>.open` exists, after it creates `<name>.reached`.
+	// `./gate.sh <name>` waits until `<name>.open` exists, after it creates `<name>.reached`. It ends when the sandbox
+	// is removed, so a gate that a test leaves open does not loop after the test.
 	await writeFile(
 		join(root, "gate.sh"),
-		'#!/bin/sh\ntouch "$1.reached"\nwhile [ ! -f "$1.open" ]; do sleep 0.02; done\n',
+		'#!/bin/sh\ntouch "$1.reached"\nwhile [ ! -f "$1.open" ]; do [ -d "$PWD" ] || exit 1; sleep 0.02; done\n',
 	);
 	await chmod(join(root, "gate.sh"), 0o755);
 });
