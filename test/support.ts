@@ -596,6 +596,8 @@ export async function workflows(
 		readonly keepHost?: boolean;
 		/** The first `start` request fails after the host created its task, as when the connection closes before the reply. */
 		readonly dropStart?: boolean;
+		/** The lines typed on the terminal, one for each read; with none left, the read gives the end of input. */
+		readonly lines?: readonly string[];
 	},
 ): Promise<Outcome> {
 	let exits = 0;
@@ -622,6 +624,7 @@ export async function workflows(
 	let host = options.host;
 	let started: Host | undefined;
 	let drop = options.dropStart === true;
+	const queue = [...(options.lines ?? [])];
 
 	const code = await main(argv, {
 		cwd: options.cwd,
@@ -632,6 +635,7 @@ export async function workflows(
 		interrupt: ctrlC.interrupt,
 		stop: ctrlC.stop,
 		following: (active) => ctrlC.following(active),
+		readLine: options.lines && (async () => queue.shift()),
 		stopWindowMs: options.stopWindowMs ?? 0,
 		models: async () => model.models,
 		connect: async (project, start) => {

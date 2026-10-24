@@ -66,8 +66,9 @@ describe("the program status report", () => {
 	it("writes the state, the kind of a blocked state, and the message in base64 with spaces for control characters", () => {
 		expect(programStatus("working", "plan")).toBe("\x1b]7501;state=working:app=workflows:msg=cGxhbg==\x1b\\");
 		expect(programStatus("done", "a\tb\nc\u0085é")).toBe("\x1b]7501;state=done:app=workflows:msg=YSBiIGMgw6k=\x1b\\");
-		const blocked = "\x1b]7501;state=blocked:kind=question:app=workflows:msg=";
-		expect(programStatus("blocked", "?", "question").slice(0, blocked.length)).toBe(blocked);
+		expect(programStatus("blocked", "?", "question")).toBe(
+			"\x1b]7501;state=blocked:kind=question:app=workflows:msg=Pw==\x1b\\",
+		);
 	});
 
 	it("cuts the message to 2048 bytes on a character boundary", () => {
