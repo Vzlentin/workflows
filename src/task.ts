@@ -6,6 +6,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import {
+	type ConversationId,
 	defineTask,
 	type JsonObject,
 	type RunningTask,
@@ -14,10 +15,11 @@ import {
 	type TaskRecord,
 	type TaskRuntime,
 } from "@earendil-works/pi-durable";
+import { type Static, Type } from "typebox";
 import { ensureWorktree } from "./git.ts";
-import { childInput, type ScriptInput } from "./meta.ts";
+import { childInput, report, type ScriptInput } from "./meta.ts";
 import { newRunId } from "./run.ts";
-import { addProgress, CallDoc, type Child, type Host, ownerOf, runScript, SessionsDoc } from "./script.ts";
+import { addProgress, CallDoc, type Child, type Host, JSON_VALUE, ownerOf, runScript, SessionsDoc } from "./script.ts";
 
 /**
  * The checkpoint of a run: its one phase. The saved calls of its script are documents of the store, so a new task of
@@ -101,6 +103,98 @@ async function restartChild(
 	return savedChild(runtime, key, context);
 }
 
+/** The stdout line of `workflows --json` after `run <run-id>`, and the outcome that a background run posts. */
+export const OUTCOME = Type.Union([
+	Type.Object({
+		runId: Type.String(),
+		status: Type.Literal("finished"),
+		result: JSON_VALUE,
+		/** The lines that the workflow's report prints without `--json`. */
+		report: Type.Array(Type.String()),
+	}),
+	Type.Object({ runId: Type.String(), status: Type.Literal("failed"), error: Type.String() }),
+	Type.Object({
+		runId: Type.String(),
+		status: Type.Union([
+			Type.Literal("started"),
+			Type.Literal("detached"),
+			Type.Literal("stopped"),
+			Type.Literal("host-stopped"),
+		]),
+	}),
+]);
+
+export type WorkflowOutcome = Static<typeof OUTCOME>;
+
+function summary(outcome: WorkflowOutcome): string {
+	switch (outcome.status) {
+		case "finished":
+			return `run ${outcome.runId} finished: ${JSON.stringify(outcome.result)}`;
+		case "failed":
+			return `run ${outcome.runId} failed: ${outcome.error}; continue it with resume: "${outcome.runId}"`;
+		case "started":
+			return `run ${outcome.runId} started in the background; its result comes as a message in this conversation when it ends; follow it with resume: "${outcome.runId}", or stop it with the command workflows stop ${outcome.runId}`;
+		case "detached":
+			return `run ${outcome.runId} detached and goes on in the harness host; follow it with resume: "${outcome.runId}", or stop it with the command workflows stop ${outcome.runId}`;
+		case "stopped":
+			return `run ${outcome.runId} stopped; continue it with resume: "${outcome.runId}"`;
+		case "host-stopped":
+			return `the harness host of run ${outcome.runId} stopped; the run continues when the host starts again, so follow it with resume: "${outcome.runId}"`;
+	}
+}
+
+/** The text of `outcome` for the model: its summary, then the report lines of a finished run. */
+export function outcomeText(outcome: WorkflowOutcome): string {
+	return outcome.status === "finished" ? [summary(outcome), ...outcome.report].join("\n") : summary(outcome);
+}
+
+/** The outcome of the finished run `input` with `result`, with the report lines that the command prints. */
+function finishedOutcome(input: ScriptInput, result: JsonValue): WorkflowOutcome {
+	const lines: string[] = [];
+
+	const io = {
+		cwd: input.cwd,
+		stdin: async () => undefined,
+		stdout: (line: string) => lines.push(line),
+		stderr: () => {},
+	};
+
+	report(input, result, io);
+
+	return { runId: input.runId, status: "finished", result, report: lines };
+}
+
+/**
+ * Posts `outcome` as a message to the conversation `input.parent` when the run started with `notify`. Its request ID
+ * has the task ID, so a rerun of the phase posts once, and a later task of the run posts again. A failed post does not
+ * change the outcome of the run, but a closing host rethrows it, so the task stays pending and posts after the restart.
+ */
+async function notify(runtime: Runtime, input: ScriptInput, outcome: WorkflowOutcome, context: Context): Promise<void> {
+	const { notify: wanted, parent } = input;
+
+	// A Pi session ID is a UUID, and only a host conversation has a number.
+	if (!wanted || parent === undefined || !/^\d+$/.test(parent)) return;
+
+	try {
+		// SAFETY: a conversation ID is a number, and `parent` is the number of the conversation of the `workflow` call.
+		const conversation = await runtime.conversation(Number(parent) as ConversationId, context);
+
+		await conversation?.submit(
+			{
+				type: "input",
+				whenBusy: "followUp",
+				content: outcomeText(outcome),
+				entry: { kind: "workflows.result", data: { runId: input.runId, status: outcome.status } },
+				requestId: `workflows.result:${input.runId}/${runtime.taskId}`,
+			},
+			context,
+		);
+	} catch (error) {
+		if (runtime.signal.aborted) throw error;
+		runtime.report(error);
+	}
+}
+
 /**
  * Ends the sessions of the run `input`. After a completed root run, it closes the sessions of the run and of its child
  * runs, also of a failed child run that the script caught, with everything under them. After a completed child run, it
@@ -180,6 +274,7 @@ async function runPhase(
 		});
 
 		await endSessions(host, runtime, input, true, context);
+		await notify(runtime, input, finishedOutcome(input, result), context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: false }]);
 
@@ -191,6 +286,7 @@ async function runPhase(
 		// A thrown phase would end the task as faulted, so the phase commits the failure itself.
 		const message = error instanceof Error ? error.message : String(error);
 		await endSessions(host, runtime, input, false, context);
+		await notify(runtime, input, { runId, status: "failed", error: message }, context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: true }]);
 
@@ -200,7 +296,7 @@ async function runPhase(
 }
 
 /** The kind and version of the task of every script run. A run saved by another version cannot resume. */
-export const TASK = { name: "workflows.run", version: 12 } as const;
+export const TASK = { name: "workflows.run", version: 13 } as const;
 
 /** Whether the script task can continue the task `latest`. */
 export function current<R>(
@@ -219,6 +315,7 @@ export function scriptTask(host: Host): ScriptTask {
 		abort: async (task, runtime, context) => {
 			const { runId, root } = task.input;
 			await endSessions(host, runtime, task.input, false, context);
+			await notify(runtime, task.input, { runId, status: "stopped" }, context);
 			await runtime.commit(async (tx) => {
 				await addProgress(tx, root, [{ kind: "end", run: runId, failed: true }]);
 

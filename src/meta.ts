@@ -286,7 +286,7 @@ export function usageOf(name: string, meta: Meta): string {
 		words.push(spec.required && spec.type !== "text" ? value : `[${value}]`);
 	}
 
-	words.push("[--json]");
+	words.push("[--background] [--json]");
 
 	return words.join(" ");
 }
@@ -529,6 +529,8 @@ export type ScriptInput = Omit<Args, "repo" | "base"> & {
 	readonly cwd: string;
 	/** The conversation whose `workflow` tool started the run, from `PI_SESSION_ID`; a child run has its caller's. */
 	readonly parent?: string;
+	/** Set by `--background`: the end of the run posts its outcome as a message to the conversation `parent`. */
+	readonly notify?: true;
 	readonly worktree?: {
 		readonly repository: string;
 		readonly start: string;

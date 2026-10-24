@@ -1,9 +1,10 @@
 /**
  * The `workflows` command line, a client of the harness host of a project. `workflows <workflow> ...` starts a run of a
- * workflow script in the host and follows it, `workflows resume <run-id>` continues or follows one, `workflows stop
- * <run-id>` stops one, `workflows list` prints the runs of the project, `workflows show <run-id>` prints the calls of
- * one run, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow. The project store
- * holds the runs; a run directory holds the run's `project` file and whatever the workflow writes there.
+ * workflow script in the host and follows it, `workflows resume <run-id>` continues or follows one, `workflows wait
+ * <run-id>` follows one to its outcome, `workflows stop <run-id>` stops one, `workflows list` prints the runs of the
+ * project, `workflows show <run-id>` prints the calls of one run, and `workflows save <run-id> <name>` keeps the script
+ * of one run as a project workflow. The project store holds the runs; a run directory holds the run's `project` file
+ * and whatever the workflow writes there.
  */
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -54,18 +55,20 @@ export type Terminal = Io & {
 	readonly connect?: (project: string, start: boolean) => Promise<Client | undefined>;
 };
 
-const RESUME = "workflows resume <run-id> [--json]";
+const RESUME = "workflows resume <run-id> [--background] [--json]";
+const WAIT = "workflows wait <run-id> [--json]";
 const STOP = "workflows stop <run-id> [--json]";
 const LIST = "workflows list [--json]";
 const SHOW = "workflows show <run-id> [--json]";
 const SAVE = "workflows save <run-id> <name> [--force]";
 
-type Command = (args: readonly string[], terminal: Terminal, json: boolean) => Promise<number>;
+type Command = (args: readonly string[], terminal: Terminal, json: boolean, background: boolean) => Promise<number>;
 
 /** The commands by name. No script can have one of these names. */
 const COMMANDS = new Map<string, Command>([
 	["list", list],
 	["resume", resume],
+	["wait", (args, terminal, json) => resume(args, terminal, json, false, true)],
 	["stop", stop],
 	["show", show],
 	["save", save],
@@ -75,9 +78,10 @@ const COMMANDS = new Map<string, Command>([
 /** The exit code: 0 for a successful result, 1 for any other result or error, 2 for bad usage, 130 after Ctrl+C. */
 export async function main(argv: readonly string[], terminal: Terminal): Promise<number> {
 	const usage = [
-		`${script.USAGE} [--json]`,
+		`${script.USAGE} [--background] [--json]`,
 		"workflows <workflow> --help",
 		RESUME,
+		WAIT,
 		STOP,
 		LIST,
 		SHOW,
@@ -92,7 +96,11 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		const dashes = argv.indexOf("--");
 		const options = dashes === -1 ? argv.length : dashes;
 		const json = argv.slice(0, options).includes("--json");
-		const [command, ...args] = argv.filter((arg, index) => index >= options || arg !== "--json");
+		const background = argv.slice(0, options).includes("--background");
+
+		const [command, ...args] = argv.filter(
+			(arg, index) => index >= options || (arg !== "--json" && arg !== "--background"),
+		);
 
 		if (command === undefined) {
 			for (const line of await script.listScripts(terminal)) terminal.stdout(line);
@@ -102,7 +110,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 
 		const run = COMMANDS.get(command);
 
-		if (run !== undefined) return await run(args, terminal, json);
+		if (run !== undefined) return await run(args, terminal, json, background);
 		const flags = args.indexOf("--");
 
 		if (args.slice(0, flags === -1 ? args.length : flags).includes("--help")) {
@@ -111,7 +119,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 			return 0;
 		}
 
-		return await start([command, ...args], terminal, json);
+		return await start([command, ...args], terminal, json, background);
 	} catch (error) {
 		terminal.stderr(`workflows: ${error instanceof Error ? error.message : String(error)}`);
 
@@ -227,7 +235,7 @@ async function findTask(terminal: Terminal, project: string, key: string): Promi
 	}
 }
 
-async function start(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
+async function start(args: readonly string[], terminal: Terminal, json: boolean, background: boolean): Promise<number> {
 	const parsed = await script.parse(args, terminal);
 	const id = newRunId();
 	const directory = join(runsDirectory(), id);
@@ -242,7 +250,9 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 		const prepared = await script.prepare(parsed, { id, directory, cwd: terminal.cwd });
 		// The `workflow` tool of a conversation of the host sets `PI_SESSION_ID`, so the run's sessions go under it.
 		const session = process.env.PI_SESSION_ID;
-		input = session ? { ...prepared, parent: session } : prepared;
+		const own = session ? { ...prepared, parent: session } : prepared;
+		// A run started in the background posts its outcome to that conversation when it ends.
+		input = background ? { ...own, notify: true } : own;
 		await writeFile(join(directory, "project"), `${project}\n`);
 		terminal.interrupt.throwIfAborted();
 		terminal.following(true);
@@ -274,7 +284,7 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 				terminal.following(true);
 				terminal.stdout(`run ${id}`);
 
-				return follow({ id, project, key, input, client: again, from: 0 }, terminal, json);
+				return follow({ id, project, key, input, client: again, from: 0 }, terminal, json, background);
 			}
 		}
 
@@ -288,7 +298,7 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean)
 
 	terminal.stdout(`run ${id}`);
 
-	return follow({ id, project, key, input, client, from: 0 }, terminal, json);
+	return follow({ id, project, key, input, client, from: 0 }, terminal, json, background);
 }
 
 /** The one run ID of `args`. Bad usage prints `usage`. */
@@ -364,21 +374,31 @@ function progressOf(run: SavedRun): Promise<readonly ProgressEvent[]> {
  * Continues the run of `args`. A finished run prints its result. A run whose last task ended without a result continues
  * in a new task with the same input, and shows the progress from its start. A run whose last task did not end is
  * followed: with its host running, from the start of the task's current execution, else from when the host starts.
+ * With `wait`, an ended run prints its outcome from the store, and Ctrl+C never stops the run.
  */
-async function resume(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
-	const run = await savedRun(oneRunId(args, RESUME), RESUME);
+async function resume(
+	args: readonly string[],
+	terminal: Terminal,
+	json: boolean,
+	background: boolean,
+	wait = false,
+): Promise<number> {
+	const usage = wait ? WAIT : RESUME;
+	const run = await savedRun(oneRunId(args, usage), usage);
 	const tasks = await tasksOf(run);
-	const { input, state } = checked(taskOf(tasks), run.id, "resume");
+	const { input, state } = checked(taskOf(tasks), run.id, wait ? "be waited for" : "resume");
 
-	if (state.status === "terminal" && state.outcome.status === "completed") {
+	if (state.status === "terminal" && (wait || state.outcome.status === "completed")) {
 		terminal.stdout(`run ${run.id}`);
 
-		return finished(input, run.id, state.outcome.result, terminal, json);
+		return outcomeOf(input, run.id, state.outcome, terminal, json);
 	}
 
 	const ended = tasks.at(-1)?.state.status === "terminal";
 	const key = taskKey(run.id, tasks.length + (ended ? 1 : 0));
-	terminal.following(true);
+	// A wait never tells the terminal that it follows a run, so a second Ctrl+C exits rather than stops the run.
+	const followed: Terminal = wait ? { ...terminal, following: () => {}, stopWindowMs: 0 } : terminal;
+	followed.following(true);
 	let client: Client | undefined;
 	let from: number;
 
@@ -386,7 +406,9 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 		if (ended) {
 			from = (await progressOf(run)).length;
 			client = await connectTo(terminal, run.project, true);
-			await startTask(client, run.project, input, key);
+			// The new task posts its outcome only when this resume runs in the background, whatever the last task did.
+			const { notify: _ended, ...saved } = input;
+			await startTask(client, run.project, background ? { ...saved, notify: true } : saved, key);
 		} else {
 			const before = (await progressOf(run)).length;
 			client = await connectTo(terminal, run.project, false);
@@ -404,13 +426,13 @@ async function resume(args: readonly string[], terminal: Terminal, json: boolean
 		}
 	} catch (error) {
 		client?.close();
-		terminal.following(false);
+		followed.following(false);
 		throw error;
 	}
 
 	terminal.stdout(`run ${run.id}`);
 
-	return follow({ id: run.id, project: run.project, key, input, client, from }, terminal, json);
+	return follow({ id: run.id, project: run.project, key, input, client, from }, followed, json, background);
 }
 
 /**
@@ -740,17 +762,23 @@ const hostStopped = (cause: unknown) => cause instanceof Error && cause.message 
  * Shows the progress of the run until its task ends, and reports its outcome. Ctrl+C detaches and leaves the run to
  * the host; a second Ctrl+C, also one that came before the window, stops it. A host that stops leaves the run pending.
  */
-async function follow(run: Following, terminal: Terminal, json: boolean): Promise<number> {
+async function follow(run: Following, terminal: Terminal, json: boolean, background: boolean): Promise<number> {
 	const { id, input, client } = run;
+
+	if (background) {
+		client.close();
+		terminal.following(false);
+
+		if (json) terminal.stdout(JSON.stringify({ runId: id, status: "started" }));
+
+		return 0;
+	}
+
 	terminal.following(true);
 	const shown = display(terminal, json);
 
 	// With `--json`, the outcome line replaces the footer lines on stderr, so each stderr line is a progress line.
-	const end = (
-		status: "finished" | "failed" | "detached" | "stopped" | "host-stopped",
-		rest: { result?: JsonValue; report?: string[]; error?: string },
-		...footer: string[]
-	) => {
+	const end = (status: "failed" | "detached" | "host-stopped", rest: { error?: string }, ...footer: string[]) => {
 		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
 		else for (const line of footer) terminal.stderr(line);
 	};
@@ -844,31 +872,42 @@ async function follow(run: Following, terminal: Terminal, json: boolean): Promis
 		await stopPolling();
 		const { outcome } = info;
 
-		if (outcome?.status === "completed") {
-			shown.stop(false);
-
-			if (!json) return script.report(input, outcome.result, terminal);
-			const lines: string[] = [];
-			const code = script.report(input, outcome.result, { ...terminal, stdout: (line) => lines.push(line) });
-			end("finished", { result: outcome.result, report: lines });
-
-			return code;
-		}
-
-		shown.stop(true);
+		shown.stop(outcome?.status !== "completed");
 
 		if (outcome === undefined) throw new Error(`run ended ${info.status}`);
-		const ended = endOf(outcome, script.title(input), id);
 
-		if (outcome.status === "aborted") {
-			end("stopped", {}, ...ended.lines);
-
-			return 130;
-		}
-
-		const error = ended.error ?? `the task was orphaned: ${outcome.status === "orphaned" ? outcome.reason : ""}`;
-		end("failed", { error }, ...ended.lines);
-
-		return 1;
+		return outcomeOf(input, id, outcome, terminal, json);
 	}
+}
+
+/**
+ * Prints how the run `id` ended with `outcome`: the report of a finished run, else the footer lines on stderr, or one
+ * JSON outcome line. It gives the exit code.
+ */
+function outcomeOf(
+	input: script.ScriptInput,
+	id: string,
+	outcome: TaskOutcome<JsonValue>,
+	terminal: Terminal,
+	json: boolean,
+): number {
+	if (outcome.status === "completed") return finished(input, id, outcome.result, terminal, json);
+	const ended = endOf(outcome, script.title(input), id);
+
+	const end = (status: "failed" | "stopped", rest: { error?: string }) => {
+		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
+		else for (const line of ended.lines) terminal.stderr(line);
+	};
+
+	if (outcome.status === "aborted") {
+		end("stopped", {});
+
+		return 130;
+	}
+
+	end("failed", {
+		error: ended.error ?? `the task was orphaned: ${outcome.status === "orphaned" ? outcome.reason : ""}`,
+	});
+
+	return 1;
 }

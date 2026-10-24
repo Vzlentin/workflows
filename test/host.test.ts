@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Cursor } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -12,12 +14,14 @@ import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CtrlC, newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
+import { stopAfterPost } from "./stop-entry.ts";
 import {
 	detached,
 	escAgent,
 	hostModel,
 	nextResult,
 	piSettings,
+	postedResults,
 	rootTasks,
 	runsOf,
 	sandbox,
@@ -212,6 +216,84 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		expect([run.code, run.stdout, run.stderr]).toEqual([0, [`run ${run.id}`, "done"], [detached(run.id)]]);
 	});
 
+	it("starts a run in the background, and wait follows it to its outcome", async () => {
+		// A Pi session ID is not a conversation of the host, so the run posts nothing.
+		process.env.PI_SESSION_ID = randomUUID();
+		const started = await workflows(["gated.js", "--background", "--json"], { cwd: root, keepHost: true });
+		const { host } = started;
+
+		if (host === undefined) throw new Error("no host");
+		const id = started.id ?? "";
+
+		try {
+			const line = JSON.stringify({ runId: id, status: "started" });
+			expect([started.code, started.stdout]).toEqual([0, [`run ${id}`, line]]);
+			expect(await rootTasks(id)).toEqual([{ status: expect.stringMatching(/^(pending|running)$/) }]);
+			const resumed = await workflows(["resume", id, "--background", "--json"], { cwd: root, host });
+			expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${id}`, line]]);
+			expect(await rootTasks(id)).toHaveLength(1);
+			await reached("g");
+			await writeFile(join(root, "g.open"), "");
+			const waited = await workflows(["wait", id], { cwd: root, host });
+			expect([waited.code, waited.stdout]).toEqual([0, [`run ${id}`, "done"]]);
+		} finally {
+			await host.close();
+		}
+
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
+		expect(await postedResults()).toEqual([]);
+	});
+
+	it("waits for an ended run from the store, without a host and without a new task", async () => {
+		await writeFile(join(root, "x.js"), 'await sh("test -f ok")\nreturn "done"');
+		const failed = await workflows(["x.js"], { cwd: root });
+		const id = failed.id ?? "";
+		const lines = [`failed x: sh exited with 1: test -f ok`, `continue with: workflows resume ${id}`];
+		const waited = await workflows(["wait", id], { cwd: root, keepHost: true });
+		expect([waited.code, waited.stdout, waited.stderr, waited.host]).toEqual([1, [`run ${id}`], lines, undefined]);
+		const json = await workflows(["wait", id, "--json"], { cwd: root });
+		expect(json.stdout.at(-1)).toEqual(
+			JSON.stringify({ runId: id, status: "failed", error: "sh exited with 1: test -f ok" }),
+		);
+		expect(await rootTasks(id)).toHaveLength(1);
+		await writeFile(join(root, "ok"), "");
+		expect((await workflows(["resume", id], { cwd: root })).code).toBe(0);
+		const done = await workflows(["wait", id], { cwd: root, keepHost: true });
+		expect([done.code, done.stdout, done.host]).toEqual([0, [`run ${id}`, "done"], undefined]);
+		expect(await rootTasks(id)).toHaveLength(2);
+	});
+
+	it("detaches a wait on Ctrl+C, and never stops the run", async () => {
+		const { id, host } = await detachedRun();
+
+		try {
+			let exits = 0;
+
+			const ctrlC = new CtrlC(() => {
+				exits++;
+			});
+
+			const pending = workflows(["wait", id], { cwd: root, host, ctrlC });
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			ctrlC.press();
+			ctrlC.press();
+			const waited = await pending;
+			expect([waited.code, waited.stderr, exits]).toEqual([130, [detached(id)], 1]);
+			expect(await rootTasks(id)).toEqual([{ status: expect.stringMatching(/^(pending|running)$/) }]);
+			await writeFile(join(root, "g.open"), "");
+			const done = await workflows(["wait", id], { cwd: root, host });
+			expect([done.code, done.stdout]).toEqual([0, [`run ${id}`, "done"]]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("starts no run after a bad usage with --background", async () => {
+		const run = await workflows(["gated.js", "--background", "extra"], { cwd: root });
+		expect(run.code).toBe(2);
+		expect(existsSync(runsOf(root)) ? await readdir(runsOf(root)) : []).toEqual([]);
+	});
+
 	it("starts no run after a Ctrl+C before the run starts", async () => {
 		const interrupt = new AbortController();
 		interrupt.abort();
@@ -388,6 +470,11 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x earlier-version x`]);
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect(resumed.stderr).toEqual([`workflows: run ${id} was saved by an earlier version of x and cannot resume`]);
+		const waited = await workflows(["wait", id], { cwd: root });
+		expect([waited.code, waited.stderr]).toEqual([
+			1,
+			[`workflows: run ${id} was saved by an earlier version of x and cannot be waited for`],
+		]);
 		const stopped = await workflows(["stop", id], { cwd: root });
 		expect([stopped.code, stopped.stdout]).toEqual([
 			0,
@@ -642,6 +729,16 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 			expect(session?.prompt).toBe('Script respond: {"ok":true}');
 			expect(session?.tools).toContain("respond");
 			expect(session?.tools).not.toContain("workflow");
+			expect(await postedResults()).toEqual([]);
+			const id = /^run (\S+) /.exec(result.text)?.[1] ?? "";
+			const save = { runId: id, name: "kept" };
+			await tellAgent(`Script workflow: ${JSON.stringify({ save, background: true })}`);
+			expect(await nextResult(1)).toEqual({
+				text: expect.stringContaining("background works only with name, script or resume"),
+				details: undefined,
+				isError: true,
+			});
+			expect(await readdir(runsOf(root))).toEqual([id]);
 		} finally {
 			await host.close();
 		}
@@ -690,6 +787,148 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 			expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
 		} finally {
 			await host.close();
+		}
+	});
+
+	it("starts a run in the background, and posts its outcome once to the conversation when it ends", async () => {
+		// The project agent of a project runs in its folder, so the inline script finds the project's `child` workflow.
+		await mkdir(join(root, "project"));
+		const project = addProject("demo", join(root, "project"));
+		const scripts = join(project, ".workflows", "workflows");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "child.js"),
+			`await sh(${JSON.stringify(`cd ${root} && ./gate.sh g`)})\nreturn "child"`,
+		);
+		const model = hostModel();
+		const host = await startHost("demo", model.models);
+
+		try {
+			const script = 'const child = await run("child")\nreturn { report: ["ran", child] }';
+			await tellAgent(`Script workflow: ${JSON.stringify({ script, background: true })}`, "demo");
+			const started = await nextResult(0, "demo");
+			const id = /^run (\S+) /.exec(started.text)?.[1] ?? "";
+			expect([started.text, started.isError]).toEqual([
+				`run ${id} started in the background; its result comes as a message in this conversation when it ends; follow it with resume: "${id}", or stop it with the command workflows stop ${id}`,
+				false,
+			]);
+			await reached("g");
+			expect(await postedResults("demo")).toEqual([]);
+			const calls = model.calls.length;
+			await writeFile(join(root, "g.open"), "");
+			await until(async () => (await rootTasks(id, "demo"))[0]?.status === "terminal");
+			await until(async () => model.count("result") === 1);
+			expect(await postedResults("demo")).toEqual([
+				{
+					text: `run ${id} finished: {"report":["ran","child"]}\nran\nchild`,
+					data: { runId: id, status: "finished" },
+					conversation: 1,
+				},
+			]);
+			expect(model.calls.length).toBe(calls + 1);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("posts each end of a background run, also of a background resume that is stopped", async () => {
+		const model = hostModel();
+		const host = await startHost("main", model.models);
+
+		try {
+			const script = `await sh(${JSON.stringify(`test -f ${root}/ok`)})\nawait sh(${JSON.stringify(`cd ${root} && ./gate.sh g`)})\nreturn "done"`;
+			await tellAgent(`Script workflow: ${JSON.stringify({ script, background: true })}`);
+			const id = /^run (\S+) /.exec((await nextResult(0)).text)?.[1] ?? "";
+			await until(async () => (await postedResults()).length === 1);
+			await writeFile(join(root, "ok"), "");
+			await tellAgent(`Script workflow: ${JSON.stringify({ resume: id, background: true })}`);
+			expect((await nextResult(1)).text).toMatch(new RegExp(`^run ${id} started in the background`));
+			await reached("g");
+			const stopped = await workflows(["stop", id], { cwd: root, host });
+			expect(stopped.code).toBe(0);
+			await until(async () => (await postedResults()).length === 2);
+			expect(await postedResults()).toEqual([
+				{
+					text: `run ${id} failed: sh exited with 1: test -f ${root}/ok; continue it with resume: "${id}"`,
+					data: { runId: id, status: "failed" },
+					conversation: 1,
+				},
+				{
+					text: `run ${id} stopped; continue it with resume: "${id}"`,
+					data: { runId: id, status: "stopped" },
+					conversation: 1,
+				},
+			]);
+			expect(await rootTasks(id)).toEqual([
+				{ status: "terminal", outcome: "failed" },
+				{ status: "terminal", outcome: "aborted" },
+			]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("posts nothing when the host stops, and posts once after the host starts again", async () => {
+		const host = await startHost("main", hostModel().models);
+		let id = "";
+
+		try {
+			const script = `await sh(${JSON.stringify(`cd ${root} && ./gate.sh g`)})\nreturn "done"`;
+			await tellAgent(`Script workflow: ${JSON.stringify({ script, background: true })}`);
+			id = /^run (\S+) /.exec((await nextResult(0)).text)?.[1] ?? "";
+			await reached("g");
+		} finally {
+			await host.close();
+		}
+
+		expect(await postedResults()).toEqual([]);
+		const model = hostModel();
+		const again = await startHost("main", model.models);
+
+		try {
+			await writeFile(join(root, "g.open"), "");
+			await until(async () => (await rootTasks(id))[0]?.status === "terminal");
+			await until(async () => model.count("result") === 1);
+			expect(await postedResults()).toEqual([
+				{ text: `run ${id} finished: "done"\ndone`, data: { runId: id, status: "finished" }, conversation: 1 },
+			]);
+			expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
+		} finally {
+			await again.close();
+		}
+	});
+
+	it("posts the outcome once when the host stops after the post and before the end of the task", async () => {
+		await setEntries({ workflows: fileURLToPath(new URL("stop-entry.ts", import.meta.url)) });
+		const host = await startHost("main", hostModel().models);
+		let id = "";
+
+		try {
+			const script = `await sh(${JSON.stringify(`cd ${root} && ./gate.sh g`)})\nreturn "done"`;
+			await tellAgent(`Script workflow: ${JSON.stringify({ script, background: true })}`);
+			id = /^run (\S+) /.exec((await nextResult(0)).text)?.[1] ?? "";
+			await reached("g");
+			stopAfterPost.host = host;
+			await writeFile(join(root, "g.open"), "");
+			await host.closed;
+			expect(await postedResults()).toHaveLength(1);
+			expect((await rootTasks(id))[0]?.status).not.toBe("terminal");
+		} finally {
+			stopAfterPost.host = undefined;
+			await host.close();
+		}
+
+		const model = hostModel();
+		const again = await startHost("main", model.models);
+
+		try {
+			await until(async () => (await rootTasks(id))[0]?.status === "terminal");
+			expect(await postedResults()).toEqual([
+				{ text: `run ${id} finished: "done"\ndone`, data: { runId: id, status: "finished" }, conversation: 1 },
+			]);
+			expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
+		} finally {
+			await again.close();
 		}
 	});
 });

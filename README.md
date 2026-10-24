@@ -49,6 +49,7 @@ workflows ship "Fix the README typo"
 workflows campaign goal.md
 workflows list                             # the runs of this project
 workflows resume <run-id>
+workflows wait <run-id>                    # follow a run to its outcome
 workflows stop <run-id>
 workflows                                  # the workflows that you can run
 workflows ship --help

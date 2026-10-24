@@ -319,7 +319,7 @@ export const meta = {
   branch `<wf>/<run-id>` in the run directory, runs the script there, and gives it `args.start`, the start commit.
 - `exit` maps `result.status` to the exit code. Any other status, or a result without `status`, exits 0.
 
-Every script also takes `--prompts <folder>`, as `ship` does, `--json` and `--help`. `workflows <wf> --help` prints
+Every script also takes `--prompts <folder>`, as `ship` does, `--background`, `--json` and `--help`. `workflows <wf> --help` prints
 the usage line, built from `meta`, and `meta.description` when the script has one, and exits 0. Any other flag is bad usage. Bad usage prints
 `workflows: <error>` and the usage line of the script, and exits 2. A bad `meta` fails with
 `workflows: <name>: <problem>` and exits 1.
@@ -498,6 +498,14 @@ the shipped items and the requeues are not run again. It does not read the work 
 repository again, or create another branch. Answered turns are not sent to the model again. A turn that was in
 progress is sent again.
 
+With `--background`, at any position before `--`, start and resume print `run <run-id>` once the host has the run's
+task, and exit 0 without following it. With `--json`, they also print `{"runId":"<run-id>","status":"started"}`. A
+Ctrl+C after the host accepted the task does not change this. The other commands ignore `--background`. Follow such a
+run with `workflows wait <run-id>` or `workflows resume <run-id>`. A start with `--background` saves `notify` in the
+input of the run. A resume that starts a new task saves `notify` only with `--background`, whatever the last task
+had. A resume that follows a task that has not ended does not change it. See
+[The `workflow` tool of the host](#the-workflow-tool-of-the-host) for what `notify` does.
+
 A run has one live task at a time. When the run's last task has not ended, because it runs in the host or waits for
 the host to start, resume follows that task and prints its outcome. When the host runs, resume prints the progress
 lines of the task's current execution from its start. When no host runs, resume starts it and prints the progress
@@ -565,20 +573,40 @@ and the command prints `stopped <workflow>, which an earlier version saved; it c
 Model requests use the retry, stream timeout and compaction settings of Pi's `settings.json` in `~/.pi/agent`, as the
 host reads them. The `.pi/settings.json` of the run's directory does not count.
 
+## Wait
+
+```sh
+workflows wait <run-id> [--json]
+```
+
+`workflows wait` follows a run to its outcome, and never starts a task or stops the run. It prints `run <run-id>`, then
+the same outcome lines, JSON line and exit code as `resume`. A run whose task ended, completed or not, prints its
+outcome from the project store: `wait` starts no host and no task, so a failed run prints its `failed` and `continue
+with` lines and exits 1. A run whose task has not ended is followed as `resume` follows it, and `wait` starts the host
+when none runs. `wait` checks the version of the host's task as `resume` does, and refuses a run that another version
+saved with `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot be waited for`.
+
+Ctrl+C detaches `wait` at once: it prints the `detached` line, or the `detached` JSON line, and exits 130. The run goes
+on in the host. A second Ctrl+C exits and never stops the run. Bad usage prints `usage: workflows wait <run-id>
+[--json]` and exits 2.
+
 ## JSON output
 
 ```sh
 workflows ship --json plan.md
 workflows resume <run-id> --json
+workflows wait <run-id> --json
 ```
 
-Every form of start and resume accepts `--json`, at any position before `--`. After `run <run-id>`, stdout gets one
+Every form of start, resume and wait accepts `--json`, at any position before `--`. After `run <run-id>`, stdout gets one
 line of JSON in place of the report lines, `{ "runId", "status", "result"?, "report"?, "error"? }`, for every outcome:
 
 - `finished`: `result` is the result of the run, for example `{"status":"shipped","rounds":1,"head":"1a2b3c4",...}`
   for ship. The [Ship](#ship) section lists the fields of a ship result. `report` is the list of report lines that
   the command prints without `--json`, such as `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4"]`.
 - `failed`: `error` is the error message.
+- `started`: with `--background`, the host has the run's task, and the command does not follow it. The `workflow`
+  tool of the host and the `workflow` tool of Pi give it as a result that is not an error.
 - `detached`: Ctrl+C detached the command, and the run goes on in the host.
 - `stopped`: a second Ctrl+C or `workflows stop` stopped the run.
 - `host-stopped`: the host stopped while the command followed the run, which stays pending.
@@ -782,6 +810,19 @@ project of the host and `PI_SESSION_ID` to the conversation ID.
 - The result text of a finished run is the summary of Pi's tool, then the `report` lines. A failed, detached, stopped
   or host-stopped run is an error result with its summary, and keeps the structured output
   `{ runId, status, result?, report?, error? }`.
+- `background: true`, with `name`, `script` or `resume`, adds `--background` to the command. With `save`, it is an
+  error and no command starts. The result is `started`, which is not an error: `run <run-id> started in the
+  background; its result comes as a message in this conversation when it ends; follow it with resume: "<run-id>", or
+  stop it with the command workflows stop <run-id>`.
+- A task whose input has `notify` posts its outcome to the conversation `parent` when it ends, after it ends its
+  sessions and before its end commits. The post is a follow-up input of the entry kind `workflows.result`, with the
+  data `{ runId, status }` and the text of the tool result for that outcome: `finished` with the report lines,
+  `failed` with the error, or `stopped`. Its request ID is `workflows.result:<run-id>/<task-id>`, so a rerun of the
+  phase posts once, and each later task of the run posts again. A child run never has `notify`. Nothing is posted
+  when `parent` is not a conversation ID of the host, such as the session ID of Pi, or when the host stops: the task
+  stays pending and posts when it ends after the restart. A failed post goes to the host's report and does not
+  change the outcome of the run. A `background` resume of a task that has not ended, such as a run that a call
+  without `background` started, posts nothing.
 - Esc in a conversation aborts the call: the command gets SIGINT, detaches, and the run goes on in the host. The
   result is an error that keeps the running output, so it names the run, says that it is detached, and says to follow
   it with `resume`. A call
@@ -800,7 +841,8 @@ project of the host and `PI_SESSION_ID` to the conversation ID.
 The `pi/` folder of the package is the Pi extension that gives Pi the `workflow` tool. The setup of a global
 install registers it, see [Setup](#setup). It runs each workflow as a child process of the `workflows` command of
 the same install (`../dist/cli.js` from the extension), with the Node that runs Pi, in the session's directory, always
-with `--json`. So a run that starts in Pi is a normal run of the project of the session's directory, and `workflows resume`
+with `--json`. With `background`, the call returns at once, and the extension posts the outcome of the run to the
+session as a message, see [Background runs in Pi](#background-runs-in-pi). So a run that starts in Pi is a normal run of the project of the session's directory, and `workflows resume`
 follows or continues it from a terminal.
 
 ### The `workflow` tool
@@ -818,9 +860,12 @@ The tool takes one of `name`, `script`, `resume` or `save`, plus `args` with `na
 - `resume` runs `workflows resume <run-id>`.
 - `save: { runId, name, force? }` runs `workflows save <run-id> <name>`, with `--force` when `force` is true. See
   [Save](#save).
+- `background: true`, with `name`, `script` or `resume`, adds `--background` before `--json`. With `save`, it is the
+  error `background works only with name, script or resume`, and no command starts.
 
 The tool adds guidelines to the system prompt on how to write a `script`: its shape and `meta`, the script globals,
-the sandbox and resume rules, and `save`. A test checks that they name every global of `workflows/script.d.ts`.
+the sandbox and resume rules, `save`, and `background`. A test checks that they name every global of
+`workflows/script.d.ts`.
 
 Each stderr line of the run is a progress update of the tool. The text of an update is the last line of a
 `{"progress":[...]}` line, or the stderr line itself. Esc sends SIGINT to the command, as Ctrl+C does, so the command
@@ -842,11 +887,34 @@ The tool declares an `outputSchema`. Its `structuredContent` is `{ runId, status
 - `finished`: the run finished, `result` is its result, such as a `blocked` ship result, and `report` is its report
   lines.
 - `failed`: the run failed, and `error` is its error message.
+- `started`: a `background` call started the run, or a new task of it, and does not follow it. It is not an error,
+  its text is `run <run-id> started in the background; its result comes as a message in this conversation when it
+  ends; follow it with resume: "<run-id>", or stop it with the command workflows stop <run-id>`, and it draws
+  `◉ started in the background`.
 - `detached`: Esc detached the command, and the run goes on in the host.
 - `stopped`: `workflows stop` stopped the run.
 - `host-stopped`: the host stopped while the command followed the run, which continues when the host starts again.
 
 These are the fields of the JSON outcome line of the command.
+
+### Background runs in Pi
+
+After a `started` result, the extension appends the session entry `workflow-background` with the data
+`{ runId, cwd }`, and follows the run with `workflows wait <run-id> --json` in `cwd`. When the wait prints a
+`finished`, `failed` or `stopped` outcome, the extension sends the message `workflow-result`, with the text of a
+call without `background` for that outcome (the summary, with no report lines), the `details` `{ steps, outcome }`,
+`display: true`, `triggerTurn: true` and `deliverAs: "followUp"`. It then appends the session entry
+`workflow-background-end` with the data `{ runId }`. The renderer of `workflow-result` draws the steps and the outcome
+as the tool result draws them, or the text of the message when its `details` are not valid.
+
+At each `session_start`, the extension reads all the entries of the session, of every branch, and follows each run
+whose last `workflow-background` entry comes after its last `workflow-background-end` entry. One extension instance
+has at most one wait for a run, so a second `session_start` or a `background` resume of a followed run starts no
+second wait. `session_shutdown` sends SIGINT to the waits, which detach and post nothing.
+
+A `detached` or `host-stopped` outcome, an outcome line that is not valid, or no outcome line posts nothing and
+appends no end entry, so the next `session_start` follows the run again. A crash between the message and the end entry
+posts the outcome again at the next `session_start`.
 
 A `save` call returns `{ runId, status: "finished", result: { file }, report: [file] }`, with the absolute path of the
 file that it wrote. A `save` that fails is a normal tool error with the stderr text.
