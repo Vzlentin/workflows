@@ -61,7 +61,7 @@ export type Terminal = Io & {
 	readonly connect?: (project: string, start: boolean) => Promise<Client | undefined>;
 };
 
-const RESUME = "workflows resume <run-id> [--background] [--json]";
+const RESUME = "workflows resume <run-id> [--answer <text>] [--background] [--json]";
 const WAIT = "workflows wait <run-id> [--json]";
 const STOP = "workflows stop <run-id> [--json]";
 const LIST = "workflows list [--json]";
@@ -83,7 +83,10 @@ const COMMANDS = new Map<string, Command>([
 	["check", script.check],
 ]);
 
-/** The exit code: 0 for a successful result, 1 for any other result or error, 2 for bad usage, 130 after Ctrl+C. */
+/**
+ * The exit code: 0 for a successful result, 1 for any other result or error, 2 for bad usage, 3 for a run that waits
+ * for an answer, 130 after Ctrl+C.
+ */
 export async function main(argv: readonly string[], terminal: Terminal): Promise<number> {
 	const usage = [
 		`${script.USAGE} [--background] [--json]`,
@@ -381,7 +384,8 @@ function progressOf(run: SavedRun): Promise<readonly ProgressEvent[]> {
 
 /**
  * Continues the run of `args`. A finished run prints its result. A run whose last task ended without a result continues
- * in a new task with the same input, and shows the progress from its start. A run whose last task did not end is
+ * in a new task with the same input, and shows the progress from its start. A run that waits for an answer continues
+ * in a new task with the answer of `--answer` to its open `input` call. A run whose last task did not end is
  * followed: with its host running, from the start of the task's current execution, else from when the host starts.
  * With `wait`, an ended run prints its outcome from the store, and Ctrl+C never stops the run.
  */
@@ -393,16 +397,25 @@ async function resume(
 	wait = false,
 ): Promise<number> {
 	const usage = wait ? WAIT : RESUME;
-	const run = await savedRun(oneRunId(args, usage), usage);
+	const { id, answer } = wait ? { id: oneRunId(args, usage), answer: undefined } : resumeArgs(args);
+	const run = await savedRun(id, usage);
 	const tasks = await tasksOf(run);
-	const { input, state } = checked(taskOf(tasks), run.id, wait ? "be waited for" : "resume");
+	const { input: last, state } = checked(taskOf(tasks), run.id, wait ? "be waited for" : "resume");
 
-	if (state.status === "terminal" && (wait || state.outcome.status === "completed")) {
+	const waiting =
+		state.status === "terminal" &&
+		state.outcome.status === "completed" &&
+		script.statusOf(state.outcome.result) === "waiting";
+
+	if (answer !== undefined && !waiting) throw new UsageError(`run ${run.id} does not wait for an answer`, RESUME);
+
+	if (state.status === "terminal" && answer === undefined && (wait || state.outcome.status === "completed")) {
 		terminal.stdout(`run ${run.id}`);
 
-		return outcomeOf(input, run.id, state.outcome, terminal, json);
+		return outcomeOf(last, run.id, state.outcome, terminal, json);
 	}
 
+	const input = answer === undefined ? last : { ...last, answer: { call: await openInput(run), text: answer } };
 	const ended = tasks.at(-1)?.state.status === "terminal";
 	const key = taskKey(run.id, tasks.length + (ended ? 1 : 0));
 	// A wait never tells the terminal that it follows a run, so a second Ctrl+C exits rather than stops the run.
@@ -442,6 +455,31 @@ async function resume(
 	terminal.stdout(`run ${run.id}`);
 
 	return follow({ id: run.id, project: run.project, key, input, client, from }, followed, json, background);
+}
+
+/** The run ID and the `--answer` of the args of `resume`. */
+function resumeArgs(args: readonly string[]) {
+	const { values, positionals } = withUsage(
+		() => parseArgs({ args: [...args], options: { answer: { type: "string" } }, allowPositionals: true, strict: true }),
+		RESUME,
+	);
+
+	return { id: oneRunId(positionals, RESUME), answer: values.answer };
+}
+
+/** The document key of the `input` call that the run waits for an answer to: the last one that started and did not end. */
+async function openInput(run: SavedRun): Promise<string> {
+	const records = await reading(run.store, new Map(), (store) => callRecords(store, run.id));
+
+	const open = [...records]
+		.filter(([key, record]) => key.startsWith(`${run.id}/`) && record.kind === "input" && record.endedAt === undefined)
+		.sort(([, a], [, b]) => a.startedAt.localeCompare(b.startedAt));
+
+	const [key] = open.at(-1) ?? [];
+
+	if (key === undefined) throw new Error(`run ${run.id} has no open input call`);
+
+	return key;
 }
 
 /**
@@ -843,8 +881,8 @@ function treeLines(calls: readonly Shown[], indent: string, now: number): string
 }
 
 /**
- * The profile of a session, also for an ask in it, the command on one line for `sh` and `ok`, and the workflow and child
- * run ID for `run`.
+ * The profile of a session, also for an ask in it, the command on one line for `sh` and `ok`, the workflow and child
+ * run ID for `run`, and the question on one line for `input`.
  */
 function labelOf(
 	{ kind, args }: Pick<SavedCall, "kind" | "args">,
@@ -858,6 +896,8 @@ function labelOf(
 	}
 
 	if (kind === "run") return [args.name, child].filter((value) => value !== undefined).join(" ");
+
+	if (kind === "input") return String(args.question).replace(/\s+/g, " ").trim().slice(0, 80);
 
 	if (kind === "session") return String(args.profile);
 	// A linear scan for each ask; an index by conversation if runs get thousands of calls.

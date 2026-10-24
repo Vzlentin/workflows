@@ -336,7 +336,8 @@ const GUIDELINES = [
 		"`session({ as, provider, model, thinking })` gives a session that keeps its history, and its " +
 		"`.ask(prompt, { schema })` is one turn. `as` names an agent profile (default `default`), and `provider`, " +
 		"`model` and `thinking` override it. `sh(cmd)` returns stdout and throws on a nonzero exit, `ok(cmd)` returns true on exit 0. " +
-		"`run(name, args)` runs a named workflow as a child run. `parallel([() => ...])` and " +
+		"`run(name, args)` runs a named workflow as a child run. `input(question)` stops the run until the user answers " +
+		"with the command `workflows resume <run-id> --answer <text>`, and then returns the answer. `parallel([() => ...])` and " +
 		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +
 		"and `log(text)` write progress lines. `args`, `runId` and `runDir` are values.",
 	"A script has no file system, network, modules or timers, so effects go through `sh`. `Date`, `Date.now()` and " +
