@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.5](https://github.com/Vzlentin/workflows/compare/v0.3.4...v0.3.5) (2026-10-24)
+
+
+### Features
+
+* steps with their time and result in run output and show, list --pick, wait from the first step, and no Herdr workspace of its own ([#50](https://github.com/Vzlentin/workflows/issues/50)) ([348c62f](https://github.com/Vzlentin/workflows/commit/348c62ffb29929a3ad51fbe001a13ca5fff2a613))
+
 ## [0.3.4](https://github.com/Vzlentin/workflows/compare/v0.3.3...v0.3.4) (2026-10-24)
 
 
