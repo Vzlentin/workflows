@@ -205,8 +205,10 @@ describe("workflows save", () => {
 describe("usage errors", () => {
 	it("print the usage line of their own command", async () => {
 		const cases: [string[], string][] = [
-			[["resume"], "usage: workflows resume <run-id> [--json]"],
-			[["resume", "a/b"], "usage: workflows resume <run-id> [--json]"],
+			[["resume"], "usage: workflows resume <run-id> [--background] [--json]"],
+			[["resume", "a/b"], "usage: workflows resume <run-id> [--background] [--json]"],
+			[["resume", "--background"], "usage: workflows resume <run-id> [--background] [--json]"],
+			[["wait", "r1", "r2"], "usage: workflows wait <run-id> [--json]"],
 			[["show", "r1", "r2"], "usage: workflows show <run-id> [--json]"],
 			[["show", ".."], "usage: workflows show <run-id> [--json]"],
 			[["list", "x"], "usage: workflows list [--json]"],
@@ -945,16 +947,16 @@ return [one.reply, two.reply].join(", ")`,
 			"plain",
 		]);
 		const plain = await workflows(["plain", "--help"], { cwd: root });
-		expect(plain.stdout).toEqual(["usage: workflows plain [--prompts <folder>] [--json]"]);
+		expect(plain.stdout).toEqual(["usage: workflows plain [--prompts <folder>] [--background] [--json]"]);
 
 		const ship = await workflows(["ship", "--help"], { cwd: root });
 		expect([ship.code, ship.stdout[0]]).toEqual([
 			0,
-			"usage: workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--prompts <folder>] [<item.md> | <text>] [--json]",
+			"usage: workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--prompts <folder>] [<item.md> | <text>] [--background] [--json]",
 		]);
 		const own = await workflows(["count.js", "--help"], { cwd: root });
 		expect(own.stdout).toEqual([
-			"usage: workflows count [--depth <n>] [--all] [--prompts <folder>] <path> [--json]",
+			"usage: workflows count [--depth <n>] [--all] [--prompts <folder>] <path> [--background] [--json]",
 			"Count words.",
 		]);
 
@@ -978,7 +980,7 @@ return [one.reply, two.reply].join(", ")`,
 			join(root, "x.js"),
 			`export const meta = { args: { path: { type: "string", positional: true, required: true }, depth: { type: "number" } } }\nreturn args`,
 		);
-		const usage = "usage: workflows x [--depth <n>] [--prompts <folder>] <path> [--json]";
+		const usage = "usage: workflows x [--depth <n>] [--prompts <folder>] <path> [--background] [--json]";
 
 		const cases: [string[], string][] = [
 			[["x.js", "--depth", "two", "src"], "workflows: --depth must be a positive integer"],

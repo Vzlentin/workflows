@@ -12,6 +12,7 @@ import {
 	fauxProvider,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
+import type { EntryRecord } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { REMINDER } from "@vzlentin/harness/answer";
 import { connect } from "@vzlentin/harness/client";
@@ -176,7 +177,8 @@ export type Kind =
 	| "split"
 	| "requeue"
 	| "reflect"
-	| "script";
+	| "script"
+	| "result";
 
 /** One answered prompt: its kind, provider, model, thinking level, offered tools, system prompt sections, and text. */
 export type Call = {
@@ -204,6 +206,8 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Update the work item queue", "requeue"],
 	["Improve this prompt", "reflect"],
 	["Script", "script"],
+	// The outcome that a background run posts to the conversation of its `workflow` call.
+	["run ", "result"],
 ];
 
 function textOf(message: Message): string {
@@ -419,6 +423,8 @@ export class FakeModel {
 				return fauxAssistantMessage(`${current}\nImproved prompt ${nth}.`);
 			}
 
+			case "result":
+				return fauxAssistantMessage("Noted.");
 			case "script": {
 				// `Script spawn: <prompt>` spawns a subagent with the prompt `Script: <prompt>` through harness's tool.
 				const spawned = /^Script spawn: (.*)$/s.exec(prompt)?.[1];
@@ -658,28 +664,46 @@ export function escAgent(project = "main"): Promise<void> {
 /** A result of the `workflow` tool in a transcript: its text, its details, and whether it is an error. */
 export type WorkflowResult = { readonly text: string; readonly details: unknown; readonly isError: boolean };
 
-/** The results of the `workflow` tool in the transcripts of the store of `project`, in entry order of each conversation. */
-export async function workflowResults(project = "main"): Promise<WorkflowResult[]> {
+/** The entries in the transcripts of the store of `project`, in entry order of each conversation. */
+async function entriesOf(project: string): Promise<EntryRecord[]> {
 	const storage = await openNodeSqliteStorage(storeOf(project));
 
 	try {
-		const found: WorkflowResult[] = [];
+		const found: EntryRecord[] = [];
 		const { items } = await storage.scanConversations({}, 256, undefined, BACKGROUND_CONTEXT);
 
 		for (const { id } of items) {
 			const query = { conversationId: id, order: "ascending" } as const;
-			const entries = await storage.scanEntries(query, 1024, undefined, BACKGROUND_CONTEXT);
-
-			for (const message of entries.items.flatMap((entry) => entry.model ?? [])) {
-				if (message.role !== "toolResult" || message.toolName !== "workflow") continue;
-				found.push({ text: textOf(message), details: message.details, isError: message.isError });
-			}
+			found.push(...(await storage.scanEntries(query, 1024, undefined, BACKGROUND_CONTEXT)).items);
 		}
 
 		return found;
 	} finally {
 		await storage.close(BACKGROUND_CONTEXT);
 	}
+}
+
+/** The results of the `workflow` tool in the transcripts of the store of `project`, in entry order of each conversation. */
+export async function workflowResults(project = "main"): Promise<WorkflowResult[]> {
+	return (await entriesOf(project)).flatMap((entry) =>
+		(entry.model ?? []).flatMap((message) =>
+			message.role === "toolResult" && message.toolName === "workflow"
+				? [{ text: textOf(message), details: message.details, isError: message.isError }]
+				: [],
+		),
+	);
+}
+
+/** A run outcome that a background run posted as a message: its text, its data, and the conversation it went to. */
+export type PostedResult = { readonly text: string; readonly data: unknown; readonly conversation: number };
+
+/** The `workflows.result` entries in the transcripts of the store of `project`. */
+export async function postedResults(project = "main"): Promise<PostedResult[]> {
+	return (await entriesOf(project)).flatMap((entry) =>
+		entry.kind === "workflows.result"
+			? [{ text: (entry.model ?? []).map(textOf).join("\n"), data: entry.data, conversation: entry.conversationId }]
+			: [],
+	);
 }
 
 /** Waits until the store of `project` has more than `count` results of the `workflow` tool, and gives the next one. */

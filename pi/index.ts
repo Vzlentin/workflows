@@ -27,6 +27,12 @@ const PARAMETERS = Type.Object({
 	resume: Type.Optional(Type.String({ description: "The ID of a run to continue" })),
 	save: Type.Optional(SAVE),
 	args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+	background: Type.Optional(
+		Type.Boolean({
+			description:
+				"With `name`, `script` or `resume`: start the run and return at once; its result comes as a message in this conversation",
+		}),
+	),
 });
 
 /** The arguments of a call of the tool, which Pi checks against `PARAMETERS`. */
@@ -51,7 +57,7 @@ const JSON_VALUE = Type.Cyclic(
 	"Json",
 );
 
-/** The stdout line of `workflows --json` after `run <run-id>`. */
+/** The stdout line of `workflows --json` after `run <run-id>`, and of `workflows wait <run-id> --json`. */
 const OUTCOME = Type.Union([
 	Type.Object({
 		runId: Type.String(),
@@ -63,7 +69,12 @@ const OUTCOME = Type.Union([
 	Type.Object({ runId: Type.String(), status: Type.Literal("failed"), error: Type.String() }),
 	Type.Object({
 		runId: Type.String(),
-		status: Type.Union([Type.Literal("detached"), Type.Literal("stopped"), Type.Literal("host-stopped")]),
+		status: Type.Union([
+			Type.Literal("started"),
+			Type.Literal("detached"),
+			Type.Literal("stopped"),
+			Type.Literal("host-stopped"),
+		]),
 	}),
 ]);
 
@@ -81,6 +92,20 @@ type WorkflowDetails = Static<typeof DETAILS>;
 const STEPS = Type.Object({ steps: Type.Array(Type.String()) });
 
 const PROGRESS = Type.Object({ progress: Type.Array(Type.Unknown()) });
+
+/** The entry that a background call records, so a later start of the session watches the run again. */
+const STARTED_ENTRY = Type.Object({
+	type: Type.Literal("custom"),
+	customType: Type.Literal("workflow-background"),
+	data: Type.Object({ runId: Type.String(), cwd: Type.String() }),
+});
+
+/** The entry that the watcher records after it posts the outcome of a background run. */
+const ENDED_ENTRY = Type.Object({
+	type: Type.Literal("custom"),
+	customType: Type.Literal("workflow-background-end"),
+	data: Type.Object({ runId: Type.String() }),
+});
 
 /** The lines of a `{"progress":[...]}` stderr line of `workflows --json`, or undefined for any other line. */
 function progressLines(line: string): string[] | undefined {
@@ -104,12 +129,15 @@ function cli(): string[] {
  * The `workflows` arguments of a tool call, with each arg as a flag, and `--json` for a run. The command rejects a flag
  * it does not know, so a mistyped arg fails before a run exists.
  */
-function cliArgs({ name, script, resume, save, args = {} }: WorkflowCall): string[] {
+function cliArgs({ name, script, resume, save, args = {}, background }: WorkflowCall): string[] {
 	const given = [name, script, resume, save].filter((value) => value !== undefined).length;
 
 	if (given !== 1) throw new Error("give exactly one of name, script, resume or save");
 
-	if (resume !== undefined) return ["resume", resume, "--json"];
+	if (background && save !== undefined) throw new Error("background works only with name, script or resume");
+	const json = background ? ["--background", "--json"] : ["--json"];
+
+	if (resume !== undefined) return ["resume", resume, ...json];
 
 	if (save !== undefined) return ["save", save.runId, save.name, ...(save.force ? ["--force"] : [])];
 
@@ -121,7 +149,7 @@ function cliArgs({ name, script, resume, save, args = {} }: WorkflowCall): strin
 		return [`--${key}=${Value.Check(Type.String(), flag) ? flag : JSON.stringify(flag)}`];
 	});
 
-	return [name ?? "-", ...flags, "--json"];
+	return [name ?? "-", ...flags, ...json];
 }
 
 type Output = { readonly code: number | null; readonly stdout: readonly string[]; readonly stderr: readonly string[] };
@@ -162,6 +190,33 @@ async function runCli(
 	}
 }
 
+/**
+ * The steps of the stderr lines of the command: the lines of the last `{"progress":[...]}` line, then any other line.
+ */
+class Steps {
+	#drawn: readonly string[] = [];
+	readonly #other: string[] = [];
+
+	/** Adds a stderr line, and returns the text of its update: the last progress line, or the line itself. */
+	add(line: string): string {
+		const lines = progressLines(line);
+
+		if (lines === undefined) {
+			this.#other.push(line);
+
+			return line;
+		}
+
+		this.#drawn = lines;
+
+		return lines.at(-1)?.trim() ?? "";
+	}
+
+	get lines(): string[] {
+		return [...this.#drawn, ...this.#other];
+	}
+}
+
 /** The outcome line after `run <run-id>`; throws the stderr text when the command stopped without one. */
 function outcomeOf(output: Output): WorkflowOutcome {
 	const [, line] = output.stdout;
@@ -180,6 +235,8 @@ function summary(outcome: WorkflowOutcome): string {
 			return `run ${outcome.runId} finished: ${JSON.stringify(outcome.result)}`;
 		case "failed":
 			return `run ${outcome.runId} failed: ${outcome.error}; continue it with resume: "${outcome.runId}"`;
+		case "started":
+			return `run ${outcome.runId} started in the background; its result comes as a message in this conversation when it ends; follow it with resume: "${outcome.runId}", or stop it with the command workflows stop ${outcome.runId}`;
 		case "detached":
 			return `run ${outcome.runId} detached and goes on in the harness host; follow it with resume: "${outcome.runId}", or stop it with the command workflows stop ${outcome.runId}`;
 		case "stopped":
@@ -216,7 +273,7 @@ function resultOf(outcome: WorkflowOutcome, steps: string[]): AgentToolResult<Wo
 		structuredContent: outcome,
 	};
 
-	if (outcome.status !== "finished") result.isError = true;
+	if (outcome.status !== "finished" && outcome.status !== "started") result.isError = true;
 
 	return result;
 }
@@ -248,8 +305,8 @@ const MARKS = new Map<string, ThemeColor>([
 ]);
 
 /**
- * The progress lines as the command drew them, with themed marks, then the report lines of a finished run, or the
- * summary of a failed, detached or stopped one, or of one whose host stopped.
+ * The progress lines as the command drew them, with themed marks, then the report lines of a finished run, a line for a
+ * run that started in the background, or the summary of a failed, detached or stopped one, or of one whose host stopped.
  */
 function detailLines(steps: readonly string[], outcome: WorkflowOutcome | undefined, theme: Theme): string[] {
 	const lines = steps.map((step) => {
@@ -263,6 +320,8 @@ function detailLines(steps: readonly string[], outcome: WorkflowOutcome | undefi
 	if (outcome === undefined) return lines;
 
 	if (outcome.status === "finished") return [...lines, ...outcome.report];
+
+	if (outcome.status === "started") return [...lines, `${theme.fg("accent", "◉")} started in the background`];
 
 	return [...lines, theme.fg("error", `✗ ${summary(outcome)}`)];
 }
@@ -285,10 +344,13 @@ const GUIDELINES = [
 		"command that did not finish runs again, so keep `sh` and `ok` commands safe to repeat.",
 	"To keep a good inline script as a named workflow of the project, call `workflow` with " +
 		"`save: { runId, name }` after its run. Add `force: true` to replace a workflow of that name.",
+	"Use `background: true` for long runs, such as `campaign` or `optimize`, or for work that can go on while the " +
+		"conversation continues. The call returns at once, and the result of the run comes later as a message in the " +
+		"conversation. `resume` follows the run.",
 ];
 
-/** The `workflow` tool, which runs `command`. */
-export function workflowTool(command: readonly string[]) {
+/** The `workflow` tool, which runs `command`, and gives `watcher` each run that it started in the background. */
+export function workflowTool(command: readonly string[], watcher: Watcher) {
 	return {
 		name: "workflow",
 		label: "Workflow",
@@ -302,7 +364,10 @@ export function workflowTool(command: readonly string[]) {
 			"`base`, `rounds` and `prompts`. For `optimize`, which searches for better ship prompts over a folder of work " +
 			"items: `workflow` (`ship`) and `items`, and optional `improve` and `trials`. Each `run()` call of a " +
 			"script starts a child run, which a resume of its caller continues. A run goes on in the harness host of the " +
-			"project: Esc detaches from it, and `resume` follows it again. A failed or stopped run stays resumable.",
+			"project: Esc detaches from it, and `resume` follows it again. A failed or stopped run stays resumable. With " +
+			"`background: true`, the call returns at once and the result of the run comes later as a message in this " +
+			"conversation: use it for long runs such as `campaign` or `optimize`, or for work that can go on while the " +
+			"conversation continues.",
 		promptGuidelines: GUIDELINES,
 		parameters: PARAMETERS,
 		outputSchema: Type.Object({
@@ -310,6 +375,7 @@ export function workflowTool(command: readonly string[]) {
 			status: Type.Union([
 				Type.Literal("finished"),
 				Type.Literal("failed"),
+				Type.Literal("started"),
 				Type.Literal("detached"),
 				Type.Literal("stopped"),
 				Type.Literal("host-stopped"),
@@ -325,23 +391,22 @@ export function workflowTool(command: readonly string[]) {
 				return savedOf(output, params.save.runId);
 			}
 
-			let drawn: readonly string[] = [];
-			const other: string[] = [];
+			const steps = new Steps();
 
 			const output = await runCli(command, cliArgs(params), ctx.cwd, {
 				stdin: params.script,
 				signal,
 				progress: (line) => {
-					const lines = progressLines(line);
-
-					if (lines === undefined) other.push(line);
-					else drawn = lines;
-					const text = lines === undefined ? line : (lines.at(-1)?.trim() ?? "");
-					onUpdate?.({ content: [{ type: "text", text }], details: { steps: [...drawn, ...other] } });
+					const text = steps.add(line);
+					onUpdate?.({ content: [{ type: "text", text }], details: { steps: steps.lines } });
 				},
 			});
 
-			return resultOf(outcomeOf(output), [...drawn, ...other]);
+			const outcome = outcomeOf(output);
+
+			if (outcome.status === "started") watcher.started(outcome.runId, ctx.cwd);
+
+			return resultOf(outcome, steps.lines);
 		},
 		renderCall(args: PartialCall, theme: Theme) {
 			return new Text(theme.fg("toolTitle", theme.bold("workflow ")) + theme.fg("accent", callLabel(args)), 0, 0);
@@ -363,6 +428,95 @@ export function workflowTool(command: readonly string[]) {
 	} satisfies ToolDefinition<typeof PARAMETERS, WorkflowDetails>;
 }
 
-export default function workflows(pi: Pick<ExtensionAPI, "registerTool">, command: readonly string[] = cli()) {
-	pi.registerTool(workflowTool(command));
+type Api = Pick<ExtensionAPI, "registerTool" | "registerMessageRenderer" | "on" | "sendMessage" | "appendEntry">;
+
+/**
+ * Follows the background runs of a session with `workflows wait`, and posts the outcome of each one as a
+ * `workflow-result` message that starts a turn. Shutdown sends SIGINT to the waits, which detach and post nothing.
+ */
+class Watcher {
+	readonly #pi: Api;
+	readonly #command: readonly string[];
+	readonly #controller = new AbortController();
+	/** The runs that a wait of this instance follows. */
+	readonly #watched = new Set<string>();
+
+	constructor(pi: Api, command: readonly string[]) {
+		this.#pi = pi;
+		this.#command = command;
+	}
+
+	/** Records the run that a call started in the background, and follows it. */
+	started(runId: string, cwd: string): void {
+		this.#pi.appendEntry("workflow-background", { runId, cwd });
+		this.watch(runId, cwd);
+	}
+
+	/** Follows each run of the session that has a start entry after its last end entry. */
+	resume(entries: readonly unknown[]): void {
+		const pending = new Map<string, string>();
+
+		for (const entry of entries) {
+			if (Value.Check(STARTED_ENTRY, entry)) pending.set(entry.data.runId, entry.data.cwd);
+			else if (Value.Check(ENDED_ENTRY, entry)) pending.delete(entry.data.runId);
+		}
+
+		for (const [runId, cwd] of pending) this.watch(runId, cwd);
+	}
+
+	stop(): void {
+		this.#controller.abort();
+	}
+
+	watch(runId: string, cwd: string): void {
+		if (this.#watched.has(runId)) return;
+		this.#watched.add(runId);
+		this.#post(runId, cwd)
+			.catch(() => {})
+			.finally(() => this.#watched.delete(runId));
+	}
+
+	async #post(runId: string, cwd: string): Promise<void> {
+		const { signal } = this.#controller;
+		const steps = new Steps();
+
+		const output = await runCli(this.#command, ["wait", runId, "--json"], cwd, {
+			signal,
+			progress: (line) => steps.add(line),
+		});
+
+		// No outcome, or an outcome that is not valid, posts nothing: the next start of the session watches the run again.
+		const outcome = outcomeOf(output);
+
+		if (signal.aborted) return;
+
+		if (outcome.status !== "finished" && outcome.status !== "failed" && outcome.status !== "stopped") return;
+		const details: WorkflowDetails = { steps: steps.lines, outcome };
+		this.#pi.sendMessage(
+			{ customType: "workflow-result", content: [{ type: "text", text: summary(outcome) }], display: true, details },
+			{ triggerTurn: true, deliverAs: "followUp" },
+		);
+		// a crash between the post and the end entry posts again at the next start; accepted, the window is one sync call
+		this.#pi.appendEntry("workflow-background-end", { runId });
+	}
+}
+
+export default function workflows(pi: Api, command: readonly string[] = cli()) {
+	const watcher = new Watcher(pi, command);
+	pi.registerTool(workflowTool(command, watcher));
+	pi.on("session_start", (_event, ctx) => watcher.resume(ctx.sessionManager.getEntries()));
+	pi.on("session_shutdown", () => watcher.stop());
+	pi.registerMessageRenderer("workflow-result", (message, _options, theme) => {
+		if (Value.Check(DETAILS, message.details)) {
+			return new Text(detailLines(message.details.steps, message.details.outcome, theme).join("\n"), 0, 0);
+		}
+
+		const { content } = message;
+
+		const text = Value.Check(Type.String(), content)
+			? content
+			: content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+
+		return new Text(text, 0, 0);
+	});
 }

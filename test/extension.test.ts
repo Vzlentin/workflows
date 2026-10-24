@@ -2,9 +2,10 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import extension, { workflowTool } from "../pi/index.ts";
+import type { TSchema } from "@earendil-works/pi-ai";
+import type { CustomEntry, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import extension, { type workflowTool } from "../pi/index.ts";
 
 type Tool = ReturnType<typeof workflowTool>;
 
@@ -14,6 +15,7 @@ let tool: Tool;
 /** A fake `workflows` command: its behavior comes from its arguments, which it appends to `args.log`. */
 const FAKE = `#!/bin/sh
 echo "$@" >> args.log
+case " $* " in *" --background "*) echo "run rb"; echo '{"runId":"rb","status":"started"}'; exit 0 ;; esac
 case "$1" in
 ok)
 	echo "run r1"; echo '{"progress":["◉ item 1/2: one"]}' >&2
@@ -46,6 +48,18 @@ campaign)
 optimize)
 	echo "run r7"
 	echo '{"runId":"r7","status":"finished","result":{"baseline":0.5,"best":0.75,"diff":"prompts.diff"},"report":["optimized ship: baseline 0.50, best 0.75, prompts.diff"]}' ;;
+wait)
+	echo "run $2"
+	case "$2" in
+	rb) echo '{"progress":["✓ plan"]}' >&2; echo '{"runId":"rb","status":"finished","result":1,"report":["one"]}' ;;
+	failed) echo '{"progress":["✗ plan"]}' >&2; echo '{"runId":"failed","status":"failed","error":"boom"}'; exit 1 ;;
+	stopped) echo '{"runId":"stopped","status":"stopped"}'; exit 130 ;;
+	gone) echo "workflows: no run gone" >&2; exit 1 ;;
+	long)
+		trap 'touch detached; echo '"'"'{"runId":"long","status":"detached"}'"'"'; exit 130' INT
+		touch waiting
+		while :; do sleep 0.02; done ;;
+	esac ;;
 *) exit 9 ;;
 esac
 `;
@@ -53,7 +67,7 @@ esac
 beforeEach(async () => {
 	root = await mkdtemp(join(tmpdir(), "workflows-extension-test-"));
 	await writeFile(join(root, "workflows"), FAKE);
-	tool = workflowTool(["/bin/sh", join(root, "workflows")]);
+	tool = fakePi().registered;
 });
 
 afterEach(() => rm(root, { recursive: true, force: true }));
@@ -106,12 +120,103 @@ function draw(args: PartialParams, result?: Result, isPartial = false): string[]
 	return components.flatMap((component) => component.render(200).map((line) => line.trimEnd()));
 }
 
+type Api = Parameters<typeof extension>[0];
+
+type Message = Parameters<Api["sendMessage"]>[0];
+
+type MessageOptions = Parameters<Api["sendMessage"]>[1];
+
+type Renderer = Parameters<Api["registerMessageRenderer"]>[1];
+
+/** The part of a context that the handlers of the extension read. */
+type Context = Pick<ExtensionContext, "cwd"> & {
+	readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getEntries">;
+};
+
+type Handler = (event: { readonly type: string }, ctx: Context) => void | Promise<void>;
+
+/** Whether `registered` is the tool of `workflowTool`, by its name, which is the only tool the extension registers. */
+function isWorkflowTool<P extends TSchema, D, S>(
+	registered: ToolDefinition<P, D, S>,
+): registered is ToolDefinition<P, D, S> & Tool {
+	return registered.name === "workflow";
+}
+
+/** A fake Pi API that records the calls of the extension, with the entries that `appendEntry` adds to the session. */
+function fakePi(entries: CustomEntry[] = []) {
+	const tools: Tool[] = [];
+	const names: string[] = [];
+	const renderers = new Map<string, Renderer>();
+	const handlers = new Map<string, Handler[]>();
+	const messages: { message: Message; options: MessageOptions }[] = [];
+	let id = entries.length;
+
+	const on = (event: string, handler: Handler) => {
+		handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+	};
+
+	const pi: Api = {
+		registerTool: (registered) => {
+			names.push(registered.name);
+
+			if (isWorkflowTool(registered)) tools.push(registered);
+		},
+		// SAFETY: the extension registers only the renderer of `workflow-result`, which checks its details.
+		registerMessageRenderer: (customType, renderer) => renderers.set(customType, renderer as Renderer),
+		// SAFETY: `on` has one overload for each event, and the fake keeps every handler by its event name. The handlers
+		// of the extension read only `ctx.cwd` and `ctx.sessionManager.getEntries()`, which `fire` gives.
+		on: on as Api["on"],
+		sendMessage: (message, options) => messages.push({ message, options }),
+		appendEntry: (customType, data) => {
+			id += 1;
+			entries.push({ type: "custom", customType, data, id: `e${id}`, parentId: null, timestamp: "" });
+		},
+	};
+
+	extension(pi, ["/bin/sh", join(root, "workflows")]);
+
+	/** Fires `event` with a context in `root` whose session has `entries`. */
+	const fire = async (event: string) => {
+		const ctx: Context = { cwd: root, sessionManager: { getEntries: () => entries } };
+
+		for (const handler of handlers.get(event) ?? []) await handler({ type: event }, ctx);
+	};
+
+	const [registered] = tools;
+
+	if (registered === undefined) throw new Error("the extension registered no tool");
+
+	return { names, registered, renderers, messages, entries, fire };
+}
+
+/** A start entry of a background run, as the extension records it. */
+const startEntry = (runId: string, cwd: string): CustomEntry => ({
+	type: "custom",
+	customType: "workflow-background",
+	data: { runId, cwd },
+	id: `s-${runId}`,
+	parentId: null,
+	timestamp: "",
+});
+
+const endEntry = (runId: string): CustomEntry => ({
+	type: "custom",
+	customType: "workflow-background-end",
+	data: { runId },
+	id: `x-${runId}`,
+	parentId: null,
+	timestamp: "",
+});
+
+const waits = async () =>
+	(await readFile(join(root, "args.log"), "utf8").catch(() => ""))
+		.split("\n")
+		.filter((line) => line.startsWith("wait"));
+
 describe("the workflow tool", () => {
 	it("is the tool that the extension registers", () => {
-		const names: string[] = [];
-		const pi: Pick<ExtensionAPI, "registerTool"> = { registerTool: (registered) => names.push(registered.name) };
-		extension(pi, ["/bin/sh", join(root, "workflows")]);
-		expect(names).toEqual([tool.name]);
+		const pi = fakePi();
+		expect(pi.names).toEqual(["workflow"]);
 	});
 
 	it("returns the structured result of a finished run, with each stderr line as an update", async () => {
@@ -321,5 +426,104 @@ describe("the workflow tool", () => {
 		const guidelines = (tool.promptGuidelines ?? []).join("\n");
 
 		for (const name of globals) expect(guidelines, name).toContain(`\`${name}`);
+	});
+});
+
+describe("a background run of the workflow tool", () => {
+	it("returns started, and posts the outcome of the run as a message that starts a turn", async () => {
+		const pi = fakePi();
+
+		const result = await pi.registered.execute(
+			"call-1",
+			{ name: "ship", background: true },
+			undefined,
+			undefined,
+			contextOf(root),
+		);
+
+		expect(result.structuredContent).toEqual({ runId: "rb", status: "started" });
+		expect(result.isError).toBeUndefined();
+		expect(result.content).toEqual([
+			{
+				type: "text",
+				text: 'run rb started in the background; its result comes as a message in this conversation when it ends; follow it with resume: "rb", or stop it with the command workflows stop rb',
+			},
+		]);
+		expect(pi.entries.map((entry) => [entry.customType, entry.data])).toEqual([
+			["workflow-background", { runId: "rb", cwd: root }],
+		]);
+		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
+		expect(pi.messages).toEqual([
+			{
+				message: {
+					customType: "workflow-result",
+					content: [{ type: "text", text: "run rb finished: 1" }],
+					display: true,
+					details: {
+						steps: ["✓ plan"],
+						outcome: { runId: "rb", status: "finished", result: 1, report: ["one"] },
+					},
+				},
+				options: { triggerTurn: true, deliverAs: "followUp" },
+			},
+		]);
+		expect(pi.entries[1]?.customType).toBe("workflow-background-end");
+		expect(pi.entries[1]?.data).toEqual({ runId: "rb" });
+		expect(await readFile(join(root, "args.log"), "utf8")).toBe("ship --background --json\nwait rb --json\n");
+	});
+
+	it("posts a failed or stopped run with the run ID to resume", async () => {
+		for (const runId of ["failed", "stopped"]) {
+			const pi = fakePi([startEntry(runId, root)]);
+			await pi.fire("session_start");
+			await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
+			expect(pi.messages).toHaveLength(1);
+			const [{ message } = { message: undefined }] = pi.messages;
+			expect(message?.content).toEqual([{ type: "text", text: expect.stringContaining(`resume: "${runId}"`) }]);
+
+			if (runId !== "failed" || message === undefined) continue;
+			const render = pi.renderers.get("workflow-result");
+			const drawn = render?.({ ...message, role: "custom", timestamp: 0 }, { expanded: false, outputPad: 0 }, theme);
+			expect(drawn?.render(200).map((line) => line.trimEnd())).toEqual([
+				"✗ plan",
+				'✗ run failed failed: boom; continue it with resume: "failed"',
+			]);
+		}
+	});
+
+	it("watches each run of the session that has no end entry, once", async () => {
+		const pi = fakePi([startEntry("rb", root), startEntry("stopped", root), endEntry("stopped")]);
+		await pi.fire("session_start");
+		await pi.fire("session_start");
+		await vi.waitFor(() => expect(pi.messages).toHaveLength(1));
+		expect(await waits()).toEqual(["wait rb --json"]);
+		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: "run rb finished: 1" }]);
+	});
+
+	it("posts nothing when the wait prints no outcome", async () => {
+		const pi = fakePi([startEntry("gone", root)]);
+		await pi.fire("session_start");
+		await vi.waitFor(async () => expect(await waits()).toEqual(["wait gone --json"]));
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		expect(pi.messages).toEqual([]);
+		expect(pi.entries).toHaveLength(1);
+	});
+
+	it("detaches the waits at shutdown, and posts nothing", async () => {
+		const pi = fakePi([startEntry("long", root)]);
+		await pi.fire("session_start");
+		await vi.waitFor(() => readFile(join(root, "waiting")));
+		await pi.fire("session_shutdown");
+		await vi.waitFor(() => readFile(join(root, "detached")));
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(pi.messages).toEqual([]);
+		expect(pi.entries).toHaveLength(1);
+	});
+
+	it("refuses background with save, and runs no command", async () => {
+		await expect(call({ save: { runId: "r2", name: "fix" }, background: true })).rejects.toThrow(
+			"background works only with name, script or resume",
+		);
+		await expect(readFile(join(root, "args.log"), "utf8")).rejects.toThrow();
 	});
 });

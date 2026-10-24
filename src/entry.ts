@@ -12,8 +12,8 @@ import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-wo
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { type Host, JSON_VALUE, TOOL_EXTENSION } from "./script.ts";
-import { scriptTask } from "./task.ts";
+import { type Host, TOOL_EXTENSION } from "./script.ts";
+import { OUTCOME, outcomeText, scriptTask, type WorkflowOutcome } from "./task.ts";
 
 const SAVE = Type.Object(
 	{
@@ -30,27 +30,15 @@ const PARAMETERS = Type.Object({
 	resume: Type.Optional(Type.String({ description: "The ID of a run to continue" })),
 	save: Type.Optional(SAVE),
 	args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+	background: Type.Optional(
+		Type.Boolean({
+			description:
+				"With `name`, `script` or `resume`: start the run and return at once; its result comes as a message in this conversation",
+		}),
+	),
 });
 
 type WorkflowCall = Static<typeof PARAMETERS>;
-
-/** The stdout line of `workflows --json` after `run <run-id>`. */
-const OUTCOME = Type.Union([
-	Type.Object({
-		runId: Type.String(),
-		status: Type.Literal("finished"),
-		result: JSON_VALUE,
-		/** The lines that the workflow's report prints without `--json`. */
-		report: Type.Array(Type.String()),
-	}),
-	Type.Object({ runId: Type.String(), status: Type.Literal("failed"), error: Type.String() }),
-	Type.Object({
-		runId: Type.String(),
-		status: Type.Union([Type.Literal("detached"), Type.Literal("stopped"), Type.Literal("host-stopped")]),
-	}),
-]);
-
-type WorkflowOutcome = Static<typeof OUTCOME>;
 
 /** The `details` of a call: the progress lines that the command drew last, then any other stderr line. */
 type WorkflowDetails = { steps: string[] };
@@ -80,12 +68,15 @@ const CLI = [
  * The `workflows` arguments of a tool call, with each arg as a flag, and `--json` for a run. The command rejects a flag
  * it does not know, so a mistyped arg fails before a run exists.
  */
-function cliArgs({ name, script, resume, save, args = {} }: WorkflowCall): string[] {
+function cliArgs({ name, script, resume, save, args = {}, background }: WorkflowCall): string[] {
 	const given = [name, script, resume, save].filter((value) => value !== undefined).length;
 
 	if (given !== 1) throw new Error("give exactly one of name, script, resume or save");
 
-	if (resume !== undefined) return ["resume", resume, "--json"];
+	if (background && save !== undefined) throw new Error("background works only with name, script or resume");
+	const json = background ? ["--background", "--json"] : ["--json"];
+
+	if (resume !== undefined) return ["resume", resume, ...json];
 
 	if (save !== undefined) return ["save", save.runId, save.name, ...(save.force ? ["--force"] : [])];
 
@@ -97,7 +88,7 @@ function cliArgs({ name, script, resume, save, args = {} }: WorkflowCall): strin
 		return [`--${key}=${Value.Check(Type.String(), flag) ? flag : JSON.stringify(flag)}`];
 	});
 
-	return [name ?? "-", ...flags, "--json"];
+	return [name ?? "-", ...flags, ...json];
 }
 
 type Output = { readonly code: number | null; readonly stdout: readonly string[]; readonly stderr: readonly string[] };
@@ -155,21 +146,6 @@ function outcomeOf(output: Output): WorkflowOutcome {
 	if (!Value.Check(OUTCOME, outcome)) throw new Error(`workflows printed an outcome that is not valid: ${line}`);
 
 	return outcome;
-}
-
-function summary(outcome: WorkflowOutcome): string {
-	switch (outcome.status) {
-		case "finished":
-			return `run ${outcome.runId} finished: ${JSON.stringify(outcome.result)}`;
-		case "failed":
-			return `run ${outcome.runId} failed: ${outcome.error}; continue it with resume: "${outcome.runId}"`;
-		case "detached":
-			return `run ${outcome.runId} detached and goes on in the harness host; follow it with resume: "${outcome.runId}", or stop it with the command workflows stop ${outcome.runId}`;
-		case "stopped":
-			return `run ${outcome.runId} stopped; continue it with resume: "${outcome.runId}"`;
-		case "host-stopped":
-			return `the harness host of run ${outcome.runId} stopped; the run continues when the host starts again, so follow it with resume: "${outcome.runId}"`;
-	}
 }
 
 /** The project of the host, which the host gives only to the shell of each conversation. */
@@ -269,11 +245,10 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 	}
 
 	const outcome = outcomeOf(output);
-	const text = outcome.status === "finished" ? [summary(outcome), ...outcome.report].join("\n") : summary(outcome);
-	const result = { output: [{ type: "text" as const, text }], structuredOutput: outcome };
+	const result = { output: [{ type: "text" as const, text: outcomeText(outcome) }], structuredOutput: outcome };
 
 	// The result has no details, so the details of the last progress line stay.
-	return outcome.status === "finished" ? result : { ...result, isError: true };
+	return outcome.status === "finished" || outcome.status === "started" ? result : { ...result, isError: true };
 }
 
 /** The `workflow` tool, in an extension that every conversation of the host selects, and that sessions remove. */
@@ -290,12 +265,16 @@ function workflowExtension(host: Host) {
 			"`base`, `rounds` and `prompts`. For `optimize`, which searches for better ship prompts over a folder of work " +
 			"items: `workflow` (`ship`) and `items`, and optional `improve` and `trials`. Each `run()` call of a " +
 			"script starts a child run, which a resume of its caller continues. A run goes on in the harness host of the " +
-			"project: Esc detaches from it, and `resume` follows it again. A failed or stopped run stays resumable.",
+			"project: Esc detaches from it, and `resume` follows it again. A failed or stopped run stays resumable. With " +
+			"`background: true`, the call returns at once and the result of the run comes later as a message in this " +
+			"conversation: use it for long runs such as `campaign` or `optimize`, or for work that can go on while the " +
+			"conversation continues.",
 		parameters: PARAMETERS,
 		structuredOutputSchema: Type.Object({
 			runId: Type.String(),
 			status: Type.Union([
 				Type.Literal("finished"),
+				Type.Literal("started"),
 				Type.Literal("failed"),
 				Type.Literal("detached"),
 				Type.Literal("stopped"),
