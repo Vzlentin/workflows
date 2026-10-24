@@ -25,6 +25,7 @@ const PARAMETERS = Type.Object({
 	name: Type.Optional(Type.String({ description: "`ship`, `campaign`, `optimize`, or the name of a workflow script" })),
 	script: Type.Optional(Type.String({ description: "An inline workflow script" })),
 	resume: Type.Optional(Type.String({ description: "The ID of a run to continue" })),
+	answer: Type.Optional(Type.String({ description: "With `resume`: the answer to the question of a waiting run" })),
 	save: Type.Optional(SAVE),
 	args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 	background: Type.Optional(
@@ -129,15 +130,17 @@ function cli(): string[] {
  * The `workflows` arguments of a tool call, with each arg as a flag, and `--json` for a run. The command rejects a flag
  * it does not know, so a mistyped arg fails before a run exists.
  */
-function cliArgs({ name, script, resume, save, args = {}, background }: WorkflowCall): string[] {
+function cliArgs({ name, script, resume, answer, save, args = {}, background }: WorkflowCall): string[] {
 	const given = [name, script, resume, save].filter((value) => value !== undefined).length;
 
 	if (given !== 1) throw new Error("give exactly one of name, script, resume or save");
 
+	if (answer !== undefined && resume === undefined) throw new Error("answer works only with resume");
+
 	if (background && save !== undefined) throw new Error("background works only with name, script or resume");
 	const json = background ? ["--background", "--json"] : ["--json"];
 
-	if (resume !== undefined) return ["resume", resume, ...json];
+	if (resume !== undefined) return ["resume", resume, ...(answer === undefined ? [] : [`--answer=${answer}`]), ...json];
 
 	if (save !== undefined) return ["save", save.runId, save.name, ...(save.force ? ["--force"] : [])];
 
@@ -229,9 +232,16 @@ function outcomeOf(output: Output): WorkflowOutcome {
 	return outcome;
 }
 
+/** The result of a run that waits on `input(question)`. */
+const WAITING = Type.Object({ status: Type.Literal("waiting"), question: Type.String() });
+
 function summary(outcome: WorkflowOutcome): string {
 	switch (outcome.status) {
 		case "finished":
+			if (Value.Check(WAITING, outcome.result)) {
+				return `run ${outcome.runId} waits for an answer: ${outcome.result.question}; answer it with resume: "${outcome.runId}" and answer: "<your answer>"`;
+			}
+
 			return `run ${outcome.runId} finished: ${JSON.stringify(outcome.result)}`;
 		case "failed":
 			return `run ${outcome.runId} failed: ${outcome.error}; continue it with resume: "${outcome.runId}"`;
@@ -336,8 +346,9 @@ const GUIDELINES = [
 		"`session({ as, provider, model, thinking })` gives a session that keeps its history, and its " +
 		"`.ask(prompt, { schema })` is one turn. `as` names an agent profile (default `default`), and `provider`, " +
 		"`model` and `thinking` override it. `sh(cmd)` returns stdout and throws on a nonzero exit, `ok(cmd)` returns true on exit 0. " +
-		"`run(name, args)` runs a named workflow as a child run. `input(question)` stops the run until the user answers " +
-		"with the command `workflows resume <run-id> --answer <text>`, and then returns the answer. `parallel([() => ...])` and " +
+		"`run(name, args)` runs a named workflow as a child run. `input(question)` stops the run, and the tool gives a " +
+		"`waiting` result with the question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` " +
+		"then returns the answer. `parallel([() => ...])` and " +
 		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +
 		"and `log(text)` write progress lines. `args`, `runId` and `runDir` are values.",
 	"A script has no file system, network, modules or timers, so effects go through `sh`. `Date`, `Date.now()` and " +

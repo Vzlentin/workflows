@@ -6,6 +6,7 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import type { CustomEntry, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension, { type workflowTool } from "../pi/index.ts";
+import { hostModel, sandbox, startHost } from "./support.ts";
 
 type Tool = ReturnType<typeof workflowTool>;
 
@@ -143,7 +144,7 @@ function isWorkflowTool<P extends TSchema, D, S>(
 }
 
 /** A fake Pi API that records the calls of the extension, with the entries that `appendEntry` adds to the session. */
-function fakePi(entries: CustomEntry[] = []) {
+function fakePi(entries: CustomEntry[] = [], command = ["/bin/sh", join(root, "workflows")]) {
 	const tools: Tool[] = [];
 	const names: string[] = [];
 	const renderers = new Map<string, Renderer>();
@@ -173,7 +174,7 @@ function fakePi(entries: CustomEntry[] = []) {
 		},
 	};
 
-	extension(pi, ["/bin/sh", join(root, "workflows")]);
+	extension(pi, command);
 
 	/** Fires `event` with a context in `root` whose session has `entries`. */
 	const fire = async (event: string) => {
@@ -400,6 +401,43 @@ describe("the workflow tool", () => {
 		await expect(call({ script: "return 1", save: { runId: "r2", name: "fix" } })).rejects.toThrow(both);
 	});
 
+	it("gives the question of a waiting run, and continues the run with the answer", { timeout: 30_000 }, async () => {
+		const saved = process.env;
+		const cwd = await sandbox();
+		// The command runs as a child process, which finds the host of this process through HARNESS_PROJECT.
+		process.env.HARNESS_PROJECT = "main";
+		const host = await startHost("main", hostModel().models);
+		const cli = [process.execPath, join(import.meta.dirname, "..", "src", "cli.ts")];
+		const real = fakePi([], cli).registered;
+
+		try {
+			const script = 'const a = await input("Q?")\nreturn a';
+			const waiting = await real.execute("call-1", { script }, undefined, undefined, contextOf(cwd));
+			const [first] = waiting.content;
+			const text = first?.type === "text" ? first.text : "";
+			const id = /^run (\S+) /.exec(text)?.[1] ?? "";
+			expect([text, waiting.isError]).toEqual([
+				`run ${id} waits for an answer: Q?; answer it with resume: "${id}" and answer: "<your answer>"`,
+				undefined,
+			]);
+
+			const answered = await real.execute(
+				"call-2",
+				{ resume: id, answer: "yes" },
+				undefined,
+				undefined,
+				contextOf(cwd),
+			);
+
+			expect(answered.content).toEqual([{ type: "text", text: `run ${id} finished: "yes"` }]);
+			expect(answered.structuredContent).toEqual({ runId: id, status: "finished", result: "yes", report: ["yes"] });
+		} finally {
+			await host.close();
+			process.env = saved;
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("saves the script of a run and returns the file", async () => {
 		const file = join(await realpath(root), ".workflows", "workflows", "fix.js");
 		const { result } = await call({ save: { runId: "r2", name: "fix" } });
@@ -520,10 +558,11 @@ describe("a background run of the workflow tool", () => {
 		expect(pi.entries).toHaveLength(1);
 	});
 
-	it("refuses background with save, and runs no command", async () => {
+	it("refuses background with save, and answer without resume, and runs no command", async () => {
 		await expect(call({ save: { runId: "r2", name: "fix" }, background: true })).rejects.toThrow(
 			"background works only with name, script or resume",
 		);
+		await expect(call({ name: "ok", answer: "y" })).rejects.toThrow("answer works only with resume");
 		await expect(readFile(join(root, "args.log"), "utf8")).rejects.toThrow();
 	});
 });

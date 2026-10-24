@@ -28,6 +28,7 @@ const PARAMETERS = Type.Object({
 	name: Type.Optional(Type.String({ description: "`ship`, `campaign`, `optimize`, or the name of a workflow script" })),
 	script: Type.Optional(Type.String({ description: "An inline workflow script" })),
 	resume: Type.Optional(Type.String({ description: "The ID of a run to continue" })),
+	answer: Type.Optional(Type.String({ description: "With `resume`: the answer to the question of a waiting run" })),
 	save: Type.Optional(SAVE),
 	args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 	background: Type.Optional(
@@ -68,15 +69,17 @@ const CLI = [
  * The `workflows` arguments of a tool call, with each arg as a flag, and `--json` for a run. The command rejects a flag
  * it does not know, so a mistyped arg fails before a run exists.
  */
-function cliArgs({ name, script, resume, save, args = {}, background }: WorkflowCall): string[] {
+function cliArgs({ name, script, resume, answer, save, args = {}, background }: WorkflowCall): string[] {
 	const given = [name, script, resume, save].filter((value) => value !== undefined).length;
 
 	if (given !== 1) throw new Error("give exactly one of name, script, resume or save");
 
+	if (answer !== undefined && resume === undefined) throw new Error("answer works only with resume");
+
 	if (background && save !== undefined) throw new Error("background works only with name, script or resume");
 	const json = background ? ["--background", "--json"] : ["--json"];
 
-	if (resume !== undefined) return ["resume", resume, ...json];
+	if (resume !== undefined) return ["resume", resume, ...(answer === undefined ? [] : [`--answer=${answer}`]), ...json];
 
 	if (save !== undefined) return ["save", save.runId, save.name, ...(save.force ? ["--force"] : [])];
 
@@ -268,7 +271,8 @@ function workflowExtension(host: Host) {
 			"project: Esc detaches from it, and `resume` follows it again. A failed or stopped run stays resumable. With " +
 			"`background: true`, the call returns at once and the result of the run comes later as a message in this " +
 			"conversation: use it for long runs such as `campaign` or `optimize`, or for work that can go on while the " +
-			"conversation continues.",
+			"conversation continues. `input(question)` stops the run, and the tool gives a `waiting` result with the " +
+			"question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` then returns the answer.",
 		parameters: PARAMETERS,
 		structuredOutputSchema: Type.Object({
 			runId: Type.String(),
