@@ -269,10 +269,11 @@ return their saved results, and the failed ship run continues. `workflows list` 
 
 The research, plan, implement, review and judge sessions use the agent profiles `agents/researcher.md`,
 `agents/planner.md`, `agents/implementer.md`, `agents/reviewer.md` and `agents/judge.md`. Each uses
-`anthropic/claude-opus-5-5` with thinking `medium`, and every session gets the same tools. Like every workflow script,
-`ship` and `campaign` read the scripts, prompts and profiles of the package and of the project folder `.workflows/` of
-the current directory, also when `--repo` selects another repository. See [Workflow scripts](#workflow-scripts). A
-project `agents/planner.md`, for example, gives the planner another model.
+`anthropic/claude-opus-5-5` with thinking `medium`, and every session gets the same tools. Their instructions say that
+the session is not the user's main agent and does not write to the user's memory or note tools, because the run keeps
+its own memory. Like every workflow script, `ship` and `campaign` read the scripts, prompts and profiles of the package
+and of the project folder `.workflows/` of the current directory, also when `--repo` selects another repository. See
+[Workflow scripts](#workflow-scripts). A project `agents/planner.md`, for example, gives the planner another model.
 
 Sessions are children of harness's children library in the harness host of the run's project, and use the host's
 providers and credentials: Pi's, from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers that Pi
