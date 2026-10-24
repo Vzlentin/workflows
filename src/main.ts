@@ -29,7 +29,16 @@ import { display, type ProgressEvent, programStatus } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
 import type { SavedCall } from "./script.ts";
 import { loadScripts, projectFolder } from "./script.ts";
-import { callRecords, inputString, openStore, progressEvents, type RunTask, reading, runTasks } from "./store.ts";
+import {
+	callRecords,
+	inputString,
+	inputWorktree,
+	openStore,
+	progressEvents,
+	type RunTask,
+	reading,
+	runTasks,
+} from "./store.ts";
 import { current, TASK } from "./task.ts";
 
 /** How often the command reads the progress of a run that it follows. */
@@ -640,15 +649,18 @@ async function prune(args: readonly string[], terminal: Terminal, json: boolean)
 	return 0;
 }
 
-/** The run `id` with `tasks` when it has a run directory, has ended, and has a worktree on a branch. */
+/**
+ * The run `id` with `tasks` when it has a run directory, has ended, was saved by this or an earlier version, and has a
+ * worktree on a branch.
+ */
 async function prunable(id: string, tasks: readonly RunTask[]): Promise<Prunable | undefined> {
 	if (!existsSync(join(runsDirectory(), id, "project"))) return undefined;
 
 	if (tasks.at(-1)?.state.status !== "terminal") return undefined;
 	const task = taskOf(tasks);
 
-	if (task === undefined || !current(task)) return undefined;
-	const { worktree } = task.input;
+	if (task === undefined || savedBy(task).later) return undefined;
+	const worktree = inputWorktree(task.input);
 
 	if (worktree === undefined || (await repositoryAt(worktree.path)) === undefined) return undefined;
 	const branch = await git(worktree.path, "branch", "--show-current");

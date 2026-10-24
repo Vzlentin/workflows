@@ -729,9 +729,10 @@ workflows prune [--yes] [--install-hook] [--json]
 `workflows prune` prints one line `<run-id> <branch> <worktree>` for each run of the harness project of the current
 directory, newest run ID first, whose worktree is on a branch with a merged pull request. With `--json`, it prints one
 JSON array of `{ "runId", "branch", "worktree" }`. A run is a candidate only when it has a run directory with a
-`project` file, its last task has ended, a task of this version saved it, its worktree exists, and the worktree is on a
-branch. A run that has not ended, a run of another version, a detached worktree, and a worktree that is not a Git
-worktree of its own are never pruned. `prune` reads the project store file read-only, as `list` does, and does not
+`project` file, its last task has ended, a task of this version or of an earlier version saved it, its saved input has a
+worktree, the worktree exists, and the worktree is on a branch. For a run of an earlier version, `prune` reads only the
+`worktree` of its saved input. A run of a later version, a run without a worktree, a run that has not ended, a detached
+worktree, and a worktree that is not a Git worktree of its own are never pruned. `prune` reads the project store file read-only, as `list` does, and does not
 start the host.
 
 For each candidate, `prune` runs `gh pr list --head <branch> --state merged --json headRefOid` in the worktree. A branch

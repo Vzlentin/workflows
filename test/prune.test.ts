@@ -1,8 +1,10 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { git, repository, runsOf, sandbox, workflows } from "./support.ts";
+import { TASK } from "../src/task.ts";
+import { git, repository, runsOf, sandbox, storeOf, workflows } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -52,6 +54,18 @@ async function mergedRun(): Promise<{ id: string; worktree: string }> {
 	return { id, worktree };
 }
 
+/** Marks the run task of the store as saved by `version`, with its input wrapped as `{ input }` when `wrap` is set. */
+function saveAs(version: number, wrap: boolean): void {
+	const database = new DatabaseSync(storeOf());
+	const input = wrap ? ", '$.input', json_object('input', record -> '$.input')" : "";
+	database
+		.prepare(
+			`UPDATE tasks SET record = json_set(record, '$.version', ?${input}) WHERE record ->> '$.kind' = 'workflows.run'`,
+		)
+		.run(version);
+	database.close();
+}
+
 const hasBranch = (name: string) => git(repo, "branch", "--list", name) !== "";
 
 describe("workflows prune", () => {
@@ -74,6 +88,26 @@ describe("workflows prune", () => {
 
 		const runs = await workflows(["list"], { cwd: repo });
 		expect(runs.stdout).toContain(`${id} w done w`);
+	});
+
+	it("removes the worktree and branch of a run that an earlier version saved", async () => {
+		const { id, worktree } = await mergedRun();
+		saveAs(TASK.version - 1, true);
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		expect(existsSync(worktree)).toBe(false);
+		expect(hasBranch("feat/x")).toBe(false);
+	});
+
+	it("keeps a run that a later version saved", async () => {
+		const { worktree } = await mergedRun();
+		saveAs(TASK.version + 1, false);
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout]).toEqual([0, []]);
+		expect(existsSync(worktree)).toBe(true);
+		expect(hasBranch("feat/x")).toBe(true);
 	});
 
 	it("keeps a run whose branch name had a pull request merged at another commit", async () => {
