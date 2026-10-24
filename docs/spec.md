@@ -146,7 +146,7 @@ A planner session splits the goal into work items with the `split` prompt, and a
 work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the research, the plan, the rounds, the
 review, the judge and the squash of `workflows/ship.js`, from the commit that the item before it made. So each shipped
 item is one commit, with the commit message that its own judge wrote, as in `ship`. No `ship/<run-id>` branch is made,
-the worktree stays on `campaign/<run-id>`, and nothing is merged or pushed. Each item is a ship child run, with its own
+and nothing is merged or pushed. Each item is a ship child run, with its own
 run ID and run directory, in the store of the campaign run: see `run` in [the script API](#the-script-api).
 
 After each shipped item, also the last one, a new planner session gets the goal, the shipped item and the remaining
@@ -172,14 +172,24 @@ change it. The steps of the item's ship run are under the item step, indented by
 See [Progress](#progress). At resume, the first steps of the item it continues can come before the item step. On a
 terminal and in Pi they move under the item step when it comes.
 
-- When the queue is empty, the command prints `done <subject> in <n> items, <commit>` with the commit of the last item,
-  and exits 0.
+When the queue is empty, a new planner session gets the goal and the subjects of the shipped commits, in order, with
+the `branch` prompt, and answers the branch name through `respond`. This turn prints no step. The run renames
+`campaign/<run-id>` to that name, as `ship` renames `ship/<run-id>`: only when the worktree is on `campaign/<run-id>`, so
+a repeat of the step after the rename keeps the branch it renamed to, and with `-2`, `-3` and so on when the name
+exists. A failed turn or an empty name keeps `campaign/<run-id>`. A name that Git rejects, because it is not a valid
+branch name or it is in conflict with an existing branch, keeps `campaign/<run-id>`, and the command prints a second
+report line with the reason: `branch <name> is not a valid branch name; kept campaign/<run-id>` or `branch <name> is in
+conflict with an existing branch; kept campaign/<run-id>`.
+
+- When the queue is empty, the command prints `done <subject> in <n> items, <commit> on <branch>` with the commit of the
+  last item and the branch that the worktree ends on, and exits 0.
 - When an item is blocked or stopped, or ships with a judge score of 0, the campaign stops. The command prints
   `stopped <subject> at item <n>: <worktree>` and exits 1. A missing score, when the judge failed, does not stop it.
 
 `<subject>` is the first non-empty line of the goal without leading `#`. The result is
-`{ "status": "done", "head", "items": [{ "item", "result" }] }` or `{ "status": "stopped", "items" }`, with the `ship`
-result of each item that ran, and its child run ID as `result.runId`. `head` is the commit of the last item.
+`{ "status": "done", "head", "branch", "items": [{ "item", "result" }] }` or `{ "status": "stopped", "items" }`, with
+the `ship` result of each item that ran, and its child run ID as `result.runId`. `head` is the commit of the last item,
+and `branch` is the branch that the worktree ends on.
 
 ## Optimize
 
@@ -946,7 +956,8 @@ A ship run also has:
 - `repository/`: the clone, for a GitHub repository only
 - `round-<n>.patch`, `round-<n>-fix.patch`: the patches each review got
 
-A campaign run has `worktree/` on `campaign/<run-id>` and `repository/` in the same way, plus:
+A campaign run has `worktree/` on `campaign/<run-id>`, or on the branch that a done run renamed it to, and
+`repository/` in the same way, plus:
 
 - `item-<n>/`: the `round-<n>.patch` and `round-<n>-fix.patch` files of item `n`
 
@@ -961,12 +972,12 @@ task of the caller's run. A child run without a worktree can have an empty run d
 ## Prompts
 
 `prompts/` holds the Pi prompt templates `research`, `plan`, `challenge`, `handoff`, `implement`, `review`, `judge` and
-`commit`, `split` and `requeue` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
+`commit`, `split`, `requeue` and `branch` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
 frontmatter and the last line `$@`: the run removes them, then adds its inputs as `## <name>` sections.
 `workflows/ship.js` adds the evidence rule and the SHIP or FIX answer rule of the review challenge itself, so a template
 edit cannot remove them. It also adds the `respond` answer rules of the handoff and implement turns. In the same way,
 `workflows/campaign.js` adds the `respond` answer rule of `split` and `requeue`. The judge rubric is fixed: its eight
-answers, in question order, make the score. `judge` and `commit` hold their own `respond` answer rules. A run uses the
+answers, in question order, make the score. `judge`, `commit` and `branch` hold their own `respond` answer rules. A run uses the
 templates as they were when it started.
 
 Workflow scripts get every template of `prompts/` as `prompts.<name>`, and the agent profiles of `agents/`. A run
