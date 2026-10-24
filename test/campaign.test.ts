@@ -351,7 +351,11 @@ while [ ! -f "${gate}.open" ]; do sleep 0.02; done
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: repo });
 		expect(resumed.code).toBe(0);
 		expect(resumed.model.calls).toEqual([]);
-		expect(resumed.stdout).toEqual([`run ${first.id}`, expect.stringMatching(/ on docs\/readme$/)]);
+		expect(resumed.stdout).toEqual([
+			`run ${first.id}`,
+			expect.stringMatching(/ on docs\/readme$/),
+			itemLine(COMMIT.subject),
+		]);
 		expect(git(worktree, "branch", "--show-current")).toBe("docs/readme");
 		expect(git(repo, "branch", "--format=%(refname:short)")).toBe("docs/readme\nmain");
 	});
