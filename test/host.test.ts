@@ -728,7 +728,7 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 			const result = await nextResult(0);
 			expect(result).toEqual({
 				text: expect.stringMatching(/^run \S+ finished: \{.*\}\nran\n\{"ok":true\}$/),
-				details: { steps: ["✓ check", "  lists"] },
+				details: { steps: [expect.stringMatching(/^✓ check {2}\d+s$/), "  lists"] },
 				isError: false,
 			});
 			// The project agent is the root conversation 1, and its PI_SESSION_ID puts the session under it.

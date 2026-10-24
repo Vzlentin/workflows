@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { programStatus, terminalRedraw } from "../src/progress.ts";
+import { Progress, programStatus, terminalRedraw } from "../src/progress.ts";
 
 /** The color codes that `terminalRedraw` writes around a mark. */
 const COLORS = ["\x1b[32m", "\x1b[36m", "\x1b[31m", "\x1b[0m"];
@@ -59,6 +59,36 @@ describe("the progress on a terminal", () => {
 			"\x1b[1A\r\x1b[J✓ three\n◉ four\n◉ five\n",
 			"✗ one\n✓ two\n✓ three\n◉ four\n✗ five\n",
 		]);
+	});
+});
+
+describe("the steps of a run", () => {
+	it("give each step that ended its duration", () => {
+		const progress = new Progress();
+		progress.add({ kind: "phase", run: "r", parent: null, text: "plan", at: 0 });
+		progress.add({ kind: "log", run: "r", parent: null, text: "a note", at: 1000 });
+		progress.add({ kind: "phase", run: "r", parent: null, text: "judge", at: 185_000 });
+		expect(progress.lines()).toEqual(["✓ plan  3m05s", "  a note", "◉ judge"]);
+		progress.add({ kind: "end", run: "r", failed: false, at: 3_905_000 });
+		expect(progress.lines()).toEqual(["✓ plan  3m05s", "  a note", "✓ judge  1h02m"]);
+		// Events that an earlier version saved have no time.
+		const earlier = new Progress();
+		earlier.add({ kind: "phase", run: "r", parent: null, text: "plan" });
+		earlier.add({ kind: "end", run: "r", failed: false });
+		expect(earlier.lines()).toEqual(["✓ plan"]);
+	});
+
+	it("go on with the step that a new execution starts again in, without the time between", () => {
+		const progress = new Progress();
+		progress.add({ kind: "phase", run: "r", parent: null, text: "plan", at: 0, continues: true });
+		progress.add({ kind: "end", run: "r", failed: true, at: 5000 });
+		expect(progress.lines()).toEqual(["✗ plan  5s"]);
+		progress.add({ kind: "start", run: "r" });
+		progress.add({ kind: "phase", run: "r", parent: null, text: "plan", at: 9000, continues: true });
+		progress.add({ kind: "phase", run: "r", parent: null, text: "judge", at: 12_000 });
+		// A phase line that repeats the step within an execution is a step of its own.
+		progress.add({ kind: "phase", run: "r", parent: null, text: "judge", at: 14_000 });
+		expect(progress.lines()).toEqual(["✓ plan  8s", "✓ judge  2s", "◉ judge"]);
 	});
 });
 

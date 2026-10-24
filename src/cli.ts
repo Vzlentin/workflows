@@ -3,7 +3,11 @@
 import { createInterface } from "node:readline";
 import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
+import { StdinBuffer } from "@earendil-works/pi-tui";
 import { harnessProblem } from "./harness.ts";
+import { actionOf } from "./keys.ts";
+import type { Choose } from "./main.ts";
+import { type Pick, press, render } from "./pick.ts";
 import { terminalRedraw } from "./progress.ts";
 import { CtrlC } from "./run.ts";
 import { ensureHarness, PACKAGE, setup } from "./setup.ts";
@@ -46,6 +50,53 @@ function readLine(): Promise<string | undefined> {
 	});
 }
 
+/**
+ * Asks which of `items` to take, on stderr, with the keys of stdin in raw mode, and gives its index, or undefined when
+ * cancelled. It clears its lines before it returns.
+ */
+const choose: Choose = (question, items) => {
+	live?.forget();
+	const { stdin, stderr } = process;
+	const screen = terminalRedraw(stderr);
+	let pick: Pick = { query: "", cursor: 0 };
+	const drawPick = () => screen.redraw(render(question, items, pick, Math.min(stderr.rows ?? 24, 20)));
+
+	return new Promise((resolve) => {
+		// Splits the chunks of stdin into whole keys, so a chunk with several keys or half a key reads right.
+		const keys = new StdinBuffer();
+
+		const done = (index: number | undefined) => {
+			stdin.off("data", onData);
+			keys.destroy();
+			stdin.setRawMode(false);
+			stdin.pause();
+			screen.redraw([]);
+			resolve(index);
+		};
+
+		const onData = (data: Buffer) => keys.process(data);
+
+		keys.on("data", (key) => {
+			const action = actionOf(key);
+
+			if (action === undefined) return;
+			const step = press(items, pick, action);
+
+			if ("taken" in step) done(step.taken);
+			else if ("cancelled" in step) done(undefined);
+			else {
+				pick = step.pick;
+				drawPick();
+			}
+		});
+
+		stdin.setRawMode(true);
+		stdin.resume();
+		stdin.on("data", onData);
+		drawPick();
+	});
+};
+
 process.exitCode = await main(process.argv.slice(2), {
 	cwd: process.cwd(),
 	stdin: async () => (process.stdin.isTTY ? undefined : await text(process.stdin)),
@@ -60,5 +111,6 @@ process.exitCode = await main(process.argv.slice(2), {
 	stop: ctrlC.stop,
 	following: (active) => ctrlC.following(active),
 	readLine: process.stdin.isTTY && process.stderr.isTTY ? readLine : undefined,
+	choose: process.stdin.isTTY && process.stderr.isTTY ? choose : undefined,
 	models: async () => (await createAgentSessionServices({ cwd: process.cwd() })).modelRuntime,
 });

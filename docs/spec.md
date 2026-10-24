@@ -62,6 +62,10 @@ The command prints `run <run-id>`, then one progress step on stderr as each sess
 `round <n>: implement`, `round <n>: review` and `judge`. See [Progress](#progress) for how the steps show. A resume
 prints the phase line of the first call that runs, such as a turn or a Git step, and the lines after it.
 
+Each implement step logs the size of the round's change, `+<insertions> -<deletions> in <n> file(s)` or `no new
+changes`; each review step logs `SHIP` or `FIX`; the judge step logs `judge <score or failed>: <commit> <subject>`. See
+the example of [Campaign](#campaign).
+
 The research session gets the work item and writes a research document: what the code that the work item touches
 does today, with `path:line` references, the patterns and tests of that area, and open questions. It documents and
 does not suggest changes, and if it has a subagent tool, can spawn subagents to search in parallel. The plan prompt
@@ -124,8 +128,8 @@ command prints a second report line with the reason: `branch <name> is not a val
 or `branch <name> is in conflict with an existing branch; kept ship/<run-id>`. The command prints `shipped
 <subject> in <n> rounds, judge <score or failed>, <commit> on <branch>` and exits 0.
 
-The result of the run, which `--json` prints, has `status` and `rounds`; `head` and `branch`, the branch that the
-worktree ends on, when shipped; `score`, `answers`, the eight answers in question order, and `findings`, the finding
+The result of the run, which `--json` prints, has `status` and `rounds`; `head`, `subject`, the subject of the
+squashed commit, and `branch`, the branch that the worktree ends on, when shipped; `score`, `answers`, the eight answers in question order, and `findings`, the finding
 lines of the judge, when the judge answered; `judgeError` when the judge failed; `reply` when blocked; `handoff`, the
 handoff that the last round used, when blocked or stopped; and `memory`, the
 memory lines in order or `[]` when there are no notes, for every status.
@@ -143,7 +147,8 @@ The goal comes from one argument or from stdin, as the work item of `ship` does,
 and `--prompts` work as for `ship`. `--rounds` applies to each work item. Errors name the goal, such as `the goal is empty`.
 When the judge of an item fails, the command prints `judge failed on <item subject>: <error>` on stderr, as `ship` does.
 
-A planner session splits the goal into work items with the `split` prompt, and answers through `respond`. Then each
+In the step `split`, a planner session splits the goal into work items with the `split` prompt, and answers through
+`respond`. The step logs the number of items, such as `2 items`. Then each
 work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the research, the plan, the rounds, the
 review, the judge and the squash of `workflows/ship.js`, from the commit that the item before it made. So each shipped
 item is one commit, with the commit message that its own judge wrote, as in `ship`. No `ship/<run-id>` branch is made,
@@ -154,19 +159,25 @@ After each shipped item, also the last one, a new planner session gets the goal,
 items with the `requeue` prompt. Its answer through `respond` is the new queue, which can be empty. The campaign ends
 when the queue is empty. The queue has no length limit: a requeue can add items each time.
 
-The command prints `run <run-id>`, then the step `item <n>/<total>: <subject>` on stderr before the steps of each item.
+The command prints `run <run-id>`, the step `split`, then the step `item <n>/<total>: <subject>` on stderr before the
+steps of each item.
 `<total>` is the number of items known when the item starts: the shipped items, this item and the queue. A requeue can
-change it. The steps of the item's ship run are under the item step, indented by 2:
+change it. The steps and log lines of the item's ship run are under the item step, indented by 2:
 
 ```text
-✓ item 1/2: Fix the README typo
-  ✓ research
-  ✓ plan
-  ✓ round 1: implement
-  ✓ round 1: review
-  ✓ judge
+✓ split  12s
+  2 items
+✓ item 1/2: Fix the README typo  4m03s
+  ✓ research  31s
+  ✓ plan  48s
+  ✓ round 1: implement  1m50s
+    +1 -1 in 1 file
+  ✓ round 1: review  35s
+    SHIP
+  ✓ judge  19s
+    judge 0.83: a1b2c3d fix: correct the README typo
 ◉ item 2/2: Add a thanks line
-  ✓ research
+  ✓ research  28s
   ◉ plan
 ```
 
@@ -182,8 +193,10 @@ branch name or it is in conflict with an existing branch, keeps `campaign/<run-i
 report line with the reason: `branch <name> is not a valid branch name; kept campaign/<run-id>` or `branch <name> is in
 conflict with an existing branch; kept campaign/<run-id>`.
 
-- When the queue is empty, the command prints `done <subject> in <n> items, <commit> on <branch>` with the commit of the
-  last item and the branch that the worktree ends on, and exits 0.
+- When the queue is empty, the command prints `done <subject> in <n> item(s), <commit> on <branch>` with the commit of
+  the last item and the branch that the worktree ends on, then one line `  <commit> <commit subject>, judge <score or
+  failed>` for each shipped item, in order, and exits 0.
+
 - When an item is blocked or stopped, or ships with a judge score of 0, the item fails. A missing score, when the judge
   failed, is not a failure. The run resets the worktree with `git reset --hard` to the commit that the item started
   from: the last shipped commit, or the start commit when no item shipped. Then a new planner session gets the
@@ -312,7 +325,7 @@ workflows check review
 
 `resume`, `wait`, `stop`, `list`, `show`, `attach`, `save`, `prune` and `check` are commands, so no script of these
 names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command,
-such as `usage: workflows show <run-id> [--json]`, and exits 2.
+such as `usage: workflows show <run-id> [--calls] [--json]`, and exits 2.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
@@ -399,20 +412,27 @@ When the caller has no step then, the child run moves under the caller's next st
 stderr in one of three ways:
 
 - On a terminal, the command draws the tree again in place at each change. A step is `◉` while it runs, `✓` when it
-  is done, and `✗` when its run failed or was stopped. Each line is cut to the width of the terminal. When another
+  is done, and `✗` when its run failed or was stopped. A step that ended ends with two spaces and its duration, such
+  as `12s`, `3m05s` or `1h02m`, from its `phase` line to the next `phase` line of its run or the end of its run. Each
+  line is cut to the columns of the terminal. When another
   line, such as a warning, comes between two draws, the lines above it stay, and the changed lines print again below
   it.
 - When stderr is not a terminal, and without `--json`, each step and log line prints once as it comes, with its indent
   and without a mark.
 - With `--json`, each change prints one stderr line `{"progress":["<line>",...]}` with every line of the tree, each
-  step as `<indent><mark> <text>` and each log line as `<indent><text>`. A run without steps prints no progress line.
+  step as `<indent><mark> <text>`, with the duration of a step that ended as on a terminal, and each log line as
+  `<indent><text>`. A run without steps prints no progress line.
   The [Pi tool](#the-workflow-tool) draws the last of these lines, so Pi shows the same steps as a terminal.
+
+The store keeps each line with its time; lines that an earlier version saved have none, and show no duration. The
+first `phase` line of an execution of a run, such as after a resume, continues the step of the same text that runs,
+without the time between, and prints nothing. Any other `phase` line starts a new step.
 
 When the run ends, the steps that still run become `✓` when the run finished, and `✗` when it failed or was
 stopped. A command that Ctrl+C detaches leaves them as they are. On a terminal and with `--json`, the tree draws once
 more then. A command that follows a run shows only the lines that come after it starts or reaches the run. `<title>`
 is the subject of the first `text` argument, or else the file name without `.js`, the workflow name, or `stdin`. The
-run's task ends as failed, and its saved calls stay in the project store for the resume. `workflows show <run-id>` shows the failed call. See [Show](#show).
+run's task ends as failed, and its saved calls stay in the project store for the resume. `workflows show <run-id> --calls` shows the failed call. See [Show](#show).
 
 `workflows/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
 workflows campaign, which give it the start commit`. `run("ship", { repo })` gets its own worktree and `start`, as
@@ -662,28 +682,31 @@ workflows wait <run-id> [--json]
 `workflows wait` follows a run to its outcome, and never starts a task or stops the run. It prints `run <run-id>`, then
 the same outcome lines, JSON line and exit code as `resume`. A waiting run prints its question and exits 3. A run whose task ended, completed or not, prints its
 outcome from the project store: `wait` starts no host and no task, so a failed run prints its `failed` and `continue
-with` lines and exits 1. A run whose task has not ended is followed as `resume` follows it, and `wait` starts the host
-when none runs. `wait` checks the version of the host's task as `resume` does, and refuses a run that another version
+with` lines and exits 1. A run whose task has not ended is followed as `resume` follows it, with every step of the run
+from its first line, and `wait` starts the host when none runs. `wait` checks the version of the host's task as `resume` does, and refuses a run that another version
 saved with `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot be waited for`.
 
 Ctrl+C detaches `wait` at once: it prints the `detached` line, or the `detached` JSON line, and exits 130. The run goes
 on in the host. A second Ctrl+C exits and never stops the run. Bad usage prints `usage: workflows wait <run-id>
 [--json]` and exits 2.
 
-## Herdr workspaces
+## Herdr
 
-When `HERDR_ENV` is set, a command that follows a root run with a worktree (a start, `resume` or `wait`) opens the
-worktree as a Herdr workspace. It reads progress about every 0.5 s, and on the first read that finds the worktree path
-on disk, it runs `herdr worktree list --cwd <worktree>`. When no workspace has the worktree open, it runs:
+The command opens nothing in Herdr by itself. A Herdr key composes the commands instead, such as one that picks a run
+and follows it in a new pane, from which `workflows attach <run-id>` opens a session:
 
-```sh
-herdr worktree open --cwd <repository> --path <worktree> --label <title> --no-focus
+```toml
+[[keys.command]]
+key = "prefix+w"
+type = "shell"
+description = "follow a workflows run"
+command = '''
+pane=$("$HERDR_BIN_PATH" pane split $HERDR_ACTIVE_PANE_ID --direction right --focus | jq -r '.result.pane.pane_id')
+[ -n "$pane" ] && "$HERDR_BIN_PATH" pane run "$pane" 'id=$(workflows list --pick) && workflows wait "$id"'
+'''
 ```
 
-Each command tries once. A herdr failure, or a missing `herdr`, prints the one line `workflows: herdr: <message>` on
-stderr, with each newline of the message as a space, and changes neither the outcome nor the exit code. Ctrl+C stops a
-`herdr` call that runs, and prints no warning for it. `--background` opens nothing; a later `wait` or `resume` of the run,
-while it has not ended, opens it. A run whose task ended, and the child runs, open nothing.
+`prune` and `attach` use Herdr when `HERDR_ENV` is set: see [Prune](#prune) and [Attach](#attach).
 
 ## JSON output
 
@@ -717,6 +740,7 @@ bad usage, prints no `run <run-id>` line and no JSON line.
 ```sh
 workflows list
 workflows list --json
+workflows list --pick
 ```
 
 `workflows list` prints one line for each run of the harness project of the current directory, newest run ID first:
@@ -731,6 +755,12 @@ cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
 without a worktree.
 Only the runs that have a run directory with a `project` file are listed.
+
+With `--pick`, on a terminal, the command asks `Pick a run:` with the runs that run or wait first, each as `<mark>
+<title>  <workflow> <status>`, with `: <steps that run now>` for a running run. The mark is `◉` running, `?` waiting,
+`✗` failed, else `·`. Typing filters by each word, in any case; the arrows move, Enter prints the run ID, and Esc or
+Ctrl+C exits 130. So commands compose: `workflows wait "$(workflows list --pick)"`. A project with no run exits 1, and
+`--pick` without a terminal exits 2.
 
 `list` reads the project store file read-only and does not start the host, so no run continues. It takes no lock that
 the host waits for, and runs no checkpoint of the file. A store whose schema pi-durable must update first cannot open
@@ -773,10 +803,16 @@ hook exists, it writes nothing, prints an error with the line to add, and exits 
 
 ```sh
 workflows show <run-id>
+workflows show <run-id> --calls
 workflows show <run-id> --json
 ```
 
-`workflows show` prints one run as a tree of its phases and calls, from the store of its project:
+`workflows show` prints one run from the store of its project: the line `run <run-id> <workflow> <status> <title>`,
+with the fields of `workflows list`, then the steps of [Progress](#progress) from the first line of the run, then the
+report lines, or the `failed` and `continue with` lines. Once the run's task ended, the steps that still ran are `✓`
+when it completed and `✗` otherwise. A run without steps prints its calls, as `--calls` does.
+
+With `--calls`, `show` prints the tree of its phases and calls:
 
 ```text
 run <run-id> <workflow> <status> <title>
@@ -785,7 +821,6 @@ run <run-id> <workflow> <status> <title>
 <report lines, or the failed and continue with lines>
 ```
 
-- The first line has the fields of `workflows list`.
 - The calls are in the order they started. Each call is under the phase line that was current when it started, and is
   indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `sh`, `ok`,
   `run` or `input`. An `agent` call is a `session` call and an `ask` call.
@@ -805,7 +840,8 @@ run <run-id> <workflow> <status> <title>
   orphaned run with `orphaned <title>: <reason>` and the `continue with` line. Any other run ends after its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
-object with the same tree: `{ "runId", "workflow", "title", "status", "report"?, "error"?, "calls" }`. Each call is
+object with both trees: `{ "runId", "workflow", "title", "status", "report"?, "error"?, "steps", "calls" }`, where
+`steps` has the step lines of the text, without the first line and the footer. Each call is
 `{ "kind", "label", "phase", "args", "mark", "startedAt", "endedAt"?, "conversation"?, "result"?, "error"?, "calls"? }`,
 with ISO times. `conversation` is the conversation ID of a `session` that opened. The JSON `mark` of a working session
 is `✓`: only the text shows it as `◉`. `phase` is `null` before the first phase line. The `result` of a `run` call is
@@ -817,7 +853,7 @@ without a `project` file, prints the
 `no run` error of `resume`. A run saved by an earlier version prints `workflows: run
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
-as no run ID, prints `usage: workflows show <run-id> [--json]` and exits 2.
+as no run ID, prints `usage: workflows show <run-id> [--calls] [--json]` and exits 2.
 
 ## Attach
 
@@ -831,7 +867,7 @@ workflows attach <run-id> <step>
 - The sessions are the `session` calls of the run and of its child runs that opened a conversation, in the order they
   started. With `<step>`, only the sessions under the phase line `<step>` count. The step is all the words after the
   run ID, and must be equal to the phase line.
-- The command opens the session that works now, as `show` marks it `◉`. When no session works, it opens the last
+- The command opens the session that works now, as `show --calls` marks it `◉`. When no session works, it opens the last
   session that started.
 - It connects to the host of the run's project, and starts the host when none runs. It sends `watch` for the
   conversation of the session, so an unknown conversation fails before Pi starts.

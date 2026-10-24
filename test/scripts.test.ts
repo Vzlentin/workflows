@@ -222,9 +222,9 @@ describe("usage errors", () => {
 			[["resume", "a/b"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
 			[["resume", "--background"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
 			[["wait", "r1", "r2"], "usage: workflows wait <run-id> [--json]"],
-			[["show", "r1", "r2"], "usage: workflows show <run-id> [--json]"],
-			[["show", ".."], "usage: workflows show <run-id> [--json]"],
-			[["list", "x"], "usage: workflows list [--json]"],
+			[["show", "r1", "r2"], "usage: workflows show <run-id> [--calls] [--json]"],
+			[["show", ".."], "usage: workflows show <run-id> [--calls] [--json]"],
+			[["list", "x"], "usage: workflows list [--pick] [--json]"],
 			[["check"], "usage: workflows check <workflow>"],
 		];
 
@@ -342,12 +342,22 @@ describe("input", () => {
 });
 
 describe("workflows show", () => {
-	it("shows the failed call and the error of a failed run", async () => {
-		await writeFile(join(root, "x.js"), `phase("check")\nawait sh("echo a")\nawait ok("false")\nawait sh("exit 3")`);
+	it("shows the failed step, the failed call and the error of a failed run", async () => {
+		const body = `phase("check")\nlog("checking")\nawait sh("echo a")\nawait ok("false")\nawait sh("exit 3")`;
+		await writeFile(join(root, "x.js"), body);
 		const run = await workflows(["x.js"], { cwd: root });
 		expect(run.code).toBe(1);
 		const id = run.id ?? "";
-		const shown = await workflows(["show", id], { cwd: root });
+		const steps = await workflows(["show", id], { cwd: root });
+		expect([steps.code, steps.stderr]).toEqual([0, []]);
+		expect(steps.stdout).toEqual([
+			`run ${id} x failed x`,
+			expect.stringMatching(/^✗ check {2}\d+s$/),
+			"  checking",
+			"failed x: sh exited with 3: exit 3",
+			`continue with: workflows resume ${id}`,
+		]);
+		const shown = await workflows(["show", id, "--calls"], { cwd: root });
 		expect([shown.code, shown.stderr]).toEqual([0, []]);
 		expect(shown.stdout).toEqual([
 			`run ${id} x failed x`,
@@ -358,8 +368,10 @@ describe("workflows show", () => {
 			"failed x: sh exited with 3: exit 3",
 			`continue with: workflows resume ${id}`,
 		]);
-		const { calls, ...tree } = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
+		const shownJson = await workflows(["show", id, "--json"], { cwd: root });
+		const { calls, steps: json, ...tree } = JSON.parse(shownJson.stdout[0] ?? "");
 		expect(tree).toEqual({ runId: id, workflow: "x", title: "x", status: "failed", error: "sh exited with 3: exit 3" });
+		expect(json).toEqual(steps.stdout.slice(1, 3));
 		expect(
 			calls.map((call: { mark: string; result?: unknown; error?: string }) => [call.mark, call.result, call.error]),
 		).toEqual([
@@ -378,7 +390,10 @@ describe("workflows show", () => {
 		expect(first.code).toBe(130);
 		const id = first.id ?? "";
 		const before = rows();
-		const shown = await workflows(["show", id], { cwd: root });
+		const steps = await workflows(["show", id], { cwd: root });
+		// The task has not ended, so the step runs.
+		expect(steps.stdout).toEqual([`run ${id} x running x`, "◉ talk"]);
+		const shown = await workflows(["show", id, "--calls"], { cwd: root });
 		expect(rows()).toEqual(before);
 		const a = await conversationOf(/Script: one/);
 		const b = await conversationOf(/Script: two/);
@@ -397,7 +412,7 @@ describe("workflows show", () => {
 		expect(calls[3].endedAt).toBeUndefined();
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
-		const done = await workflows(["show", id], { cwd: root });
+		const done = await workflows(["show", id, "--calls"], { cwd: root });
 		expect(done.stdout.filter((line) => line.includes(`session default conversation ${b} `))).toEqual([
 			expect.stringMatching(new RegExp(`^ {2}✓ session default conversation ${b} {2}\\d+s$`)),
 		]);

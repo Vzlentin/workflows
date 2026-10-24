@@ -4,6 +4,7 @@
  * comes. The command draws the tree on stderr, and the Pi tool draws the lines that the command sends with `--json`,
  * so both show the same steps.
  */
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import type { Io } from "./run.ts";
 
@@ -12,7 +13,9 @@ export const PROGRESS_KIND = "workflows.progress";
 
 /**
  * A `phase` or `log` line of the run `run`, whose caller is `parent`, the end of the run `run`, or the start of an
- * execution of the root run `run`, from which a command that reaches the running task shows the lines.
+ * execution of the root run `run`, from which a command that reaches the running task shows the lines. `at` is the
+ * time of the line or the end in ms since the epoch; events that an earlier version saved have none. `continues` marks
+ * the first phase line of an execution of the run, which goes on with the step of that text when it is the current one.
  */
 export const PROGRESS_EVENT = Type.Union([
 	Type.Object({
@@ -20,8 +23,15 @@ export const PROGRESS_EVENT = Type.Union([
 		run: Type.String(),
 		parent: Type.Union([Type.String(), Type.Null()]),
 		text: Type.String(),
+		at: Type.Optional(Type.Number()),
+		continues: Type.Optional(Type.Boolean()),
 	}),
-	Type.Object({ kind: Type.Literal("end"), run: Type.String(), failed: Type.Boolean() }),
+	Type.Object({
+		kind: Type.Literal("end"),
+		run: Type.String(),
+		failed: Type.Boolean(),
+		at: Type.Optional(Type.Number()),
+	}),
 	Type.Object({ kind: Type.Literal("start"), run: Type.String() }),
 ]);
 
@@ -29,7 +39,14 @@ export type ProgressEvent = Readonly<Static<typeof PROGRESS_EVENT>>;
 
 export type Mark = "✓" | "◉" | "✗";
 
-type Step = { readonly text: string; mark: Mark; readonly items: Item[] };
+/** A step, with the times of its start and its end when the events give them. */
+type Step = {
+	readonly text: string;
+	mark: Mark;
+	readonly items: Item[];
+	started?: number | undefined;
+	ended?: number | undefined;
+};
 
 type Item = Step | { readonly log: string } | { readonly run: RunNode };
 
@@ -51,7 +68,10 @@ export class Progress {
 		if (event.kind === "end") {
 			const step = this.#runs.get(event.run)?.current;
 
-			if (step?.mark === "◉") step.mark = event.failed ? "✗" : "✓";
+			if (step?.mark === "◉") {
+				step.mark = event.failed ? "✗" : "✓";
+				step.ended = event.at;
+			}
 
 			return undefined;
 		}
@@ -65,8 +85,24 @@ export class Progress {
 			return `${"  ".repeat(depth(run) + (current === undefined ? 0 : 1))}${event.text}`;
 		}
 
-		if (current?.mark === "◉") current.mark = "✓";
-		const step: Step = { text: event.text, mark: "◉", items: [] };
+		// A new execution starts again at the step that it stopped in, so the step goes on, without the time between.
+		if (event.kind === "phase" && event.continues === true && current?.text === event.text) {
+			if (current.started !== undefined && current.ended !== undefined && event.at !== undefined) {
+				current.started += event.at - current.ended;
+			}
+
+			current.mark = "◉";
+			delete current.ended;
+
+			return undefined;
+		}
+
+		if (current?.mark === "◉") {
+			current.mark = "✓";
+			current.ended = event.at;
+		}
+
+		const step: Step = { text: event.text, mark: "◉", items: [], started: event.at };
 
 		if (current === undefined) {
 			const loose = run.items.filter((item) => "run" in item && !item.run.under);
@@ -80,6 +116,30 @@ export class Progress {
 		run.items.push(step);
 
 		return `${"  ".repeat(depth(run))}${event.text}`;
+	}
+
+	/** The texts of the steps that run now, outermost first. */
+	running(): string[] {
+		const texts: string[] = [];
+
+		const visit = (items: readonly Item[]) => {
+			for (const item of items) {
+				if ("run" in item) visit(item.run.items);
+				else if ("mark" in item) {
+					if (item.mark === "◉") texts.push(item.text);
+					visit(item.items);
+				}
+			}
+		};
+
+		visit(this.#top);
+
+		return texts;
+	}
+
+	/** Whether the run has a step. */
+	get stepped(): boolean {
+		return [...this.#runs.values()].some((run) => run.current !== undefined);
 	}
 
 	/** Marks each step that runs as failed, or as done. */
@@ -98,7 +158,10 @@ export class Progress {
 		visit(this.#top);
 	}
 
-	/** Each step as `<indent><mark> <text>` and each log line as `<indent><text>`, with 2 spaces for each level. */
+	/**
+	 * Each step as `<indent><mark> <text>` and each log line as `<indent><text>`, with 2 spaces for each level. A step
+	 * that ended adds `  <duration>`.
+	 */
 	lines(): string[] {
 		const lines: string[] = [];
 
@@ -107,7 +170,9 @@ export class Progress {
 				if ("run" in item) visit(item.run.items, indent);
 				else if ("log" in item) lines.push(`${indent}${item.log}`);
 				else {
-					lines.push(`${indent}${item.mark} ${item.text}`);
+					const { started, ended } = item;
+					const time = started === undefined || ended === undefined ? "" : `  ${duration(ended - started)}`;
+					lines.push(`${indent}${item.mark} ${item.text}${time}`);
 					visit(item.items, `${indent}  `);
 				}
 			}
@@ -129,6 +194,18 @@ export class Progress {
 
 		return node;
 	}
+}
+
+/** `12s`, `3m05s` or `1h02m`. */
+export function duration(ms: number): string {
+	const seconds = Math.max(0, Math.floor(ms / 1000));
+	const pad = (n: number) => String(n).padStart(2, "0");
+
+	if (seconds < 60) return `${seconds}s`;
+
+	if (seconds < 3600) return `${Math.floor(seconds / 60)}m${pad(seconds % 60)}s`;
+
+	return `${Math.floor(seconds / 3600)}h${pad(Math.floor(seconds / 60) % 60)}m`;
 }
 
 /** The level of the steps of `run`. */
@@ -176,7 +253,7 @@ const COLORS: Readonly<Record<Mark, string>> = { "✓": "32", "◉": "36", "✗"
 
 /**
  * A `redraw` for a terminal stream. It moves the cursor up to the first line that changed, writes the lines from there
- * again, and colors the marks. A line is cut to the width of the terminal, so that each line takes one row. After
+ * again, and colors the marks. A line is cut to the columns of the terminal, so that each line takes one row. After
  * `forget`, because another write moved the cursor below the lines, the lines on the screen stay, and a change prints
  * the lines from the first changed one below them.
  */
@@ -192,7 +269,7 @@ export function terminalRedraw(stream: {
 	return {
 		redraw: (lines: readonly string[]) => {
 			const width = Math.max((stream.columns ?? 80) - 1, 10);
-			const cut = lines.map((line) => (line.length > width ? `${line.slice(0, width - 1)}…` : line));
+			const cut = lines.map((line) => truncateToWidth(line, width, "…"));
 			let first = 0;
 
 			while (first < cut.length && first < shown.length && cut[first] === shown[first]) first++;

@@ -46,7 +46,14 @@ printf %s "$n"`
 
 const answer = "\n\nAnswer with respond: the work items, each one as the full text of one work item, in order."
 
+const count = (n) => `${n} item${n === 1 ? "" : "s"}`
+
+phase("split")
+
 let queue = (await agent(`${await prompts.split({ goal })}${answer}`, { as: "planner", schema: items(1) })).items
+
+log(count(queue.length))
+
 const done = []
 
 // Known ceiling: requeue can add items after each shipped item, so the queue has no length limit.
@@ -120,8 +127,15 @@ const renamed =
 	branchName === "" || branchName === base ? base : await sh(["sh", "-c", RENAME, "rename", base, branchName])
 
 const [branch, rejected] = renamed.split("\n")
-const report = [`done ${name} in ${done.length} items, ${head} on ${branch}`]
+const report = [`done ${name} in ${count(done.length)}, ${head} on ${branch}`]
 
 if (rejected !== undefined) report.push(`branch ${branchName} ${rejected}; kept ${base}`)
+
+for (const { result } of done) {
+	const judged = result.score === undefined ? "failed" : result.score.toFixed(2)
+	// A result that an earlier version saved has no subject.
+	const commit = result.subject === undefined ? result.head : `${result.head} ${result.subject}`
+	report.push(`  ${commit}, judge ${judged}`)
+}
 
 return { status: "done", head, branch, items: done, report }

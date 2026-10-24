@@ -115,6 +115,7 @@ for (let round = 1; round <= rounds; round++) {
 	const change = [await patch(`round-${round}.patch`, start)]
 
 	if (round > 1) change.push(await patch(`round-${round}-fix.patch`, before))
+	log(stat(await sh(["git", "diff", "--shortstat", before, "HEAD"])))
 
 	phase(`round ${round}: review`)
 	const reviewer = remembering("reviewer")
@@ -122,7 +123,10 @@ for (let round = 1; round <= rounds; round++) {
 	const answer = "Answer with respond: SHIP if nothing needs to change, FIX otherwise."
 	const challenge = `${await prompts.challenge()}\n\n${EVIDENCE}\n\n${answer}`
 
-	if ((await reviewer.ask(challenge, { schema: SHIP_OR_FIX })) === "SHIP") return await judgeAndSquash(round)
+	const verdict = await reviewer.ask(challenge, { schema: SHIP_OR_FIX })
+	log(verdict)
+
+	if (verdict === "SHIP") return await judgeAndSquash(round)
 
 	if (round === rounds) {
 		return {
@@ -165,7 +169,8 @@ async function judgeAndSquash(round) {
 	}
 
 	const valid = answer !== undefined && answer.subject.trim() !== ""
-	const commitMessage = valid ? `${answer.subject.trim()}\n\n${answer.body.trim()}` : subject
+	const commitSubject = valid ? answer.subject.trim() : subject
+	const commitMessage = valid ? `${commitSubject}\n\n${answer.body.trim()}` : commitSubject
 	const name = args.branch ?? (valid ? answer.branch.trim() : "")
 
 	// One command, so that a repeat resets a squash commit that was made but not saved.
@@ -176,7 +181,8 @@ async function judgeAndSquash(round) {
 	const renamed = name === "" || name === base ? base : await sh(["sh", "-c", RENAME, "rename", base, name])
 	const [branch, rejected] = renamed.split("\n")
 	const judged = verdict === undefined ? "failed" : score(verdict.answers).toFixed(2)
-	const shipped = { status: "shipped", rounds: round, head: short, branch }
+	log(`judge ${judged}: ${short} ${commitSubject}`)
+	const shipped = { status: "shipped", rounds: round, head: short, subject: commitSubject, branch }
 
 	if (verdict !== undefined) {
 		shipped.score = score(verdict.answers)
@@ -227,6 +233,16 @@ async function patch(name, from) {
 	await sh(["git", "diff", "--binary", `--output=${path}`, from, "HEAD"])
 
 	return path
+}
+
+// `+12 -3 in 2 files` from the output of `git diff --shortstat`, or `no new changes`.
+function stat(shortstat) {
+	const count = (word) => Number(new RegExp(`(\\d+) ${word}`).exec(shortstat)?.[1] ?? 0)
+	const files = count("files? changed")
+
+	if (files === 0) return "no new changes"
+
+	return `+${count("insertion")} -${count("deletion")} in ${files} file${files === 1 ? "" : "s"}`
 }
 
 // Zero when question 1 or 2 fails, else the passing fraction of questions 3 to 8.

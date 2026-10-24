@@ -22,7 +22,7 @@ import { projectDir } from "@vzlentin/harness/projects";
 import { AGENT_HANDLE, type Replies, type Request, statePaths } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { main } from "../src/main.ts";
+import { type Choose, main } from "../src/main.ts";
 import { CtrlC } from "../src/run.ts";
 
 /** The entry of the workflows checkout, which the hosts of the tests load. */
@@ -550,7 +550,15 @@ export type Outcome = {
 
 const PROGRESS = Type.Object({ progress: Type.Array(Type.String()) });
 
-/** The lines of the last `{"progress":[...]}` stderr line of a `--json` run, and throws for any other stderr line. */
+/** `line` without the duration at the end of a step line, which depends on how fast the test runs. */
+export function untimed(line: string): string {
+	return line.replace(/ {2}\d+(?:s|m\d\ds|h\d\dm)$/, "");
+}
+
+/**
+ * The lines of the last `{"progress":[...]}` stderr line of a `--json` run, without durations, and throws for any
+ * other stderr line.
+ */
 export function progressOf(stderr: readonly string[]): string[] {
 	const snapshots = stderr.map((line) => {
 		const parsed = JSON.parse(line);
@@ -560,7 +568,7 @@ export function progressOf(stderr: readonly string[]): string[] {
 		return parsed.progress;
 	});
 
-	return snapshots.at(-1) ?? [];
+	return (snapshots.at(-1) ?? []).map(untimed);
 }
 
 /** A connection to the host of `project` that runs in this process. */
@@ -603,6 +611,8 @@ export async function workflows(
 		readonly dropStart?: boolean;
 		/** The lines typed on the terminal, one for each read; with none left, the read gives the end of input. */
 		readonly lines?: readonly string[];
+		/** The terminal's pick: gets the question and the items, and gives the index of the taken item. */
+		readonly choose?: Choose;
 	},
 ): Promise<Outcome> {
 	let exits = 0;
@@ -641,6 +651,7 @@ export async function workflows(
 		stop: ctrlC.stop,
 		following: (active) => ctrlC.following(active),
 		readLine: options.lines && (async () => queue.shift()),
+		choose: options.choose,
 		stopWindowMs: options.stopWindowMs ?? 0,
 		models: async () => model.models,
 		connect: async (project, start) => {

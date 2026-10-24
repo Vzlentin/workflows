@@ -2,9 +2,9 @@
  * The `workflows` command line, a client of the harness host of a project. `workflows <workflow> ...` starts a run of a
  * workflow script in the host and follows it, `workflows resume <run-id>` continues or follows one, `workflows wait
  * <run-id>` follows one to its outcome, `workflows stop <run-id>` stops one, `workflows list` prints the runs of the
- * project, `workflows show <run-id>` prints the calls of one run, `workflows attach <run-id>` opens a session of one run
- * in Pi, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow; `workflows prune`
- * removes the worktrees of the ended runs whose branch GitHub merged. The project store holds the runs; a run directory
+ * project, `workflows show <run-id>` prints the steps or the calls of one run, `workflows attach <run-id>` opens a
+ * session of one run in Pi, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow;
+ * `workflows prune` removes the worktrees of the ended runs whose branch GitHub merged. The project store holds the runs; a run directory
  * holds the run's `project` file and whatever the workflow writes there.
  */
 import { spawn } from "node:child_process";
@@ -28,7 +28,7 @@ import { Value } from "typebox/value";
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
 import { ENTRY, harnessDir } from "./harness.ts";
 import * as script from "./meta.ts";
-import { display, type ProgressEvent, programStatus } from "./progress.ts";
+import { display, duration, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
 import type { SavedCall } from "./script.ts";
 import { loadScripts, projectFolder } from "./script.ts";
@@ -42,6 +42,7 @@ import {
 	type RunTask,
 	reading,
 	runTasks,
+	type Store,
 } from "./store.ts";
 import { current, TASK } from "./task.ts";
 
@@ -53,6 +54,9 @@ const STOP_WINDOW_MS = 2000;
 
 /** The error of harness's client when the host closes the connection, such as when it stops. */
 const HOST_CLOSED = "The harness host closed the connection";
+
+/** A question with `items` to pick one of, on a terminal: the index of the item, or undefined when cancelled. */
+export type Choose = (question: string, items: readonly string[]) => Promise<number | undefined>;
 
 export type Terminal = Io & {
 	/** Aborted by the first Ctrl+C: the command detaches, and the run goes on in the host. */
@@ -70,6 +74,8 @@ export type Terminal = Io & {
 	 * terminals.
 	 */
 	readonly readLine?: (() => Promise<string | undefined>) | undefined;
+	/** Asks which of `items` to take, and gives its index, or undefined when cancelled. Given only on a terminal. */
+	readonly choose?: Choose | undefined;
 	/** Pi's model registry, for `check`. */
 	readonly models: () => Promise<Models>;
 	/**
@@ -82,8 +88,8 @@ export type Terminal = Io & {
 const RESUME = "workflows resume <run-id> [--answer <text>] [--background] [--json]";
 const WAIT = "workflows wait <run-id> [--json]";
 const STOP = "workflows stop <run-id> [--json]";
-const LIST = "workflows list [--json]";
-const SHOW = "workflows show <run-id> [--json]";
+const LIST = "workflows list [--pick] [--json]";
+const SHOW = "workflows show <run-id> [--calls] [--json]";
 const ATTACH = "workflows attach <run-id> [<step>]";
 const SAVE = "workflows save <run-id> <name> [--force]";
 const PRUNE = "workflows prune [--yes] [--install-hook] [--json]";
@@ -501,7 +507,13 @@ async function resume(
 
 	terminal.stdout(`run ${run.id}`);
 
-	return follow({ id: run.id, project: run.project, key, input, client, from }, followed, json, background);
+	// A wait shows every step of the run, from its first execution.
+	return follow(
+		{ id: run.id, project: run.project, key, input, client, from: wait ? 0 : from },
+		followed,
+		json,
+		background,
+	);
 }
 
 /** The run ID and the `--answer` of the args of `resume`. */
@@ -582,9 +594,31 @@ type Listed = {
  * project store only.
  */
 async function list(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
-	if (args.length > 0) throw new UsageError("list takes no arguments", LIST);
-	const store = await storeOf(await projectOf(terminal.cwd));
-	const runs = await reading(store, new Map<string, RunTask[]>(), runTasks);
+	const pick = args[0] === "--pick";
+
+	if (args.length > Number(pick)) throw new UsageError("list takes no arguments but --pick", LIST);
+
+	if (pick) {
+		if (terminal.choose === undefined) throw new UsageError("--pick needs a terminal on stdin and stderr", LIST);
+		const run = await pickRun(terminal, terminal.choose);
+
+		if (run === undefined) return 130;
+		terminal.stdout(run.runId);
+
+		return 0;
+	}
+
+	const listed = await reading(await storeOf(await projectOf(terminal.cwd)), [], listedRuns);
+
+	if (json) terminal.stdout(JSON.stringify(listed));
+	else for (const run of listed) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
+
+	return 0;
+}
+
+/** The runs of the open project store `store` that have a run directory, newest run ID first. */
+async function listedRuns(store: Store): Promise<Listed[]> {
+	const runs = await runTasks(store);
 	const listed: Listed[] = [];
 
 	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
@@ -599,10 +633,54 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 		else listed.push({ runId: id, workflow: savedBy(task).name, title: savedBy(task).name, status, repository });
 	}
 
-	if (json) terminal.stdout(JSON.stringify(listed));
-	else for (const run of listed) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
+	return listed;
+}
 
-	return 0;
+/**
+ * Asks on the terminal which run of the project of the current directory to take, and gives it, or undefined when the
+ * person cancels. The runs that have not ended come first, each with the steps that run now.
+ */
+async function pickRun(terminal: Terminal, choose: Choose): Promise<Listed | undefined> {
+	const empty = { runs: [], steps: new Map<string, string>() };
+
+	const { runs, steps } = await reading(await storeOf(await projectOf(terminal.cwd)), empty, async (store) => {
+		const live = (run: Listed) => run.status === "running" || run.status === "waiting";
+		// A stable sort keeps the newest first within each group.
+		const sorted = (await listedRuns(store)).toSorted((a, b) => Number(live(b)) - Number(live(a)));
+		const found = new Map<string, string>();
+
+		for (const run of sorted.filter((each) => each.status === "running")) {
+			const progress = new Progress();
+
+			for (const event of await progressEvents(store, run.runId)) progress.add(event);
+			const running = progress.running();
+
+			if (running.length > 0) found.set(run.runId, running.join(" › "));
+		}
+
+		return { runs: sorted, steps: found };
+	});
+
+	if (runs.length === 0) throw new Error(`no runs in the project of ${terminal.cwd}`);
+
+	const items = runs.map((run) => {
+		const step = steps.get(run.runId);
+
+		return `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${step === undefined ? "" : `: ${step}`}`;
+	});
+
+	const index = await choose("Pick a run:", items);
+
+	return index === undefined ? undefined : runs[index];
+}
+
+/** The mark of a run in the picker by its status: `◉` running, `?` waiting for an answer, `✗` failed, else `·`. */
+function markOf(status: string): Mark | "?" | "·" {
+	if (status === "running") return "◉";
+
+	if (status === "waiting") return "?";
+
+	return status === "failed" || status === "faulted" ? "✗" : "·";
 }
 
 /** The line of the post-merge hook that `prune --install-hook` writes. */
@@ -711,10 +789,10 @@ async function removeWorktree({ branch, worktree }: Prunable): Promise<void> {
 	}
 }
 
-/** The ID of the herdr workspace that has `worktree` open, if any. It throws when herdr fails or `signal` aborts. */
-async function herdrWorkspace(worktree: Worktree, signal?: AbortSignal): Promise<string | undefined> {
+/** The ID of the herdr workspace that has `worktree` open, if any. It throws when herdr fails. */
+async function herdrWorkspace(worktree: Worktree): Promise<string | undefined> {
 	const argv = ["worktree", "list", "--cwd", worktree.path];
-	const listed = await runCommand("herdr", argv, worktree.path, signal);
+	const listed = await runCommand("herdr", argv, worktree.path);
 
 	if (listed.code !== 0) throw new Error(failure(["herdr", ...argv], listed));
 	const parsed: unknown = JSON.parse(listed.stdout);
@@ -745,40 +823,6 @@ async function removedByHerdr(worktree: Worktree): Promise<boolean> {
 		return removed.code === 0;
 	} catch {
 		return false;
-	}
-}
-
-/** The terminals of the commands that tried to open their run's worktree in herdr: each command tries once. */
-const herdrTried = new WeakSet<Terminal>();
-
-/**
- * Opens `worktree` of the run of `input` as a herdr workspace, unless a workspace has it open. A herdr failure is a
- * warning line on stderr. Ctrl+C stops a herdr call and prints no warning.
- */
-async function openInHerdr(input: script.ScriptInput, worktree: Worktree, terminal: Terminal): Promise<void> {
-	try {
-		if ((await herdrWorkspace(worktree, terminal.interrupt)) !== undefined) return;
-
-		const argv = [
-			"worktree",
-			"open",
-			"--cwd",
-			worktree.repository,
-			"--path",
-			worktree.path,
-			"--label",
-			script.title(input),
-			"--no-focus",
-		];
-
-		const opened = await runCommand("herdr", argv, worktree.repository, terminal.interrupt);
-
-		if (opened.code !== 0) throw new Error(failure(["herdr", ...argv], opened));
-	} catch (cause) {
-		if (terminal.interrupt.aborted) return;
-		const message = cause instanceof Error ? cause.message : String(cause);
-
-		terminal.stderr(`workflows: herdr: ${message.replace(/\s*\n\s*/g, " ")}`);
 	}
 }
 
@@ -822,17 +866,25 @@ function endOf(outcome: TaskOutcome<JsonValue>, title: string, id: string) {
 }
 
 /**
- * Prints the phases and calls of a run as a tree, then its report lines, or how it ended. It reads the task records and
- * the call records from the project store only.
+ * Prints the steps of a run as a tree, or with `--calls` its phases and calls, then its report lines, or how it ended.
+ * A run without steps prints its calls. It reads the task records, the progress, and the call records when it prints
+ * them, from the project store only.
  */
 async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
-	const run = await savedRun(oneRunId(args, SHOW), SHOW);
+	const withCalls = args.includes("--calls");
+	const rest = args.filter((arg) => arg !== "--calls");
+	const run = await savedRun(oneRunId(rest, SHOW), SHOW);
 	const { id } = run;
+	const empty = { task: undefined, records: new Map<string, SavedCall>(), progress: new Progress() };
 
-	const { task, records } = await reading(run.store, { task: undefined, records: new Map() }, async (store) => ({
-		task: taskOf((await runTasks(store)).get(id) ?? []),
-		records: await callRecords(store, id),
-	}));
+	const { task, records, progress } = await reading(run.store, empty, async (store) => {
+		const read = new Progress();
+
+		for (const event of await progressEvents(store, id)) read.add(event);
+		const calls = withCalls || json || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
+
+		return { task: taskOf((await runTasks(store)).get(id) ?? []), records: calls, progress: read };
+	});
 
 	const checkedTask = checked(task, id, "be shown");
 	const { input, state } = checkedTask;
@@ -854,17 +906,19 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 
 	const status = runStatus(checkedTask);
 
+	if (outcome !== undefined) progress.stop(outcome.status !== "completed");
+	const now = Date.now();
+	const steps = progress.lines();
+
 	if (json) {
-		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, calls }));
+		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, steps, calls }));
 
 		return 0;
 	}
 
-	terminal.stdout(`run ${id} ${input.name} ${status} ${title}`);
+	const body = withCalls || !progress.stepped ? treeLines(calls, "", now) : steps;
 
-	for (const line of treeLines(calls, "", Date.now())) terminal.stdout(line);
-
-	for (const line of footer) terminal.stdout(line);
+	for (const line of [`run ${id} ${input.name} ${status} ${title}`, ...body, ...footer]) terminal.stdout(line);
 
 	return 0;
 }
@@ -1026,18 +1080,6 @@ function savedBy(latest: TaskRecord<JsonValue, JsonValue, JsonValue>) {
 	return { name, later: latest.kind === TASK.name && latest.version > TASK.version };
 }
 
-/** `12s`, `3m05s` or `1h02m`. */
-function duration(ms: number): string {
-	const seconds = Math.max(0, Math.floor(ms / 1000));
-	const pad = (n: number) => String(n).padStart(2, "0");
-
-	if (seconds < 60) return `${seconds}s`;
-
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m${pad(seconds % 60)}s`;
-
-	return `${Math.floor(seconds / 3600)}h${pad(Math.floor(seconds / 60) % 60)}m`;
-}
-
 /**
  * The phase lines at `indent` and the calls under them, the calls of a child run under its `run` line. A call that a
  * stopped or failed task cut has no duration. A working session prints `◉`.
@@ -1166,7 +1208,6 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 
 	terminal.following(true);
 	const shown = display(terminal, json);
-	const herdrWorktree = process.env.HERDR_ENV ? input.worktree : undefined;
 
 	const tell = (state: "idle" | "working" | "done" | "error", message: string) => {
 		if (!json) terminal.status?.(programStatus(state, message));
@@ -1187,12 +1228,6 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 	let seen = run.from;
 
 	const poll = async () => {
-		// The host creates the worktree after the run starts, so each read looks for it until the command tries once.
-		if (herdrWorktree !== undefined && !herdrTried.has(terminal) && existsSync(herdrWorktree.path)) {
-			herdrTried.add(terminal);
-			await openInHerdr(input, herdrWorktree, terminal);
-		}
-
 		if (store === undefined) return;
 		// A read that fails, such as one that waited too long for a lock, shows nothing; the next read catches up.
 		const events = await progressEvents(store, id).catch(() => []);

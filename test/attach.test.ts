@@ -78,6 +78,38 @@ describe("attach", () => {
 	});
 });
 
+describe("list --pick", () => {
+	it("prints the run ID that the pick takes, the runs that run first, each with its steps that run", async () => {
+		await ran('phase("a")\nawait agent("Script: done")');
+		await writeFile(join(root, "y.js"), 'phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")');
+		const running = await workflows(["y.js"], { cwd: root, script: { interruptAt: { kind: "script", nth: 2 } } });
+		const asked: string[][] = [];
+
+		const choose = async (question: string, items: readonly string[]) => {
+			asked.push([question, ...items]);
+
+			return 0;
+		};
+
+		const picked = await workflows(["list", "--pick"], { cwd: root, choose });
+		expect(asked).toEqual([["Pick a run:", "◉ y  y running: talk", "· x  x done"]]);
+		expect([picked.code, picked.stdout]).toEqual([0, [running.id]]);
+		const cancelled = await workflows(["list", "--pick"], { cwd: root, choose: async () => undefined });
+		expect([cancelled.code, cancelled.stdout, cancelled.stderr]).toEqual([130, [], []]);
+		expect((await workflows(["list", "--pick"], { cwd: root })).code).toBe(2);
+	});
+});
+
+describe("wait", () => {
+	it("shows every step of the run from its first line, also the steps before it joined", async () => {
+		const script = 'phase("talk")\nawait agent("Script: one")\nphase("more")\nawait agent("Script: two")';
+		await writeFile(join(root, "y.js"), script);
+		const running = await workflows(["y.js"], { cwd: root, script: { interruptAt: { kind: "script", nth: 2 } } });
+		const waited = await workflows(["wait", running.id ?? ""], { cwd: root });
+		expect([waited.code, waited.stderr]).toEqual([0, ["talk", "more"]]);
+	});
+});
+
 describe("attach in herdr", () => {
 	let repo: string;
 	let id: string;
