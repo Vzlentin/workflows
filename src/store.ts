@@ -143,6 +143,22 @@ export function inputString(input: JsonValue, field: "runId" | "name"): string |
 	return Value.Check(schema, saved) ? saved[field] : undefined;
 }
 
+const WORKTREE = Type.Object({
+	worktree: Type.Object({
+		repository: Type.String(),
+		start: Type.String(),
+		branch: Type.String(),
+		path: Type.String(),
+	}),
+});
+
+/** The worktree of the input of a workflow task, also of an earlier version, which some versions wrapped as `{ input }`. */
+export function inputWorktree(input: JsonValue) {
+	const saved = Value.Check(WRAPPED, input) ? input.input : input;
+
+	return Value.Check(WORKTREE, saved) ? saved.worktree : undefined;
+}
+
 /**
  * The tasks of the kind `workflows.run` that no task owns, so not the tasks of child runs, by run ID, oldest first,
  * also of another version.

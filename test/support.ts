@@ -140,6 +140,7 @@ exec git clone -q "${root}/github/$source" "$4"
 		"HARNESS_PROJECT",
 		// This would make `prune` call the real herdr.
 		"HERDR_ENV",
+		"HERDR_PANE_ID",
 		"PI_SESSION_ID",
 		"PI_PROVIDER",
 		"PI_MODEL",
@@ -732,6 +733,15 @@ export async function workflowResults(project = "main"): Promise<WorkflowResult[
 				: [],
 		),
 	);
+}
+
+/** The conversation ID of the first transcript in the store of `project` with a user message that matches `prompt`. */
+export async function conversationOf(prompt: RegExp, project = "main"): Promise<number | undefined> {
+	const found = (await entriesOf(project)).find((entry) =>
+		(entry.model ?? []).some((message) => message.role === "user" && prompt.test(textOf(message))),
+	);
+
+	return found?.conversationId;
 }
 
 /** A run outcome that a background run posted as a message: its text, its data, and the conversation it went to. */

@@ -1,8 +1,10 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { git, repository, runsOf, sandbox, workflows } from "./support.ts";
+import { TASK } from "../src/task.ts";
+import { git, repository, runsOf, sandbox, storeOf, workflows } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -52,6 +54,18 @@ async function mergedRun(): Promise<{ id: string; worktree: string }> {
 	return { id, worktree };
 }
 
+/** Marks the run task of the store as saved by `version`, with its input wrapped as `{ input }` when `wrap` is set. */
+function saveAs(version: number, wrap: boolean): void {
+	const database = new DatabaseSync(storeOf());
+	const input = wrap ? ", '$.input', json_object('input', record -> '$.input')" : "";
+	database
+		.prepare(
+			`UPDATE tasks SET record = json_set(record, '$.version', ?${input}) WHERE record ->> '$.kind' = 'workflows.run'`,
+		)
+		.run(version);
+	database.close();
+}
+
 const hasBranch = (name: string) => git(repo, "branch", "--list", name) !== "";
 
 describe("workflows prune", () => {
@@ -74,6 +88,30 @@ describe("workflows prune", () => {
 
 		const runs = await workflows(["list"], { cwd: repo });
 		expect(runs.stdout).toContain(`${id} w done w`);
+	});
+
+	it("removes the worktree and branch of a run that an earlier version saved", async () => {
+		const { id, worktree } = await mergedRun();
+		saveAs(TASK.version - 1, true);
+		const listed = await workflows(["list", "--json"], { cwd: repo });
+		expect(JSON.parse(listed.stdout[0] ?? "")).toEqual([
+			{ runId: id, workflow: "w", title: "w", status: "done", repository: await realpath(repo) },
+		]);
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		expect(existsSync(worktree)).toBe(false);
+		expect(hasBranch("feat/x")).toBe(false);
+	});
+
+	it("keeps a run that a later version saved", async () => {
+		const { worktree } = await mergedRun();
+		saveAs(TASK.version + 1, false);
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout]).toEqual([0, []]);
+		expect(existsSync(worktree)).toBe(true);
+		expect(hasBranch("feat/x")).toBe(true);
 	});
 
 	it("keeps a run whose branch name had a pull request merged at another commit", async () => {
@@ -168,4 +206,80 @@ esac
 		expect(existsSync(hook)).toBe(false);
 		expect(existsSync(join(repo, "x"))).toBe(false);
 	});
+});
+
+describe("herdr workspace", () => {
+	/** A fake herdr that logs its arguments and lists `worktrees`. */
+	const herdr = (worktrees: object[]) =>
+		fake(
+			"herdr",
+			`echo "$@" >> "${root}/herdr.log"
+case "$2" in
+list) echo '${JSON.stringify({ result: { worktrees } })}' ;;
+esac
+`,
+		);
+
+	const logged = async () => (await readFile(join(root, "herdr.log"), "utf8")).trim().split("\n");
+
+	it("opens the worktree of a followed run once, only when HERDR_ENV is set", async () => {
+		await herdr([]);
+		const plain = await workflows(["w"], { cwd: repo });
+		expect(plain.code).toBe(0);
+		expect(existsSync(join(root, "herdr.log"))).toBe(false);
+
+		process.env.HERDR_ENV = "1";
+		const run = await workflows(["w"], { cwd: repo });
+		const id = run.id ?? "";
+		expect([run.code, run.stdout]).toEqual([0, plain.stdout.map((line) => line.replace(plain.id ?? "", id))]);
+		const worktree = join(runsOf(root), id, "worktree");
+		expect(await logged()).toEqual([
+			`worktree list --cwd ${worktree}`,
+			`worktree open --cwd ${await realpath(repo)} --path ${worktree} --label w --no-focus`,
+		]);
+	});
+
+	it("opens nothing for a waited run whose worktree a workspace has open", async () => {
+		const run = await workflows(["slow"], { cwd: repo, script: { interruptAt: { kind: "script", nth: 1 } } });
+		expect(run.code).toBe(130);
+		const id = run.id ?? "";
+		const worktree = join(runsOf(root), id, "worktree");
+		process.env.HERDR_ENV = "1";
+		await herdr([{ path: await realpath(worktree), open_workspace_id: "w1" }]);
+
+		const waited = await workflows(["wait", id], { cwd: repo });
+		expect(waited.code).toBe(0);
+		expect(await logged()).toEqual([`worktree list --cwd ${worktree}`]);
+	});
+
+	it("warns when herdr fails, and keeps the outcome", async () => {
+		await fake("herdr", "printf 'line one\\nline two\\n' >&2\nexit 1\n");
+		process.env.HERDR_ENV = "1";
+
+		const run = await workflows(["w"], { cwd: repo });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, "done"]);
+		const warnings = run.stderr.filter((line) => line.includes("herdr:"));
+		expect(warnings).toEqual([expect.stringMatching(/^workflows: herdr: .*line one line two$/)]);
+	});
+
+	it("detaches at once on Ctrl+C while herdr runs, with no warning", async () => {
+		await fake("herdr", `echo "list started" >> "${root}/herdr.log"\nexec sleep 30\n`);
+		process.env.HERDR_ENV = "1";
+		const interrupt = new AbortController();
+		const started = Date.now();
+
+		const running = workflows(["slow"], { cwd: repo, interrupt, script: { hang: "Script: one" } });
+
+		while (!existsSync(join(root, "herdr.log")) && Date.now() - started < 10_000) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+
+		interrupt.abort();
+		const run = await running;
+
+		expect(await logged()).toEqual(["list started"]);
+		expect(run.code).toBe(130);
+		expect(Date.now() - started).toBeLessThan(15_000);
+		expect(run.stderr.filter((line) => line.includes("herdr:"))).toEqual([]);
+	}, 25_000);
 });

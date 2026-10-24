@@ -12,6 +12,7 @@ import { newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
 import {
 	COMMIT,
+	conversationOf,
 	detached,
 	FakeModel,
 	git,
@@ -44,7 +45,7 @@ const RUN_ID = Type.Object({ runId: Type.String() });
 /** The input of a task of another version: some versions wrapped it as `{ input }`. */
 type SavedInput = { readonly name?: string; readonly input?: { readonly name?: string } };
 
-type Stored = { readonly kind: string; readonly label: string };
+type Stored = { readonly kind: string; readonly label: string; readonly args: { readonly profile?: string } };
 
 /**
  * The ID of a new run of the `main` project whose store holds one pending task of `kind` at `version` with `input`, as
@@ -682,7 +683,7 @@ describe("workflows show", () => {
 		const shown = await workflows(["show", id], { cwd: root });
 		expect([shown.code, shown.stderr]).toEqual([0, []]);
 		const call = (line: string) => expect.stringMatching(new RegExp(`^  ✓ ${line}  \\d+s$`));
-		const asks = (profile: string, n: number) => [call(`session ${profile}`), ...Array(n).fill(call(`ask ${profile}`))];
+		const asks = (p: string, n: number) => [call(`session ${p} conversation \\d+`), ...Array(n).fill(call(`ask ${p}`))];
 		expect(shown.stdout).toEqual([
 			`run ${id} ship shipped Fix the README typo`,
 			"research",
@@ -722,18 +723,20 @@ describe("workflows show", () => {
 		});
 		expect(tree.calls).toHaveLength(shown.stdout.length - 7);
 
-		const planner = tree.calls.find((c: Stored) => c.kind === "session" && c.label === "planner");
+		const conversation = await conversationOf(/Plan this change\./);
+		const planner = tree.calls.find((c: Stored) => c.kind === "session" && c.args.profile === "planner");
 		const asked = tree.calls.find((c: Stored) => c.kind === "ask" && c.label === "planner");
 		const added = tree.calls.find((c: Stored) => c.kind === "sh" && c.label === "git add -A");
 
 		expect(planner).toEqual({
 			kind: "session",
-			label: "planner",
+			label: `planner conversation ${conversation}`,
 			phase: "plan",
 			args: { profile: "planner" },
 			mark: "✓",
 			startedAt: time,
 			endedAt: time,
+			conversation,
 			result: expect.any(Number),
 		});
 		expect(asked).toMatchObject({ result: "Problem: README.md says wrold." });
@@ -891,9 +894,11 @@ describe("workflows resume of ship runs", () => {
 		expect(listed.code).toBe(0);
 		expect(listed.stdout).toHaveLength(1);
 
+		const repository = git(repo, "rev-parse", "--show-toplevel");
+
 		const runs = [
-			{ runId: shipped.id, workflow: "ship", title: "Fix the README typo", status: "shipped" },
-			{ runId: stopped.id, workflow: "ship", title: "Second item", status: "running" },
+			{ runId: shipped.id, workflow: "ship", title: "Fix the README typo", status: "shipped", repository },
+			{ runId: stopped.id, workflow: "ship", title: "Second item", status: "running", repository },
 		].sort((a, b) => (b.runId ?? "").localeCompare(a.runId ?? ""));
 
 		expect(JSON.parse(listed.stdout[0] ?? "")).toEqual(runs);

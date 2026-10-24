@@ -310,9 +310,9 @@ workflows check review
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `stop`, `list`, `show`, `save`, `prune` and `check` are commands, so no script of these names can run. Bad
-usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command, such as `usage:
-workflows show <run-id> [--json]`, and exits 2.
+`resume`, `wait`, `stop`, `list`, `show`, `attach`, `save`, `prune` and `check` are commands, so no script of these
+names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command,
+such as `usage: workflows show <run-id> [--json]`, and exits 2.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
@@ -670,6 +670,21 @@ Ctrl+C detaches `wait` at once: it prints the `detached` line, or the `detached`
 on in the host. A second Ctrl+C exits and never stops the run. Bad usage prints `usage: workflows wait <run-id>
 [--json]` and exits 2.
 
+## Herdr workspaces
+
+When `HERDR_ENV` is set, a command that follows a root run with a worktree (a start, `resume` or `wait`) opens the
+worktree as a Herdr workspace. It reads progress about every 0.5 s, and on the first read that finds the worktree path
+on disk, it runs `herdr worktree list --cwd <worktree>`. When no workspace has the worktree open, it runs:
+
+```sh
+herdr worktree open --cwd <repository> --path <worktree> --label <title> --no-focus
+```
+
+Each command tries once. A herdr failure, or a missing `herdr`, prints the one line `workflows: herdr: <message>` on
+stderr, with each newline of the message as a space, and changes neither the outcome nor the exit code. Ctrl+C stops a
+`herdr` call that runs, and prints no warning for it. `--background` opens nothing; a later `wait` or `resume` of the run,
+while it has not ended, opens it. A run whose task ended, and the child runs, open nothing.
+
 ## JSON output
 
 ```sh
@@ -712,7 +727,9 @@ argument, such as the work item for ship and the goal for campaign, or else the 
 `done` when the result has no `status`. A run that waits for an answer to `input()` is `waiting`. A run whose task has not ended is `running`, also when it waits for its host
 to start. A run whose task ended without a result is `stopped`, `failed`, `faulted` or `orphaned`. A pending run that
 another version of workflows saved is `earlier-version` or `later-version`, with its workflow name as its title: it
-cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status" }`.
+cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status", "repository" }`.
+`repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
+without a worktree.
 Only the runs that have a run directory with a `project` file are listed.
 
 `list` reads the project store file read-only and does not start the host, so no run continues. It takes no lock that
@@ -729,9 +746,10 @@ workflows prune [--yes] [--install-hook] [--json]
 `workflows prune` prints one line `<run-id> <branch> <worktree>` for each run of the harness project of the current
 directory, newest run ID first, whose worktree is on a branch with a merged pull request. With `--json`, it prints one
 JSON array of `{ "runId", "branch", "worktree" }`. A run is a candidate only when it has a run directory with a
-`project` file, its last task has ended, a task of this version saved it, its worktree exists, and the worktree is on a
-branch. A run that has not ended, a run of another version, a detached worktree, and a worktree that is not a Git
-worktree of its own are never pruned. `prune` reads the project store file read-only, as `list` does, and does not
+`project` file, its last task has ended, a task of this version or of an earlier version saved it, its saved input has a
+worktree, the worktree exists, and the worktree is on a branch. For a run of an earlier version, `prune` reads only the
+`worktree` of its saved input. A run of a later version, a run without a worktree, a run that has not ended, a detached
+worktree, and a worktree that is not a Git worktree of its own are never pruned. `prune` reads the project store file read-only, as `list` does, and does not
 start the host.
 
 For each candidate, `prune` runs `gh pr list --head <branch> --state merged --json headRefOid` in the worktree. A branch
@@ -773,22 +791,25 @@ run <run-id> <workflow> <status> <title>
   `run` or `input`. An `agent` call is a `session` call and an `ask` call.
 - The mark is `✓` for a finished call and `✗` for a failed call. A call that started and did not end is `◉` while the
   run's task has not ended: it runs now, or the host stopped. Once the task ended, such a call is `✗`, without a
-  duration: the end of the task cut it.
-- The label is the profile of the session for `session` and `ask`, and the command on one line, cut at 80 characters,
-  for `sh` and `ok`. For `run`, it is the workflow name and the child run ID. For `input`, it is the question on one line, cut at 80
-  characters. The phase lines and calls of the child run
+  duration: the end of the task cut it. A session is `◉` while one of its asks is `◉`; once the task ended, it keeps
+  its `✓` or `✗`.
+- The label is `<profile> conversation <id>` for a `session` that opened, with the profile and the conversation ID of
+  the session, and the profile only for a `session` that did not open. For `ask`, it is the profile of its session. For
+  `sh` and `ok`, it is the command on one line, cut at 80 characters. For `run`, it is the workflow name and the child
+  run ID. For `input`, it is the question on one line, cut at 80 characters. The phase lines and calls of the child run
   are indented by 2 more under the `run` line.
-- The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, it is the time since the call
-  started.
+- The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, also for a working session, it is
+  the time since the call started.
 - A finished run ends with its report lines. A failed run ends with `failed <title>: <error>` and `continue with:
   workflows resume <run-id>`, a stopped run with `stopped <title>; continue with: workflows resume <run-id>`, and an
   orphaned run with `orphaned <title>: <reason>` and the `continue with` line. Any other run ends after its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
 object with the same tree: `{ "runId", "workflow", "title", "status", "report"?, "error"?, "calls" }`. Each call is
-`{ "kind", "label", "phase", "args", "mark", "startedAt", "endedAt"?, "result"?, "error"?, "calls"? }`, with ISO
-times. `phase` is `null` before the first phase line. The `result` of a `run` call is `{ "runId", "result" }`, with the
-result of its child run, and its `calls` are the calls of the child run.
+`{ "kind", "label", "phase", "args", "mark", "startedAt", "endedAt"?, "conversation"?, "result"?, "error"?, "calls"? }`,
+with ISO times. `conversation` is the conversation ID of a `session` that opened. The JSON `mark` of a working session
+is `✓`: only the text shows it as `◉`. `phase` is `null` before the first phase line. The `result` of a `run` call is
+`{ "runId", "result" }`, with the result of its child run, and its `calls` are the calls of the child run.
 
 `show` exits 0 for every run it can show. It reads the project store through pi-durable's storage functions, as `list`
 does, and does not start the host. It reads the file read-only as `list` does. An unknown run ID, or a run directory
@@ -797,6 +818,34 @@ without a `project` file, prints the
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
 as no run ID, prints `usage: workflows show <run-id> [--json]` and exits 2.
+
+## Attach
+
+```sh
+workflows attach <run-id>
+workflows attach <run-id> <step>
+```
+
+`workflows attach` opens one session of a run in Pi, as `harness attach --conversation <id>` does:
+
+- The sessions are the `session` calls of the run and of its child runs that opened a conversation, in the order they
+  started. With `<step>`, only the sessions under the phase line `<step>` count. The step is all the words after the
+  run ID, and must be equal to the phase line.
+- The command opens the session that works now, as `show` marks it `◉`. When no session works, it opens the last
+  session that started.
+- It connects to the host of the run's project, and starts the host when none runs. It sends `watch` for the
+  conversation of the session, so an unknown conversation fails before Pi starts.
+- Outside Herdr, or in Herdr with no place to open Pi, it runs `harness --project <project> attach --conversation <id>`
+  in this terminal, and exits with its code. A child that a signal ends exits 1.
+- With `HERDR_ENV`, it opens Pi in a new tab of the Herdr workspace that has the run's worktree open, or else in a new
+  pane to the right of the pane `HERDR_PANE_ID`, and exits 0. A run with no worktree, or whose worktree is gone, uses
+  only the pane.
+
+A run with no session prints `workflows: run <run-id> has no session`, and a step with no session prints
+`workflows: run <run-id> has no session in <step>`. An unknown run ID prints the `no run` error of `resume`, and a run
+saved by another version prints the error of `show` with `cannot be attached`. A Herdr failure prints
+`workflows: <error>`. These exit 1. Bad usage, such as no run ID, prints `usage: workflows attach <run-id> [<step>]` and
+exits 2.
 
 ## Save
 
@@ -1092,8 +1141,8 @@ The engine files in `src/`:
 - `cli.ts`: the `workflows` command entry point.
 - `harness.ts`: the check of the harness install and the path of the entry.
 - `setup.ts`: the setup of a global install, for the command and the postinstall.
-- `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show`, `save` and `prune`, a client of the harness host,
-  and the run directory.
+- `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show`, `attach`, `save` and `prune`, a client of the
+  harness host, and the run directory.
 - `entry.ts`: the entry that the harness host loads, with the script task.
 - `progress.ts`: the tree of steps of a run, and how the command draws it on stderr.
 - `store.ts`: the command's read-only reads of the project store: the tasks of the runs, their progress and calls.

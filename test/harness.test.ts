@@ -135,7 +135,7 @@ const workflows = (dir: string, env: Readonly<Record<string, string>>, ...args: 
 
 describe("the harness range", () => {
 	it("is the peer dependency of the package", () => {
-		expect(harnessRange()).toBe("^0.3.0");
+		expect(harnessRange()).toBe("^0.3.1");
 	});
 
 	it("takes the versions of a caret range as npm does", () => {
@@ -188,15 +188,15 @@ describe("the harness check", () => {
 	it("says how to install harness when none is found, or when its version is out of the range", async () => {
 		const dir = join(root, "package");
 		expect(harnessProblem(dir)).toBe(
-			"workflows needs @vzlentin/harness ^0.3.0: npm install -g @vzlentin/harness@^0.3.0",
+			"workflows needs @vzlentin/harness ^0.3.1: npm install -g @vzlentin/harness@^0.3.1",
 		);
 		expect(harnessProblem(dir, "/p")).toBe(
-			"workflows needs @vzlentin/harness ^0.3.0: npm install -g --prefix /p @vzlentin/harness@^0.3.0",
+			"workflows needs @vzlentin/harness ^0.3.1: npm install -g --prefix /p @vzlentin/harness@^0.3.1",
 		);
 
 		await fakeHarness("0.1.0");
 		expect(harnessProblem(dir)).toBe(
-			"workflows needs @vzlentin/harness ^0.3.0, found 0.1.0: npm install -g @vzlentin/harness@^0.3.0",
+			"workflows needs @vzlentin/harness ^0.3.1, found 0.1.0: npm install -g @vzlentin/harness@^0.3.1",
 		);
 
 		await fakeHarness("0.3.3");
@@ -204,7 +204,7 @@ describe("the harness check", () => {
 
 		await fakeHarness("0.4.0");
 		expect(harnessProblem(dir)).toBe(
-			"workflows needs @vzlentin/harness ^0.3.0, found 0.4.0, which is newer. Update workflows: npm install -g @vzlentin/workflows",
+			"workflows needs @vzlentin/harness ^0.3.1, found 0.4.0, which is newer. Update workflows: npm install -g @vzlentin/workflows",
 		);
 	});
 
@@ -217,14 +217,14 @@ describe("the harness check", () => {
 		expect(await node(cli, ["list"], {})).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: "workflows needs @vzlentin/harness ^0.3.0: npm install -g @vzlentin/harness@^0.3.0\n",
+			stderr: "workflows needs @vzlentin/harness ^0.3.1: npm install -g @vzlentin/harness@^0.3.1\n",
 		});
 
 		await fakeHarness("0.1.0");
 		expect(await node(cli, ["list"], {})).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: "workflows needs @vzlentin/harness ^0.3.0, found 0.1.0: npm install -g @vzlentin/harness@^0.3.0\n",
+			stderr: "workflows needs @vzlentin/harness ^0.3.1, found 0.1.0: npm install -g @vzlentin/harness@^0.3.1\n",
 		});
 		expect(await log("npm.log")).toEqual([]);
 	});
@@ -267,9 +267,9 @@ describe("the setup", () => {
 		expect(await workflows(dir, env, "list")).toEqual({
 			code: 0,
 			stdout: "",
-			stderr: `workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.0\n`,
+			stderr: `workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.1\n`,
 		});
-		expect(await log("npm.log")).toEqual([`install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.0`]);
+		expect(await log("npm.log")).toEqual([`install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.1`]);
 		const once = [`install ${join(LIB(), "@vzlentin", "harness", "pi")}`, `install ${join(dir, "pi")}`];
 		expect(await log("pi.log")).toEqual(once);
 		expect(await entries()).toEqual({ workflows: join(dir, "dist", "entry.js") });
@@ -306,18 +306,18 @@ describe("the setup", () => {
 
 	it("gives the prefix of the install in the fix command when it is not npm's global prefix", async () => {
 		const dir = await installWorkflows();
-		const installing = `workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.0\n`;
+		const installing = `workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.1\n`;
 
 		expect(await workflows(dir, {}, "list")).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: `${installing}workflows needs @vzlentin/harness ^0.3.0: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.0\n`,
+			stderr: `${installing}workflows needs @vzlentin/harness ^0.3.1: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.1\n`,
 		});
 
 		expect(await workflows(dir, { NPM_GLOBAL_PREFIX: PREFIX() }, "list")).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: `${installing}workflows needs @vzlentin/harness ^0.3.0: npm install -g @vzlentin/harness@^0.3.0\n`,
+			stderr: `${installing}workflows needs @vzlentin/harness ^0.3.1: npm install -g @vzlentin/harness@^0.3.1\n`,
 		});
 		expect(await log("pi.log")).toEqual([]);
 	});
@@ -332,14 +332,14 @@ describe("the setup", () => {
 		expect(await workflows(dir, { NPM_INSTALLS: HARNESS }, "list")).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: `workflows needs @vzlentin/harness ^0.3.0, found 0.4.0, which is newer. Update workflows: npm install -g --prefix ${PREFIX()} @vzlentin/workflows\n`,
+			stderr: `workflows needs @vzlentin/harness ^0.3.1, found 0.4.0, which is newer. Update workflows: npm install -g --prefix ${PREFIX()} @vzlentin/workflows\n`,
 		});
 
 		await writeFile(manifest, JSON.stringify({ ...json, version: "0.4.0-rc.1" }));
 		expect(await workflows(dir, { NPM_INSTALLS: HARNESS }, "list")).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: `workflows needs @vzlentin/harness ^0.3.0, found 0.4.0-rc.1, which is newer. Update workflows: npm install -g --prefix ${PREFIX()} @vzlentin/workflows\n`,
+			stderr: `workflows needs @vzlentin/harness ^0.3.1, found 0.4.0-rc.1, which is newer. Update workflows: npm install -g --prefix ${PREFIX()} @vzlentin/workflows\n`,
 		});
 		expect(await log("npm.log")).toEqual(["prefix -g", "prefix -g"]);
 	});
@@ -351,8 +351,8 @@ describe("the setup", () => {
 			code: 0,
 			stdout: "",
 			stderr:
-				`workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.0\n` +
-				`workflows needs @vzlentin/harness ^0.3.0: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.0\n`,
+				`workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.1\n` +
+				`workflows needs @vzlentin/harness ^0.3.1: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.1\n`,
 		});
 		await expect(entries()).rejects.toThrow("ENOENT");
 	});
