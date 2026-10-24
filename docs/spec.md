@@ -670,6 +670,21 @@ Ctrl+C detaches `wait` at once: it prints the `detached` line, or the `detached`
 on in the host. A second Ctrl+C exits and never stops the run. Bad usage prints `usage: workflows wait <run-id>
 [--json]` and exits 2.
 
+## Herdr workspaces
+
+When `HERDR_ENV` is set, a command that follows a root run with a worktree (a start, `resume` or `wait`) opens the
+worktree as a Herdr workspace. It reads progress about every 0.5 s, and on the first read that finds the worktree path
+on disk, it runs `herdr worktree list --cwd <worktree>`. When no workspace has the worktree open, it runs:
+
+```sh
+herdr worktree open --cwd <repository> --path <worktree> --label <title> --no-focus
+```
+
+Each command tries once. A herdr failure, or a missing `herdr`, prints the one line `workflows: herdr: <message>` on
+stderr, with each newline of the message as a space, and changes neither the outcome nor the exit code. Ctrl+C stops a
+`herdr` call that runs, and prints no warning for it. `--background` opens nothing; a later `wait` or `resume` of the run,
+while it has not ended, opens it. A run whose task ended, and the child runs, open nothing.
+
 ## JSON output
 
 ```sh

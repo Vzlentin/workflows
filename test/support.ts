@@ -140,6 +140,7 @@ exec git clone -q "${root}/github/$source" "$4"
 		"HARNESS_PROJECT",
 		// This would make `prune` call the real herdr.
 		"HERDR_ENV",
+		"HERDR_PANE_ID",
 		"PI_SESSION_ID",
 		"PI_PROVIDER",
 		"PI_MODEL",

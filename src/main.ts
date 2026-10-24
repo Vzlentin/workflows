@@ -704,31 +704,74 @@ async function removeWorktree({ branch, worktree }: Prunable): Promise<void> {
 	}
 }
 
+/** The ID of the herdr workspace that has `worktree` open, if any. It throws when herdr fails or `signal` aborts. */
+async function herdrWorkspace(worktree: Worktree, signal?: AbortSignal): Promise<string | undefined> {
+	const argv = ["worktree", "list", "--cwd", worktree.path];
+	const listed = await runCommand("herdr", argv, worktree.path, signal);
+
+	if (listed.code !== 0) throw new Error(failure(["herdr", ...argv], listed));
+	const parsed: unknown = JSON.parse(listed.stdout);
+
+	if (!Value.Check(HERDR_WORKTREES, parsed))
+		throw new Error(`herdr worktree list printed no worktrees: ${listed.stdout}`);
+	const path = await realpath(worktree.path);
+
+	for (const entry of parsed.result.worktrees) {
+		const workspace = entry.open_workspace_id;
+
+		if (workspace && (await realpath(entry.path).catch(() => undefined)) === path) return workspace;
+	}
+
+	return undefined;
+}
+
 /** Whether herdr removed `worktree` with the workspace that has it open. Any herdr failure is false. */
 async function removedByHerdr(worktree: Worktree): Promise<boolean> {
 	if (!process.env.HERDR_ENV) return false;
 
 	try {
-		const listed = await runCommand("herdr", ["worktree", "list", "--cwd", worktree.path], worktree.path);
+		const workspace = await herdrWorkspace(worktree);
 
-		if (listed.code !== 0) return false;
-		const parsed: unknown = JSON.parse(listed.stdout);
+		if (workspace === undefined) return false;
+		const removed = await runCommand("herdr", ["worktree", "remove", "--workspace", workspace], worktree.repository);
 
-		if (!Value.Check(HERDR_WORKTREES, parsed)) return false;
-		const path = await realpath(worktree.path);
-
-		for (const entry of parsed.result.worktrees) {
-			const workspace = entry.open_workspace_id;
-
-			if (!workspace || (await realpath(entry.path).catch(() => undefined)) !== path) continue;
-			const removed = await runCommand("herdr", ["worktree", "remove", "--workspace", workspace], worktree.repository);
-
-			return removed.code === 0;
-		}
-
-		return false;
+		return removed.code === 0;
 	} catch {
 		return false;
+	}
+}
+
+/** The terminals of the commands that tried to open their run's worktree in herdr: each command tries once. */
+const herdrTried = new WeakSet<Terminal>();
+
+/**
+ * Opens `worktree` of the run of `input` as a herdr workspace, unless a workspace has it open. A herdr failure is a
+ * warning line on stderr. Ctrl+C stops a herdr call and prints no warning.
+ */
+async function openInHerdr(input: script.ScriptInput, worktree: Worktree, terminal: Terminal): Promise<void> {
+	try {
+		if ((await herdrWorkspace(worktree, terminal.interrupt)) !== undefined) return;
+
+		const argv = [
+			"worktree",
+			"open",
+			"--cwd",
+			worktree.repository,
+			"--path",
+			worktree.path,
+			"--label",
+			script.title(input),
+			"--no-focus",
+		];
+
+		const opened = await runCommand("herdr", argv, worktree.repository, terminal.interrupt);
+
+		if (opened.code !== 0) throw new Error(failure(["herdr", ...argv], opened));
+	} catch (cause) {
+		if (terminal.interrupt.aborted) return;
+		const message = cause instanceof Error ? cause.message : String(cause);
+
+		terminal.stderr(`workflows: herdr: ${message.replace(/\s*\n\s*/g, " ")}`);
 	}
 }
 
@@ -1026,6 +1069,7 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 
 	terminal.following(true);
 	const shown = display(terminal, json);
+	const herdrWorktree = process.env.HERDR_ENV ? input.worktree : undefined;
 
 	const tell = (state: "idle" | "working" | "done" | "error", message: string) => {
 		if (!json) terminal.status?.(programStatus(state, message));
@@ -1046,6 +1090,12 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 	let seen = run.from;
 
 	const poll = async () => {
+		// The host creates the worktree after the run starts, so each read looks for it until the command tries once.
+		if (herdrWorktree !== undefined && !herdrTried.has(terminal) && existsSync(herdrWorktree.path)) {
+			herdrTried.add(terminal);
+			await openInHerdr(input, herdrWorktree, terminal);
+		}
+
 		if (store === undefined) return;
 		// A read that fails, such as one that waited too long for a lock, shows nothing; the next read catches up.
 		const events = await progressEvents(store, id).catch(() => []);
