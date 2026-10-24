@@ -2,9 +2,9 @@
  * The `workflows` command line, a client of the harness host of a project. `workflows <workflow> ...` starts a run of a
  * workflow script in the host and follows it, `workflows resume <run-id>` continues or follows one, `workflows wait
  * <run-id>` follows one to its outcome, `workflows stop <run-id>` stops one, `workflows list` prints the runs of the
- * project, `workflows show <run-id>` prints the calls of one run, `workflows attach <run-id>` opens a session of one run
- * in Pi, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow; `workflows prune`
- * removes the worktrees of the ended runs whose branch GitHub merged. The project store holds the runs; a run directory
+ * project, `workflows show <run-id>` prints the steps or the calls of one run, `workflows attach <run-id>` opens a
+ * session of one run in Pi, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow;
+ * `workflows prune` removes the worktrees of the ended runs whose branch GitHub merged. The project store holds the runs; a run directory
  * holds the run's `project` file and whatever the workflow writes there.
  */
 import { spawn } from "node:child_process";
@@ -28,7 +28,7 @@ import { Value } from "typebox/value";
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
 import { ENTRY, harnessDir } from "./harness.ts";
 import * as script from "./meta.ts";
-import { display, type ProgressEvent, programStatus } from "./progress.ts";
+import { display, duration, Progress, type ProgressEvent, programStatus } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
 import type { SavedCall } from "./script.ts";
 import { loadScripts, projectFolder } from "./script.ts";
@@ -83,7 +83,7 @@ const RESUME = "workflows resume <run-id> [--answer <text>] [--background] [--js
 const WAIT = "workflows wait <run-id> [--json]";
 const STOP = "workflows stop <run-id> [--json]";
 const LIST = "workflows list [--json]";
-const SHOW = "workflows show <run-id> [--json]";
+const SHOW = "workflows show <run-id> [--calls] [--json]";
 const ATTACH = "workflows attach <run-id> [<step>]";
 const SAVE = "workflows save <run-id> <name> [--force]";
 const PRUNE = "workflows prune [--yes] [--install-hook] [--json]";
@@ -822,16 +822,22 @@ function endOf(outcome: TaskOutcome<JsonValue>, title: string, id: string) {
 }
 
 /**
- * Prints the phases and calls of a run as a tree, then its report lines, or how it ended. It reads the task records and
- * the call records from the project store only.
+ * Prints the steps of a run as a tree, or with `--calls` its phases and calls, then its report lines, or how it ended.
+ * A run without steps prints its calls. It reads the task records, the call records and the progress from the project
+ * store only.
  */
 async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
-	const run = await savedRun(oneRunId(args, SHOW), SHOW);
+	const withCalls = args.includes("--calls");
+	const rest = args.filter((arg) => arg !== "--calls");
+	const runId = oneRunId(rest, SHOW);
+	const run = await savedRun(runId, SHOW);
 	const { id } = run;
+	const empty = { task: undefined, records: new Map(), events: [] };
 
-	const { task, records } = await reading(run.store, { task: undefined, records: new Map() }, async (store) => ({
+	const { task, records, events } = await reading(run.store, empty, async (store) => ({
 		task: taskOf((await runTasks(store)).get(id) ?? []),
 		records: await callRecords(store, id),
+		events: await progressEvents(store, id),
 	}));
 
 	const checkedTask = checked(task, id, "be shown");
@@ -853,16 +859,23 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	}
 
 	const status = runStatus(checkedTask);
+	const progress = new Progress();
+
+	for (const event of events) progress.add(event);
+
+	if (outcome !== undefined) progress.stop(outcome.status !== "completed");
+	const now = Date.now();
+	const steps = progress.lines(now);
 
 	if (json) {
-		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, calls }));
+		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, steps, calls }));
 
 		return 0;
 	}
 
 	terminal.stdout(`run ${id} ${input.name} ${status} ${title}`);
 
-	for (const line of treeLines(calls, "", Date.now())) terminal.stdout(line);
+	for (const line of withCalls || steps.length === 0 ? treeLines(calls, "", now) : steps) terminal.stdout(line);
 
 	for (const line of footer) terminal.stdout(line);
 
@@ -1024,18 +1037,6 @@ function savedBy(latest: TaskRecord<JsonValue, JsonValue, JsonValue>) {
 	const name = inputString(latest.input, "name") ?? latest.kind.slice(PREFIX.length);
 
 	return { name, later: latest.kind === TASK.name && latest.version > TASK.version };
-}
-
-/** `12s`, `3m05s` or `1h02m`. */
-function duration(ms: number): string {
-	const seconds = Math.max(0, Math.floor(ms / 1000));
-	const pad = (n: number) => String(n).padStart(2, "0");
-
-	if (seconds < 60) return `${seconds}s`;
-
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m${pad(seconds % 60)}s`;
-
-	return `${Math.floor(seconds / 3600)}h${pad(Math.floor(seconds / 60) % 60)}m`;
 }
 
 /**

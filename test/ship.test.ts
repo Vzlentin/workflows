@@ -136,10 +136,15 @@ describe("workflows ship", () => {
 			"✓ research",
 			"✓ plan",
 			"✓ round 1: implement",
+			"  +1 -1 in 1 file",
 			"✓ round 1: review",
+			"  FIX",
 			"✓ round 2: implement",
+			"  +1 -0 in 1 file",
 			"✓ round 2: review",
+			"  SHIP",
 			"✓ judge",
+			expect.stringMatching(/^ {2}judge 0\.83: [0-9a-f]+ fix: correct the README typo$/),
 		]);
 		expect(JSON.parse(run.stderr[0] ?? "")).toEqual({ progress: ["◉ research"] });
 		expect(run.code).toBe(0);
@@ -490,7 +495,10 @@ export default function ({ events }) {
 		expect(run.stdout[1]).toMatch(SHIPPED);
 		expect(run.stdout[1]).toContain("judge failed,");
 		expect(run.stderr.filter((line) => !progress.test(line))).toEqual([
+			"  +1 -1 in 1 file",
+			"  SHIP",
 			"  judge failed on Fix the README typo: the answer did not call respond",
+			expect.stringMatching(/^ {2}judge failed: [0-9a-f]+ Fix the README typo$/),
 		]);
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-parse", "HEAD^")).toBe(develop);
@@ -672,7 +680,7 @@ export default function ({ events }) {
 });
 
 describe("workflows show", () => {
-	it("prints the phases and calls of a finished ship run, and the same tree as JSON", async () => {
+	it("prints the steps of a finished ship run, its calls with --calls, and the same trees as JSON", async () => {
 		const run = await workflows(["ship", "--repo", ".", "Fix the README typo"], {
 			cwd: repo,
 			script: { edits: [FIXED] },
@@ -680,7 +688,23 @@ describe("workflows show", () => {
 
 		expect(run.code).toBe(0);
 		const id = run.id ?? "";
-		const shown = await workflows(["show", id], { cwd: root });
+		const steps = await workflows(["show", id], { cwd: root });
+		expect([steps.code, steps.stderr]).toEqual([0, []]);
+		const step = (line: string) => expect.stringMatching(new RegExp(`^✓ ${line}  \\d+s$`));
+		expect(steps.stdout).toEqual([
+			`run ${id} ship shipped Fix the README typo`,
+			step("research"),
+			step("plan"),
+			step("round 1: implement"),
+			"  +1 -1 in 1 file",
+			step("round 1: review"),
+			"  SHIP",
+			step("judge"),
+			expect.stringMatching(/^ {2}judge 0\.83: [0-9a-f]+ fix: correct the README typo$/),
+			expect.stringMatching(SHIPPED),
+		]);
+
+		const shown = await workflows(["show", id, "--calls"], { cwd: root });
 		expect([shown.code, shown.stderr]).toEqual([0, []]);
 		const call = (line: string) => expect.stringMatching(new RegExp(`^  ✓ ${line}  \\d+s$`));
 		const asks = (p: string, n: number) => [call(`session ${p} conversation \\d+`), ...Array(n).fill(call(`ask ${p}`))];
@@ -698,6 +722,7 @@ describe("workflows show", () => {
 			call("sh git commit --allow-empty -m round 1"),
 			// The command is cut at 80 characters.
 			call("sh git diff --binary --output=.{53}"),
+			call(`sh git diff --shortstat ${start} HEAD`),
 			"round 1: review",
 			...asks("reviewer", 2),
 			call("sh git rev-parse HEAD"),
@@ -720,6 +745,7 @@ describe("workflows show", () => {
 			title: "Fix the README typo",
 			status: "shipped",
 			report: [shown.stdout.at(-1)],
+			steps: steps.stdout.slice(1, -1),
 		});
 		expect(tree.calls).toHaveLength(shown.stdout.length - 7);
 
@@ -863,7 +889,14 @@ describe("workflows resume of ship runs", () => {
 
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout).toEqual([`run ${first.id}`, expect.stringMatching(SHIPPED)]);
-		expect(resumed.stderr).toEqual(["round 1: implement", "round 1: review", "judge"]);
+		expect(resumed.stderr).toEqual([
+			"round 1: implement",
+			"  +1 -1 in 1 file",
+			"round 1: review",
+			"  SHIP",
+			"judge",
+			expect.stringMatching(/^ {2}judge 0\.83: /),
+		]);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "verdict", "judge", "commit"]);
 		expect(resumed.model.find("implement")?.prompt).toContain("## plan\nHandoff 1: ");
 		expect(resumed.model.find("implement")?.prompt.startsWith(`${memory(1)}Implement this plan`)).toBe(true);
@@ -923,7 +956,15 @@ describe("workflows resume of ship runs", () => {
 
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
 		expect(resumed.code).toBe(0);
-		expect(resumed.stderr).toEqual(["plan", "round 1: implement", "round 1: review", "judge"]);
+		expect(resumed.stderr).toEqual([
+			"plan",
+			"round 1: implement",
+			"  +1 -1 in 1 file",
+			"round 1: review",
+			"  SHIP",
+			"judge",
+			expect.stringMatching(/^ {2}judge 0\.83: /),
+		]);
 	});
 
 	it("runs the rename step again on resume after the rename was done", async () => {

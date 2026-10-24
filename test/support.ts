@@ -550,7 +550,15 @@ export type Outcome = {
 
 const PROGRESS = Type.Object({ progress: Type.Array(Type.String()) });
 
-/** The lines of the last `{"progress":[...]}` stderr line of a `--json` run, and throws for any other stderr line. */
+/** `line` without the duration at the end of a step line, which depends on how fast the test runs. */
+export function untimed(line: string): string {
+	return line.replace(/ {2}\d+(?:s|m\d\ds|h\d\dm)$/, "");
+}
+
+/**
+ * The lines of the last `{"progress":[...]}` stderr line of a `--json` run, without durations, and throws for any
+ * other stderr line.
+ */
 export function progressOf(stderr: readonly string[]): string[] {
 	const snapshots = stderr.map((line) => {
 		const parsed = JSON.parse(line);
@@ -560,7 +568,7 @@ export function progressOf(stderr: readonly string[]): string[] {
 		return parsed.progress;
 	});
 
-	return snapshots.at(-1) ?? [];
+	return (snapshots.at(-1) ?? []).map(untimed);
 }
 
 /** A connection to the host of `project` that runs in this process. */

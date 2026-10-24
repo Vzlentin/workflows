@@ -46,7 +46,14 @@ printf %s "$n"`
 
 const answer = "\n\nAnswer with respond: the work items, each one as the full text of one work item, in order."
 
+const count = (n) => `${n} item${n === 1 ? "" : "s"}`
+
+phase("split")
+
 let queue = (await agent(`${await prompts.split({ goal })}${answer}`, { as: "planner", schema: items(1) })).items
+
+log(count(queue.length))
+
 const done = []
 
 // Known ceiling: requeue can add items after each shipped item, so the queue has no length limit.
@@ -59,6 +66,8 @@ for (let n = 1; queue.length > 0; n++) {
 	const { report: _report, ...result } = await run("ship", { item, rounds, start, patches })
 
 	if (result.status !== "shipped" || result.score === 0) {
+		const status = result.status === "shipped" ? "shipped with judge score 0" : result.status
+		log(`${status}; the worktree goes back to ${start.slice(0, 7)}`)
 		// `start` is the last shipped commit: every earlier item shipped or was reset to its own start.
 		await sh(["git", "reset", "--hard", start])
 		const shipped = JSON.stringify(done.map(({ item, result }) => ({ item, commit: result.head })))
@@ -68,7 +77,7 @@ for (let n = 1; queue.length > 0; n++) {
 				goal,
 				shipped,
 				item,
-				status: result.status === "shipped" ? "shipped with judge score 0" : result.status,
+				status,
 				reply: result.reply ?? "",
 				handoff: result.handoff ?? "",
 				findings: (result.findings ?? []).join("\n"),
@@ -103,6 +112,7 @@ for (let n = 1; queue.length > 0; n++) {
 
 	const requeue = await prompts.requeue({ goal, done: item, queue: JSON.stringify(rest) })
 	queue = (await agent(`${requeue}${answer}`, { as: "planner", schema: items(0) })).items
+	log(queue.length === 0 ? "queue: empty" : `queue: ${count(queue.length)}`)
 }
 
 const head = done.at(-1).result.head
@@ -120,8 +130,15 @@ const renamed =
 	branchName === "" || branchName === base ? base : await sh(["sh", "-c", RENAME, "rename", base, branchName])
 
 const [branch, rejected] = renamed.split("\n")
-const report = [`done ${name} in ${done.length} items, ${head} on ${branch}`]
+const report = [`done ${name} in ${count(done.length)}, ${head} on ${branch}`]
 
 if (rejected !== undefined) report.push(`branch ${branchName} ${rejected}; kept ${base}`)
+
+for (const { result } of done) {
+	const judged = result.score === undefined ? "failed" : result.score.toFixed(2)
+	// A result that an earlier version saved has no subject.
+	const commit = result.subject === undefined ? result.head : `${result.head} ${result.subject}`
+	report.push(`  ${commit}, judge ${judged}`)
+}
 
 return { status: "done", head, branch, items: done, report }

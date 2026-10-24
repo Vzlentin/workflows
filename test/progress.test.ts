@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { programStatus, terminalRedraw } from "../src/progress.ts";
+import { Progress, programStatus, terminalRedraw } from "../src/progress.ts";
 
 /** The color codes that `terminalRedraw` writes around a mark. */
 const COLORS = ["\x1b[32m", "\x1b[36m", "\x1b[31m", "\x1b[0m"];
@@ -37,6 +37,12 @@ describe("the progress on a terminal", () => {
 		]);
 	});
 
+	it("keeps the duration at the end of a line that it cuts", () => {
+		const terminal = stream();
+		terminalRedraw(terminal).redraw([`✓ ${"x".repeat(50)}  3m05s`]);
+		expect(terminal.written).toEqual([`✓ ${"x".repeat(29)}…  3m05s\n`]);
+	});
+
 	it("cuts a line to the width of the terminal", () => {
 		const terminal = stream();
 		terminalRedraw(terminal).redraw([`◉ ${"x".repeat(50)}`]);
@@ -59,6 +65,37 @@ describe("the progress on a terminal", () => {
 			"\x1b[1A\r\x1b[J✓ three\n◉ four\n◉ five\n",
 			"✗ one\n✓ two\n✓ three\n◉ four\n✗ five\n",
 		]);
+	});
+});
+
+describe("the steps of a run", () => {
+	it("give each step that ended its duration, and a step that runs the time since it started with now", () => {
+		const progress = new Progress();
+		progress.add({ kind: "phase", run: "r", parent: null, text: "plan", at: 0 });
+		progress.add({ kind: "log", run: "r", parent: null, text: "a note", at: 1000 });
+		progress.add({ kind: "phase", run: "r", parent: null, text: "judge", at: 185_000 });
+		expect(progress.lines()).toEqual(["✓ plan  3m05s", "  a note", "◉ judge"]);
+		expect(progress.lines(197_000)).toEqual(["✓ plan  3m05s", "  a note", "◉ judge  12s"]);
+		progress.add({ kind: "end", run: "r", failed: false, at: 3_905_000 });
+		expect(progress.lines()).toEqual(["✓ plan  3m05s", "  a note", "✓ judge  1h02m"]);
+	});
+
+	it("go on with the step that a resume starts again in", () => {
+		const progress = new Progress();
+		progress.add({ kind: "phase", run: "r", parent: null, text: "plan", at: 0 });
+		progress.add({ kind: "end", run: "r", failed: true, at: 5000 });
+		expect(progress.lines()).toEqual(["✗ plan  5s"]);
+		progress.add({ kind: "start", run: "r" });
+		expect(progress.add({ kind: "phase", run: "r", parent: null, text: "plan", at: 9000 })).toBeUndefined();
+		progress.add({ kind: "phase", run: "r", parent: null, text: "judge", at: 12_000 });
+		expect(progress.lines()).toEqual(["✓ plan  12s", "◉ judge"]);
+	});
+
+	it("give no duration to steps that an earlier version saved without times", () => {
+		const progress = new Progress();
+		progress.add({ kind: "phase", run: "r", parent: null, text: "plan" });
+		progress.add({ kind: "end", run: "r", failed: false });
+		expect(progress.lines(1000)).toEqual(["✓ plan"]);
 	});
 });
 

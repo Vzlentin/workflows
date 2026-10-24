@@ -288,7 +288,7 @@ async function runPhase(
 		await endSessions(host, runtime, input, statusOf(result) !== "waiting", context);
 		await notify(runtime, input, finishedOutcome(input, result), context);
 		await runtime.commit(async (tx) => {
-			await addProgress(tx, root, [{ kind: "end", run: runId, failed: false }]);
+			await addProgress(tx, root, [{ kind: "end", run: runId, failed: false, at: Date.now() }]);
 
 			return { status: "terminal", outcome: { status: "completed", result } };
 		}, context);
@@ -300,7 +300,7 @@ async function runPhase(
 		await endSessions(host, runtime, input, false, context);
 		await notify(runtime, input, { runId, status: "failed", error: message }, context);
 		await runtime.commit(async (tx) => {
-			await addProgress(tx, root, [{ kind: "end", run: runId, failed: true }]);
+			await addProgress(tx, root, [{ kind: "end", run: runId, failed: true, at: Date.now() }]);
 
 			return { status: "terminal", outcome: { status: "failed", error: { message } } };
 		}, context);
@@ -329,7 +329,7 @@ export function scriptTask(host: Host): ScriptTask {
 			await endSessions(host, runtime, task.input, false, context);
 			await notify(runtime, task.input, { runId, status: "stopped" }, context);
 			await runtime.commit(async (tx) => {
-				await addProgress(tx, root, [{ kind: "end", run: runId, failed: true }]);
+				await addProgress(tx, root, [{ kind: "end", run: runId, failed: true, at: Date.now() }]);
 
 				return { status: "terminal", outcome: { status: "aborted" } };
 			}, context);
