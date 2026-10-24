@@ -19,7 +19,8 @@ the top of the script declares its arguments. See [Workflow scripts](#workflow-s
 and work item.
 
 ```text
-plan session:       plan  ->  challenge  ->  handoff
+research session:   research (documents the code as it is)
+plan session:       plan (with the research)  ->  challenge  ->  handoff
 implement session:  implement the handoff                      <- round n (at most --rounds)
 review session:     review  ->  challenge (SHIP or FIX)  ->  handoff (on FIX, back to implement)
 judge session:      fixed rubric, after SHIP
@@ -57,9 +58,15 @@ uses it and its local `--base` commit. Otherwise `gh repo clone <value>` clones 
 directory, and the run starts from the cloned `origin/<base>`. A bare name such as `calibre` clones from the
 authenticated user, and `owner/calibre` names the owner.
 
-The command prints `run <run-id>`, then one progress step on stderr as each session starts: `plan`,
+The command prints `run <run-id>`, then one progress step on stderr as each session starts: `research`, `plan`,
 `round <n>: implement`, `round <n>: review` and `judge`. See [Progress](#progress) for how the steps show. A resume
 prints the phase line of the first call that runs, such as a turn or a Git step, and the lines after it.
+
+The research session gets the work item and writes a research document: what the code that the work item touches
+does today, with `path:line` references, the patterns and tests of that area, and open questions. It documents and
+does not suggest changes, and can spawn subagents to search in parallel. Its reply is saved as `research.md` in the
+run directory, and the plan prompt gets it as its `research` section, after the work item. The research prompt has no
+memory and gives no notes.
 
 The work item ships onto the branch `ship/<run-id>`, in a worktree in the run directory. The selected repository's
 checkout, index and local edits stay unchanged. Ship does not push and does not open a pull request.
@@ -130,7 +137,7 @@ and `--prompts` work as for `ship`. `--rounds` applies to each work item. Errors
 When the judge of an item fails, the command prints `judge failed on <item subject>: <error>` on stderr, as `ship` does.
 
 A planner session splits the goal into work items with the `split` prompt, and answers through `respond`. Then each
-work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the plan, the rounds, the review, the
+work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the research, the plan, the rounds, the review, the
 judge and the squash of `workflows/ship.js`, from the commit that the item before it made. So each shipped item is one
 commit, with the commit message of `ship`. No `ship/<run-id>` branch is made, and nothing is merged or pushed. Each
 item is a ship child run, with its own run ID and run directory, in the store of the campaign run: see `run` in
@@ -146,11 +153,13 @@ change it. The steps of the item's ship run are under the item step, indented by
 
 ```text
 ✓ item 1/2: Fix the README typo
+  ✓ research
   ✓ plan
   ✓ round 1: implement
   ✓ round 1: review
   ✓ judge
 ◉ item 2/2: Add a thanks line
+  ✓ research
   ◉ plan
 ```
 
@@ -191,8 +200,8 @@ start: "4dfb5c8"
 The README says wrold.
 ```
 
-`--improve` lists the prompts to optimize, separated by commas: any of `plan`, `challenge`, `handoff`, `implement` and
-`review`. The default is `review,challenge,handoff`. `judge` gives the score, so it is never a candidate. `--trials`
+`--improve` lists the prompts to optimize, separated by commas: any of `research`, `plan`, `challenge`, `handoff`,
+`implement` and `review`. The default is `review,challenge,handoff`. `judge` gives the score, so it is never a candidate. `--trials`
 is the number of candidates that the run evaluates, the baseline included, and defaults to 3. A workflow other than
 `ship`, an unknown prompt name, fewer than 2 items, or an item without `repo` or `start` fails the run after
 `run <run-id>`, with `failed optimize: <error>`, and exits 1, because the script checks them when it runs.
@@ -225,8 +234,8 @@ return their saved results, and the failed ship run continues. `workflows list` 
 
 ## Sessions
 
-The plan, implement, review and judge sessions use the agent profiles `agents/planner.md`, `agents/implementer.md`,
-`agents/reviewer.md` and `agents/judge.md`. Each uses `anthropic/claude-opus-5-5` with thinking `medium`, and every
+The research, plan, implement, review and judge sessions use the agent profiles `agents/researcher.md`,
+`agents/planner.md`, `agents/implementer.md`, `agents/reviewer.md` and `agents/judge.md`. Each uses `anthropic/claude-opus-5-5` with thinking `medium`, and every
 session gets the same tools. Like every workflow script, `ship` and `campaign` read the scripts, prompts and profiles
 of the package and of the project folder `.workflows/` of the current directory, also when `--repo` selects another
 repository. See [Workflow scripts](#workflow-scripts). A project `agents/planner.md`, for example, gives the planner
@@ -860,11 +869,12 @@ A ship run also has:
 
 - `worktree/`: the worktree on `ship/<run-id>`
 - `repository/`: the clone, for a GitHub repository only
+- `research.md`: the research document that the plan got
 - `round-<n>.patch`, `round-<n>-fix.patch`: the patches each review got
 
 A campaign run has `worktree/` on `campaign/<run-id>` and `repository/` in the same way, plus:
 
-- `item-<n>/`: the `round-<n>.patch` and `round-<n>-fix.patch` files of item `n`
+- `item-<n>/`: the `research.md`, `round-<n>.patch` and `round-<n>-fix.patch` files of item `n`
 
 An optimize run has:
 
@@ -876,7 +886,7 @@ task of the caller's run. A child run without a worktree can have an empty run d
 
 ## Prompts
 
-`prompts/` holds the Pi prompt templates `plan`, `challenge`, `handoff`, `implement`, `review` and `judge`,
+`prompts/` holds the Pi prompt templates `research`, `plan`, `challenge`, `handoff`, `implement`, `review` and `judge`,
 `split` and `requeue` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the frontmatter and the last line `$@`: the run
 removes them, then adds its inputs as `## <name>` sections. `workflows/ship.js` adds the evidence rule and the SHIP or
 FIX answer rule of the review challenge itself, so a template edit cannot remove them. It also adds the `respond`

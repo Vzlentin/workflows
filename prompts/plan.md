@@ -6,7 +6,7 @@ Plan this change.
 
 ## Investigate
 
-Read repository instructions and trace the real execution path before planning. For bugs, prefer a real user-path reproduction, then an existing integration signal, then an owning-layer test. If none is available, label the diagnosis as a hypothesis. For features, define one observable acceptance signal.
+Start from the research document below: it describes the code as it is today. Read the code that the plan relies on, and trace the real execution path before planning. For bugs, prefer a real user-path reproduction, then an existing integration signal, then an owning-layer test. If none is available, label the diagnosis as a hypothesis. For features, define one observable acceptance signal.
 
 Separate facts from assumptions. Investigation cannot expand the request.
 

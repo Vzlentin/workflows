@@ -941,7 +941,7 @@ return [one.reply, two.reply].join(", ")`,
 		expect(listed.stdout).toEqual([
 			"campaign: Split a goal into work items and ship each one as a commit on one branch.",
 			"optimize: Search for better ship prompts over a folder of work items.",
-			"ship: Ship one work item onto a new branch: plan, implement and review rounds, judge, and one squashed commit.",
+			"ship: Ship one work item onto a new branch: research, plan, implement and review rounds, judge, and one squashed commit.",
 			"plain",
 		]);
 		const plain = await workflows(["plain", "--help"], { cwd: root });
