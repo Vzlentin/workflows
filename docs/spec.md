@@ -293,9 +293,9 @@ workflows check review
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `stop`, `list`, `show`, `save` and `check` are commands, so no script of these names can run. Bad usage of a
-command prints `workflows: <error>`, then `usage:` and the usage line of that command, such as `usage: workflows
-show <run-id> [--json]`, and exits 2.
+`resume`, `stop`, `list`, `show`, `save`, `prune` and `check` are commands, so no script of these names can run. Bad
+usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command, such as `usage:
+workflows show <run-id> [--json]`, and exits 2.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
@@ -656,6 +656,37 @@ the host waits for, and runs no checkpoint of the file. A store whose schema pi-
 read-only: `list`, `show` and `save` then fail with `<store> needs a schema update that only its harness host makes:
 start the host once, such as with harness --project <project> host, and run the command again`.
 
+## Prune
+
+```sh
+workflows prune [--yes] [--install-hook] [--json]
+```
+
+`workflows prune` prints one line `<run-id> <branch> <worktree>` for each run of the harness project of the current
+directory, newest run ID first, whose worktree is on a branch with a merged pull request. With `--json`, it prints one
+JSON array of `{ "runId", "branch", "worktree" }`. A run is a candidate only when it has a run directory with a
+`project` file, its last task has ended, a task of this version saved it, its worktree exists, and the worktree is on a
+branch. A run that has not ended, a run of another version, a detached worktree, and a worktree that is not a Git
+worktree of its own are never pruned. `prune` reads the project store file read-only, as `list` does, and does not
+start the host.
+
+For each candidate, `prune` runs `gh pr list --head <branch> --state merged --json headRefOid` in the worktree. A branch
+is merged when one pull request in the list has the commit that the worktree is on as its head. A branch name that comes
+back in a later run, with a merged pull request of an earlier commit, is not merged. `prune` runs every `gh` call before
+it removes anything: a failed `gh` call, or a missing `gh`, prints `workflows: <error>`, removes nothing and exits 1.
+
+With `--yes`, `prune` removes each merged worktree in order, and prints its line after the removal. When `HERDR_ENV` is
+set and `herdr worktree list --cwd <worktree>` shows a workspace open on the worktree, it runs `herdr worktree remove
+--workspace <id>`. Otherwise, or when a herdr command fails, it runs `git worktree remove <worktree>` in the run's
+repository, without `--force`. Then it deletes the branch with `git branch -D <branch>` when the branch still exists. A
+removal that fails, such as of a worktree with changes, prints the error and exits 1; the next `prune` tries again. The
+run directory and the run's records stay, so `list` and `show` still show the run.
+
+`--install-hook` writes the executable `post-merge` hook of the Git repository of the current directory, with the line
+`workflows prune --yes >/dev/null 2>&1 &`, and prints the hook's path. When `core.hooksPath` is set or a `post-merge`
+hook exists, it writes nothing, prints an error with the line to add, and exits 1. `--install-hook` ignores `--yes` and
+`--json`.
+
 ## Show
 
 ```sh
@@ -990,8 +1021,8 @@ The engine files in `src/`:
 - `cli.ts`: the `workflows` command entry point.
 - `harness.ts`: the check of the harness install and the path of the entry.
 - `setup.ts`: the setup of a global install, for the command and the postinstall.
-- `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show` and `save`, a client of the harness host, and the
-  run directory.
+- `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show`, `save` and `prune`, a client of the harness host,
+  and the run directory.
 - `entry.ts`: the entry that the harness host loads, with the script task.
 - `progress.ts`: the tree of steps of a run, and how the command draws it on stderr.
 - `store.ts`: the command's read-only reads of the project store: the tasks of the runs, their progress and calls.
