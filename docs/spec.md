@@ -174,8 +174,8 @@ and nothing is merged or pushed. Each item is a ship child run, with its own
 run ID and run directory, in the store of the campaign run: see `run` in [the script API](#the-script-api).
 
 After each shipped item, also the last one, a new planner session gets the goal, the shipped item and the remaining
-items with the `requeue` prompt. Its answer through `respond` is the new queue, which can be empty, and the item step
-logs it as `queue: <n> item(s)` or `queue: empty`. The campaign ends when the queue is empty. The queue has no length limit: a requeue can add items each time.
+items with the `requeue` prompt. Its answer through `respond` is the new queue, which can be empty. The campaign ends
+when the queue is empty. The queue has no length limit: a requeue can add items each time.
 
 The command prints `run <run-id>`, the step `split`, then the step `item <n>/<total>: <subject>` on stderr before the
 steps of each item.
@@ -194,7 +194,6 @@ change it. The steps and log lines of the item's ship run are under the item ste
     SHIP
   ✓ judge  19s
     judge 0.83: a1b2c3d fix: correct the README typo
-  queue: 1 item
 ◉ item 2/2: Add a thanks line
   ✓ research  28s
   ◉ plan
@@ -223,8 +222,7 @@ conflict with an existing branch; kept campaign/<run-id>`.
   ```
 
 - When an item is blocked or stopped, or ships with a judge score of 0, the item fails. A missing score, when the judge
-  failed, is not a failure. The item step logs `<status>; the worktree goes back to <commit>`, with the status that
-  the `rundown` prompt gets. The run resets the worktree with `git reset --hard` to the commit that the item started
+  failed, is not a failure. The run resets the worktree with `git reset --hard` to the commit that the item started
   from: the last shipped commit, or the start commit when no item shipped. Then a new planner session gets the
   `rundown` prompt with the inputs `goal`, `shipped` (the shipped items with their commits, as JSON), `item`, `status`
   (the ship status, or `shipped with judge score 0`), `reply`, `handoff`, `findings`, `memory` and `queue` (the
@@ -351,7 +349,7 @@ workflows check review
 
 `resume`, `wait`, `stop`, `list`, `show`, `attach`, `save`, `prune` and `check` are commands, so no script of these
 names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command,
-such as `usage: workflows show <run-id> [--calls] [--follow] [--json]`, and exits 2.
+such as `usage: workflows show <run-id> [--calls] [--json]`, and exits 2.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
@@ -440,7 +438,7 @@ stderr in one of three ways:
 - On a terminal, the command draws the tree again in place at each change. A step is `◉` while it runs, `✓` when it
   is done, and `✗` when its run failed or was stopped. A step that ended ends with two spaces and its duration, such
   as `12s`, `3m05s` or `1h02m`, from its `phase` line to the next `phase` line of its run or the end of its run. Each
-  line is cut to the width of the terminal, before the duration when the line has room for it. When another
+  line is cut to the columns of the terminal. When another
   line, such as a warning, comes between two draws, the lines above it stay, and the changed lines print again below
   it.
 - When stderr is not a terminal, and without `--json`, each step and log line prints once as it comes, with its indent
@@ -710,8 +708,8 @@ workflows wait <run-id> [--json]
 `workflows wait` follows a run to its outcome, and never starts a task or stops the run. It prints `run <run-id>`, then
 the same outcome lines, JSON line and exit code as `resume`. A waiting run prints its question and exits 3. A run whose task ended, completed or not, prints its
 outcome from the project store: `wait` starts no host and no task, so a failed run prints its `failed` and `continue
-with` lines and exits 1. A run whose task has not ended is followed as `resume` follows it, and `wait` starts the host
-when none runs. `wait` checks the version of the host's task as `resume` does, and refuses a run that another version
+with` lines and exits 1. A run whose task has not ended is followed as `resume` follows it, with every step of the run
+from its first line, and `wait` starts the host when none runs. `wait` checks the version of the host's task as `resume` does, and refuses a run that another version
 saved with `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot be waited for`.
 
 Ctrl+C detaches `wait` at once: it prints the `detached` line, or the `detached` JSON line, and exits 130. The run goes
@@ -730,7 +728,7 @@ type = "shell"
 description = "follow a workflows run"
 command = '''
 pane=$("$HERDR_BIN_PATH" pane split $HERDR_ACTIVE_PANE_ID --direction right --focus | jq -r '.result.pane.pane_id')
-[ -n "$pane" ] && "$HERDR_BIN_PATH" pane run "$pane" 'id=$(workflows list --pick) && workflows show "$id" --follow'
+[ -n "$pane" ] && "$HERDR_BIN_PATH" pane run "$pane" 'id=$(workflows list --pick) && workflows wait "$id"'
 '''
 ```
 
@@ -786,11 +784,10 @@ Only the runs that have a run directory with a `project` file are listed.
 
 With `--pick`, when stdin and stderr are terminals, the command asks `Pick a run:` with the runs: the runs that run or
 wait for an answer first, then the others, newest first. Each line is `<mark> <title>  <workflow> <status>`, then
-`: <steps>` for a running run, with the steps that run now joined by ` › `, then `  <age> ago`. The mark is `◉`
+`: <steps>` for a running run, with the steps that run now joined by ` › `. The mark is `◉`
 running, `?` waiting, `✗` failed, else `·`. Typing filters the lines by each word, in any case; the arrows move,
 Enter takes the run under the cursor, and Esc or Ctrl+C exits 130 with no output. The command prints
-the run ID of the run it takes, or with `--json` its `list` object, so other commands compose with it:
-`workflows show "$(workflows list --pick)" --follow`. A project with no run prints `workflows: no runs in the project of
+the run ID of the run it takes, so other commands compose with it: `workflows wait "$(workflows list --pick)"`. A project with no run prints `workflows: no runs in the project of
 <cwd>` and exits 1. `--pick` without a terminal prints `workflows: --pick needs a terminal on stdin and stderr` and the
 usage line `usage: workflows list [--pick] [--json]`, and exits 2.
 
@@ -835,7 +832,6 @@ hook exists, it writes nothing, prints an error with the line to add, and exits 
 
 ```sh
 workflows show <run-id>
-workflows show <run-id> --follow
 workflows show <run-id> --calls
 workflows show <run-id> --json
 ```
@@ -853,12 +849,6 @@ The first line has the fields of `workflows list`. The steps are the tree of [Pr
 line of the run, as a terminal draws it when the run ends: a step that runs is `◉`, with the time since it started.
 Once the run's task ended, the steps that still ran are `✓` when it completed and `✗` otherwise. A run without steps
 prints its calls, as `--calls` does.
-
-With `--follow`, on a terminal, `show` prints the first line, then draws the tree again in place on stderr about every
-0.5 s, with the time of the steps that run, until the run's task ends; then it prints the footer. Ctrl+C ends it with
-exit 130 and leaves the run alone. When stderr is not a terminal, or with `--json`, it waits until the task ends and
-prints as `show` does. It reads the store only, as `show` does, so it follows a run that no command follows and shows
-every step from the first.
 
 With `--calls`, `show` prints the tree of its phases and calls:
 
@@ -901,7 +891,7 @@ without a `project` file, prints the
 `no run` error of `resume`. A run saved by an earlier version prints `workflows: run
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
-as no run ID, prints `usage: workflows show <run-id> [--calls] [--follow] [--json]` and exits 2.
+as no run ID, prints `usage: workflows show <run-id> [--calls] [--json]` and exits 2.
 
 ## Attach
 

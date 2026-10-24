@@ -4,7 +4,7 @@
  * comes. The command draws the tree on stderr, and the Pi tool draws the lines that the command sends with `--json`,
  * so both show the same steps.
  */
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import type { Io } from "./run.ts";
 
@@ -208,14 +208,6 @@ export function duration(ms: number): string {
 	return `${Math.floor(seconds / 3600)}h${pad(Math.floor(seconds / 60) % 60)}m`;
 }
 
-/** The `  <duration>` at the end of a step line. */
-const TIME = / {2}\d+(?:s|m\d\ds|h\d\dm)$/;
-
-/** `line` without the duration at its end. */
-export function untimed(line: string): string {
-	return line.replace(TIME, "");
-}
-
 /** The level of the steps of `run`. */
 function depth(run: RunNode): number {
 	return run.caller === undefined ? 0 : depth(run.caller) + (run.under ? 1 : 0);
@@ -261,8 +253,7 @@ const COLORS: Readonly<Record<Mark, string>> = { "✓": "32", "◉": "36", "✗"
 
 /**
  * A `redraw` for a terminal stream. It moves the cursor up to the first line that changed, writes the lines from there
- * again, and colors the marks. A line is cut to the width of the terminal, so that each line takes one row, and keeps
- * the duration at its end. After
+ * again, and colors the marks. A line is cut to the columns of the terminal, so that each line takes one row. After
  * `forget`, because another write moved the cursor below the lines, the lines on the screen stay, and a change prints
  * the lines from the first changed one below them.
  */
@@ -278,7 +269,7 @@ export function terminalRedraw(stream: {
 	return {
 		redraw: (lines: readonly string[]) => {
 			const width = Math.max((stream.columns ?? 80) - 1, 10);
-			const cut = lines.map((line) => fit(line, width));
+			const cut = lines.map((line) => truncateToWidth(line, width, "…"));
 			let first = 0;
 
 			while (first < cut.length && first < shown.length && cut[first] === shown[first]) first++;
@@ -294,17 +285,6 @@ export function terminalRedraw(stream: {
 			below = 0;
 		},
 	};
-}
-
-/** `line` cut to `width` terminal columns with `…`, before the duration at its end when there is room for it. */
-export function fit(line: string, width: number): string {
-	if (visibleWidth(line) <= width) return line;
-	const time = TIME.exec(line)?.[0] ?? "";
-	const room = width - visibleWidth(time);
-
-	if (room <= 11) return truncateToWidth(line, width, "…");
-
-	return `${truncateToWidth(line.slice(0, line.length - time.length), room, "…")}${time}`;
 }
 
 function colored(_match: string, indent: string, mark: Mark): string {

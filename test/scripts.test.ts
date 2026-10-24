@@ -222,8 +222,8 @@ describe("usage errors", () => {
 			[["resume", "a/b"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
 			[["resume", "--background"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
 			[["wait", "r1", "r2"], "usage: workflows wait <run-id> [--json]"],
-			[["show", "r1", "r2"], "usage: workflows show <run-id> [--calls] [--follow] [--json]"],
-			[["show", ".."], "usage: workflows show <run-id> [--calls] [--follow] [--json]"],
+			[["show", "r1", "r2"], "usage: workflows show <run-id> [--calls] [--json]"],
+			[["show", ".."], "usage: workflows show <run-id> [--calls] [--json]"],
 			[["list", "x"], "usage: workflows list [--pick] [--json]"],
 			[["check"], "usage: workflows check <workflow>"],
 		];

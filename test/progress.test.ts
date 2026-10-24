@@ -37,12 +37,6 @@ describe("the progress on a terminal", () => {
 		]);
 	});
 
-	it("keeps the duration at the end of a line that it cuts", () => {
-		const terminal = stream();
-		terminalRedraw(terminal).redraw([`✓ ${"x".repeat(50)}  3m05s`]);
-		expect(terminal.written).toEqual([`✓ ${"x".repeat(29)}…  3m05s\n`]);
-	});
-
 	it("cuts a line by the columns that it takes, so wide characters count twice", () => {
 		const terminal = stream();
 		terminalRedraw(terminal).redraw([`◉ ${"界".repeat(30)}`]);
@@ -84,6 +78,11 @@ describe("the steps of a run", () => {
 		expect(progress.lines(197_000)).toEqual(["✓ plan  3m05s", "  a note", "◉ judge  12s"]);
 		progress.add({ kind: "end", run: "r", failed: false, at: 3_905_000 });
 		expect(progress.lines()).toEqual(["✓ plan  3m05s", "  a note", "✓ judge  1h02m"]);
+		// Events that an earlier version saved have no time.
+		const earlier = new Progress();
+		earlier.add({ kind: "phase", run: "r", parent: null, text: "plan" });
+		earlier.add({ kind: "end", run: "r", failed: false });
+		expect(earlier.lines(1000)).toEqual(["✓ plan"]);
 	});
 
 	it("go on with the step that a new execution starts again in, without the time between", () => {
@@ -96,21 +95,9 @@ describe("the steps of a run", () => {
 		expect(progress.add(again)).toBeUndefined();
 		expect(progress.running()).toEqual(["plan"]);
 		progress.add({ kind: "phase", run: "r", parent: null, text: "judge", at: 12_000 });
-		expect(progress.lines()).toEqual(["✓ plan  8s", "◉ judge"]);
-	});
-
-	it("keep a phase line that repeats the step within an execution as a step of its own", () => {
-		const progress = new Progress();
-		progress.add({ kind: "phase", run: "r", parent: null, text: "poll", at: 0, continues: true });
-		progress.add({ kind: "phase", run: "r", parent: null, text: "poll", at: 2000 });
-		expect(progress.lines()).toEqual(["✓ poll  2s", "◉ poll"]);
-	});
-
-	it("give no duration to steps that an earlier version saved without times", () => {
-		const progress = new Progress();
-		progress.add({ kind: "phase", run: "r", parent: null, text: "plan" });
-		progress.add({ kind: "end", run: "r", failed: false });
-		expect(progress.lines(1000)).toEqual(["✓ plan"]);
+		// A phase line that repeats the step within an execution is a step of its own.
+		progress.add({ kind: "phase", run: "r", parent: null, text: "judge", at: 14_000 });
+		expect(progress.lines()).toEqual(["✓ plan  8s", "✓ judge  2s", "◉ judge"]);
 	});
 });
 

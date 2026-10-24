@@ -29,7 +29,7 @@ import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./gi
 import { ENTRY, harnessDir } from "./harness.ts";
 import * as script from "./meta.ts";
 import { display, duration, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
-import { type Io, newRunId, parseArgsMessage, runStart, UsageError, withUsage } from "./run.ts";
+import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
 import type { SavedCall } from "./script.ts";
 import { loadScripts, projectFolder } from "./script.ts";
 import { PACKAGE } from "./setup.ts";
@@ -89,7 +89,7 @@ const RESUME = "workflows resume <run-id> [--answer <text>] [--background] [--js
 const WAIT = "workflows wait <run-id> [--json]";
 const STOP = "workflows stop <run-id> [--json]";
 const LIST = "workflows list [--pick] [--json]";
-const SHOW = "workflows show <run-id> [--calls] [--follow] [--json]";
+const SHOW = "workflows show <run-id> [--calls] [--json]";
 const ATTACH = "workflows attach <run-id> [<step>]";
 const SAVE = "workflows save <run-id> <name> [--force]";
 const PRUNE = "workflows prune [--yes] [--install-hook] [--json]";
@@ -507,7 +507,13 @@ async function resume(
 
 	terminal.stdout(`run ${run.id}`);
 
-	return follow({ id: run.id, project: run.project, key, input, client, from }, followed, json, background);
+	// A wait shows every step of the run, from its first execution.
+	return follow(
+		{ id: run.id, project: run.project, key, input, client, from: wait ? 0 : from },
+		followed,
+		json,
+		background,
+	);
 }
 
 /** The run ID and the `--answer` of the args of `resume`. */
@@ -597,7 +603,7 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 		const run = await pickRun(terminal, terminal.choose);
 
 		if (run === undefined) return 130;
-		terminal.stdout(json ? JSON.stringify(run) : run.runId);
+		terminal.stdout(run.runId);
 
 		return 0;
 	}
@@ -656,15 +662,11 @@ async function pickRun(terminal: Terminal, choose: Choose): Promise<Listed | und
 	});
 
 	if (runs.length === 0) throw new Error(`no runs in the project of ${terminal.cwd}`);
-	const now = Date.now();
 
 	const items = runs.map((run) => {
-		const started = runStart(run.runId);
-		const age = started === undefined ? "" : `  ${duration(now - started)} ago`;
 		const step = steps.get(run.runId);
-		const detail = step === undefined ? "" : `: ${step}`;
 
-		return `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${detail}${age}`;
+		return `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${step === undefined ? "" : `: ${step}`}`;
 	});
 
 	const index = await choose("Pick a run:", items);
@@ -865,42 +867,13 @@ function endOf(outcome: TaskOutcome<JsonValue>, title: string, id: string) {
 
 /**
  * Prints the steps of a run as a tree, or with `--calls` its phases and calls, then its report lines, or how it ended.
- * A run without steps prints its calls. With `--follow`, it draws the tree again as the run goes on, until the run's
- * task ends or Ctrl+C. It reads the task records, the call records and the progress from the project store only.
+ * A run without steps prints its calls. It reads the task records, the progress, and the call records when it prints
+ * them, from the project store only.
  */
 async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const withCalls = args.includes("--calls");
-	const following = args.includes("--follow");
-	const rest = args.filter((arg) => arg !== "--calls" && arg !== "--follow");
+	const rest = args.filter((arg) => arg !== "--calls");
 	const run = await savedRun(oneRunId(rest, SHOW), SHOW);
-	// On a terminal the tree draws in place on stderr; elsewhere the command prints it once the run ended.
-	const draw = following && !json ? terminal.redraw : undefined;
-	let shown = await snapshot(run, terminal, withCalls || json);
-
-	if (draw !== undefined) terminal.stdout(shown.header);
-
-	while (following && !shown.ended) {
-		draw?.(shown.body);
-
-		if (await abortedWithin(terminal.interrupt, POLL_MS)) return 130;
-		shown = await snapshot(run, terminal, withCalls || json);
-	}
-
-	if (json) terminal.stdout(JSON.stringify(shown.json));
-	else if (draw !== undefined) {
-		draw(shown.body);
-
-		for (const line of shown.footer) terminal.stdout(line);
-	} else for (const line of [shown.header, ...shown.body, ...shown.footer]) terminal.stdout(line);
-
-	return 0;
-}
-
-/**
- * What `show` prints of `run` now: its first line, its tree, its footer, the JSON tree, and whether its task ended.
- * It reads the call records only `withCalls`, or when the run has no step.
- */
-async function snapshot(run: SavedRun, terminal: Terminal, withCalls: boolean) {
 	const { id } = run;
 	const empty = { task: undefined, records: new Map<string, SavedCall>(), progress: new Progress() };
 
@@ -908,7 +881,7 @@ async function snapshot(run: SavedRun, terminal: Terminal, withCalls: boolean) {
 		const read = new Progress();
 
 		for (const event of await progressEvents(store, id)) read.add(event);
-		const calls = withCalls || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
+		const calls = withCalls || json || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
 
 		return { task: taskOf((await runTasks(store)).get(id) ?? []), records: calls, progress: read };
 	});
@@ -937,13 +910,17 @@ async function snapshot(run: SavedRun, terminal: Terminal, withCalls: boolean) {
 	const now = Date.now();
 	const steps = progress.lines(now);
 
-	return {
-		header: `run ${id} ${input.name} ${status} ${title}`,
-		body: withCalls || !progress.stepped ? treeLines(calls, "", now) : steps,
-		footer,
-		json: { runId: id, workflow: input.name, title, status, ...end, steps, calls },
-		ended: outcome !== undefined,
-	};
+	if (json) {
+		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, steps, calls }));
+
+		return 0;
+	}
+
+	const body = withCalls || !progress.stepped ? treeLines(calls, "", now) : steps;
+
+	for (const line of [`run ${id} ${input.name} ${status} ${title}`, ...body, ...footer]) terminal.stdout(line);
+
+	return 0;
 }
 
 /**

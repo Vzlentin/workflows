@@ -13,16 +13,6 @@ export function newRunId(): string {
 	return `${stamp}-${randomBytes(4).toString("hex")}`;
 }
 
-/** The start time of the run `id`, from the timestamp that `newRunId` writes, if it has one. */
-export function runStart(id: string): number | undefined {
-	const match = /^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)-/.exec(id);
-
-	if (match === null) return undefined;
-	const [, year, month, day, hour, minute, second] = match.map(Number);
-
-	return Date.UTC(year ?? 0, (month ?? 1) - 1, day, hour, minute, second);
-}
-
 /** Bad command-line usage: the command prints `usage`, or its own usage, and exits 2. */
 export class UsageError extends Error {
 	readonly usage: string | undefined;

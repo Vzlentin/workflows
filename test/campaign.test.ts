@@ -94,10 +94,8 @@ describe("workflows campaign", () => {
 			"  1 item",
 			"✓ item 1/1: Fix the README typo",
 			...itemSteps("+1 -1 in 1 file", COMMIT.subject),
-			"  queue: 1 item",
 			"✓ item 2/2: Add a thanks line",
 			...itemSteps("+1 -0 in 1 file", THANKS.subject),
-			"  queue: empty",
 		]);
 		expect(run.model.calls.map((call) => call.kind)).toEqual([
 			"split",
@@ -260,7 +258,6 @@ describe("workflows campaign", () => {
 		expect(progressOf(resumed.stderr)).toEqual([
 			"✓ item 2/2: Add a thanks line",
 			...itemSteps("+1 -0 in 1 file", THANKS.subject),
-			"  queue: empty",
 		]);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual([...SHIP, "requeue", "branch"]);
 		const worktree = worktreeOf(first.id);

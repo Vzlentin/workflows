@@ -78,71 +78,36 @@ describe("attach", () => {
 	});
 });
 
-describe("list --pick and show --follow", () => {
+describe("list --pick", () => {
 	it("prints the run ID that the pick takes, the runs that run first, each with its steps that run", async () => {
 		await ran('phase("a")\nawait agent("Script: done")');
 		await writeFile(join(root, "y.js"), 'phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")');
 		const running = await workflows(["y.js"], { cwd: root, script: { interruptAt: { kind: "script", nth: 2 } } });
-		expect(running.code).toBe(130);
 		const asked: string[][] = [];
 
-		const picked = await workflows(["list", "--pick"], {
-			cwd: root,
-			choose: async (question, items) => {
-				asked.push([question, ...items]);
+		const choose = async (question: string, items: readonly string[]) => {
+			asked.push([question, ...items]);
 
-				return 0;
-			},
-		});
+			return 0;
+		};
 
-		expect(asked).toEqual([
-			[
-				"Pick a run:",
-				expect.stringMatching(/^◉ y {2}y running: talk {2}\d+s ago$/),
-				expect.stringMatching(/^· x {2}x done {2}\d+s ago$/),
-			],
-		]);
+		const picked = await workflows(["list", "--pick"], { cwd: root, choose });
+		expect(asked).toEqual([["Pick a run:", "◉ y  y running: talk", "· x  x done"]]);
 		expect([picked.code, picked.stdout]).toEqual([0, [running.id]]);
-		const json = await workflows(["list", "--pick", "--json"], { cwd: root, choose: async () => 0 });
-		expect(JSON.parse(json.stdout[0] ?? "")).toMatchObject({ runId: running.id, status: "running", title: "y" });
-	});
-
-	it("exits 130 with no output when the pick is cancelled, and needs a terminal", async () => {
-		await ran('phase("a")\nawait agent("Script: one")');
 		const cancelled = await workflows(["list", "--pick"], { cwd: root, choose: async () => undefined });
 		expect([cancelled.code, cancelled.stdout, cancelled.stderr]).toEqual([130, [], []]);
 		const piped = await workflows(["list", "--pick"], { cwd: root });
-		expect([piped.code, piped.stderr]).toEqual([
-			2,
-			["workflows: --pick needs a terminal on stdin and stderr", "usage: workflows list [--pick] [--json]"],
-		]);
+		expect([piped.code, piped.stderr[0]]).toEqual([2, "workflows: --pick needs a terminal on stdin and stderr"]);
 	});
+});
 
-	it("draws the steps of a run in place until Ctrl+C, and prints a run that ended as show does", async () => {
-		await writeFile(join(root, "y.js"), 'phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")');
+describe("wait", () => {
+	it("shows every step of the run from its first line, also the steps before it joined", async () => {
+		const script = 'phase("talk")\nawait agent("Script: one")\nphase("more")\nawait agent("Script: two")';
+		await writeFile(join(root, "y.js"), script);
 		const running = await workflows(["y.js"], { cwd: root, script: { interruptAt: { kind: "script", nth: 2 } } });
-		const id = running.id ?? "";
-		const drawn: string[][] = [];
-		const interrupt = new AbortController();
-
-		const following = workflows(["show", id, "--follow"], {
-			cwd: root,
-			interrupt,
-			redraw: (lines) => {
-				drawn.push([...lines]);
-
-				if (drawn.length === 2) interrupt.abort();
-			},
-		});
-
-		const followed = await following;
-		expect([followed.code, followed.stdout]).toEqual([130, [`run ${id} y running y`]]);
-		expect(drawn[1]).toEqual([expect.stringMatching(/^◉ talk {2}\d+s$/)]);
-
-		const done = await ran('phase("a")\nawait agent("Script: one")');
-		const shown = await workflows(["show", done], { cwd: root });
-		const plain = await workflows(["show", done, "--follow"], { cwd: root });
-		expect(plain.stdout).toEqual(shown.stdout);
+		const waited = await workflows(["wait", running.id ?? ""], { cwd: root });
+		expect([waited.code, waited.stderr]).toEqual([0, ["talk", "more"]]);
 	});
 });
 

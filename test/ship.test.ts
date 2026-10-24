@@ -680,7 +680,7 @@ export default function ({ events }) {
 });
 
 describe("workflows show", () => {
-	it("prints the steps of a finished ship run, its calls with --calls, and the same trees as JSON", async () => {
+	it("prints the calls of a finished ship run with --calls, and the same tree as JSON", async () => {
 		const run = await workflows(["ship", "--repo", ".", "Fix the README typo"], {
 			cwd: repo,
 			script: { edits: [FIXED] },
@@ -688,22 +688,6 @@ describe("workflows show", () => {
 
 		expect(run.code).toBe(0);
 		const id = run.id ?? "";
-		const steps = await workflows(["show", id], { cwd: root });
-		expect([steps.code, steps.stderr]).toEqual([0, []]);
-		const step = (line: string) => expect.stringMatching(new RegExp(`^✓ ${line}  \\d+s$`));
-		expect(steps.stdout).toEqual([
-			`run ${id} ship shipped Fix the README typo`,
-			step("research"),
-			step("plan"),
-			step("round 1: implement"),
-			"  +1 -1 in 1 file",
-			step("round 1: review"),
-			"  SHIP",
-			step("judge"),
-			expect.stringMatching(/^ {2}judge 0\.83: [0-9a-f]+ fix: correct the README typo$/),
-			expect.stringMatching(SHIPPED),
-		]);
-
 		const shown = await workflows(["show", id, "--calls"], { cwd: root });
 		expect([shown.code, shown.stderr]).toEqual([0, []]);
 		const call = (line: string) => expect.stringMatching(new RegExp(`^  ✓ ${line}  \\d+s$`));
@@ -745,7 +729,6 @@ describe("workflows show", () => {
 			title: "Fix the README typo",
 			status: "shipped",
 			report: [shown.stdout.at(-1)],
-			steps: steps.stdout.slice(1, -1),
 		});
 		expect(tree.calls).toHaveLength(shown.stdout.length - 7);
 

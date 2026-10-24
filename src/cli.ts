@@ -3,12 +3,12 @@
 import { createInterface } from "node:readline";
 import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
-import { StdinBuffer } from "@earendil-works/pi-tui";
+import { StdinBuffer, truncateToWidth } from "@earendil-works/pi-tui";
 import { harnessProblem } from "./harness.ts";
 import { actionOf } from "./keys.ts";
 import type { Choose } from "./main.ts";
 import { type Pick, press, render } from "./pick.ts";
-import { fit, terminalRedraw } from "./progress.ts";
+import { terminalRedraw } from "./progress.ts";
 import { CtrlC } from "./run.ts";
 import { ensureHarness, PACKAGE, setup } from "./setup.ts";
 
@@ -63,7 +63,7 @@ const choose: Choose = (question, items) => {
 	const draw = (lines: readonly string[]) => {
 		const width = Math.max((stderr.columns ?? 80) - 1, 10);
 		const up = drawn > 1 ? `\x1b[${drawn - 1}A` : "";
-		const cut = lines.map((line) => fit(line, width));
+		const cut = lines.map((line) => truncateToWidth(line, width, "…"));
 		stderr.write(`${up}\r\x1b[J${cut.join("\n")}`);
 		drawn = cut.length;
 	};
