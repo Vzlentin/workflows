@@ -952,7 +952,7 @@ return [one.reply, two.reply].join(", ")`,
 		const ship = await workflows(["ship", "--help"], { cwd: root });
 		expect([ship.code, ship.stdout[0]]).toEqual([
 			0,
-			"usage: workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--prompts <folder>] [<item.md> | <text>] [--background] [--json]",
+			"usage: workflows ship [--rounds <n>] [--branch <value>] [--repo <repository>] [--base <branch>] [--prompts <folder>] [<item.md> | <text>] [--background] [--json]",
 		]);
 		const own = await workflows(["count.js", "--help"], { cwd: root });
 		expect(own.stdout).toEqual([

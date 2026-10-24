@@ -55,8 +55,9 @@ workflows                                  # the workflows that you can run
 workflows ship --help
 ```
 
-A ship run works on the branch `ship/<run-id>` in its own worktree. It does not push and does not open a pull
-request. [docs/spec.md](docs/spec.md) describes all the commands, workflow scripts, runs, and the `workflow` tool.
+A ship run works on the branch `ship/<run-id>` in its own worktree, and renames the branch at the end. It does not push
+and does not open a pull request. [docs/spec.md](docs/spec.md) describes all the commands, workflow scripts, runs, and
+the `workflow` tool.
 
 ## Development
 

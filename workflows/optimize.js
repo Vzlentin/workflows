@@ -57,11 +57,11 @@ async function evaluate(candidate) {
 
 	for (const item of items) {
 		const result = await run("ship", { item: item.body, repo: item.repo, base: item.start, prompts: candidate })
-		// Known ceiling: the worktree path and the branch name copy the run layout and ship's branch name. Use paths from
-		// the child's result if that layout changes.
+		// Known ceiling: the worktree path and the branch name of a run that did not ship copy the run layout and ship's
+		// branch name. Use paths from the child's result if that layout changes.
 		const runs = runDir.slice(0, runDir.lastIndexOf("/"))
 		await ok(["git", "-C", item.repo, "worktree", "remove", "--force", `${runs}/${result.runId}/worktree`])
-		await ok(["git", "-C", item.repo, "branch", "-D", `ship/${result.runId}`])
+		await ok(["git", "-C", item.repo, "branch", "-D", result.branch ?? `ship/${result.runId}`])
 		results.push(result)
 	}
 

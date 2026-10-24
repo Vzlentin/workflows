@@ -1,11 +1,12 @@
-// The research, the plan, the rounds, the review, the judge and the squash of `workflows ship` and of each
-// `workflows campaign` item, in its worktree. Every Git step is safe to repeat: a resume runs a step again when its
-// result was not saved.
+// The research, the plan, the rounds, the review, the judge, the squash and the branch rename of `workflows ship` and
+// of each `workflows campaign` item, in its worktree. Every Git step is safe to repeat: a resume runs a step again when
+// its result was not saved.
 export const meta = {
 	description: "Ship one work item onto a new branch: research, plan, implement and review rounds, judge, and one squashed commit.",
 	args: {
 		item: { type: "text", positional: true, label: "work item", required: true },
 		rounds: { type: "number", default: 3 },
+		branch: { type: "string" },
 	},
 	worktree: true,
 	exit: { blocked: 1, stopped: 1 },
@@ -31,6 +32,23 @@ const VERDICT = {
 		findings: { type: "array", items: { type: "string" } },
 	},
 }
+
+const COMMIT = {
+	type: "object",
+	required: ["branch", "subject", "body"],
+	properties: { branch: { type: "string" }, subject: { type: "string" }, body: { type: "string" } },
+}
+
+// Renames the branch `$1` to `$2` when the worktree is on `$1`, with a suffix `-2`, `-3`... when `$2` exists, and
+// prints the branch that the worktree is on. A `$2` that Git rejects keeps `$1`, and a second line gives the reason.
+// A repeat after the rename finds the worktree on another branch and prints it.
+const RENAME = `cur=$(git branch --show-current)
+[ "$cur" = "$1" ] || { printf %s "$cur"; exit 0; }
+git check-ref-format --branch "$2" >/dev/null 2>&1 || { printf '%s\\nis not a valid branch name' "$1"; exit 0; }
+n=$2; i=2
+while git show-ref --verify --quiet "refs/heads/$n"; do n=$2-$i; i=$((i+1)); done
+git branch -m "$n" 2>/dev/null || { printf '%s\\nis in conflict with an existing branch' "$1"; exit 0; }
+printf %s "$n"`
 
 const NOTED = {
 	type: "object",
@@ -132,12 +150,27 @@ async function judgeAndSquash(round) {
 		log(`judge failed on ${subject}: ${judgeError}`)
 	}
 
+	let answer
+
+	if (verdict !== undefined) {
+		try {
+			answer = await judge.ask(prompts.commit(), { schema: COMMIT })
+		} catch {}
+	}
+
+	const valid = answer !== undefined && answer.subject.trim() !== ""
+	const commitMessage = valid ? `${answer.subject.trim()}\n\n${answer.body.trim()}` : subject
+	const name = args.branch ?? (valid ? answer.branch.trim() : "")
+
 	// One command, so that a repeat resets a squash commit that was made but not saved.
 	const squash = 'git reset -q --soft "$1" && git commit -q -m "$2"'
-	await sh(["sh", "-c", squash, "squash", start, message(round, verdict)])
+	await sh(["sh", "-c", squash, "squash", start, commitMessage])
 	const short = await sh(["git", "rev-parse", "--short", "HEAD"])
+	const base = `ship/${runId}`
+	const renamed = name === "" || name === base ? base : await sh(["sh", "-c", RENAME, "rename", base, name])
+	const [branch, rejected] = renamed.split("\n")
 	const judged = verdict === undefined ? "failed" : score(verdict.answers).toFixed(2)
-	const shipped = { status: "shipped", rounds: round, head: short }
+	const shipped = { status: "shipped", rounds: round, head: short, branch }
 
 	if (verdict !== undefined) {
 		shipped.score = score(verdict.answers)
@@ -147,7 +180,9 @@ async function judgeAndSquash(round) {
 
 	if (judgeError !== undefined) shipped.judgeError = judgeError
 	shipped.memory = memory
-	shipped.report = [`shipped ${subject} in ${round} rounds, judge ${judged}, ${short}`]
+	shipped.report = [`shipped ${subject} in ${round} rounds, judge ${judged}, ${short} on ${branch}`]
+
+	if (rejected !== undefined) shipped.report.push(`branch ${name} ${rejected}; kept ${base}`)
 
 	return shipped
 }
@@ -193,17 +228,4 @@ function score(answers) {
 	if (answers[0] !== "PASS" || answers[1] !== "PASS") return 0
 
 	return answers.slice(2).filter((answer) => answer === "PASS").length / 6
-}
-
-// The squashed commit message: subject, work item, judge findings, then the trailers.
-function message(round, verdict) {
-	const paragraphs = [subject, item.trim()]
-	const trailers = [`Rounds: ${round}`]
-
-	if (verdict !== undefined) {
-		if (verdict.findings.length > 0) paragraphs.push(verdict.findings.join("\n"))
-		trailers.push(`Judge: ${score(verdict.answers).toFixed(2)}`)
-	}
-
-	return [...paragraphs, trailers.join("\n")].join("\n\n")
 }

@@ -174,6 +174,7 @@ export type Kind =
 	| "review"
 	| "verdict"
 	| "judge"
+	| "commit"
 	| "split"
 	| "requeue"
 	| "reflect"
@@ -202,6 +203,7 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Implement this plan", "implement"],
 	["Perform a deep code quality audit", "review"],
 	["## Vocabulary", "judge"],
+	["Write the commit message and the branch name", "commit"],
 	["Split this goal into work items.", "split"],
 	["Update the work item queue", "requeue"],
 	["Improve this prompt", "reflect"],
@@ -228,6 +230,8 @@ export type Script = {
 	readonly verdicts?: readonly ("SHIP" | "FIX")[];
 	/** The judge's `respond` answer, or a text reply without `respond`; a list gives one for each judge call. */
 	readonly judge?: Verdict | string | readonly (Verdict | string)[];
+	/** The `respond` answer of the commit message turn; a list gives one for each commit call. */
+	readonly commit?: Commit | readonly Commit[];
 	/** The work items of the split answer. */
 	readonly items?: readonly string[];
 	/** The queue of each requeue answer; a missing answer is an empty queue. */
@@ -254,6 +258,14 @@ export type Verdict = { readonly answers: readonly ("PASS" | "FAIL")[]; readonly
 export const PASSING_JUDGE: Verdict = {
 	answers: ["PASS", "PASS", "PASS", "FAIL", "PASS", "PASS", "PASS", "PASS"],
 	findings: ["4 FAIL README.md:3 adds a line the work item does not need"],
+};
+
+export type Commit = { readonly branch: string; readonly subject: string; readonly body: string };
+
+export const COMMIT: Commit = {
+	branch: "fix/readme-typo",
+	subject: "fix: correct the README typo",
+	body: "The README said wrold. It now says world.",
 };
 
 /**
@@ -412,6 +424,8 @@ export class FakeModel {
 				return respond(this.#script.verdicts?.[nth - 1] ?? "SHIP");
 			case "judge":
 				return this.#judge();
+			case "commit":
+				return this.#commit();
 			case "split":
 				return respond({ items: [...(this.#script.items ?? [])] });
 			case "requeue":
@@ -467,6 +481,12 @@ export class FakeModel {
 		const judge = Array.isArray(scripted) ? (scripted[this.count("judge") - 1] ?? PASSING_JUDGE) : scripted;
 
 		return Value.Check(Type.String(), judge) ? fauxAssistantMessage(judge) : respond(judge);
+	}
+
+	#commit(): AssistantMessage {
+		const { commit: scripted = COMMIT } = this.#script;
+
+		return respond(Array.isArray(scripted) ? (scripted[this.count("commit") - 1] ?? COMMIT) : scripted);
 	}
 }
 
