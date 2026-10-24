@@ -400,6 +400,15 @@ workflows campaign, which give it the start commit`. `run("ship", { repo })` get
 The script does not check where `start` comes from: with `start` from another script, it runs in that script's
 directory and can commit there.
 
+#### Program status
+
+When stderr is a terminal, a command that follows a run also writes OSC 7501 program status reports to stderr:
+`ESC ]7501;state=<state>:app=workflows:msg=<base64 of the message> ESC \`. `working` comes at each `phase` line, also
+of a child run, with the phase text. `idle` comes at the `detached` line, with that line. `done` or `error` comes when
+the command reports the outcome, by its exit code, with the first line that it prints, which can be empty. With
+`--json` or `--background`, or when stderr is not a terminal, no report comes. In the message, each control character
+becomes a space, and the message is cut to 2048 UTF-8 bytes on a character boundary.
+
 ### Child runs
 
 `run(name, args)` starts a child run of the script `name` of the caller's saved scripts. The child run has its own run

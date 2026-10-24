@@ -12,6 +12,7 @@ import { addProject } from "@vzlentin/harness/projects";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { programStatus } from "../src/progress.ts";
 import { CtrlC, newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
 import { stopAfterPost } from "./stop-entry.ts";
@@ -158,6 +159,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		if (host === undefined) throw new Error("no host");
 		const id = first.id ?? "";
 		expect([first.code, first.stderr]).toEqual([130, ["gate", "  waits", detached(id)]]);
+		expect(first.status).toEqual([programStatus("working", "gate"), programStatus("idle", detached(id))]);
 
 		try {
 			const resumed = workflows(["resume", id], { cwd: root, host });
@@ -180,6 +182,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		setTimeout(() => ctrlC.press(), 50);
 		const run = await pending;
 		expect([run.code, run.stdout.at(-1)]).toEqual([130, JSON.stringify({ runId: run.id, status: "stopped" })]);
+		expect(run.status).toEqual([]);
 		const id = run.id ?? "";
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
 
@@ -203,6 +206,10 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 			130,
 			[detached(run.id), `stopped gated; continue with: workflows resume ${run.id}`],
 		]);
+		expect(run.status).toEqual([
+			programStatus("idle", detached(run.id)),
+			programStatus("error", `stopped gated; continue with: workflows resume ${run.id}`),
+		]);
 		expect([run.exits, await rootTasks(run.id ?? "")]).toEqual([0, [{ status: "terminal", outcome: "aborted" }]]);
 	});
 
@@ -214,6 +221,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		await writeFile(join(root, "g.open"), "");
 		const run = await pending;
 		expect([run.code, run.stdout, run.stderr]).toEqual([0, [`run ${run.id}`, "done"], [detached(run.id)]]);
+		expect(run.status).toEqual([programStatus("idle", detached(run.id)), programStatus("done", "done")]);
 	});
 
 	it("starts a run in the background, and wait follows it to its outcome", async () => {

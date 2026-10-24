@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { terminalRedraw } from "../src/progress.ts";
+import { programStatus, terminalRedraw } from "../src/progress.ts";
 
 /** The color codes that `terminalRedraw` writes around a mark. */
 const COLORS = ["\x1b[32m", "\x1b[36m", "\x1b[31m", "\x1b[0m"];
@@ -59,5 +59,21 @@ describe("the progress on a terminal", () => {
 			"\x1b[1A\r\x1b[J✓ three\n◉ four\n◉ five\n",
 			"✗ one\n✓ two\n✓ three\n◉ four\n✗ five\n",
 		]);
+	});
+});
+
+describe("the program status report", () => {
+	it("writes the state, the kind of a blocked state, and the message in base64 with spaces for control characters", () => {
+		expect(programStatus("working", "plan")).toBe("\x1b]7501;state=working:app=workflows:msg=cGxhbg==\x1b\\");
+		expect(programStatus("done", "a\tb\nc\u0085é")).toBe("\x1b]7501;state=done:app=workflows:msg=YSBiIGMgw6k=\x1b\\");
+		const blocked = "\x1b]7501;state=blocked:kind=question:app=workflows:msg=";
+		expect(programStatus("blocked", "?", "question").slice(0, blocked.length)).toBe(blocked);
+	});
+
+	it("cuts the message to 2048 bytes on a character boundary", () => {
+		const report = programStatus("working", `a${"é".repeat(1024)}`);
+		const msg = report.slice(report.indexOf("msg=") + 4, -2);
+		expect(Buffer.from(msg, "base64").toString()).toBe(`a${"é".repeat(1023)}`);
+		expect([msg.length <= 2732, Buffer.byteLength(report) <= 4096]).toEqual([true, true]);
 	});
 });

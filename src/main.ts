@@ -25,7 +25,7 @@ import { Value } from "typebox/value";
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
 import { ENTRY } from "./harness.ts";
 import * as script from "./meta.ts";
-import { display, type ProgressEvent } from "./progress.ts";
+import { display, type ProgressEvent, programStatus } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
 import type { SavedCall } from "./script.ts";
 import { loadScripts, projectFolder } from "./script.ts";
@@ -50,6 +50,8 @@ export type Terminal = Io & {
 	readonly following: (active: boolean) => void;
 	/** How long a command that Ctrl+C detached waits for a second Ctrl+C. Default 2 s. */
 	readonly stopWindowMs?: number;
+	/** Writes an OSC 7501 program status report to the terminal, when stderr is one. */
+	readonly status?: ((report: string) => void) | undefined;
 	/** Pi's model registry, for `check`. */
 	readonly models: () => Promise<Models>;
 	/**
@@ -934,6 +936,10 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 	terminal.following(true);
 	const shown = display(terminal, json);
 
+	const tell = (state: "idle" | "working" | "done" | "error", message: string) => {
+		if (!json) terminal.status?.(programStatus(state, message));
+	};
+
 	// With `--json`, the outcome line replaces the footer lines on stderr, so each stderr line is a progress line.
 	const end = (status: "failed" | "detached" | "host-stopped", rest: { error?: string }, ...footer: string[]) => {
 		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
@@ -953,7 +959,12 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 		// A read that fails, such as one that waited too long for a lock, shows nothing; the next read catches up.
 		const events = await progressEvents(store, id).catch(() => []);
 
-		for (const event of events.slice(seen)) shown.event(event);
+		for (const event of events.slice(seen)) {
+			shown.event(event);
+
+			if (event.kind === "phase") tell("working", event.text);
+		}
+
 		seen = Math.max(seen, events.length);
 	};
 
@@ -983,7 +994,10 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 		await stopPolling();
 		const next = `Follow it with: workflows resume ${id}. Stop it with: workflows stop ${id}`;
 
-		if (!json) terminal.stderr(`detached; run ${id} goes on. ${next}`);
+		const line = `detached; run ${id} goes on. ${next}`;
+
+		if (!json) terminal.stderr(line);
+		tell("idle", line);
 
 		// A run that ends in the window reports its outcome. A wait that fails leaves the run to the host.
 		const ended = waited.then(
@@ -1033,7 +1047,19 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 
 		if (outcome === undefined) throw new Error(`run ended ${info.status}`);
 
-		return outcomeOf(input, id, outcome, terminal, json);
+		// The first line that the outcome prints is the message of the last report.
+		let first: string | undefined;
+
+		const keep = (print: (line: string) => void) => (line: string) => {
+			first ??= line;
+			print(line);
+		};
+
+		const shownTo = { ...terminal, stdout: keep(terminal.stdout), stderr: keep(terminal.stderr) };
+		const code = outcomeOf(input, id, outcome, shownTo, json);
+		tell(code === 0 ? "done" : "error", first ?? "");
+
+		return code;
 	}
 }
 
