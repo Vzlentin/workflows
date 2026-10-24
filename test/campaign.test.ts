@@ -23,6 +23,15 @@ const FIRST = "# Fix the README typo\n\nThe README says wrold.";
 const SECOND = "# Add a thanks line\n\nEnd the README with Thanks.";
 const FIXED = "# Demo\n\nHello world\n";
 const THANKED = `${FIXED}Thanks.\n`;
+const THIRD = "# Thank the reader\n\nEnd the README with Thanks.";
+
+const QUESTION = [
+	"Rundown 1: the item failed.",
+	"Suggestions:\n- Split the item.",
+	"Proposed queue:",
+	"How should the campaign continue? Answer stop, or nothing, to end it.",
+].join("\n\n");
+
 const SHIP = ["research", "plan", "challenge", "handoff", "implement", "review", "verdict", "judge", "commit"];
 
 const THANKS: Commit = {
@@ -111,21 +120,70 @@ describe("workflows campaign", () => {
 		expect(shipped[0]).not.toHaveProperty("child");
 	});
 
-	it("stops at an item that is blocked", async () => {
-		const run = await workflows(["campaign", GOAL], { cwd: repo, script: { items: [FIRST, SECOND], edits: [] } });
+	it("resets to the start commit after a judge score of 0, and stops on the answer stop", async () => {
+		const judge = { answers: ["FAIL", ...Array(7).fill("PASS")], findings: ["1 FAIL: the typo stays."] };
 
-		expect(run.code).toBe(1);
-		expect(run.stdout).toEqual([`run ${run.id}`, `stopped Fix the README at item 1: ${worktreeOf(run.id)}`]);
-		expect(run.stderr).toEqual(["item 1/2: Fix the README typo", "  research", "  plan", "  round 1: implement"]);
-		expect(run.model.calls.map((call) => call.kind)).toEqual([
-			"split",
-			"research",
-			"plan",
-			"challenge",
-			"handoff",
-			"implement",
+		const run = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: { items: [FIRST, SECOND], edits: [FIXED], judge },
+		});
+
+		expect(run.code).toBe(3);
+		expect(run.stdout).toEqual([`run ${run.id}`, QUESTION]);
+		const worktree = worktreeOf(run.id);
+		expect(git(worktree, "rev-parse", "HEAD")).toBe(start);
+		expect(existsSync(join(runs(), run.id ?? "", "item-1", "round-1.patch"))).toBe(true);
+		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "rundown"]);
+		const rundown = run.model.find("rundown")?.prompt;
+		expect(rundown).toContain("## status\nshipped with judge score 0");
+		expect(rundown).toContain("## findings\n1 FAIL");
+		expect(rundown).toContain(`## queue\n${JSON.stringify([SECOND])}`);
+
+		const stopped = await workflows(["resume", run.id ?? "", "--answer", " Stop "], { cwd: root });
+		expect(stopped.code).toBe(1);
+		expect(stopped.stdout).toEqual([
+			`run ${run.id}`,
+			`stopped Fix the README at item 1: ${worktree}`,
+			"Rundown 1: the item failed.",
 		]);
-		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
+		expect(stopped.model.calls).toEqual([]);
+		expect(git(worktree, "branch", "--show-current")).toBe(`campaign/${run.id}`);
+		const json = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
+		expect(JSON.parse(json.stdout[1] ?? "").result.rundown).toBe("Rundown 1: the item failed.");
+	});
+
+	it("resets to the last shipped commit after a stopped item, and goes on with the answer", async () => {
+		const run = await workflows(["campaign", "--rounds", "1", GOAL], {
+			cwd: repo,
+			script: { items: [FIRST], queues: [[SECOND]], edits: [FIXED, THANKED], verdicts: ["SHIP", "FIX"] },
+		});
+
+		expect(run.code).toBe(3);
+		const worktree = worktreeOf(run.id);
+		expect(git(worktree, "rev-parse", "HEAD~1")).toBe(start);
+		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(FIXED);
+		expect(await readFile(join(runs(), run.id ?? "", "item-2", "round-1.patch"), "utf8")).toContain("+Thanks.");
+		const rundown = run.model.find("rundown")?.prompt;
+		expect(rundown).toContain("## handoff\nHandoff 2:");
+		expect(rundown).toContain(
+			`## shipped\n${JSON.stringify([{ item: FIRST, commit: git(worktree, "rev-parse", "--short", "HEAD") }])}`,
+		);
+
+		const resumed = await workflows(["resume", run.id ?? "", "--answer", "Thank the reader in one line", "--json"], {
+			cwd: root,
+			script: { items: [THIRD], edits: [THANKED], queues: [[]], commit: THANKS },
+		});
+
+		expect(resumed.code).toBe(0);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "requeue", "branch"]);
+		const split = resumed.model.find("split")?.prompt;
+		expect(split).toContain("## rundown\nRundown 1");
+		expect(split).toContain("## answer\nThank the reader in one line");
+		expect(progressOf(resumed.stderr)).toContain("✓ item 3/3: Thank the reader");
+		expect(JSON.parse(resumed.stdout[1] ?? "").report).toEqual([
+			expect.stringMatching(/^done Fix the README in 2 items, [0-9a-f]+ on docs\/readme$/),
+		]);
+		expect(git(worktree, "rev-parse", "HEAD~2")).toBe(start);
 	});
 
 	it("resumes in the second item and repeats no call of the first", async () => {

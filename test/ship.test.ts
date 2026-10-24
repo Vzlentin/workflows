@@ -339,7 +339,15 @@ export default function ({ events }) {
 		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, status: "detached" })]);
 
 		const resumed = await workflows(["resume", run.id ?? "", "--json"], { cwd: repo, script: { edits: [] } });
-		const result = { status: "blocked", rounds: 1, reply: "I found nothing to change.", memory: NOTES.slice(0, 2) };
+
+		const result = {
+			status: "blocked",
+			rounds: 1,
+			reply: "I found nothing to change.",
+			handoff: "Handoff 1: replace wrold with world in README.md.",
+			memory: NOTES.slice(0, 2),
+		};
+
 		expect(resumed.code).toBe(1);
 		const report = [`blocked Fix the README typo after 1 rounds: ${worktreeOf(run.id)}`, result.reply];
 		expect(resumed.stdout).toEqual([
@@ -363,6 +371,7 @@ export default function ({ events }) {
 		expect(run.stdout[0]).toBe(`run ${run.id}`);
 		expect(report).toEqual([`stopped Fix the README typo after 2 rounds: ${worktreeOf(run.id)}`]);
 		expect(result.memory).toEqual(NOTES);
+		expect(result.handoff).toBe("Handoff 2: replace wrold with world in README.md.");
 		expect(run.model.calls.map((call) => call.kind)).toEqual(
 			[
 				["research", "plan", "challenge", "handoff"],

@@ -21,6 +21,16 @@ const items = (min) => ({
 	properties: { items: { type: "array", minItems: min, items: { type: "string" } } },
 })
 
+const RUNDOWN = {
+	type: "object",
+	required: ["rundown", "suggestions", "queue"],
+	properties: {
+		rundown: { type: "string" },
+		suggestions: { type: "array", items: { type: "string" } },
+		queue: { type: "array", items: { type: "string" } },
+	},
+}
+
 const BRANCH = { type: "object", required: ["branch"], properties: { branch: { type: "string" } } }
 
 // Renames the branch `$1` to `$2` when the worktree is on `$1`, with a suffix `-2`, `-3`... when `$2` exists, and
@@ -47,11 +57,49 @@ for (let n = 1; queue.length > 0; n++) {
 	await sh(["mkdir", "-p", patches])
 	const start = await sh(["git", "rev-parse", "HEAD"])
 	const { report: _report, ...result } = await run("ship", { item, rounds, start, patches })
-	done.push({ item, result })
 
 	if (result.status !== "shipped" || result.score === 0) {
-		return { status: "stopped", items: done, report: [`stopped ${name} at item ${n}: ${runDir}/worktree`] }
+		// `start` is the last shipped commit: every earlier item shipped or was reset to its own start.
+		await sh(["git", "reset", "--hard", start])
+		const shipped = JSON.stringify(done.map(({ item, result }) => ({ item, commit: result.head })))
+
+		const { rundown, suggestions, queue: proposed } = await agent(
+			await prompts.rundown({
+				goal,
+				shipped,
+				item,
+				status: result.status === "shipped" ? "shipped with judge score 0" : result.status,
+				reply: result.reply ?? "",
+				handoff: result.handoff ?? "",
+				findings: (result.findings ?? []).join("\n"),
+				memory: result.memory.join("\n"),
+				queue: JSON.stringify(rest),
+			}),
+			{ as: "planner", schema: RUNDOWN },
+		)
+
+		const summary = [
+			rundown,
+			["Suggestions:", ...suggestions.map((suggestion) => `- ${suggestion}`)].join("\n"),
+			["Proposed queue:", ...proposed.map((next, i) => `${i + 1}. ${next}`)].join("\n\n"),
+		].join("\n\n")
+
+		const reply = (
+			await input(`${summary}\n\nHow should the campaign continue? Answer stop, or nothing, to end it.`)
+		).trim()
+
+		if (reply === "" || reply.toLowerCase() === "stop") {
+			const report = [`stopped ${name} at item ${n}: ${runDir}/worktree`, rundown]
+
+			return { status: "stopped", items: [...done, { item, result }], rundown, report }
+		}
+
+		const split = await prompts.split({ goal, shipped, rundown: summary, answer: reply })
+		queue = (await agent(`${split}${answer}`, { as: "planner", schema: items(1) })).items
+		continue
 	}
+
+	done.push({ item, result })
 
 	const requeue = await prompts.requeue({ goal, done: item, queue: JSON.stringify(rest) })
 	queue = (await agent(`${requeue}${answer}`, { as: "planner", schema: items(0) })).items

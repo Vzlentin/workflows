@@ -104,7 +104,7 @@ for (let round = 1; round <= rounds; round++) {
 	if (await ok(["git", "diff", "--cached", "--quiet", start])) {
 		const report = [`blocked ${subject} after ${round} rounds: ${worktree}`, reply]
 
-		return { status: "blocked", rounds: round, reply, memory, report }
+		return { status: "blocked", rounds: round, reply, handoff: plan, memory, report }
 	}
 
 	// The check's result is saved, so a commit that succeeded before a stop may run again with nothing staged.
@@ -125,7 +125,13 @@ for (let round = 1; round <= rounds; round++) {
 	if ((await reviewer.ask(challenge, { schema: SHIP_OR_FIX })) === "SHIP") return await judgeAndSquash(round)
 
 	if (round === rounds) {
-		return { status: "stopped", rounds: round, memory, report: [`stopped ${subject} after ${round} rounds: ${worktree}`] }
+		return {
+			status: "stopped",
+			rounds: round,
+			handoff: plan,
+			memory,
+			report: [`stopped ${subject} after ${round} rounds: ${worktree}`],
+		}
 	}
 
 	plan = await reviewer.noted(

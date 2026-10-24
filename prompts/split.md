@@ -10,4 +10,6 @@ Each work item ships as one commit, after the items before it. Make each item sm
 
 Write each item as a work item for an agent that has not seen this session: a first line that names the change, then the contract, the protected behavior and the proof. Do not add items that the goal does not need.
 
+When `shipped`, `rundown` and `answer` are given, the shipped items are already commits in the worktree, and an item failed after them. Give only the items that complete the goal from there, and follow the answer.
+
 $@
