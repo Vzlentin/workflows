@@ -83,7 +83,7 @@ describe("workflows optimize", () => {
 		expect(text).toContain("\n+Improved prompt 1.\n");
 		expect((await readdir(join(directory, "best"))).sort()).toEqual(["challenge.md", "handoff.md", "review.md"]);
 		expect(await readFile(join(directory, "best", "review.md"), "utf8")).toMatch(/\nImproved prompt 1\.\n$/);
-		expect(git(join(root, "repo"), "branch", "--list", "ship/*")).toBe("");
+		expect(git(join(root, "repo"), "branch", "--format=%(refname:short)")).toBe("main");
 		expect(git(join(root, "repo"), "worktree", "list", "--porcelain").split("\n\n")).toHaveLength(1);
 		expect(await promptsHash()).toBe(before);
 	});

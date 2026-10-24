@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { git, PASSING_JUDGE, progressOf, repository, sandbox, workflows } from "./support.ts";
+import { COMMIT, type Commit, git, PASSING_JUDGE, progressOf, repository, sandbox, workflows } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -23,14 +23,21 @@ const FIRST = "# Fix the README typo\n\nThe README says wrold.";
 const SECOND = "# Add a thanks line\n\nEnd the README with Thanks.";
 const FIXED = "# Demo\n\nHello world\n";
 const THANKED = `${FIXED}Thanks.\n`;
-const SHIP = ["research", "plan", "challenge", "handoff", "implement", "review", "verdict", "judge"];
+const SHIP = ["research", "plan", "challenge", "handoff", "implement", "review", "verdict", "judge", "commit"];
+
+const THANKS: Commit = {
+	branch: "docs/thanks",
+	subject: "docs: thank the reader",
+	body: "The README ends with Thanks.",
+};
+
 const ROUND = ["research", "plan", "round 1: implement", "round 1: review", "judge"];
 
 describe("workflows campaign", () => {
 	it("ships two items as two commits on the campaign branch", async () => {
 		const run = await workflows(["campaign", "--json", GOAL], {
 			cwd: repo,
-			script: { items: [FIRST], edits: [FIXED, THANKED], queues: [[SECOND], []] },
+			script: { items: [FIRST], edits: [FIXED, THANKED], queues: [[SECOND], []], commit: [COMMIT, THANKS] },
 		});
 
 		expect(run.code).toBe(0);
@@ -55,18 +62,15 @@ describe("workflows campaign", () => {
 		expect(git(worktree, "branch", "--show-current")).toBe(`campaign/${run.id}`);
 		expect(git(worktree, "rev-parse", "HEAD~2")).toBe(start);
 		const messages = git(worktree, "log", "--format=%B%x00", `${start}..HEAD`).split("\0").slice(0, 2);
-		expect(messages.map((message) => message.trim().split("\n")[0])).toEqual([
-			"Add a thanks line",
-			"Fix the README typo",
-		]);
-
-		for (const message of messages) expect(message).toMatch(/\nRounds: 1\nJudge: 0\.83/);
+		expect(messages.map((message) => message.trim())).toEqual(
+			[THANKS, COMMIT].map(({ subject, body }) => `${subject}\n\n${body}`),
+		);
 		expect(report[0]).toContain(git(worktree, "rev-parse", "--short", "HEAD"));
 		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(THANKED);
 		expect(await readFile(join(runs(), run.id ?? "", "item-2", "round-1.patch"), "utf8")).toContain("+Thanks.");
 		expect(existsSync(join(runs(), run.id ?? "", "round-1.patch"))).toBe(false);
 		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
-		expect(git(repo, "branch", "--list", "ship/*")).toBe("");
+		expect(git(repo, "branch", "--format=%(refname:short)")).toBe(`campaign/${run.id}\nmain`);
 
 		const shown = await workflows(["show", run.id ?? ""], { cwd: root });
 		const children = result.items.map((item: { result: { runId: string } }) => item.result.runId);
@@ -124,7 +128,7 @@ describe("workflows campaign", () => {
 
 		const resumed = await workflows(["resume", first.id ?? "", "--json"], {
 			cwd: root,
-			script: { edits: [THANKED], queues: [[]] },
+			script: { edits: [THANKED], queues: [[]], commit: THANKS },
 		});
 
 		expect(resumed.code).toBe(0);
@@ -138,7 +142,7 @@ describe("workflows campaign", () => {
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual([...SHIP, "requeue"]);
 		const worktree = worktreeOf(first.id);
 		const reflog = git(worktree, "reflog", "--format=%gs").split("\n");
-		expect(reflog.filter((line) => line === "commit: Fix the README typo")).toHaveLength(1);
+		expect(reflog.filter((line) => line === `commit: ${COMMIT.subject}`)).toHaveLength(1);
 		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("2");
 	});
 });

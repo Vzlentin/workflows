@@ -23,7 +23,7 @@ research session:   research (documents the code as it is)
 plan session:       plan (with the research)  ->  challenge  ->  handoff
 implement session:  implement the handoff                      <- round n (at most --rounds)
 review session:     review  ->  challenge (SHIP or FIX)  ->  handoff (on FIX, back to implement)
-judge session:      fixed rubric, after SHIP
+judge session:      fixed rubric, then commit message and branch, after SHIP
 ```
 
 Each box is a new session.
@@ -45,7 +45,7 @@ The work item comes from one argument or from stdin:
 - Without an argument, the work item is read from stdin.
 
 A work item without a non-empty line fails before the run starts. `--base` defaults to `main` and `--rounds`
-defaults to 3.
+defaults to 3. `--branch <name>` gives the name of the branch that a shipped run ends on.
 
 `--prompts <folder>`, relative to the current directory, gives prompts for this run: each `<name>.md` in the folder
 replaces the package prompt `prompts/<name>.md`, in the same template format. A missing folder, or a file with no
@@ -67,8 +67,9 @@ does today, with `path:line` references, the patterns and tests of that area, an
 does not suggest changes, and if it has a subagent tool, can spawn subagents to search in parallel. The plan prompt
 gets its reply as its `research` section, after the work item. The research prompt has no memory and gives no notes.
 
-The work item ships onto the branch `ship/<run-id>`, in a worktree in the run directory. The selected repository's
-checkout, index and local edits stay unchanged. Ship does not push and does not open a pull request.
+The work item ships onto the branch `ship/<run-id>`, in a worktree in the run directory, and a shipped run renames that
+branch at the end. The selected repository's checkout, index and local edits stay unchanged. Ship does not push and does
+not open a pull request.
 
 After each implement session, the run stages all changes in the worktree:
 
@@ -95,32 +96,38 @@ The review challenge has an evidence rule: a finding that reverses a note, or a 
 stays only with a defect that the review showed, written as `reverses #k: <defect>`. `workflows/ship.js` adds this
 rule next to the SHIP or FIX rule, and not in a template. The planner's challenge does not get it.
 
-On SHIP, the judge session reviews the change in the worktree, and the run squashes the work into one commit:
+On SHIP, the judge session reviews the change in the worktree. The judge answers through `respond`: eight PASS or
+FAIL answers, and one finding line for each failed question. If question 1 (complete) or 2 (correct) fails, the score
+is 0. Otherwise the score is the fraction of questions 3 to 8 that pass. If the judge fails or does not answer through
+`respond`, the command prints `judge failed on <subject>: <error>` on stderr.
+
+When the judge answered, the same judge session then gets the `commit` prompt, and answers through `respond` with
+`branch`, `subject` and `body`: a commit message that follows the commit rules of the repository, and a short branch
+name. The run squashes the work into one commit with the message `<subject>`, an empty line, then `<body>`:
 
 ```text
-Fix the README typo
+fix: correct the README typo
 
-# Fix the README typo
-
-The README says wrold.
-
-4 FAIL README.md:3 adds a line the work item does not need
-
-Rounds: 2
-Judge: 0.83
+The README said wrold. It now says world.
 ```
 
-The subject is the first non-empty line of the work item without leading `#`. The body is the work item, then the
-judge's findings. The judge answers through `respond`: eight PASS or FAIL answers, and one finding line for each failed
-question. If question 1 (complete) or 2 (correct) fails, the score is 0. Otherwise the score is the fraction of
-questions 3 to 8 that pass. If the judge fails or does not answer through `respond`, the commit has no `Judge` trailer,
-and the command prints `judge failed on <subject>: <error>` on stderr. The command prints
-`shipped <subject> in <n> rounds, judge <score or failed>, <commit>` and exits 0.
+If the judge failed, or the message turn fails or answers an empty `subject`, the message is the subject of the work
+item alone: its first non-empty line without leading `#`. A failed message turn prints nothing and does not change the
+score.
 
-The result of the run, which `--json` prints, has `status` and `rounds`; `head` when shipped; `score`, `answers`, the
-eight answers in question order, and `findings`, the finding lines that the commit message has, when the judge
-answered; `judgeError` when the judge failed; `reply` when blocked; and `memory`, the memory lines in order or `[]` when
-there are no notes, for every status.
+After the squash, the run renames `ship/<run-id>` to the `--branch` name, or else to the judge's `branch`. It renames
+only when the worktree is on `ship/<run-id>`, so a repeat of the step after the rename keeps the branch it renamed to.
+When the name exists, the run adds `-2`, `-3` and so on, until the name is free. No name, an empty judge `branch` or a
+judge answer that was not used keeps `ship/<run-id>`. A name that Git rejects, because it is not a valid branch name or
+it is in conflict with an existing branch, such as `docs/typo` when `docs` exists, keeps `ship/<run-id>`, and the
+command prints a second report line with the reason: `branch <name> is not a valid branch name; kept ship/<run-id>`
+or `branch <name> is in conflict with an existing branch; kept ship/<run-id>`. The command prints `shipped
+<subject> in <n> rounds, judge <score or failed>, <commit> on <branch>` and exits 0.
+
+The result of the run, which `--json` prints, has `status` and `rounds`; `head` and `branch`, the branch that the
+worktree ends on, when shipped; `score`, `answers`, the eight answers in question order, and `findings`, the finding
+lines of the judge, when the judge answered; `judgeError` when the judge failed; `reply` when blocked; and `memory`, the
+memory lines in order or `[]` when there are no notes, for every status.
 
 Blocked and stopped runs keep their branch, worktree and round commits. Delete them when you no longer need them.
 
@@ -138,9 +145,9 @@ When the judge of an item fails, the command prints `judge failed on <item subje
 A planner session splits the goal into work items with the `split` prompt, and answers through `respond`. Then each
 work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the research, the plan, the rounds, the
 review, the judge and the squash of `workflows/ship.js`, from the commit that the item before it made. So each shipped
-item is one commit, with the commit message of `ship`. No `ship/<run-id>` branch is made, and nothing is merged or
-pushed. Each item is a ship child run, with its own run ID and run directory, in the store of the campaign run: see
-`run` in [the script API](#the-script-api).
+item is one commit, with the commit message that its own judge wrote, as in `ship`. No `ship/<run-id>` branch is made,
+the worktree stays on `campaign/<run-id>`, and nothing is merged or pushed. Each item is a ship child run, with its own
+run ID and run directory, in the store of the campaign run: see `run` in [the script API](#the-script-api).
 
 After each shipped item, also the last one, a new planner session gets the goal, the shipped item and the remaining
 items with the `requeue` prompt. Its answer through `respond` is the new queue, which can be empty. The campaign ends
@@ -209,8 +216,9 @@ A candidate is one text for each listed prompt. The baseline is the texts of the
 <folder>` sets it. Each evaluation is the child run
 `run("ship", { item, repo, base: start, prompts: candidate })`, one at a time. The score of a shipped run is
 `passes/8 - 0.1*(rounds-1)`, where `passes` is the number of PASS answers of the judge, or 0 when the judge failed. A
-blocked or stopped run scores 0. After a ship run finishes, its worktree and its branch `ship/<run-id>` are removed.
-Its run directory stays. There is no evaluation cache: a reflect text equal to an earlier candidate's text ships again.
+blocked or stopped run scores 0. After a ship run finishes, its worktree and its branch are removed: the `branch` of its
+result, or `ship/<run-id>` when it did not ship. Its run directory stays. There is no evaluation cache: a reflect text
+equal to an earlier candidate's text ships again.
 
 The run evaluates the baseline on every item first. Each later trial changes one prompt of the best candidate so far,
 the listed prompts in turn, and evaluates the new candidate on every item. So the run makes `trials × items` ship
@@ -603,7 +611,7 @@ line of JSON in place of the report lines, `{ "runId", "status", "result"?, "rep
 
 - `finished`: `result` is the result of the run, for example `{"status":"shipped","rounds":1,"head":"1a2b3c4",...}`
   for ship. The [Ship](#ship) section lists the fields of a ship result. `report` is the list of report lines that
-  the command prints without `--json`, such as `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4"]`.
+  the command prints without `--json`, such as `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4 on fix/readme-typo"]`.
 - `failed`: `error` is the error message.
 - `started`: with `--background`, the host has the run's task, and the command does not follow it. The `workflow`
   tool of the host and the `workflow` tool of Pi give it as a result that is not an error.
@@ -878,7 +886,7 @@ file name of a `.md` file without `.md`, or else the first 40 characters of its 
 command draws them on a terminal, with the marks in the theme's colors, then any other stderr line, such as a warning.
 See [Progress](#progress). So a campaign shows its item steps with the ship steps of each item under them. The tool
 does not make the steps itself. A finished run ends with its `report` lines,
-such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8`. A failed, detached or stopped run ends with
+such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8 on fix/readme-typo`. A failed, detached or stopped run ends with
 the error or the state, and the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the
 same after a reload. The model gets the same result text as before.
 
@@ -934,7 +942,7 @@ host](#runs-in-the-harness-host).
 
 A ship run also has:
 
-- `worktree/`: the worktree on `ship/<run-id>`
+- `worktree/`: the worktree on `ship/<run-id>`, or on the branch that a shipped run renamed it to
 - `repository/`: the clone, for a GitHub repository only
 - `round-<n>.patch`, `round-<n>-fix.patch`: the patches each review got
 
@@ -952,13 +960,14 @@ task of the caller's run. A child run without a worktree can have an empty run d
 
 ## Prompts
 
-`prompts/` holds the Pi prompt templates `research`, `plan`, `challenge`, `handoff`, `implement`, `review` and `judge`,
-`split` and `requeue` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the frontmatter and the last line `$@`: the run
-removes them, then adds its inputs as `## <name>` sections. `workflows/ship.js` adds the evidence rule and the SHIP or
-FIX answer rule of the review challenge itself, so a template edit cannot remove them. It also adds the `respond`
-answer rules of the handoff and implement turns. In the same way, `workflows/campaign.js` adds the `respond` answer rule of `split` and
-`requeue`. The judge rubric is fixed: its eight answers, in question order, make the score. A run uses the templates
-as they were when it started.
+`prompts/` holds the Pi prompt templates `research`, `plan`, `challenge`, `handoff`, `implement`, `review`, `judge` and
+`commit`, `split` and `requeue` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
+frontmatter and the last line `$@`: the run removes them, then adds its inputs as `## <name>` sections.
+`workflows/ship.js` adds the evidence rule and the SHIP or FIX answer rule of the review challenge itself, so a template
+edit cannot remove them. It also adds the `respond` answer rules of the handoff and implement turns. In the same way,
+`workflows/campaign.js` adds the `respond` answer rule of `split` and `requeue`. The judge rubric is fixed: its eight
+answers, in question order, make the score. `judge` and `commit` hold their own `respond` answer rules. A run uses the
+templates as they were when it started.
 
 Workflow scripts get every template of `prompts/` as `prompts.<name>`, and the agent profiles of `agents/`. A run
 uses the profiles as they were when it started.

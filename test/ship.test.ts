@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newRunId } from "../src/run.ts";
 import { TASK } from "../src/task.ts";
 import {
+	COMMIT,
 	detached,
 	FakeModel,
 	git,
@@ -88,12 +89,14 @@ async function saveRun(kind: string, version: number, input: SavedInput = { inpu
 const worktreeOf = (id: string | undefined) => join(runs(), id ?? "missing", "worktree");
 const progress = /^(research|plan|judge|round \d: (implement|review))$/;
 const FIXED = "# Demo\n\nHello world\n";
-const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|failed), [0-9a-f]+$/;
+const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|failed), [0-9a-f]+ on \S+$/;
 const TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash"];
 
 // The tool of the harness host, before the tools of the packages in Pi's settings.
 const HARNESS_TOOLS = ["subagent", "codemode"];
-const answers = (kind: string) => (["verdict", "judge", "implement", "handoff"].includes(kind) ? ["respond"] : []);
+
+const answers = (kind: string) =>
+	["verdict", "judge", "commit", "implement", "handoff"].includes(kind) ? ["respond"] : [];
 
 const NOTES = [
 	"#1 planner 0: Handoff 1: one word changes.",
@@ -148,15 +151,11 @@ describe("workflows ship", () => {
 		expect(result).not.toHaveProperty("extra");
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-parse", "HEAD^")).toBe(start);
-		expect(git(worktree, "branch", "--show-current")).toBe(`ship/${run.id}`);
-		expect(git(worktree, "log", "-1", "--format=%B")).toBe(
-			[
-				"Fix the README typo",
-				"# Fix the README typo\n\nThe README says wrold.",
-				"4 FAIL README.md:3 adds a line the work item does not need",
-				"Rounds: 2\nJudge: 0.83",
-			].join("\n\n"),
-		);
+		expect(result.branch).toBe(COMMIT.branch);
+		expect(report[0]).toMatch(/ on fix\/readme-typo$/);
+		expect(git(worktree, "branch", "--show-current")).toBe(COMMIT.branch);
+		expect(git(repo, "branch", "--list", `ship/${run.id}`)).toBe("");
+		expect(git(worktree, "log", "-1", "--format=%B")).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
 		expect(report[0]).toContain(git(worktree, "rev-parse", "--short", "HEAD"));
 		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(`${FIXED}Thanks.\n`);
 
@@ -178,6 +177,7 @@ describe("workflows ship", () => {
 			"review",
 			"verdict",
 			"judge",
+			"commit",
 		]);
 
 		for (const call of calls) {
@@ -233,6 +233,9 @@ describe("workflows ship", () => {
 			`## change\n${patch.replace("round-1", "round-2")}\n${patch.replace("round-1", "round-2-fix")}\n`,
 		);
 		expect(run.model.find("judge")?.prompt).toMatch(new RegExp(`## base\\n${start}\\n\\n## head\\n[0-9a-f]{40}$`));
+		expect(run.model.find("commit")?.prompt).toMatch(
+			/^Write the commit message[\s\S]*Answer with respond: branch, subject and body\.$/,
+		);
 	});
 
 	it("gives every session the tools of the piDurable entries in Pi's packages, which close with the host", async () => {
@@ -299,6 +302,7 @@ export default function ({ events }) {
 			"review",
 			"verdict",
 			"judge",
+			"commit",
 		]);
 
 		for (const call of run.model.calls)
@@ -394,7 +398,7 @@ export default function ({ events }) {
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: repo });
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout[1]).toMatch(SHIPPED);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "verdict", "judge"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "verdict", "judge", "commit"]);
 	});
 
 	it("sends a failed turn again on resume, with Pi's retry settings", async () => {
@@ -417,6 +421,7 @@ export default function ({ events }) {
 			"review",
 			"verdict",
 			"judge",
+			"commit",
 		]);
 	});
 
@@ -479,7 +484,9 @@ export default function ({ events }) {
 		]);
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-parse", "HEAD^")).toBe(develop);
-		expect(git(worktree, "log", "-1", "--format=%B")).toBe("Fix the README typo\n\nFix the README typo\n\nRounds: 1");
+		expect(git(worktree, "log", "-1", "--format=%B")).toBe("Fix the README typo");
+		expect(git(worktree, "branch", "--show-current")).toBe(`ship/${run.id}`);
+		expect(run.model.count("commit")).toBe(0);
 		expect(git(remote, "branch", "--list", "ship/*")).toBe("");
 
 		const owned = await workflows(["ship", "--repo", "octocat/calibre", "Fix the README typo"], {
@@ -500,8 +507,75 @@ export default function ({ events }) {
 
 		expect(run.code).toBe(0);
 		expect(existsSync(join(root, "gh.log"))).toBe(false);
-		expect(git(repo, "branch", "--list", `ship/${run.id}`)).toContain(`ship/${run.id}`);
+		expect(git(repo, "branch", "--list", COMMIT.branch)).toContain(COMMIT.branch);
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD^")).toBe(start);
+	});
+
+	it("renames the branch to the --branch name, with a suffix when that name exists", async () => {
+		git(repo, "branch", "docs/typo");
+
+		const run = await workflows(["ship", "--json", "--branch", "docs/typo", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED] },
+		});
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(result.branch).toBe("docs/typo-2");
+		expect(report).toEqual([expect.stringMatching(/ on docs\/typo-2$/)]);
+		expect(git(worktreeOf(run.id), "branch", "--show-current")).toBe("docs/typo-2");
+		expect(git(repo, "rev-parse", "docs/typo")).toBe(start);
+		expect(git(repo, "branch", "--format=%(refname:short)")).toBe("docs/typo\ndocs/typo-2\nmain");
+	});
+
+	it("keeps the run branch when the --branch name is not valid", async () => {
+		const run = await workflows(["ship", "--branch", "bad..name", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED] },
+		});
+
+		expect(run.code).toBe(0);
+		expect(run.stdout).toEqual([
+			`run ${run.id}`,
+			expect.stringMatching(new RegExp(` on ship/${run.id}$`)),
+			`branch bad..name is not a valid branch name; kept ship/${run.id}`,
+		]);
+		expect(git(worktreeOf(run.id), "branch", "--show-current")).toBe(`ship/${run.id}`);
+	});
+
+	it("keeps the run branch when the judge name conflicts with an existing branch", async () => {
+		git(repo, "branch", "fix");
+
+		const run = await workflows(["ship", "--json", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED] },
+		});
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(result.branch).toBe(`ship/${run.id}`);
+		expect(report).toEqual([
+			expect.stringMatching(new RegExp(` on ship/${run.id}$`)),
+			`branch fix/readme-typo is in conflict with an existing branch; kept ship/${run.id}`,
+		]);
+		expect(git(worktreeOf(run.id), "branch", "--show-current")).toBe(`ship/${run.id}`);
+	});
+
+	it("uses the work item subject and keeps the run branch when the commit answer has no subject", async () => {
+		const run = await workflows(["ship", "--json", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED], commit: { branch: "x", subject: " ", body: "" } },
+		});
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(result).toMatchObject({ status: "shipped", branch: `ship/${run.id}` });
+		expect(result.score).toBeCloseTo(5 / 6);
+		expect(report).toEqual([expect.stringMatching(new RegExp(`judge 0\\.83, [0-9a-f]+ on ship/${run.id}$`))]);
+		const worktree = worktreeOf(run.id);
+		expect(git(worktree, "log", "-1", "--format=%B")).toBe("Fix the README typo");
+		expect(git(worktree, "branch", "--show-current")).toBe(`ship/${run.id}`);
+		expect(git(repo, "branch", "--list", "x")).toBe("");
 	});
 
 	it("replaces package prompts with the prompts of a --prompts folder", async () => {
@@ -551,7 +625,7 @@ export default function ({ events }) {
 		expect(run.code).toBe(0);
 		const { result } = JSON.parse(run.stdout[1] ?? "");
 		expect(result).toMatchObject({ status: "shipped", rounds: 1, runId: expect.any(String) });
-		expect(git(worktreeOf(result.runId), "branch", "--show-current")).toBe(`ship/${result.runId}`);
+		expect(git(worktreeOf(result.runId), "branch", "--show-current")).toBe(COMMIT.branch);
 		expect(git(worktreeOf(result.runId), "rev-parse", "HEAD~1")).toBe(start);
 		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
 		expect(git(repo, "status", "--porcelain")).toBe("");
@@ -618,9 +692,11 @@ describe("workflows show", () => {
 			...asks("reviewer", 2),
 			call("sh git rev-parse HEAD"),
 			"judge",
-			...asks("judge", 1),
+			...asks("judge", 2),
 			call(`sh sh -c git reset -q --soft "\\$1" && git commit -q -m "\\$2" squash ${start.slice(0, 17)}`),
 			call("sh git rev-parse --short HEAD"),
+			// The command is cut at 80 characters.
+			call("sh sh -c cur=\\$\\(git branch --show-current\\).{42}"),
 			expect.stringMatching(SHIPPED),
 		]);
 
@@ -776,13 +852,13 @@ describe("workflows resume of ship runs", () => {
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout).toEqual([`run ${first.id}`, expect.stringMatching(SHIPPED)]);
 		expect(resumed.stderr).toEqual(["round 1: implement", "round 1: review", "judge"]);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "verdict", "judge"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "verdict", "judge", "commit"]);
 		expect(resumed.model.find("implement")?.prompt).toContain("## plan\nHandoff 1: ");
 		expect(resumed.model.find("implement")?.prompt.startsWith(`${memory(1)}Implement this plan`)).toBe(true);
 		const worktree = worktreeOf(first.id);
 		expect(git(worktree, "rev-parse", "HEAD^")).toBe(start);
-		expect(git(worktree, "log", "-1", "--format=%B")).toMatch(/^Fix the README typo\n\n# Fix the README typo\n\n/);
-		expect(git(repo, "branch", "--list", "ship/*").split("\n")).toHaveLength(1);
+		expect(git(worktree, "log", "-1", "--format=%B")).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
+		expect(git(repo, "branch", "--format=%(refname:short)")).toBe(`${COMMIT.branch}\nmain`);
 		expect(git(repo, "worktree", "list").split("\n")).toHaveLength(2);
 
 		const again = await workflows(["resume", first.id ?? ""], { cwd: root });
@@ -818,7 +894,7 @@ describe("workflows resume of ship runs", () => {
 
 		const resumed = await workflows(["resume", stopped.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
 		expect(resumed.code).toBe(0);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "verdict", "judge"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "verdict", "judge", "commit"]);
 	});
 
 	it("prints the phase of a session that a later turn interrupted", async () => {
@@ -834,6 +910,41 @@ describe("workflows resume of ship runs", () => {
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
 		expect(resumed.code).toBe(0);
 		expect(resumed.stderr).toEqual(["plan", "round 1: implement", "round 1: review", "judge"]);
+	});
+
+	it("runs the rename step again on resume after the rename was done", async () => {
+		const hook = join(repo, ".git", "hooks", "reference-transaction");
+		const gate = join(root, "gate");
+		// The rename moves the branch, then points HEAD at it: the gate stops after the HEAD update.
+		await writeFile(
+			hook,
+			`#!/bin/sh
+refs=$(cat)
+[ "$1" = committed ] || exit 0
+case "$refs" in *refs/heads/${COMMIT.branch}*) ;; *) exit 0 ;; esac
+touch "${gate}.reached"
+while [ ! -f "${gate}.open" ]; do sleep 0.02; done
+`,
+		);
+		await chmod(hook, 0o755);
+		const interrupt = new AbortController();
+		const pending = workflows(["ship", "Fix the README typo"], { cwd: repo, interrupt, script: { edits: [FIXED] } });
+
+		while (!existsSync(`${gate}.reached`)) await new Promise((resolve) => setTimeout(resolve, 10));
+		interrupt.abort();
+		const first = await pending;
+		await writeFile(`${gate}.open`, "");
+		expect(first.code).toBe(130);
+		const worktree = worktreeOf(first.id);
+		expect(git(worktree, "branch", "--show-current")).toBe(COMMIT.branch);
+
+		await rm(hook);
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: repo });
+		expect(resumed.code).toBe(0);
+		expect(resumed.model.calls).toEqual([]);
+		expect(resumed.stdout).toEqual([`run ${first.id}`, expect.stringMatching(/ on fix\/readme-typo$/)]);
+		expect(git(worktree, "branch", "--show-current")).toBe(COMMIT.branch);
+		expect(git(repo, "branch", "--format=%(refname:short)")).toBe(`${COMMIT.branch}\nmain`);
 	});
 
 	it("continues a Git step interrupted between the implement and review sessions", async () => {
@@ -866,9 +977,9 @@ describe("workflows resume of ship runs", () => {
 
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: repo });
 		expect(resumed.code).toBe(0);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "verdict", "judge"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "verdict", "judge", "commit"]);
 		expect(resumed.model.find("review")?.prompt).toContain("## reply\nI fixed the typo in README.md.");
 		expect(resumed.model.find("review")?.prompt.startsWith(`${memory(2)}Perform a deep code quality audit`)).toBe(true);
-		expect(git(worktreeOf(first.id), "log", "--format=%s")).toBe("Fix the README typo\ninitial");
+		expect(git(worktreeOf(first.id), "log", "--format=%s")).toBe(`${COMMIT.subject}\ninitial`);
 	});
 });
