@@ -89,6 +89,50 @@ async function commitOf(repository: string, ref: string): Promise<string> {
 }
 
 /**
+ * The branch name of the commit subject `subject`: `feat(pi): Show the runs` gives `feat/show-the-runs`. The words
+ * after the type keep at most 48 characters, cut at a word end. Empty when the subject has no letter or digit.
+ */
+export function branchOf(subject: string): string {
+	const conventional = /^([a-z]+)(?:\([^)]*\))?!?:(.*)$/i.exec(subject.trim());
+	const words = (conventional?.[2] ?? subject).toLowerCase().match(/[a-z0-9]+/g) ?? [];
+	let slug = "";
+
+	for (const word of words) {
+		const next = slug === "" ? word : `${slug}-${word}`;
+
+		if (next.length > 48 && slug !== "") break;
+		slug = next.slice(0, 48);
+	}
+
+	if (slug === "") return "";
+
+	return conventional?.[1] === undefined ? slug : `${conventional[1].toLowerCase()}/${slug}`;
+}
+
+/**
+ * Renames the branch `from` of the worktree at `path` to `to`, or to `to-2`, `to-3`... when `to` exists, and returns
+ * the branch that the worktree is on. A worktree that is not on `from` keeps its branch, so a repeat after the rename
+ * returns the new name. Undefined when Git refuses the name, such as `feat/x` while a branch `feat` exists. `signal`
+ * stops the Git commands, which `git` and `gitSucceeds` cannot do.
+ */
+export async function renameBranch(
+	path: string,
+	from: string,
+	to: string,
+	signal: AbortSignal,
+): Promise<string | undefined> {
+	const succeeds = async (...args: string[]) => (await run("git", args, path, signal)).code === 0;
+	const current = (await run("git", ["branch", "--show-current"], path, signal)).stdout.trim();
+
+	if (current !== from) return current;
+	let name = to;
+
+	for (let n = 2; await succeeds("show-ref", "--verify", "--quiet", `refs/heads/${name}`); n++) name = `${to}-${n}`;
+
+	return (await succeeds("branch", "-m", name)) ? name : undefined;
+}
+
+/**
  * A worktree at `path` on `branch`, created from `start` when the branch is new. Safe to repeat after an interruption
  * at any point: an existing worktree is kept, and a partial one is replaced. The repository's checkout stays untouched.
  */

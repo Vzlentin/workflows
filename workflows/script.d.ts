@@ -17,7 +17,10 @@ type Meta = {
 			label?: string;
 		}
 	>;
-	/** Adds `--repo` and `--base`, and runs the script in a new worktree. */
+	/**
+	 * Adds `--repo`, `--base` and `--branch`, and runs the script in a new worktree on `--branch` or `<wf>/<run-id>`. A
+	 * result with a `subject` renames `<wf>/<run-id>` to the name of `subject`.
+	 */
 	worktree?: boolean;
 	/** The exit code of each `result.status`. Any other status exits 0. */
 	exit?: Record<string, number>;
