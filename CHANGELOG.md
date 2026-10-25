@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/Vzlentin/workflows/compare/v0.4.1...v0.4.2) (2026-10-25)
+
+
+### Features
+
+* publish the Pi extension as @vzlentin/pi-workflows ([#57](https://github.com/Vzlentin/workflows/issues/57)) ([55ca140](https://github.com/Vzlentin/workflows/commit/55ca1407a470204c927d8bfc9ef03b65c1933ae0))
+
 ## [0.4.1](https://github.com/Vzlentin/workflows/compare/v0.4.0...v0.4.1) (2026-10-25)
 
 
