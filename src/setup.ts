@@ -5,6 +5,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -17,6 +18,7 @@ import {
 	installCommand,
 	newerThanRange,
 } from "./harness.ts";
+import { releaseInstallLock, takeInstallLock, waitInstallLockFree } from "./install-lock.ts";
 
 const NAME = join("@vzlentin", "workflows");
 
@@ -71,38 +73,70 @@ export function fixPrefix(dir: string): string | undefined {
 	}
 }
 
-/**
- * Checks harness for the package in `dir`. When it is missing or older than the range and `dir` is a top-level global
- * install, it installs harness into the prefix of `dir` and checks again. A newer harness is never replaced. Returns
- * the error line that remains, or undefined when harness fits.
- */
-export function ensureHarness(dir: string): string | undefined {
-	if (harnessProblem(dir) === undefined) return undefined;
-	const prefix = globalPrefix(dir);
+/** The folder of harness's install lock, `$XDG_STATE_HOME/harness/install.lock`. */
+function harnessLock(): string {
+	return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "harness", "install.lock");
+}
+
+/** True when harness for the package in `dir` is missing or older than the range. */
+function needsInstall(dir: string): boolean {
+	if (harnessProblem(dir) === undefined) return false;
 	const version = harnessVersion(dir);
 
-	if (prefix !== undefined && (version === undefined || !newerThanRange(version, harnessRange()))) {
-		const command = installCommand(harnessRange(), prefix);
-		process.stderr.write(`workflows: installing ${HARNESS}: ${command}\n`);
+	return version === undefined || !newerThanRange(version, harnessRange());
+}
+
+/**
+ * Installs harness into the prefix of `dir` under harness's install lock. It first waits while a live process holds the
+ * lock. When harness is missing or older than the range and `dir` is a top-level global install, it takes the lock,
+ * checks again, installs harness only when it is still needed, and releases the lock. A newer harness is never replaced.
+ */
+async function installHarness(dir: string): Promise<void> {
+	const lock = harnessLock();
+	await waitInstallLockFree(lock);
+	const prefix = globalPrefix(dir);
+
+	if (prefix === undefined || !needsInstall(dir)) return;
+	await takeInstallLock(lock);
+
+	try {
+		if (!needsInstall(dir)) return;
+		process.stderr.write(`workflows: installing ${HARNESS}: ${installCommand(harnessRange(), prefix)}\n`);
 		const result = runNpm(["install", "-g", "--prefix", prefix, `${HARNESS}@${harnessRange()}`]);
 
 		if (result.status !== 0) process.stderr.write(`${result.stdout ?? ""}${result.stderr ?? ""}`);
+	} finally {
+		releaseInstallLock(lock);
+	}
+}
+
+/**
+ * Checks harness for the package in `dir`: it installs harness when needed (`installHarness`), and checks again. Returns
+ * the error line that remains, or undefined when harness fits. It never throws: a lock error is a warning, and the
+ * check goes on.
+ */
+export async function ensureHarness(dir: string): Promise<string | undefined> {
+	try {
+		await installHarness(dir);
+	} catch (error) {
+		process.stderr.write(`workflows: setup failed: ${error instanceof Error ? error.message : String(error)}\n`);
 	}
 
 	return harnessProblem(dir) === undefined ? undefined : harnessProblem(dir, fixPrefix(dir));
 }
 
 /**
- * Sets up the package in `dir` when it is a top-level global install: it ensures harness, runs harness's setup for its
- * own Pi extension, sets the entry `workflows` in harness's `entries.json`, so a host that starts before any
- * `workflows` command runs workflows, and runs harness's setup for `dir`, which registers `<dir>/pi` in Pi. harness's
- * setup keeps a stamp for each package version and path, and writes it only when `pi` worked, so a later run is cheap
- * and a failed one tries again. It never throws: an error is a warning.
+ * Sets up the package in `dir` when it is a top-level global install: it ensures harness, runs harness's setup, which
+ * installs the Pi package `@vzlentin/pi-agents` at the version of harness, sets the entry `workflows` in harness's
+ * `entries.json`, so a host that starts before any `workflows` command runs workflows, and runs harness's setup for
+ * `dir`, which installs the Pi package `@vzlentin/pi-workflows` at the version of `dir`. harness's setup skips a Pi
+ * package that Pi already lists, keeps a stamp for each package version and path, and writes it only when `pi` worked,
+ * so a later run is cheap and a failed one tries again. It never throws: an error is a warning.
  */
 export async function setup(dir: string): Promise<void> {
 	try {
 		if (globalPrefix(dir) === undefined) return;
-		const problem = ensureHarness(dir);
+		const problem = await ensureHarness(dir);
 
 		if (problem !== undefined) {
 			process.stderr.write(`${problem}\n`);
@@ -115,9 +149,9 @@ export async function setup(dir: string): Promise<void> {
 		if (harness === undefined) return;
 		const pi = await import("@vzlentin/harness/setup");
 		const entries = await import("@vzlentin/harness/entries");
-		pi.setupOnce(harness);
+		pi.setupOnce(harness, "@vzlentin/pi-agents");
 		entries.setEntry("workflows", ENTRY);
-		pi.setupOnce(dir);
+		pi.setupOnce(dir, "@vzlentin/pi-workflows");
 	} catch (error) {
 		process.stderr.write(`workflows: setup failed: ${error instanceof Error ? error.message : String(error)}\n`);
 	}

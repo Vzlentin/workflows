@@ -1,7 +1,14 @@
 {
-	"name": "@vzlentin/workflows-pi",
-	"private": true,
+	"name": "@vzlentin/pi-workflows",
+	"version": "0.4.1",
 	"description": "The workflow tool of workflows in Pi",
+	"keywords": [
+		"pi-package"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Vzlentin/workflows.git"
+	},
 	"type": "module",
 	"pi": {
 		"extensions": [
@@ -13,5 +20,8 @@
 		"@earendil-works/pi-coding-agent": "*",
 		"@earendil-works/pi-tui": "*",
 		"typebox": "*"
+	},
+	"publishConfig": {
+		"access": "public"
 	}
 }

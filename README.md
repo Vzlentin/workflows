@@ -25,15 +25,18 @@ This gives you the `workflows` command, and the `workflow` tool in Pi. workflows
 with the `harness` command and harness's `subagent` tool in Pi. There is only one copy of harness.
 
 The setup runs after the install with npm 11. npm 12 runs no install script by default, so your first `workflows`
-command does the setup. It registers the `pi` folder of each global package in Pi with `pi install <path>`. npm shows
+command does the setup. It installs the Pi packages `@vzlentin/pi-agents` and `@vzlentin/pi-workflows` from npm with
+`pi install npm:<package>@<version>`. npm shows
 the output of the install only with `--foreground-scripts`, so check the result with `workflows list` and `pi list`.
 When you install with `--prefix`, give the same prefix to every `npm` command.
+
+With only Pi, run `pi install npm:@vzlentin/pi-workflows` and start `pi`: the extension asks to install workflows.
 
 ### Update and remove
 
 ```sh
-npm install -g @vzlentin/workflows@latest                           # update
-pi remove "$(realpath "$(npm root -g)")/@vzlentin/workflows/pi"    # remove
+npm install -g @vzlentin/workflows@latest                           # update: the setup pins the extension to this version
+pi remove npm:@vzlentin/pi-workflows                               # remove
 npm uninstall -g @vzlentin/workflows
 ```
 
@@ -71,8 +74,9 @@ XDG_STATE_HOME=/tmp/wf-dev/state XDG_CONFIG_HOME=/tmp/wf-dev/config node src/cli
 
 `node src/cli.ts` runs the command of this checkout. Give it its own `XDG_STATE_HOME` and `XDG_CONFIG_HOME`, so its
 runs, hosts and harness entry do not mix with those of the installed `workflows`. The checkout runs from its TypeScript
-source. To release, merge the release PR `release: <version>` that CI keeps open: CI then publishes that version. The Pi extension is in `pi/`, and runs
-`dist/cli.js`: to try it from the checkout, run `npm run build`, then `pi install "$PWD/pi"`.
+source. To release, merge the release PR `release: <version>` that CI keeps open: CI then publishes both packages at that version. The Pi extension is in `pi/`, and runs
+`dist/cli.js` of the global workflows install: to try it from the checkout, run `npm run build`, then `npm link`,
+then `pi install ./pi`.
 
 The tests use a fake model provider, a fake `gh`, a fake `workflows` command for the Pi plugin, and temporary Git
 repositories. They do not call a real model or open Pi.
