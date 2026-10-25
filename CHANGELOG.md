@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/Vzlentin/workflows/compare/v0.3.4...v0.4.0) (2026-10-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* name the run branch from the commit subject, and drop the campaign requeue ([#54](https://github.com/Vzlentin/workflows/issues/54))
+
+### Features
+
+* name the run branch from the commit subject, and drop the campaign requeue ([#54](https://github.com/Vzlentin/workflows/issues/54)) ([d5e2512](https://github.com/Vzlentin/workflows/commit/d5e2512453a1cde2e504a087dba6bd96399b3a6c))
+* show background runs in Pi, add /workflows, and give a failed campaign item its patch ([#53](https://github.com/Vzlentin/workflows/issues/53)) ([c691e32](https://github.com/Vzlentin/workflows/commit/c691e324222742a385a52a16c98a8885a84aa0e4))
+* steps with their time and result in run output and show, list --pick, wait from the first step, and no Herdr workspace of its own ([#50](https://github.com/Vzlentin/workflows/issues/50)) ([348c62f](https://github.com/Vzlentin/workflows/commit/348c62ffb29929a3ad51fbe001a13ca5fff2a613))
+
 ## [0.3.4](https://github.com/Vzlentin/workflows/compare/v0.3.3...v0.3.4) (2026-10-24)
 
 
