@@ -314,6 +314,9 @@ workflows check review
 names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command,
 such as `usage: workflows show <run-id> [--calls | --agents] [--json]`, and exits 2.
 
+`workflows --version` prints the version of the package, from its `package.json`, and exits 0. It ignores any other
+argument. Like every command of a global install, it runs the [setup](#setup) first.
+
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
 project file adds to the package files, and replaces the package file of the same name in the same folder.
@@ -1112,7 +1115,21 @@ the npm folder counts.
 
 When it finds no install, the `workflow` tool has the description
 `workflows is not installed: npm install -g @vzlentin/workflows@<version>`, with the version of `pi/package.json`,
-and gives that text as its result. `/workflows` shows that text as an error. Nothing else is registered.
+and gives that text as its result. `/workflows` shows that text as an error.
+
+Without workflows, the extension also offers to install it at each session start, but only in Pi's interactive mode
+(mode `tui`): print, JSON and RPC modes show no dialog. The session does not wait for the offer. When the file
+`$XDG_STATE_HOME/workflows/install.declined` exists, there is no offer. Otherwise the extension takes the install lock
+`$XDG_STATE_HOME/workflows/install.lock`, as the section "Install lock" of the harness spec says, and looks up
+workflows again; when it finds workflows, it releases the lock and shows nothing. Then it runs `npm prefix -g` and
+asks `workflows is not installed`: `Install @vzlentin/workflows@<version> with npm install -g into <prefix>?`. On no,
+it writes the empty file `install.declined`, so the dialog does not come back; delete the file to get the dialog
+again. On yes, it runs `npm install -g @vzlentin/workflows@<version>`, looks up workflows again, runs
+`<install>/dist/cli.js --version` with the Node that runs Pi, which runs the [setup](#setup), and shows
+`workflows installed, run /reload`. `npm prefix -g`, `npm install -g` and `--version` run with `PATH` without the
+`node_modules/.bin` folders, and without `sudo`. When a step fails, the extension shows an error with the last 20
+lines of the command output (stdout, then stderr) and `Run by hand: npm install -g @vzlentin/workflows@<version>`, and
+the next session start asks again. The extension releases the lock in all cases.
 
 The extension runs each workflow as a child process of the `workflows` command of the install that it found
 (`<install>/dist/cli.js`), with the Node that runs Pi, in the session's directory, always with `--json`. With `background`, the call returns at once, and the extension posts the outcome of the run to the

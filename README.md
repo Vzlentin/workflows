@@ -30,6 +30,8 @@ command does the setup. It installs the Pi packages `@vzlentin/pi-agents` and `@
 the output of the install only with `--foreground-scripts`, so check the result with `workflows list` and `pi list`.
 When you install with `--prefix`, give the same prefix to every `npm` command.
 
+With only Pi, run `pi install npm:@vzlentin/pi-workflows` and start `pi`: the extension asks to install workflows.
+
 ### Update and remove
 
 ```sh

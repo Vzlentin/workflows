@@ -27,7 +27,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { agentLines, agentRows, callTree, treeLines } from "./calls.ts";
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
-import { ENTRY, harnessDir } from "./harness.ts";
+import { ENTRY, harnessDir, manifest } from "./harness.ts";
 import * as script from "./meta.ts";
 import { display, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
@@ -127,6 +127,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		SAVE,
 		PRUNE,
 		script.CHECK,
+		"workflows --version",
 		"workflows",
 	]
 		.map((line, index) => `${index === 0 ? "usage: " : "       "}${line}`)
@@ -144,6 +145,12 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 
 		if (command === undefined) {
 			for (const line of await script.listScripts(terminal)) terminal.stdout(line);
+
+			return 0;
+		}
+
+		if (command === "--version") {
+			terminal.stdout(manifest(join(PACKAGE, "package.json"))?.version ?? "");
 
 			return 0;
 		}

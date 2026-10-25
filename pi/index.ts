@@ -1,13 +1,15 @@
 /**
  * The Pi extension: the `workflow` tool and the `/workflows` command. Each run is a child process of the `workflows`
  * command of the global workflows install that the extension finds, so a run started in Pi is a normal run that
- * `workflows resume` also continues. Without that install, the tool and the command give the command that installs it.
+ * `workflows resume` also continues. Without that install, the tool and the command give the command that installs it,
+ * and an interactive session offers to install it.
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { promisify } from "node:util";
 import { type Static, Type } from "@earendil-works/pi-ai";
 import type {
 	AgentToolResult,
@@ -21,12 +23,14 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Value } from "typebox/value";
-import { waitInstallLockFree } from "./install-lock.ts";
+import { releaseInstallLock, stateFolder, takeInstallLock, waitInstallLockFree } from "./install-lock.ts";
 import { MARKS, parseRun, RunView } from "./run-view.ts";
 
 const WORKFLOWS_PACKAGE = "@vzlentin/workflows";
 const WorkflowsManifest = Type.Object({ name: Type.Literal(WORKFLOWS_PACKAGE) });
 const OwnManifest = Type.Object({ version: Type.String() });
+const CommandOutput = Type.Object({ stdout: Type.String(), stderr: Type.String() });
+const runFile = promisify(execFile);
 
 const SAVE = Type.Object(
 	{
@@ -712,7 +716,10 @@ function isWorkflows(folder: string): boolean {
 	}
 }
 
-/** Registers the tool and `/workflows` without workflows: each one gives the command that installs it. */
+/**
+ * Registers the tool and `/workflows` without workflows: each one gives the command that installs it. A session start in
+ * the TUI offers the install.
+ */
 function registerMissing(pi: Api): void {
 	const { version } = Value.Parse(
 		OwnManifest,
@@ -735,6 +742,75 @@ function registerMissing(pi: Api): void {
 		description: message,
 		handler: async (_args, ctx) => ctx.ui.notify(message, "error"),
 	});
+
+	// Pi waits for each handler, so the session starts while the dialog and the install run.
+	pi.on("session_start", (_event, ctx) => {
+		if (ctx.mode !== "tui") return;
+		void offerInstall(ctx.ui, version);
+	});
+}
+
+/**
+ * Asks to install workflows `version` with npm, and installs it when the answer is yes. It does nothing when the user
+ * declined before (`install.declined` in the state folder) or when workflows is found under the install lock. It shows
+ * each failure as an error and never rejects.
+ */
+async function offerInstall(ui: Pick<ExtensionUIContext, "confirm" | "notify">, version: string): Promise<void> {
+	const declined = join(stateFolder(), "install.declined");
+	const spec = `${WORKFLOWS_PACKAGE}@${version}`;
+
+	let held = false;
+
+	if (existsSync(declined)) return;
+
+	try {
+		await takeInstallLock();
+		held = true;
+
+		if (existsSync(declined) || workflowsFolder() !== undefined) return;
+		const prefix = (await runUserCommand("npm", ["prefix", "-g"])).trim();
+
+		if (!(await ui.confirm("workflows is not installed", `Install ${spec} with npm install -g into ${prefix}?`))) {
+			writeFileSync(declined, "");
+
+			return;
+		}
+
+		await runUserCommand("npm", ["install", "-g", spec]);
+		const folder = workflowsFolder();
+
+		if (folder === undefined) throw new Error(`npm installed ${spec}, but workflows is not found`);
+		await runUserCommand(process.execPath, [join(folder, "dist", "cli.js"), "--version"]);
+		ui.notify("workflows installed, run /reload", "info");
+	} catch (error) {
+		const output = Value.Check(CommandOutput, error) ? `${error.stdout}\n${error.stderr}` : "";
+		const reason = error instanceof Error ? error.message : String(error);
+
+		const lines = (output.trim() === "" ? reason : output)
+			.split("\n")
+			.filter((line) => line.trim() !== "")
+			.slice(-20);
+
+		ui.notify([...lines, `Run by hand: npm install -g ${spec}`].join("\n"), "error");
+	} finally {
+		if (held) releaseInstallLock();
+	}
+}
+
+/** Runs `file` with `PATH` without the `node_modules/.bin` folders, as the setup of harness does, and gives its stdout. */
+async function runUserCommand(file: string, args: string[]): Promise<string> {
+	const path = (process.env.PATH ?? "")
+		.split(delimiter)
+		.filter((entry) => !entry.endsWith(join("node_modules", ".bin")))
+		.join(delimiter);
+
+	const { stdout } = await runFile(file, args, {
+		encoding: "utf8",
+		env: { ...process.env, PATH: path },
+		maxBuffer: 64 * 1024 * 1024,
+	});
+
+	return stdout;
 }
 
 function register(pi: Api, command: readonly string[]): void {

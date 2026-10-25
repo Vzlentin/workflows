@@ -319,6 +319,15 @@ describe("the setup", () => {
 		expect(await log("pi.log")).toEqual([...once, await piInstall("@vzlentin/pi-workflows", dir)]);
 	});
 
+	it("prints the version of the package after the setup with --version", async () => {
+		const dir = await installWorkflows();
+		await installHarness();
+		const { version } = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+
+		expect(await workflows(dir, {}, "--version")).toEqual({ code: 0, stdout: `${version}\n`, stderr: "" });
+		expect(await log("pi.log")).toEqual(await piInstalls(dir));
+	});
+
 	it("does not install the Pi package of workflows when Pi lists the pi folder of a checkout", async () => {
 		const dir = await installWorkflows();
 		await installHarness();
