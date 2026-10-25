@@ -324,6 +324,7 @@ export const SessionsDoc = defineDocFamily<{ sessions: OpenedSession[] }, null>(
 	version: 1,
 	scope: "session",
 	family: true,
+	checkpointWhen: () => false,
 	initial: () => ({ sessions: [] }),
 });
 
