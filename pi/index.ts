@@ -1,13 +1,13 @@
 /**
  * The Pi extension: the `workflow` tool and the `/workflows` command. Each run is a child process of the `workflows`
- * command of the install that holds this folder, so a run started in Pi is a normal run that `workflows resume` also
- * continues.
+ * command of the global workflows install that the extension finds, so a run started in Pi is a normal run that
+ * `workflows resume` also continues. Without that install, the tool and the command give the command that installs it.
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { basename } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
 import { type Static, Type } from "@earendil-works/pi-ai";
 import type {
 	AgentToolResult,
@@ -21,7 +21,12 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Value } from "typebox/value";
+import { waitInstallLockFree } from "./install-lock.ts";
 import { MARKS, parseRun, RunView } from "./run-view.ts";
+
+const WORKFLOWS_PACKAGE = "@vzlentin/workflows";
+const WorkflowsManifest = Type.Object({ name: Type.Literal(WORKFLOWS_PACKAGE) });
+const OwnManifest = Type.Object({ version: Type.String() });
 
 const SAVE = Type.Object(
 	{
@@ -128,11 +133,6 @@ function progressLines(line: string): string[] | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-/** The `workflows` command of the install that holds this folder, with this Node. */
-function cli(): string[] {
-	return [process.execPath, fileURLToPath(new URL("../dist/cli.js", import.meta.url))];
 }
 
 /**
@@ -646,7 +646,98 @@ class Watcher {
 	}
 }
 
-export default function workflows(pi: Api, command: readonly string[] = cli()) {
+/**
+ * Registers the tool, the command, the watcher and the renderer that run `command`. Without `command`, it waits until
+ * the install lock is free, and runs `dist/cli.js` of the workflows install it finds with the Node of Pi. With
+ * `command`, it registers at once.
+ */
+export default async function workflows(pi: Api, command?: readonly string[]): Promise<void> {
+	if (command !== undefined) {
+		register(pi, command);
+
+		return;
+	}
+
+	await waitInstallLockFree();
+	const folder = workflowsFolder();
+
+	if (folder === undefined) registerMissing(pi);
+	else register(pi, [process.execPath, join(folder, "dist", "cli.js")]);
+}
+
+/**
+ * The folder of the global workflows install: the package of the first `workflows` on `PATH`, else the package in the
+ * global `node_modules` of npm. A folder counts only when its `package.json` names `@vzlentin/workflows`.
+ */
+function workflowsFolder(): string | undefined {
+	const onPath = pathFolder();
+
+	if (onPath !== undefined && isWorkflows(onPath)) return onPath;
+	const global = npmFolder();
+
+	return global !== undefined && isWorkflows(global) ? global : undefined;
+}
+
+/**
+ * The package of the first `workflows` on `PATH`: `<package>/dist/cli.js` is the real path of the command. On Windows
+ * the command is a `.cmd` shim whose real path is not `dist/cli.js`, so there only `npmFolder` finds the install.
+ */
+function pathFolder(): string | undefined {
+	try {
+		const dirs = (process.env.PATH ?? "").split(delimiter).filter((dir) => dir !== "");
+		const found = dirs.map((dir) => join(dir, "workflows")).find((path) => existsSync(path));
+
+		return found === undefined ? undefined : dirname(dirname(realpathSync(found)));
+	} catch {
+		return undefined;
+	}
+}
+
+/** The workflows package in the global `node_modules` of npm. */
+function npmFolder(): string | undefined {
+	try {
+		const root = execFileSync("npm", ["root", "-g"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+
+		return join(root.trim(), WORKFLOWS_PACKAGE);
+	} catch {
+		return undefined;
+	}
+}
+
+function isWorkflows(folder: string): boolean {
+	try {
+		return Value.Check(WorkflowsManifest, JSON.parse(readFileSync(join(folder, "package.json"), "utf8")));
+	} catch {
+		return false;
+	}
+}
+
+/** Registers the tool and `/workflows` without workflows: each one gives the command that installs it. */
+function registerMissing(pi: Api): void {
+	const { version } = Value.Parse(
+		OwnManifest,
+		JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")),
+	);
+
+	const message = `workflows is not installed: npm install -g ${WORKFLOWS_PACKAGE}@${version}`;
+
+	pi.registerTool({
+		name: "workflow",
+		label: "Workflow",
+		description: message,
+		parameters: Type.Object({}),
+		async execute() {
+			return { content: [{ type: "text", text: message }], details: undefined };
+		},
+	});
+
+	pi.registerCommand("workflows", {
+		description: message,
+		handler: async (_args, ctx) => ctx.ui.notify(message, "error"),
+	});
+}
+
+function register(pi: Api, command: readonly string[]): void {
 	const watcher = new Watcher(pi, command);
 	pi.registerTool(workflowTool(command, watcher));
 	pi.registerCommand("workflows", workflowsCommand(command));

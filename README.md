@@ -72,7 +72,8 @@ XDG_STATE_HOME=/tmp/wf-dev/state XDG_CONFIG_HOME=/tmp/wf-dev/config node src/cli
 `node src/cli.ts` runs the command of this checkout. Give it its own `XDG_STATE_HOME` and `XDG_CONFIG_HOME`, so its
 runs, hosts and harness entry do not mix with those of the installed `workflows`. The checkout runs from its TypeScript
 source. To release, merge the release PR `release: <version>` that CI keeps open: CI then publishes that version. The Pi extension is in `pi/`, and runs
-`dist/cli.js`: to try it from the checkout, run `npm run build`, then `pi install "$PWD/pi"`.
+`dist/cli.js` of the global workflows install: to try it from the checkout, run `npm run build`, then `npm link`,
+then `pi install ./pi`.
 
 The tests use a fake model provider, a fake `gh`, a fake `workflows` command for the Pi plugin, and temporary Git
 repositories. They do not call a real model or open Pi.

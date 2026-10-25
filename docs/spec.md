@@ -1086,10 +1086,25 @@ project of the host and `PI_SESSION_ID` to the conversation ID.
 
 ## Pi
 
-The `pi/` folder of the package is the Pi extension that gives Pi the `workflow` tool. The setup of a global
-install registers it, see [Setup](#setup). It runs each workflow as a child process of the `workflows` command of
-the same install (`../dist/cli.js` from the extension), with the Node that runs Pi, in the session's directory, always
-with `--json`. With `background`, the call returns at once, and the extension posts the outcome of the run to the
+The `pi/` folder is the Pi package `@vzlentin/pi-workflows`, the Pi extension that gives Pi the `workflow` tool and
+the `/workflows` command. Its `package.json` has the keyword `pi-package`, no `dependencies`, the Pi packages and
+`typebox` as peer dependencies at `"*"`, and the version of `@vzlentin/workflows`; release-please sets both versions.
+The root package also publishes `pi/`, and the setup of a global install registers it by path, see [Setup](#setup).
+
+When Pi loads the extension, the extension first waits until the install lock `$XDG_STATE_HOME/workflows/install.lock`
+is free: the folder is missing, or its `pid` file names a process that does not exist. A missing or bad pid counts
+as held for 10 s after the mtime of the folder. The wait polls every 200 ms, with no timeout, and does not take the
+lock. Then it finds the global workflows install: the package of the first `workflows` on `PATH` (two folders above
+the real path of the command), else `@vzlentin/workflows` in the folder that `npm root -g` prints. A folder counts
+only when its `package.json` has the name `@vzlentin/workflows`. On Windows, the command on `PATH` is a shim, so only
+the npm folder counts.
+
+When it finds no install, the `workflow` tool has the description
+`workflows is not installed: npm install -g @vzlentin/workflows@<version>`, with the version of `pi/package.json`,
+and gives that text as its result. `/workflows` shows that text as an error. Nothing else is registered.
+
+The extension runs each workflow as a child process of the `workflows` command of the install that it found
+(`<install>/dist/cli.js`), with the Node that runs Pi, in the session's directory, always with `--json`. With `background`, the call returns at once, and the extension posts the outcome of the run to the
 session as a message, see [Background runs in Pi](#background-runs-in-pi). So a run that starts in Pi is a normal run of the project of the session's directory, and `workflows resume`
 follows or continues it from a terminal.
 
