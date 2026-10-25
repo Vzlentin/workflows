@@ -12,7 +12,7 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { selectRepository } from "./git.ts";
+import { gitSucceeds, selectRepository } from "./git.ts";
 import { instructions } from "./prompts.ts";
 import { type Io, type Run, UsageError, withUsage } from "./run.ts";
 import { type Bundle, loadBundle, META, type RunBundle } from "./script.ts";
@@ -50,21 +50,26 @@ async function readItem(argument: string | undefined, io: Io, noun: string): Pro
 }
 
 /**
- * The selected repository and its start commit, and the worktree path of `run` on the branch `<scriptName>/<run-id>`.
+ * The selected repository and its start commit, and the worktree path of `run` on the new branch `args.branch`, or
+ * `<scriptName>/<run-id>`.
  */
 async function prepareWorktree(
 	scriptName: string,
-	args: { readonly repo: string | undefined; readonly base: string },
+	args: { readonly repo: string | undefined; readonly base: string; readonly branch: string | undefined },
 	run: Run,
 ): Promise<{ repository: string; start: string; branch: string; worktree: string }> {
 	const repository = await selectRepository(run.cwd, args.repo, args.base, join(run.directory, "repository"));
+	const { branch = `${scriptName}/${run.id}` } = args;
 
-	return {
-		repository: repository.path,
-		start: repository.start,
-		branch: `${scriptName}/${run.id}`,
-		worktree: join(run.directory, "worktree"),
-	};
+	if (!(await gitSucceeds(repository.path, "check-ref-format", "--branch", branch))) {
+		throw new UsageError(`--branch ${branch} is not a valid branch name`);
+	}
+
+	if (await gitSucceeds(repository.path, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`)) {
+		throw new UsageError(`--branch ${branch} exists`);
+	}
+
+	return { repository: repository.path, start: repository.start, branch, worktree: join(run.directory, "worktree") };
 }
 
 const ARG_TYPE = Type.Union([
@@ -87,7 +92,10 @@ export type Meta = {
 	/** One line for `workflows` and `--help`; empty when the script has none. */
 	readonly description: string;
 	readonly args: Readonly<Record<string, ArgSpec>>;
-	/** The run gets `--repo` and `--base`, a worktree on `<wf>/<run-id>`, and `args.start`. */
+	/**
+	 * The run gets `--repo`, `--base` and `--branch`, a worktree on `--branch` or `<wf>/<run-id>`, and `args.start`. A
+	 * result with a `subject` renames `<wf>/<run-id>`.
+	 */
 	readonly worktree: boolean;
 	/** The exit code of each `result.status`; any other status exits 0. */
 	readonly exit: Readonly<Record<string, number>>;
@@ -102,6 +110,9 @@ const WORKTREE = Type.Object({ worktree: Type.Optional(Type.Boolean()) });
 const EXIT = Type.Object({ exit: Type.Optional(Type.Record(Type.String(), Type.Integer())) });
 const SPEC_TYPE = Type.Object({ type: ARG_TYPE });
 const START = Type.Object({ start: Type.Optional(Type.String()) });
+
+/** The arguments that `meta.worktree` gives a script. */
+const WORKTREE_ARGS = ["repo", "base", "branch", "start"];
 
 const SPEC_FLAGS = Type.Object({
 	required: Type.Optional(Type.Boolean()),
@@ -133,7 +144,7 @@ function checkMeta(value: unknown, name: string): asserts value is Partial<Meta>
 	if (!Value.Check(WORKTREE, value)) throw fail("meta.worktree is not a boolean");
 
 	if (!Value.Check(EXIT, value)) throw fail("meta.exit does not map statuses to integer exit codes");
-	const reserved = new Set(["prompts", "help", "json", ...(value.worktree === true ? ["repo", "base", "start"] : [])]);
+	const reserved = new Set(["prompts", "help", "json", ...(value.worktree === true ? WORKTREE_ARGS : [])]);
 	let positionals = 0;
 
 	for (const [arg, spec] of Object.entries(value.args ?? {})) {
@@ -277,7 +288,7 @@ export function usageOf(name: string, meta: Meta): string {
 
 	for (const [arg, spec] of entries) if (!spec.positional) words.push(flagUsage(arg, spec));
 
-	if (meta.worktree) words.push("[--repo <repository>]", "[--base <branch>]");
+	if (meta.worktree) words.push("[--repo <repository>]", "[--base <branch>]", "[--branch <name>]");
 	words.push("[--prompts <folder>]");
 
 	for (const [arg, spec] of entries) {
@@ -518,10 +529,11 @@ type Args = {
 	readonly bundle: RunBundle;
 	readonly repo: string | undefined;
 	readonly base: string;
+	readonly branch: string | undefined;
 };
 
 /** Everything a run needs, saved before execution starts. */
-export type ScriptInput = Omit<Args, "repo" | "base"> & {
+export type ScriptInput = Omit<Args, "repo" | "base" | "branch"> & {
 	readonly runId: string;
 	/** The run ID of the root run: the run itself, or the root run of the caller of a child run. */
 	readonly root: string;
@@ -553,6 +565,7 @@ async function parseValues(meta: Meta, argv: readonly string[], io: Io, usage: s
 	if (meta.worktree) {
 		options.repo = { type: "string" };
 		options.base = { type: "string" };
+		options.branch = { type: "string" };
 	}
 
 	for (const [arg, spec] of entries) options[arg] = { type: spec.type === "boolean" ? "boolean" : "string" };
@@ -612,6 +625,7 @@ async function parseValues(meta: Meta, argv: readonly string[], io: Io, usage: s
 		prompts: stringOption(values.prompts),
 		repo: stringOption(values.repo),
 		base: stringOption(values.base) ?? "main",
+		branch: stringOption(values.branch),
 	};
 }
 
@@ -642,24 +656,24 @@ export const USAGE = "workflows <workflow | file.js | -> [<text>] [--<arg> <valu
 export async function parse([word = "", ...argv]: readonly string[], io: Io): Promise<Args> {
 	const found = await findScript(word, io);
 	const meta = await readMeta(found.source, found.name);
-	const { args, prompts, repo, base } = await parseValues(meta, argv, io, usageOf(found.name, meta));
+	const { args, prompts, repo, base, branch } = await parseValues(meta, argv, io, usageOf(found.name, meta));
 	const bundle = prompts === undefined ? found.bundle : await loadBundle(io.cwd, resolve(io.cwd, prompts));
 	const failed = problem(found.source, found.name, bundle, false);
 
 	if (failed !== undefined) throw new Error(failed);
 
-	return { name: found.name, args, meta, bundle: { ...bundle, main: found.source }, repo, base };
+	return { name: found.name, args, meta, bundle: { ...bundle, main: found.source }, repo, base, branch };
 }
 
 /** The input saved before execution starts; with `meta.worktree`, it selects the repository of the new worktree. */
 export async function prepare(
-	{ repo, base, ...args }: Args,
+	{ repo, base, branch, ...args }: Args,
 	run: Run & { readonly root?: string },
 ): Promise<ScriptInput> {
 	const own = { ...args, runId: run.id, root: run.root ?? run.id, runDir: run.directory, cwd: run.cwd };
 
 	if (!args.meta.worktree) return own;
-	const { worktree, ...prepared } = await prepareWorktree(args.name, { repo, base }, run);
+	const { worktree, ...prepared } = await prepareWorktree(args.name, { repo, base, branch }, run);
 
 	return { ...own, worktree: { ...prepared, path: worktree } };
 }
@@ -697,7 +711,7 @@ export async function childInput(
 
 	if (source === undefined) throw new Error(`no workflow ${name}`);
 	const meta = await readMeta(source, name);
-	const { repo, base = "main", prompts = {}, ...given } = request.args;
+	const { repo, base = "main", branch, prompts = {}, ...given } = request.args;
 
 	if (!Value.Check(OBJECT, prompts)) throw new Error(`run ${name}: prompts is not an object of prompt texts`);
 
@@ -720,5 +734,8 @@ export async function childInput(
 		return { ...input, runId: run.id, root: run.root, runDir: run.directory, cwd: run.cwd };
 	}
 
-	return prepare({ ...input, repo: String(repo), base: String(base) }, run);
+	return prepare(
+		{ ...input, repo: String(repo), base: String(base), branch: branch === undefined ? branch : String(branch) },
+		run,
+	);
 }

@@ -10,6 +10,7 @@ import { createRegistry, defineExtension, defineTask, Harness, type TaskId } fro
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { REMINDER } from "@vzlentin/harness/answer";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { branchOf } from "../src/git.ts";
 import { programStatus } from "../src/progress.ts";
 import { CallDoc } from "../src/script.ts";
 import {
@@ -1096,7 +1097,7 @@ return [one.reply, two.reply].join(", ")`,
 		const ship = await workflows(["ship", "--help"], { cwd: root });
 		expect([ship.code, ship.stdout[0]]).toEqual([
 			0,
-			"usage: workflows ship [--rounds <n>] [--branch <value>] [--repo <repository>] [--base <branch>] [--prompts <folder>] [<item.md> | <text>] [--background] [--json]",
+			"usage: workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [<item.md> | <text>] [--background] [--json]",
 		]);
 		const own = await workflows(["count.js", "--help"], { cwd: root });
 		expect(own.stdout).toEqual([
@@ -1176,5 +1177,14 @@ return [one.reply, two.reply].join(", ")`,
 		]);
 		expect([started.code, started.stdout]).toEqual([1, []]);
 		expect(existsSync(join(root, "state", "workflows", "runs"))).toBe(false);
+	});
+});
+
+describe("branchOf", () => {
+	it("names a branch from the type and the words of a commit subject", () => {
+		expect(branchOf("feat(pi)!: Show the Runs, in Pi")).toBe("feat/show-the-runs-in-pi");
+		expect(branchOf("Fix the README typo")).toBe("fix-the-readme-typo");
+		expect(branchOf(`fix: ${"word ".repeat(20)}`)).toBe(`fix/${Array(9).fill("word").join("-")}`);
+		expect(branchOf("docs: ...")).toBe("");
 	});
 });

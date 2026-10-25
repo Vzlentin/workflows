@@ -23,7 +23,7 @@ research session:   research (documents the code as it is)
 plan session:       plan (with the research)  ->  challenge  ->  handoff
 implement session:  implement the handoff                      <- round n (at most --rounds)
 review session:     review  ->  challenge (SHIP or FIX)  ->  handoff (on FIX, back to implement)
-judge session:      fixed rubric, then commit message and branch, after SHIP
+judge session:      fixed rubric, then commit message, after SHIP
 ```
 
 Each box is a new session.
@@ -45,7 +45,8 @@ The work item comes from one argument or from stdin:
 - Without an argument, the work item is read from stdin.
 
 A work item without a non-empty line fails before the run starts. `--base` defaults to `main` and `--rounds`
-defaults to 3. `--branch <name>` gives the name of the branch that a shipped run ends on.
+defaults to 3. `--branch <name>` gives the name of the run's branch: see
+[Branch name](#branch-name).
 
 `--prompts <folder>`, relative to the current directory, gives prompts for this run: each `<name>.md` in the folder
 replaces the package prompt `prompts/<name>.md`, in the same template format. A missing folder, or a file with no
@@ -71,9 +72,9 @@ does today, with `path:line` references, the patterns and tests of that area, an
 does not suggest changes, and if it has a subagent tool, can spawn subagents to search in parallel. The plan prompt
 gets its reply as its `research` section, after the work item. The research prompt has no memory and gives no notes.
 
-The work item ships onto the branch `ship/<run-id>`, in a worktree in the run directory, and a shipped run renames that
-branch at the end. The selected repository's checkout, index and local edits stay unchanged. Ship does not push and does
-not open a pull request.
+The work item ships onto the branch `ship/<run-id>`, or `--branch`, in a worktree in the run directory, and a shipped run renames that
+branch at the end: see [Branch name](#branch-name). The selected repository's checkout, index and local edits stay
+unchanged. Ship does not push and does not open a pull request.
 
 After each implement session, the run stages all changes in the worktree:
 
@@ -106,8 +107,8 @@ is 0. Otherwise the score is the fraction of questions 3 to 8 that pass. If the 
 `respond`, the command prints `judge failed on <subject>: <error>` on stderr.
 
 When the judge answered, the same judge session then gets the `commit` prompt, and answers through `respond` with
-`branch`, `subject` and `body`: a commit message that follows the commit rules of the repository, and a short branch
-name. The run squashes the work into one commit with the message `<subject>`, an empty line, then `<body>`:
+`subject` and `body`: a commit message that follows the commit rules of the repository. The run squashes the work
+into one commit with the message `<subject>`, an empty line, then `<body>`:
 
 ```text
 fix: correct the README typo
@@ -119,14 +120,8 @@ If the judge failed, or the message turn fails or answers an empty `subject`, th
 item alone: its first non-empty line without leading `#`. A failed message turn prints nothing and does not change the
 score.
 
-After the squash, the run renames `ship/<run-id>` to the `--branch` name, or else to the judge's `branch`. It renames
-only when the worktree is on `ship/<run-id>`, so a repeat of the step after the rename keeps the branch it renamed to.
-When the name exists, the run adds `-2`, `-3` and so on, until the name is free. No name, an empty judge `branch` or a
-judge answer that was not used keeps `ship/<run-id>`. A name that Git rejects, because it is not a valid branch name or
-it is in conflict with an existing branch, such as `docs/typo` when `docs` exists, keeps `ship/<run-id>`, and the
-command prints a second report line with the reason: `branch <name> is not a valid branch name; kept ship/<run-id>`
-or `branch <name> is in conflict with an existing branch; kept ship/<run-id>`. The command prints `shipped
-<subject> in <n> rounds, judge <score or failed>, <commit> on <branch>` and exits 0.
+The command prints `shipped <subject> in <n> rounds, judge <score or failed>, <commit>`, then the line `branch <name>`
+of [Branch name](#branch-name), and exits 0.
 
 The result of the run, which `--json` prints, has `status` and `rounds`; `head`, `subject`, the subject of the
 squashed commit, and `branch`, the branch that the worktree ends on, when shipped; `score`, `answers`, the eight answers in question order, and `findings`, the finding
@@ -148,21 +143,20 @@ and `--prompts` work as for `ship`. `--rounds` applies to each work item. Errors
 When the judge of an item fails, the command prints `judge failed on <item subject>: <error>` on stderr, as `ship` does.
 
 In the step `split`, a planner session splits the goal into work items with the `split` prompt, and answers through
-`respond`. The step logs the number of items, such as `2 items`. Then each
-work item ships in turn, in one worktree on the branch `campaign/<run-id>`: the research, the plan, the rounds, the
+`respond` with a `subject`, a Conventional Commit subject for the whole goal, and the work items. The step logs the
+number of items, such as `2 items`. Then each
+work item ships in turn, in one worktree on the branch `campaign/<run-id>`, or `--branch`: the research, the plan, the rounds, the
 review, the judge and the squash of `workflows/ship.js`, from the commit that the item before it made. So each shipped
 item is one commit, with the commit message that its own judge wrote, as in `ship`. No `ship/<run-id>` branch is made,
 and nothing is merged or pushed. Each item is a ship child run, with its own
 run ID and run directory, in the store of the campaign run: see `run` in [the script API](#the-script-api).
 
-After each shipped item, also the last one, a new planner session gets the goal, the shipped item and the remaining
-items with the `requeue` prompt. Its answer through `respond` is the new queue, which can be empty. The campaign ends
-when the queue is empty. The queue has no length limit: a requeue can add items each time.
+The items of the split do not change while they ship. Only a failed item changes them: see below.
 
 The command prints `run <run-id>`, the step `split`, then the step `item <n>/<total>: <subject>` on stderr before the
 steps of each item.
-`<total>` is the number of items known when the item starts: the shipped items, this item and the queue. A requeue can
-change it. The steps and log lines of the item's ship run are under the item step, indented by 2:
+`<total>` is the number of items known when the item starts: the items that ran before it, this item, and the items of
+the split after it. The steps and log lines of the item's ship run are under the item step, indented by 2:
 
 ```text
 ✓ split  12s
@@ -184,39 +178,31 @@ change it. The steps and log lines of the item's ship run are under the item ste
 See [Progress](#progress). At resume, the first steps of the item it continues can come before the item step. On a
 terminal and in Pi they move under the item step when it comes.
 
-When the queue is empty, a new planner session gets the goal and the subjects of the shipped commits, in order, with
-the `branch` prompt, and answers the branch name through `respond`. This turn prints no step. The run renames
-`campaign/<run-id>` to that name, as `ship` renames `ship/<run-id>`: only when the worktree is on `campaign/<run-id>`, so
-a repeat of the step after the rename keeps the branch it renamed to, and with `-2`, `-3` and so on when the name
-exists. A failed turn or an empty name keeps `campaign/<run-id>`. A name that Git rejects, because it is not a valid
-branch name or it is in conflict with an existing branch, keeps `campaign/<run-id>`, and the command prints a second
-report line with the reason: `branch <name> is not a valid branch name; kept campaign/<run-id>` or `branch <name> is in
-conflict with an existing branch; kept campaign/<run-id>`.
-
-- When the queue is empty, the command prints `done <subject> in <n> item(s), <commit> on <branch>` with the commit of
-  the last item and the branch that the worktree ends on, then one line `  <commit> <commit subject>, judge <score or
-  failed>` for each shipped item, in order, and exits 0.
+- When every item shipped, the command prints `done <subject> in <n> item(s), <commit>` with the commit of the last
+  item, then one line `  <commit> <commit subject>, judge <score or failed>` for each shipped item, in order, then the
+  line `branch <name>` of [Branch name](#branch-name), with the `subject` of the last split, and exits 0.
 
 - When an item is blocked or stopped, or ships with a judge score of 0, the item fails. A missing score, when the judge
   failed, is not a failure. The run resets the worktree with `git reset --hard` to the commit that the item started
   from: the last shipped commit, or the start commit when no item shipped. Then a new planner session gets the
   `rundown` prompt with the inputs `goal`, `shipped` (the shipped items with their commits, as JSON), `item`, `status`
-  (the ship status, or `shipped with judge score 0`), `reply`, `handoff`, `findings`, `memory`, `queue` (the
+  (the ship status, or `shipped with judge score 0`), `reply`, `handoff`, `findings`, `memory`, `remaining` (the
   remaining items, as JSON) and `patch` (the path of `item-<n>/round-<rounds of the item>.patch`, when that file
-  exists). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and a proposed queue.
+  exists). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and proposed items.
   The run asks the question of [Input](#input): the question summary, which is the rundown, `Suggestions:` with one
-  `- <suggestion>` line each, `Proposed queue:` with the numbered items, and `Patch of the failed item: <path>` when
+  `- <suggestion>` line each, `Proposed items:` with the numbered items, and `Patch of the failed item: <path>` when
   the patch exists, then `How should the campaign continue? Answer stop, or nothing, to end it.` The command prints
   the question and exits 3 with the status `waiting`. Continue with `workflows resume <run-id> --answer <text>`.
 - When the answer is `stop`, in any case, or empty, the command prints `stopped <subject> at item <n>: <worktree>`,
-  then the rundown, and exits 1. The branch keeps its name `campaign/<run-id>`.
-- Any other answer goes to a new planner session with the `split` prompt and the inputs `goal`, `shipped`, `rundown`
-  (the whole question summary) and `answer`. Its queue replaces the queue on the same branch, and the next item has
-  the next item number. A later failure asks again. The campaign ends as a campaign with no failed item.
+  then the rundown, and exits 1. The branch keeps its name `campaign/<run-id>`, or `--branch`.
+- Any other answer goes back to the step `split`: a new planner session with the `split` prompt and the inputs
+  `goal`, `shipped`, `rundown` (the whole question summary) and `answer`. Its items replace the remaining items on the
+  same branch, and the next item has the next item number. A later failure asks again. The campaign ends as a campaign
+  with no failed item.
 
 `<subject>` is the first non-empty line of the goal without leading `#`. `<n>` in the `done` line counts the shipped
 items. The number of the item step counts every item that ran. The result is
-`{ "status": "done", "head", "branch", "items": [{ "item", "result" }] }` or
+`{ "status": "done", "subject", "head", "branch", "items": [{ "item", "result" }] }` or
 `{ "status": "stopped", "items", "rundown" }`, with the `ship` result of each shipped item, plus the failed item in a
 stopped result, and its child run ID as `result.runId`. `head` is the commit of the last item, and `branch` is the
 branch that the worktree ends on.
@@ -364,8 +350,9 @@ export const meta = {
   - At most one argument is `positional`. It also works as `--<name>`; giving it both ways is bad usage. Two
     positional values fail with `give the <label> as one argument`.
   - A `required` argument without a value fails with `missing <label>`. `label` defaults to the argument name.
-- `worktree: true` adds `--repo` and `--base`, with the rules of [Ship](#ship). The run gets a new worktree on the
-  branch `<wf>/<run-id>` in the run directory, runs the script there, and gives it `args.start`, the start commit.
+- `worktree: true` adds `--repo` and `--base`, with the rules of [Ship](#ship), and `--branch`. The run gets a new
+  worktree on the branch `--branch` or `<wf>/<run-id>` in the run directory, runs the script there, and gives it `args.start`, the
+  start commit. At the end, the run names the branch: see [Branch name](#branch-name).
 - `exit` maps `result.status` to the exit code. Any other status, or a result without `status`, exits 0. The status
   `waiting` always exits 3, whatever `exit` says. See [Input](#input).
 
@@ -389,6 +376,25 @@ quote in it hides no later field. `check` also checks the `model:` line of each 
 by name or as `default` for a `session` or `agent` call, and fails with `<name> uses the agent profile <profile>, whose
 model <provider>/<id> Pi's model registry does not have`. `check` prints `ok <name>` and exits 0, or prints the first
 problem and exits 1. It starts no run and writes nothing.
+
+### Branch name
+
+A run with a worktree of its own whose result has a string `subject` names its branch: a shipped `ship` returns the
+commit subject, and a done `campaign` the subject of the last split. A child run without a worktree of its own, such
+as each item of a campaign, names no branch. The name is `subject` as a branch name: the Conventional Commit type,
+`/`, then the lowercase words of the description joined with `-`, at most 48 characters cut at a word end. A subject
+without a type gives the words alone. `feat(pi): Show the runs` gives `feat/show-the-runs`, and `Fix the README typo`
+gives `fix-the-readme-typo`. A subject without a letter or digit keeps `<wf>/<run-id>`.
+
+The run renames `<wf>/<run-id>` to the name, and adds `-2`, `-3` and so on when the name exists. It renames only when
+the worktree is on `<wf>/<run-id>`, so a repeat after the rename keeps the branch it renamed to, and a run on a
+`--branch` branch keeps it. The result gets `branch`, the branch that the worktree ends on, and the report gets the
+last line `branch <branch>`. A name that Git refuses, such as `docs/typo` when a branch `docs` exists, keeps
+`<wf>/<run-id>`, and the last line is `branch <name> is in conflict with an existing branch; kept <wf>/<run-id>`.
+
+`--branch <name>` puts the worktree on the new branch `<name>` in place of `<wf>/<run-id>`, from the start of the run.
+A value that is not a valid branch name fails before the run starts with `--branch <name> is not a valid branch name`,
+and a branch that exists with `--branch <name> exists`.
 
 ### Output
 
@@ -462,11 +468,12 @@ continues it. It runs in the same host, and its `phase` and `log` lines go to th
 current step: see [Progress](#progress). It prints no `run` or report line. Its sessions belong to the child run, and
 its end ends them as the end of a run does: see [Runs in the harness host](#runs-in-the-harness-host).
 
-- The child's args are the defaults of its `meta.args`, then `args`, without `repo`, `base` and `prompts`. They are not
+- The child's args are the defaults of its `meta.args`, then `args`, without `repo`, `base`, `branch` and `prompts`. They are not
   checked against `meta`, so an undeclared arg reaches the script.
 - With `meta.worktree` and `args.repo`, the child gets a new worktree on `<name>/<child-id>` in its run directory, in
-  the repository of `args.repo` from the caller's directory, at `args.base` (default `main`), and `args.start`. Without
-  `args.repo`, or without `meta.worktree`, the child runs in the caller's directory, and `start` is an ordinary arg.
+  the repository of `args.repo` from the caller's directory, at `args.base` (default `main`), and `args.start`.
+  `args.branch` works as `--branch`. Without `args.repo`, or without `meta.worktree`, the child runs in the caller's
+  directory, and `start` is an ordinary arg.
   With `meta.worktree`, a `start` that is not a string fails the call with `run <name>: start is not a string`.
 - `args.prompts` maps prompt names to template texts. Each text, without frontmatter and the last `$@`, replaces that
   prompt in the child run only. A name with no prompt fails the call.
@@ -590,7 +597,7 @@ the host of that project from any directory.
 Resume continues the pending work in the host. For a script, see [Saved inputs and resume](#saved-inputs-and-resume).
 For `ship`, it uses the work item, repository, start commit, `workflows/ship.js`, prompts, profiles and round limit
 that the run saved before it started. `campaign` does the same with its goal and `workflows/campaign.js`: the split,
-the shipped items, the requeues, the rundown and the split after an answer are not run again. It does not read the work item file again, select or clone the
+the splits, the shipped items and the rundown are not run again. It does not read the work item file again, select or clone the
 repository again, or create another branch. Answered turns are not sent to the model again. A turn that was in
 progress is sent again.
 
@@ -1185,12 +1192,12 @@ task of the caller's run. A child run without a worktree can have an empty run d
 ## Prompts
 
 `prompts/` holds the Pi prompt templates `research`, `plan`, `challenge`, `handoff`, `implement`, `review`, `judge` and
-`commit`, `split`, `requeue`, `rundown` and `branch` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
+`commit`, `split` and `rundown` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
 frontmatter and the last line `$@`: the run removes them, then adds its inputs as `## <name>` sections.
 `workflows/ship.js` adds the evidence rule and the SHIP or FIX answer rule of the review challenge itself, so a template
 edit cannot remove them. It also adds the `respond` answer rules of the handoff and implement turns. In the same way,
-`workflows/campaign.js` adds the `respond` answer rule of `split` and `requeue`. The judge rubric is fixed: its eight
-answers, in question order, make the score. `judge`, `commit`, `rundown` and `branch` hold their own `respond` answer rules. A run uses the
+`workflows/campaign.js` adds the `respond` answer rule of `split`. The judge rubric is fixed: its eight
+answers, in question order, make the score. `judge`, `commit` and `rundown` hold their own `respond` answer rules. A run uses the
 templates as they were when it started.
 
 Workflow scripts get every template of `prompts/` as `prompts.<name>`, and the agent profiles of `agents/`. A run

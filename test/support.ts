@@ -179,9 +179,7 @@ export type Kind =
 	| "judge"
 	| "commit"
 	| "split"
-	| "requeue"
 	| "rundown"
-	| "branch"
 	| "reflect"
 	| "script"
 	| "result";
@@ -208,11 +206,9 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Implement this plan", "implement"],
 	["Perform a deep code quality audit", "review"],
 	["## Vocabulary", "judge"],
-	["Write the commit message and the branch name", "commit"],
+	["Write the commit message", "commit"],
 	["Split this goal into work items.", "split"],
-	["Update the work item queue", "requeue"],
 	["Give a rundown of the failed work item", "rundown"],
-	["Name the branch of this campaign", "branch"],
 	["Improve this prompt", "reflect"],
 	["Script", "script"],
 	// The outcome that a background run posts to the conversation of its `workflow` call.
@@ -239,12 +235,10 @@ export type Script = {
 	readonly judge?: Verdict | string | readonly (Verdict | string)[];
 	/** The `respond` answer of the commit message turn; a list gives one for each commit call. */
 	readonly commit?: Commit | readonly Commit[];
-	/** The work items of the split answer. */
-	readonly items?: readonly string[];
-	/** The queue of each requeue answer; a missing answer is an empty queue. */
-	readonly queues?: readonly (readonly string[])[];
-	/** The `respond` answer of the campaign branch turn. */
-	readonly branch?: string;
+	/** The work items of each split answer; a missing answer repeats the last one. */
+	readonly items?: readonly (readonly string[])[];
+	/** The subject of each split answer, `docs: readme` by default. */
+	readonly subject?: string;
 	/** The prompt that interrupts the run: Ctrl+C is pressed while it waits for its answer. */
 	readonly interruptAt?: { readonly kind: Kind; readonly nth: number };
 	/**
@@ -269,10 +263,9 @@ export const PASSING_JUDGE: Verdict = {
 	findings: ["4 FAIL README.md:3 adds a line the work item does not need"],
 };
 
-export type Commit = { readonly branch: string; readonly subject: string; readonly body: string };
+export type Commit = { readonly subject: string; readonly body: string };
 
 export const COMMIT: Commit = {
-	branch: "fix/readme-typo",
 	subject: "fix: correct the README typo",
 	body: "The README said wrold. It now says world.",
 };
@@ -436,13 +429,12 @@ export class FakeModel {
 			case "commit":
 				return this.#commit();
 			case "split":
-				return respond({ items: [...(this.#script.items ?? [])] });
-			case "requeue":
-				return respond({ items: [...(this.#script.queues?.[nth - 1] ?? [])] });
+				return respond({
+					subject: this.#script.subject ?? "docs: readme",
+					items: [...(this.#script.items?.[nth - 1] ?? this.#script.items?.at(-1) ?? [])],
+				});
 			case "rundown":
-				return respond({ rundown: `Rundown ${nth}: the item failed.`, suggestions: ["Split the item."], queue: [] });
-			case "branch":
-				return respond({ branch: this.#script.branch ?? "docs/readme" });
+				return respond({ rundown: `Rundown ${nth}: the item failed.`, suggestions: ["Split the item."], items: [] });
 			case "reflect": {
 				// The reply keeps the current text first, so that the prompt keeps its kind.
 				const current = /\n## current\n([\s\S]*?)\n\n## records\n/.exec(prompt)?.[1] ?? "";

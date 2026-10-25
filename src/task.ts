@@ -17,7 +17,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { ensureWorktree } from "./git.ts";
+import { branchOf, ensureWorktree, renameBranch } from "./git.ts";
 import { childInput, report, type ScriptInput, statusOf } from "./meta.ts";
 import { newRunId } from "./run.ts";
 import { addProgress, CallDoc, type Child, type Host, JSON_VALUE, ownerOf, runScript, SessionsDoc } from "./script.ts";
@@ -237,6 +237,30 @@ async function endSessions(
 	}
 }
 
+const NAMED = Type.Object({ subject: Type.String(), report: Type.Optional(Type.Array(Type.String())) });
+
+/**
+ * `result` of a run with a worktree of its own, with the branch that the worktree ends on. A result with a `subject`
+ * renames the branch `<wf>/<run-id>` to the name of `subject`, and gets `branch` and the report line `branch <name>`.
+ * A `--branch` worktree is not on `<wf>/<run-id>`, so it keeps its branch. Safe to repeat: a repeat finds the worktree
+ * on the new branch.
+ */
+async function named(input: ScriptInput, result: JsonValue, signal: AbortSignal): Promise<JsonValue> {
+	const { worktree } = input;
+
+	if (worktree === undefined || !Value.Check(NAMED, result)) return result;
+	const wanted = branchOf(result.subject);
+	const from = `${input.name}/${input.runId}`;
+	const renamed = wanted === "" ? worktree.branch : await renameBranch(worktree.path, from, wanted, signal);
+
+	const line =
+		renamed === undefined
+			? `branch ${wanted} is in conflict with an existing branch; kept ${from}`
+			: `branch ${renamed}`;
+
+	return { ...result, branch: renamed ?? from, report: [...(result.report ?? []), line] };
+}
+
 /**
  * The one phase: it runs the script, in the run's worktree when it has one. The phase may run again after an
  * interruption: saved calls do not run again, and Git steps must be safe to repeat. A failed phase, in a root run or a
@@ -268,7 +292,7 @@ async function runPhase(
 		if (worktree !== undefined)
 			await ensureWorktree(worktree.repository, worktree.path, worktree.branch, worktree.start);
 
-		const result = await runScript(runtime, context, cwd, host, {
+		const ran = await runScript(runtime, context, cwd, host, {
 			runId,
 			parent,
 			root,
@@ -280,6 +304,8 @@ async function runPhase(
 			child: (key, name, args) => startChild(definition, runtime, context, { input, cwd }, key, name, args),
 			restart: (key, ended) => restartChild(definition, runtime, context, key, ended),
 		});
+
+		const result = await named(input, ran, runtime.signal);
 
 		// A waiting run keeps its sessions for the task that gets the answer.
 		await endSessions(host, runtime, input, statusOf(result) !== "waiting", context);
@@ -305,7 +331,7 @@ async function runPhase(
 }
 
 /** The kind and version of the task of every script run. A run saved by another version cannot resume. */
-export const TASK = { name: "workflows.run", version: 14 } as const;
+export const TASK = { name: "workflows.run", version: 15 } as const;
 
 /** Whether the script task can continue the task `latest`. */
 export function current<R>(
