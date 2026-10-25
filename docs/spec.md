@@ -979,10 +979,15 @@ Two places run it:
 
 The steps:
 
-1. When harness is missing or older than the range, it prints `workflows: installing @vzlentin/harness: npm install -g
+1. It first waits while a live process holds harness's
+   [install lock](https://github.com/Vzlentin/harness/blob/main/docs/spec.md#install-lock), also when harness looks
+   installed. When harness is missing or older than the range, it takes the lock and checks harness again. When harness
+   is still missing or older than the range, it prints `workflows: installing @vzlentin/harness: npm install -g
    --prefix <prefix> @vzlentin/harness@<range>` and runs that command, with the npm of the install in an install
-   script, or the `npm` on `PATH`. It prints the output of npm on stderr only when npm fails. When harness still does
-   not fit, it prints the error line below, and stops.
+   script, or the `npm` on `PATH`. It prints the output of npm on stderr only when npm fails. It releases the lock, also
+   when the install fails. When harness still does not fit, it prints the error line below, and stops. When the lock
+   fails, for example when the state folder is not writable, it prints `workflows: setup failed: <message>` and checks
+   harness as without the lock.
 2. It runs harness's setup (`setupOnce` of `@vzlentin/harness/setup`) for the global harness with the Pi package
    `@vzlentin/pi-agents`, which runs `pi install npm:@vzlentin/pi-agents@<harness version>`, also when npm ran no
    install script of harness.

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,7 +15,7 @@ const HARNESS = join(CHECKOUT, "node_modules", "@vzlentin", "harness");
 
 /**
  * A fake npm: it logs its arguments, prints `npm_config_prefix` or else `NPM_GLOBAL_PREFIX` for `prefix`, as npm does,
- * and copies `NPM_INSTALLS` on install.
+ * and on install sleeps `NPM_DELAY_MS`, then copies `NPM_INSTALLS`.
  */
 const FAKE_NPM = `import { appendFileSync, cpSync } from "node:fs";
 import { join } from "node:path";
@@ -23,6 +23,7 @@ const args = process.argv.slice(2);
 appendFileSync(process.env.NPM_LOG, args.join(" ") + "\\n");
 if (args[0] === "prefix") console.log(process.env.npm_config_prefix ?? process.env.NPM_GLOBAL_PREFIX);
 if (args[0] === "install") {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.NPM_DELAY_MS ?? 0));
 	if (process.env.NPM_INSTALLS === undefined) process.exit(1);
 	cpSync(process.env.NPM_INSTALLS, join(args[3], "lib", "node_modules", "@vzlentin", "harness"), { recursive: true });
 }
@@ -145,6 +146,26 @@ const postinstall = (
 		npm_lifecycle_event: "postinstall",
 	},
 ) => node(join(dir, "scripts", "postinstall.js"), [], env);
+
+/** The folder of harness's install lock for the `XDG_STATE_HOME` of `node()`. */
+const LOCK = () => join(root, "state", "harness", "install.lock");
+
+/** Writes the install lock with the holder `pid`. */
+async function writeLock(pid: number) {
+	await mkdir(LOCK(), { recursive: true });
+	await writeFile(join(LOCK(), "pid"), String(pid));
+}
+
+/** The PID of a process that has exited. */
+async function deadPid(): Promise<number> {
+	const child = execFile(process.execPath, ["-e", ""]);
+	const pid = child.pid;
+	await new Promise((resolve) => child.once("exit", resolve));
+
+	if (pid === undefined) throw new Error("the child did not start");
+
+	return pid;
+}
 
 /** Runs the installed `workflows` command of the package in `dir`. */
 const workflows = (dir: string, env: Readonly<Record<string, string>>, ...args: string[]) =>
@@ -344,6 +365,69 @@ describe("the setup", () => {
 			stderr: `${installing}workflows needs @vzlentin/harness ^0.4.0: npm install -g @vzlentin/harness@^0.4.0\n`,
 		});
 		expect(await log("pi.log")).toEqual([]);
+		expect(existsSync(LOCK())).toBe(false);
+	});
+
+	it("waits while a live process holds the install lock, and does not install the harness that it installed", async () => {
+		const dir = await installWorkflows();
+		const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+
+		try {
+			if (holder.pid === undefined) throw new Error("the holder did not start");
+			await writeLock(holder.pid);
+			const running = workflows(dir, {}, "list");
+
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			await installHarness();
+			await rm(LOCK(), { recursive: true, force: true });
+
+			expect(await running).toEqual({ code: 0, stdout: "", stderr: "" });
+			expect((await log("npm.log")).filter((line) => line.startsWith("install"))).toEqual([]);
+		} finally {
+			holder.kill();
+		}
+	});
+
+	it("installs harness once when two commands set up at the same time", async () => {
+		const dir = await installWorkflows();
+		const env = { NPM_INSTALLS: HARNESS, NPM_DELAY_MS: "1000" };
+		const installing = `workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.4.0\n`;
+
+		const results = await Promise.all([workflows(dir, env, "list"), workflows(dir, env, "list")]);
+
+		expect(results.map(({ code }) => code)).toEqual([0, 0]);
+		expect(results.map(({ stderr }) => stderr).join("")).toBe(installing);
+		expect((await log("npm.log")).filter((line) => line.startsWith("install"))).toEqual([
+			`install -g --prefix ${PREFIX()} @vzlentin/harness@^0.4.0`,
+		]);
+	});
+
+	it("takes over an install lock whose holder is dead", async () => {
+		const dir = await installWorkflows();
+		await writeLock(await deadPid());
+
+		expect(await workflows(dir, { NPM_INSTALLS: HARNESS }, "list")).toEqual({
+			code: 0,
+			stdout: "",
+			stderr: `workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.4.0\n`,
+		});
+		expect(await log("npm.log")).toEqual([`install -g --prefix ${PREFIX()} @vzlentin/harness@^0.4.0`]);
+		expect(existsSync(LOCK())).toBe(false);
+	});
+
+	it("gives the prefix of the install in the fix command when the install lock fails", async () => {
+		const dir = await installWorkflows();
+		await mkdir(join(root, "state"), { recursive: true });
+		await writeFile(join(root, "state", "harness"), "");
+
+		expect(await workflows(dir, {}, "list")).toEqual({
+			code: 1,
+			stdout: "",
+			stderr:
+				`workflows: setup failed: ENOTDIR: not a directory, stat '${LOCK()}'\n` +
+				`workflows needs @vzlentin/harness ^0.4.0: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.4.0\n`,
+		});
+		expect((await log("npm.log")).filter((line) => line.startsWith("install"))).toEqual([]);
 	});
 
 	it("never replaces a harness that is newer than the range", async () => {
