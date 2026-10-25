@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/Vzlentin/workflows/compare/v0.4.0...v0.4.1) (2026-10-25)
+
+
+### Features
+
+* show the agents of a run in /workflows, and attach to the chosen one ([#55](https://github.com/Vzlentin/workflows/issues/55)) ([5d528e7](https://github.com/Vzlentin/workflows/commit/5d528e78dacdcae028ba5c2015f42a6a876f22c5))
+
 ## [0.4.0](https://github.com/Vzlentin/workflows/compare/v0.3.4...v0.4.0) (2026-10-25)
 
 
