@@ -17,11 +17,11 @@ import type {
 	ExtensionUIContext,
 	RegisteredCommand,
 	Theme,
-	ThemeColor,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Value } from "typebox/value";
+import { MARKS, parseRun, RunView } from "./run-view.ts";
 
 const SAVE = Type.Object(
 	{
@@ -164,7 +164,11 @@ function cliArgs({ name, script, resume, answer, save, args = {}, background }: 
 	return [name ?? "-", ...flags, ...json];
 }
 
-type Output = { readonly code: number | null; readonly stdout: readonly string[]; readonly stderr: readonly string[] };
+export type Output = {
+	readonly code: number | null;
+	readonly stdout: readonly string[];
+	readonly stderr: readonly string[];
+};
 
 /** Runs `command` with `args` in `cwd`; each stderr line goes to `progress`, and `signal` sends SIGINT, which detaches. */
 async function runCli(
@@ -322,12 +326,6 @@ function callLabel({ name, script, resume, save, args }: PartialCall): string {
 	return `${name} ${line.replace(/^#+/, "").trim().slice(0, 40)}`;
 }
 
-const MARKS = new Map<string, ThemeColor>([
-	["✓", "success"],
-	["◉", "accent"],
-	["✗", "error"],
-]);
-
 /**
  * The progress lines as the command drew them, with themed marks, then the report lines of a finished run, a line for a
  * run that started in the background, or the summary of a failed, detached or stopped one, or of one whose host stopped.
@@ -460,13 +458,21 @@ const LISTED = Type.Array(
 	Type.Object({ runId: Type.String(), workflow: Type.String(), status: Type.String(), title: Type.String() }),
 );
 
+const BINDINGS = {
+	up: "tui.select.up",
+	down: "tui.select.down",
+	confirm: "tui.select.confirm",
+	cancel: "tui.select.cancel",
+} as const;
+
 /**
- * The `/workflows` command: it lists the runs of the project with `workflows list --json`, and opens the chosen one with
- * `workflows attach` in Herdr, or says how to attach from another terminal.
+ * The `/workflows` command: it lists the runs of the project with `workflows list --json`, shows the chosen run in the
+ * run view, and opens the chosen agent with `workflows attach --conversation` in Herdr, or says how to attach from
+ * another terminal.
  */
 export function workflowsCommand(command: readonly string[]) {
 	return {
-		description: "Attach to a workflow run of this project, in Herdr",
+		description: "Show a workflow run of this project, and attach to one of its agents in Herdr",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const listed = await runCli(command, ["list", "--json"], ctx.cwd, {});
 			const runs = listed.code === 0 ? JSON.parse(listed.stdout.join("\n")) : undefined;
@@ -487,11 +493,25 @@ export function workflowsCommand(command: readonly string[]) {
 				runs.map((run) => [`${run.runId}  ${run.workflow}  ${run.status}  ${run.title}`, run.runId]),
 			);
 
-			const chosen = await ctx.ui.select("Attach to workflow run", [...lines.keys()]);
+			const chosen = await ctx.ui.select("Show workflow run", [...lines.keys()]);
 			const runId = chosen === undefined ? undefined : lines.get(chosen);
 
 			if (runId === undefined) return;
-			const hint = `Run in another terminal: workflows attach ${runId}`;
+
+			const conversation = await ctx.ui.custom<number | undefined>(
+				(tui, theme, keybindings, done) =>
+					new RunView({
+						read: async () => parseRun(await runCli(command, ["show", runId, "--agents", "--json"], ctx.cwd, {})),
+						render: () => tui.requestRender(),
+						theme,
+						matches: (data, binding) => keybindings.matches(data, BINDINGS[binding]),
+						done,
+					}),
+			);
+
+			if (conversation === undefined) return;
+			const attach = ["attach", runId, "--conversation", String(conversation)];
+			const hint = `Run in another terminal: workflows ${attach.join(" ")}`;
 
 			// `workflows attach` opens a Herdr pane only with HERDR_ENV.
 			if (!process.env.HERDR_ENV) {
@@ -500,7 +520,7 @@ export function workflowsCommand(command: readonly string[]) {
 				return;
 			}
 
-			const output = await runCli(command, ["attach", runId], ctx.cwd, {});
+			const output = await runCli(command, attach, ctx.cwd, {});
 
 			if (output.code !== 0) ctx.ui.notify(`${output.stderr.join("\n")}. ${hint}`, "error");
 		},

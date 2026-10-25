@@ -25,10 +25,11 @@ import { resolveProject } from "@vzlentin/harness/projects";
 import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { agentLines, agentRows, callTree, treeLines } from "./calls.ts";
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
 import { ENTRY, harnessDir } from "./harness.ts";
 import * as script from "./meta.ts";
-import { display, duration, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
+import { display, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
 import type { SavedCall } from "./script.ts";
 import { loadScripts, projectFolder } from "./script.ts";
@@ -89,8 +90,8 @@ const RESUME = "workflows resume <run-id> [--answer <text>] [--background] [--js
 const WAIT = "workflows wait <run-id> [--json]";
 const STOP = "workflows stop <run-id> [--json]";
 const LIST = "workflows list [--pick] [--json]";
-const SHOW = "workflows show <run-id> [--calls] [--json]";
-const ATTACH = "workflows attach <run-id> [<step>]";
+const SHOW = "workflows show <run-id> [--calls | --agents] [--json]";
+const ATTACH = "workflows attach <run-id> [<step>] [--conversation <id>]";
 const SAVE = "workflows save <run-id> <name> [--force]";
 const PRUNE = "workflows prune [--yes] [--install-hook] [--json]";
 
@@ -845,13 +846,6 @@ async function installHook(terminal: Terminal): Promise<number> {
 	return 0;
 }
 
-/** One call of `workflows show`, with the calls of its child run when it is a `run` call. */
-type Shown = Omit<SavedCall, "child"> & {
-	readonly label: string;
-	readonly mark: "✓" | "✗" | "◉";
-	readonly calls?: Shown[];
-};
-
 /** The footer lines and the JSON fields of a run that ended with `outcome` without a result. */
 function endOf(outcome: TaskOutcome<JsonValue>, title: string, id: string) {
 	const resume = `continue with: workflows resume ${id}`;
@@ -871,9 +865,20 @@ function endOf(outcome: TaskOutcome<JsonValue>, title: string, id: string) {
  * them, from the project store only.
  */
 async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
-	const withCalls = args.includes("--calls");
-	const rest = args.filter((arg) => arg !== "--calls");
-	const run = await savedRun(oneRunId(rest, SHOW), SHOW);
+	const { values, positionals } = withUsage(
+		() =>
+			parseArgs({
+				args: [...args],
+				options: { calls: { type: "boolean" }, agents: { type: "boolean" } },
+				allowPositionals: true,
+				strict: true,
+			}),
+		SHOW,
+	);
+
+	if (values.calls && values.agents) throw new UsageError("give --calls or --agents, not both", SHOW);
+	const mode = values.agents ? "agents" : values.calls ? "calls" : "steps";
+	const run = await savedRun(oneRunId(positionals, SHOW), SHOW);
 	const { id } = run;
 	const empty = { task: undefined, records: new Map<string, SavedCall>(), progress: new Progress() };
 
@@ -881,7 +886,9 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 		const read = new Progress();
 
 		for (const event of await progressEvents(store, id)) read.add(event);
-		const calls = withCalls || json || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
+
+		const calls =
+			mode !== "steps" || json || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
 
 		return { task: taskOf((await runTasks(store)).get(id) ?? []), records: calls, progress: read };
 	});
@@ -910,29 +917,57 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	const now = Date.now();
 	const steps = progress.lines();
 
-	if (json) {
+	const head = `run ${id} ${input.name} ${status} ${title}`;
+
+	if (mode === "agents" && json) {
+		const agents = agentRows(calls, 0, now);
+		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, agents }));
+	} else if (mode === "agents") {
+		for (const line of [head, ...agentLines(agentRows(calls, 0, now)), ...footer]) terminal.stdout(line);
+	} else if (json) {
 		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, steps, calls }));
+	} else {
+		const body = mode === "calls" || !progress.stepped ? treeLines(calls, "", now) : steps;
 
-		return 0;
+		for (const line of [head, ...body, ...footer]) terminal.stdout(line);
 	}
-
-	const body = withCalls || !progress.stepped ? treeLines(calls, "", now) : steps;
-
-	for (const line of [`run ${id} ${input.name} ${status} ${title}`, ...body, ...footer]) terminal.stdout(line);
 
 	return 0;
 }
 
 /**
  * Opens a session of a run in Pi: the session that works now, else the last session to start, among the sessions of
- * `step` when it is given. In a Herdr workspace that has the run's worktree open, or in a Herdr pane, it opens Pi in a
+ * `step` or of `--conversation` when one is given. In a Herdr workspace that has the run's worktree open, or in a Herdr pane, it opens Pi in a
  * new tab or pane; else it runs Pi in this terminal and exits with its code.
  */
 async function attach(args: readonly string[], terminal: Terminal): Promise<number> {
-	const [id, ...words] = args;
+	const { values, positionals } = withUsage(
+		() =>
+			parseArgs({
+				args: [...args],
+				options: { conversation: { type: "string" } },
+				allowPositionals: true,
+				strict: true,
+			}),
+		ATTACH,
+	);
 
-	if (id === undefined || id.startsWith("-")) throw new UsageError("give one run ID", ATTACH);
+	const [id, ...words] = positionals;
+
+	if (id === undefined) throw new UsageError("give one run ID", ATTACH);
 	const step = words.join(" ") || undefined;
+	const wanted = values.conversation;
+
+	if (wanted !== undefined && !/^\d+$/.test(wanted)) {
+		throw new UsageError(`${wanted} is not a conversation ID`, ATTACH);
+	}
+
+	if (step !== undefined && wanted !== undefined) {
+		throw new UsageError("give a step or --conversation, not both", ATTACH);
+	}
+
+	const conversation = wanted === undefined ? undefined : Number(wanted);
+
 	const run = await savedRun(id, ATTACH);
 
 	const { task, records } = await reading(run.store, { task: undefined, records: new Map() }, async (store) => ({
@@ -941,17 +976,29 @@ async function attach(args: readonly string[], terminal: Terminal): Promise<numb
 	}));
 
 	const { input, state } = checked(task, id, "be attached");
-	const sessions = sessionsOf(callTree(records, id, state.status === "terminal"));
-	const list = step === undefined ? sessions : sessions.filter((session) => session.phase === step);
-	const session = list.findLast((found) => found.works) ?? list.at(-1);
 
-	if (session === undefined) throw new Error(`run ${id} has no session${step === undefined ? "" : ` in ${step}`}`);
+	const list = agentRows(callTree(records, id, state.status === "terminal"), 0, Date.now())
+		.flatMap((row) => (row.kind === "agent" ? [row] : []))
+		.filter((row) =>
+			step !== undefined ? row.phase === step : conversation === undefined || row.conversation === conversation,
+		)
+		.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+
+	const session = list.findLast((row) => row.mark === "◉") ?? list.at(-1);
+
+	if (session === undefined) {
+		const where =
+			step !== undefined ? ` in ${step}` : conversation !== undefined ? ` with conversation ${conversation}` : "";
+
+		throw new Error(`run ${id} has no session${where}`);
+	}
+
 	const client = await connectTo(terminal, run.project, true);
 
 	try {
 		// The watch fails here for a conversation that the host does not know, and gives the child that Herdr opens.
-		const conversation = String(session.conversation);
-		const { child } = await client.request({ type: "watch", conversation });
+		const watched = String(session.conversation);
+		const { child } = await client.request({ type: "watch", conversation: watched });
 
 		if (process.env.HERDR_ENV) {
 			const { worktree } = input;
@@ -971,35 +1018,13 @@ async function attach(args: readonly string[], terminal: Terminal): Promise<numb
 
 		// cli.ts refused to start without harness, so harness is there.
 		const cli = join(harnessDir(PACKAGE) ?? "", "dist", "cli.js");
-		const argv = [cli, "--project", run.project, "attach", "--conversation", conversation];
+		const argv = [cli, "--project", run.project, "attach", "--conversation", watched];
 		const [code]: (number | null)[] = await once(spawn(process.execPath, argv, { stdio: "inherit" }), "exit");
 
 		return code ?? 1;
 	} finally {
 		client.close();
 	}
-}
-
-/** The sessions with a conversation in `calls` and in their child runs, in the order they started. */
-function sessionsOf(
-	calls: readonly Shown[],
-): { conversation: number; phase: string | null; profile: string; works: boolean; startedAt: string }[] {
-	return calls
-		.flatMap((call) => [
-			...(call.kind === "session" && call.conversation !== undefined
-				? [
-						{
-							conversation: call.conversation,
-							phase: call.phase,
-							profile: String(call.args.profile),
-							works: works(call, calls),
-							startedAt: call.startedAt,
-						},
-					]
-				: []),
-			...sessionsOf(call.calls ?? []),
-		])
-		.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
 }
 
 /** Writes the script of a saved run to `workflows/<name>.js` of the project folder, and prints the file's path. */
@@ -1037,26 +1062,6 @@ async function save(args: readonly string[], terminal: Terminal): Promise<number
 	return 0;
 }
 
-/**
- * The calls of the run `runId` in the order they started, each `run` call with the calls of its child run. A call that
- * started and did not end is `◉` while the run's task runs, and `✗` once it `ended`.
- */
-function callTree(records: Map<string, SavedCall>, runId: string, ended: boolean): Shown[] {
-	const own = [...records].flatMap(([key, record]) => (key.startsWith(`${runId}/`) ? [record] : []));
-
-	return own
-		.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-		.map(({ child: started, ...record }) => {
-			const cut = ended && record.endedAt === undefined;
-			const mark = record.error !== undefined || cut ? "✗" : record.endedAt !== undefined ? "✓" : "◉";
-			// A `run` call that failed before its child run started has no `child`.
-			const child = started?.runId;
-			const shown = { ...record, label: labelOf(record, child, records), mark } as const;
-
-			return child === undefined ? shown : { ...shown, calls: callTree(records, child, ended) };
-		});
-}
-
 const PREFIX = "workflows.";
 
 /** The task `latest` of the run `id`. It throws when there is none, or when another version saved it. */
@@ -1078,65 +1083,6 @@ function savedBy(latest: TaskRecord<JsonValue, JsonValue, JsonValue>) {
 	const name = inputString(latest.input, "name") ?? latest.kind.slice(PREFIX.length);
 
 	return { name, later: latest.kind === TASK.name && latest.version > TASK.version };
-}
-
-/**
- * The phase lines at `indent` and the calls under them, the calls of a child run under its `run` line. A call that a
- * stopped or failed task cut has no duration. A working session prints `◉`.
- */
-function treeLines(calls: readonly Shown[], indent: string, now: number): string[] {
-	const lines: string[] = [];
-	let phase: string | null = null;
-
-	for (const call of calls) {
-		if (call.phase !== null && call.phase !== phase) lines.push(`${indent}${call.phase}`);
-		phase = call.phase;
-		const mark = works(call, calls) ? "◉" : call.mark;
-		const end = mark === "◉" ? now : call.endedAt === undefined ? undefined : Date.parse(call.endedAt);
-		const time = end === undefined ? "" : `  ${duration(end - Date.parse(call.startedAt))}`;
-		lines.push(`${indent}  ${mark} ${call.kind} ${call.label}${time}`);
-
-		if (call.calls !== undefined) lines.push(...treeLines(call.calls, `${indent}    `, now));
-	}
-
-	return lines;
-}
-
-/** Whether `call` is a session that one of its asks among `siblings` works in now. */
-function works(call: Shown, siblings: readonly Shown[]): boolean {
-	return (
-		call.kind === "session" &&
-		siblings.some((ask) => ask.kind === "ask" && ask.mark === "◉" && ask.args.conversation === call.conversation)
-	);
-}
-
-/**
- * The profile and conversation of a session, the profile of the session for an ask, the command on one line for `sh` and
- * `ok`, the workflow and child run ID for `run`, and the question on one line for `input`.
- */
-function labelOf(
-	{ kind, args, conversation }: Pick<SavedCall, "kind" | "args" | "conversation">,
-	child: string | undefined,
-	records: Map<string, SavedCall>,
-): string {
-	if (kind === "sh" || kind === "ok") {
-		const { cmd } = args;
-
-		return (Array.isArray(cmd) ? cmd.join(" ") : String(cmd)).replace(/\s+/g, " ").trim().slice(0, 80);
-	}
-
-	if (kind === "run") return [args.name, child].filter((value) => value !== undefined).join(" ");
-
-	if (kind === "input") return String(args.question).replace(/\s+/g, " ").trim().slice(0, 80);
-
-	if (kind === "session") {
-		return conversation === undefined ? String(args.profile) : `${args.profile} conversation ${conversation}`;
-	}
-
-	// A linear scan for each ask; an index by conversation if runs get thousands of calls.
-	const session = [...records.values()].find((record) => record.conversation === args.conversation);
-
-	return String(session?.args.profile);
 }
 
 /** Prints the report of the finished run `id` with `result`, or its JSON outcome line, and gives its exit code. */
