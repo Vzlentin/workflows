@@ -312,7 +312,7 @@ workflows check review
 
 `resume`, `wait`, `stop`, `list`, `show`, `attach`, `save`, `prune` and `check` are commands, so no script of these
 names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command,
-such as `usage: workflows show <run-id> [--calls] [--json]`, and exits 2.
+such as `usage: workflows show <run-id> [--calls | --agents] [--json]`, and exits 2.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
@@ -817,6 +817,7 @@ hook exists, it writes nothing, prints an error with the line to add, and exits 
 ```sh
 workflows show <run-id>
 workflows show <run-id> --calls
+workflows show <run-id> --agents [--json]
 workflows show <run-id> --json
 ```
 
@@ -860,28 +861,60 @@ with ISO times. `conversation` is the conversation ID of a `session` that opened
 is `✓`: only the text shows it as `◉`. `phase` is `null` before the first phase line. The `result` of a `run` call is
 `{ "runId", "result" }`, with the result of its child run, and its `calls` are the calls of the child run.
 
+With `--agents`, `show` prints the agents of the run, the tree that the [`/workflows`](#the-workflows-command) run
+view shows:
+
+```text
+run <run-id> <workflow> <status> <title>
+<phase line>
+  ✓ <agent text>  <model>  <n> asks  <duration>
+  ◉ run <workflow> <child run-id>
+    <phase line of the child run>
+      ✓ <agent text>  <model>  1 ask  <duration>
+<report lines, or the failed and continue with lines>
+```
+
+- An agent is a `session` call that opened a conversation. Its text is the first line of its first prompt that is not
+  blank. When other agents of the same run have the same first line, its text is the first line of its prompt that not
+  all of them have, such as the region of one worker of a fleet. A session with no ask shows its label.
+- The mark is `◉` while one of its asks works, `✗` when it or one of its asks failed, and `✓` else. The model is the
+  model of the session; the line has no model when the session has none. The duration runs from its start to now while
+  it works, else to the end of its last ask.
+- A phase line comes before the first agent or child run under it. Other calls, such as `sh`, are not in the tree. The
+  rows of a child run are indented by 4 more under its `run` line.
+
+With `--agents --json`, the command prints one JSON object `{ "runId", "workflow", "title", "status", "agents" }`.
+`agents` has one object for each line of the tree, in order: `{ "kind": "phase", "depth", "text" }`, `{ "kind": "run",
+"depth", "mark", "text" }` with the text `run <workflow> <child run-id>`, or `{ "kind": "agent", "depth", "mark", "text",
+"phase", "model", "asks", "conversation", "startedAt", "endedAt"?, "facts" }`, where `phase` is the phase line of the
+session, or `null` before the first phase line, `endedAt` is absent while the agent works, and `facts` is the text
+after the agent text in its line, such as `sonnet  1 ask  31s`. `depth` is the nesting of child runs. `--calls` and `--agents` together are bad usage.
+
 `show` exits 0 for every run it can show. It reads the project store through pi-durable's storage functions, as `list`
 does, and does not start the host. It reads the file read-only as `list` does. An unknown run ID, or a run directory
 without a `project` file, prints the
 `no run` error of `resume`. A run saved by an earlier version prints `workflows: run
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
-as no run ID, prints `usage: workflows show <run-id> [--calls] [--json]` and exits 2.
+as no run ID, prints `usage: workflows show <run-id> [--calls | --agents] [--json]` and exits 2.
 
 ## Attach
 
 ```sh
 workflows attach <run-id>
 workflows attach <run-id> <step>
+workflows attach <run-id> --conversation <id>
 ```
 
 `workflows attach` opens one session of a run in Pi, as `harness attach --conversation <id>` does:
 
-- The sessions are the `session` calls of the run and of its child runs that opened a conversation, in the order they
-  started. With `<step>`, only the sessions under the phase line `<step>` count. The step is all the words after the
-  run ID, and must be equal to the phase line.
-- The command opens the session that works now, as `show --calls` marks it `◉`. When no session works, it opens the last
-  session that started.
+- The sessions are the agents of `show --agents`, the `session` calls of the run and of its child runs that opened a
+  conversation, in the order they started. With `<step>`, only the sessions under the phase line `<step>` count. The
+  step is all the words after the run ID, and must be equal to the phase line. With `--conversation <id>`, only the
+  session of that conversation counts, as `show --json` gives it in `conversation`. A step and `--conversation`
+  together are bad usage.
+- The command opens the session that works now, as `show --agents` marks it `◉`. When no session works, it opens the
+  last session that started.
 - It connects to the host of the run's project, and starts the host when none runs. It sends `watch` for the
   conversation of the session, so an unknown conversation fails before Pi starts.
 - Outside Herdr, or in Herdr with no place to open Pi, it runs `harness --project <project> attach --conversation <id>`
@@ -891,9 +924,10 @@ workflows attach <run-id> <step>
   only the pane.
 
 A run with no session prints `workflows: run <run-id> has no session`, and a step with no session prints
-`workflows: run <run-id> has no session in <step>`. An unknown run ID prints the `no run` error of `resume`, and a run
+`workflows: run <run-id> has no session in <step>`. A conversation that is not a session of the run prints
+`workflows: run <run-id> has no session with conversation <id>`. An unknown run ID prints the `no run` error of `resume`, and a run
 saved by another version prints the error of `show` with `cannot be attached`. A Herdr failure prints
-`workflows: <error>`. These exit 1. Bad usage, such as no run ID, prints `usage: workflows attach <run-id> [<step>]` and
+`workflows: <error>`. These exit 1. Bad usage, such as no run ID, prints `usage: workflows attach <run-id> [<step>] [--conversation <id>]` and
 exits 2.
 
 ## Save
@@ -1153,13 +1187,35 @@ before a run exists, such as an unknown workflow name, is a normal tool error wi
 
 ### The `/workflows` command
 
-`/workflows` composes [`workflows list`](#list) and [`workflows attach`](#attach). It runs
+`/workflows` composes [`workflows list`](#list), [`workflows show`](#show) and [`workflows attach`](#attach). It runs
 `workflows list --json` in Pi's working directory, and lists the runs in that order, one line each:
-`<run-id>  <workflow>  <status>  <title>`. With no run, it notifies `No workflow runs in this project`. When the list
-fails, it notifies its stderr as an error. When `HERDR_ENV` is set, the chosen run gets `workflows attach <run-id>`,
-which opens the run's live session in a Herdr tab or pane. Only `HERDR_ENV` counts, because `workflows attach` opens
-a Herdr pane only with it. Without it, the command notifies `Run in another terminal: workflows attach <run-id>`. When
-the attach fails, it notifies the error `<stderr>. Run in another terminal: workflows attach <run-id>`.
+`<run-id>  <workflow>  <status>  <title>`, under the title `Show workflow run`. With no run, it notifies
+`No workflow runs in this project`. When the list fails, it notifies its stderr as an error.
+
+The chosen run opens in the run view. It reads [`workflows show <run-id> --agents --json`](#show) at once, and again 2 s
+after each read ends, and draws its tree:
+
+```text
+<workflow> <run-id> <status> <title>
+  <phase line>
+    ✓ <agent text>  <model>  <n> asks  <duration>
+>   ◉ <agent that works now>  <model>  1 ask  <duration>
+    ◉ run <workflow> <child run-id>
+      <phase line of the child run>
+        ✓ <agent text>  <model>  1 ask  <duration>
+up/down select an agent, enter attaches, escape closes
+```
+
+The view shows at most 30 rows, around the selected agent. It first selects the last agent that works, else the last
+agent; a new read keeps the selected agent. A read that fails keeps the last tree. Before the first good read, the
+view shows `Reading the run...`, or the error of the last read in its place: the stderr of a `show` that fails, such as
+`workflows: no run <run-id>`, or `workflows show did not print the expected JSON`.
+
+Escape closes the view. Enter on an agent runs `workflows attach <run-id> --conversation <id>` when `HERDR_ENV` is set,
+which opens the agent in a Herdr tab or pane. Only `HERDR_ENV` counts, because `workflows attach` opens a Herdr pane only
+with it. Without it, the command notifies `Run in another terminal: workflows attach <run-id> --conversation <id>`.
+When the attach fails, it notifies the error `<stderr>. Run in another terminal: workflows attach <run-id>
+--conversation <id>`.
 
 ## Run directory
 
@@ -1213,6 +1269,7 @@ The engine files in `src/`:
 - `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show`, `attach`, `save` and `prune`, a client of the
   harness host, and the run directory.
 - `entry.ts`: the entry that the harness host loads, with the script task.
+- `calls.ts`: the call tree of a saved run, and its lines and agent rows for `show` and `attach`.
 - `progress.ts`: the tree of steps of a run, and how the command draws it on stderr.
 - `store.ts`: the command's read-only reads of the project store: the tasks of the runs, their progress and calls.
 - `meta.ts`: the `meta` of a workflow script, its arguments, its usage, `check`, and the report lines and exit code of

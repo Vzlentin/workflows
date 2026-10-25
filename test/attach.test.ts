@@ -42,6 +42,8 @@ describe("attach", () => {
 		expect([last.code, await piLog()]).toEqual([7, `--harness main --harness-conversation ${two}`]);
 		const first = await workflows(["attach", id, "a"], { cwd: root });
 		expect([first.code, await piLog()]).toEqual([7, `--harness main --harness-conversation ${one}`]);
+		const chosen = await workflows(["attach", id, "--conversation", String(one)], { cwd: root });
+		expect([chosen.code, await piLog()]).toEqual([7, `--harness main --harness-conversation ${one}`]);
 	});
 
 	it("opens the session that works now, also when a later session started", async () => {
@@ -57,13 +59,24 @@ describe("attach", () => {
 		expect([attached.code, await piLog()]).toEqual([7, `--harness main --harness-conversation ${s}`]);
 	});
 
-	it("fails for a run with no session, an unknown step, an unknown run and no run ID", async () => {
+	it("fails for a run with no session, an unknown step, an unknown run, no run ID and both filters", async () => {
 		const bare = await ran('return "done"');
 		const id = await ran('phase("a")\nawait agent("Script: one")');
 		const runs = runsOf(root);
+		const usage = "workflows attach <run-id> [<step>] [--conversation <id>]";
 		const cases = [];
 
-		for (const argv of [["attach", bare], ["attach", id, "b c"], ["attach", "nothing"], ["attach"]]) {
+		const argvs = [
+			["attach", bare],
+			["attach", id, "b c"],
+			["attach", id, "--conversation", "999999"],
+			["attach", id, "a", "--conversation", "999999"],
+			["attach", "nothing"],
+			["attach"],
+			["attach", id, "--conversation", "x"],
+		];
+
+		for (const argv of argvs) {
 			const { code, stderr } = await workflows(argv, { cwd: root });
 			cases.push([code, stderr]);
 		}
@@ -71,8 +84,11 @@ describe("attach", () => {
 		expect(cases).toEqual([
 			[1, [`workflows: run ${bare} has no session`]],
 			[1, [`workflows: run ${id} has no session in b c`]],
+			[1, [`workflows: run ${id} has no session with conversation 999999`]],
+			[2, ["workflows: give a step or --conversation, not both", `usage: ${usage}`]],
 			[1, [`workflows: no run nothing in ${runs}`]],
-			[2, ["workflows: give one run ID", "usage: workflows attach <run-id> [<step>]"]],
+			[2, ["workflows: give one run ID", `usage: ${usage}`]],
+			[2, ["workflows: x is not a conversation ID", `usage: ${usage}`]],
 		]);
 		expect(await piLog()).toBeUndefined();
 	});

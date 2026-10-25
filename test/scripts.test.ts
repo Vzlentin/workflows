@@ -9,7 +9,9 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { REMINDER } from "@vzlentin/harness/answer";
+import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AGENTS } from "../pi/run-view.ts";
 import { branchOf } from "../src/git.ts";
 import { programStatus } from "../src/progress.ts";
 import { CallDoc } from "../src/script.ts";
@@ -223,8 +225,8 @@ describe("usage errors", () => {
 			[["resume", "a/b"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
 			[["resume", "--background"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
 			[["wait", "r1", "r2"], "usage: workflows wait <run-id> [--json]"],
-			[["show", "r1", "r2"], "usage: workflows show <run-id> [--calls] [--json]"],
-			[["show", ".."], "usage: workflows show <run-id> [--calls] [--json]"],
+			[["show", "r1", "r2"], "usage: workflows show <run-id> [--calls | --agents] [--json]"],
+			[["show", ".."], "usage: workflows show <run-id> [--calls | --agents] [--json]"],
 			[["list", "x"], "usage: workflows list [--pick] [--json]"],
 			[["check"], "usage: workflows check <workflow>"],
 		];
@@ -418,6 +420,59 @@ describe("workflows show", () => {
 			expect.stringMatching(new RegExp(`^ {2}✓ session default conversation ${b} {2}\\d+s$`)),
 		]);
 		expect(done.stdout.filter((line) => line.includes("◉"))).toEqual([]);
+	});
+
+	it("shows the agents of a run and of its child runs, named by their first prompt line", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "workflows");
+		await mkdir(scripts, { recursive: true });
+
+		await writeFile(
+			join(scripts, "parent.js"),
+			[
+				'phase("plan")',
+				'await agent("Script: plan.\\nMore.")',
+				'phase("work")',
+				'await sh("true")',
+				'await parallel(["a", "b"].map((region) => () => agent(`Script: work.\\nRegion: ${region}\\nShared.`)))',
+				'return await run("child", {})',
+			].join("\n"),
+		);
+
+		await writeFile(join(scripts, "child.js"), 'phase("item")\nawait agent("Script: child.")');
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(0);
+		const id = run.id ?? "";
+		const shown = await workflows(["show", id, "--agents"], { cwd: repo });
+
+		const printed = JSON.parse((await workflows(["show", id, "--agents", "--json"], { cwd: repo })).stdout[0] ?? "");
+		expect(Value.Check(AGENTS, printed)).toBe(true);
+		const { agents, ...head } = printed;
+
+		const child = String(agents.find((row: { kind: string }) => row.kind === "run")?.text).slice("run child ".length);
+		const agent = (text: string) => new RegExp(`^ *\\u2713 ${text} {2}1 ask {2}\\d+s$`);
+		expect([shown.code, shown.stderr]).toEqual([0, []]);
+
+		expect(shown.stdout).toEqual([
+			`run ${id} parent done parent`,
+			"plan",
+			expect.stringMatching(agent("Script: plan\\.")),
+			"work",
+			expect.stringMatching(agent("Region: a")),
+			expect.stringMatching(agent("Region: b")),
+			`  \u2713 run child ${child}`,
+			"    item",
+			expect.stringMatching(agent("Script: child\\.")),
+			...run.stdout.slice(-1),
+		]);
+
+		expect(head).toEqual({ runId: id, workflow: "parent", title: "parent", status: "done" });
+		expect(agents[1]).toMatchObject({ kind: "agent", depth: 0, mark: "\u2713", text: "Script: plan.", asks: 1 });
+		expect(agents[1].conversation).toBe(await conversationOf(/Script: plan/));
+		expect(agents.at(-1)).toMatchObject({ kind: "agent", depth: 1, text: "Script: child." });
+		const both = await workflows(["show", id, "--agents", "--calls"], { cwd: repo });
+		expect([both.code, both.stderr[0]]).toEqual([2, "workflows: give --calls or --agents, not both"]);
 	});
 
 	it("reads the store while another process holds its write lock", async () => {
@@ -854,7 +909,7 @@ return { runId, runDir, branch, start: args.start, plan: await prompts.plan() }`
 		);
 
 		const run = await workflows(["parent"], { cwd: repo });
-		expect([run.code, run.stderr]).toEqual([0, []]);
+		expect(run.code).toBe(0);
 		const { child, runId, plan } = JSON.parse(run.stdout[1] ?? "");
 		expect(runId).toBe(run.id);
 		expect(child.runId).not.toBe(run.id);

@@ -13,7 +13,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension, { type workflowTool } from "../pi/index.ts";
+import { RunView } from "../pi/run-view.ts";
 import { hostModel, sandbox, startHost } from "./support.ts";
+
+/** The factory that `/workflows` gives `ctx.ui.custom`. */
+type CustomFactory = Parameters<ExtensionUIContext["custom"]>[0];
 
 type Tool = ReturnType<typeof workflowTool>;
 
@@ -77,6 +81,7 @@ wait)
 list)
 	if [ -e list.fails ]; then echo "workflows: no harness project" >&2; exit 1; fi
 	if [ -e runs.json ]; then cat runs.json; else echo '[]'; fi ;;
+show) if [ -e show.json ]; then cat show.json; else echo "workflows: no run $2" >&2; exit 1; fi ;;
 attach) case "$2" in *-bad) echo "workflows: run $2 has no session" >&2; exit 1 ;; esac ;;
 *) exit 9 ;;
 esac
@@ -244,6 +249,7 @@ const endEntry = (runId: string): CustomEntry => ({
  * line at the index that `choose` sets, or undefined.
  */
 function fakeUi() {
+	const views: RunView[] = [];
 	const widgets: [string, string[] | undefined][] = [];
 	const selects: [string, string[]][] = [];
 	const notes: [string, string | undefined][] = [];
@@ -262,6 +268,15 @@ function fakeUi() {
 		notify: (message: string, type?: string) => {
 			notes.push([message, type]);
 		},
+		custom: (factory: CustomFactory) =>
+			new Promise((resolve) => {
+				const keybindings = { matches: (data: string, binding: string) => binding === `tui.select.${data}` };
+				// SAFETY: the run view calls only `requestRender` of the TUI and `matches` of the keybindings.
+				const view = factory({ requestRender: () => {} } as never, theme, keybindings as never, resolve);
+
+				if (!(view instanceof RunView)) throw new Error("the command showed another component");
+				views.push(view);
+			}),
 		get theme() {
 			reads += 1;
 
@@ -270,12 +285,13 @@ function fakeUi() {
 	};
 
 	// SAFETY: the watcher calls only `setWidget` with lines or undefined, and reads only `theme`. The `/workflows` command
-	// calls only `select` with a title and lines, and `notify` with a message and a type.
+	// calls only `select` with a title and lines, `notify` with a message and a type, and `custom` with a run view.
 	return {
 		ui: fake as ExtensionUIContext,
 		widgets,
 		selects,
 		notes,
+		views,
 		reads: () => reads,
 		choose: (index: number | undefined) => {
 			chosen = index;
@@ -714,7 +730,7 @@ describe("the /workflows command", () => {
 		{ runId: bad, workflow: "campaign", title: "Docs", status: "failed", repository: null },
 	];
 
-	const lines = [`${good}  ship  running  Fix the typo`, `${bad}  campaign  failed  Docs`];
+	const listed = [`${good}  ship  running  Fix the typo`, `${bad}  campaign  failed  Docs`];
 
 	const commands = async () => (await readFile(join(root, "args.log"), "utf8")).split("\n").filter(Boolean);
 
@@ -733,35 +749,134 @@ describe("the /workflows command", () => {
 		expect([fake.notes, fake.selects]).toEqual([[["workflows: no harness project", "error"]], []]);
 	});
 
-	it("lists the runs of workflows list, and attaches to the chosen one in Herdr, or gives the command", async () => {
-		await writeFile(join(root, "runs.json"), JSON.stringify(runs));
-		const saved = process.env.HERDR_ENV;
+	/** An agent of `show --agents --json` that took `end` s. */
+	const agent = (conversation: number, text: string, mark: string, depth = 0, end = 31) => ({
+		kind: "agent",
+		depth,
+		mark,
+		text,
+		conversation,
+		facts: `sonnet  1 ask  ${end}s`,
+	});
+
+	/** The run `good`: a planner, two coordinators, the second of which works, and a child ship run with one agent. */
+	const shown = {
+		runId: good,
+		workflow: "mine",
+		title: "Mine",
+		status: "running",
+		agents: [
+			{ kind: "phase", depth: 0, text: "plan" },
+			agent(1, "You plan the fleet.", "✓"),
+			{ kind: "phase", depth: 0, text: "work" },
+			agent(2, 'You coordinate "a".', "✗", 0, 32),
+			agent(3, 'You coordinate "b".', "◉"),
+			{ kind: "run", depth: 0, mark: "◉", text: "run ship 20261025T120045-cccc3333" },
+			{ kind: "phase", depth: 1, text: "plan" },
+			agent(4, "Plan the item.", "✓", 1),
+		],
+	};
+
+	/**
+	 * Shows the run view of `/workflows` for the first run, and gives the view and the end of the command once the first
+	 * line of the view has `first`.
+	 */
+	const opened = async (fake: ReturnType<typeof fakeUi>, first: string = good) => {
 		const pi = fakePi();
+		fake.choose(0);
+		const before = fake.views.length;
+		await writeFile(join(root, "runs.json"), JSON.stringify(runs));
+		const ended = pi.runCommand("workflows", fake.ui);
+		await vi.waitFor(() => expect(fake.views).toHaveLength(before + 1));
+		const view = fake.views.at(-1);
+
+		if (view === undefined) throw new Error("no run view");
+		await vi.waitFor(() => expect(view.render(200)[0]).toContain(first));
+
+		return { view, ended };
+	};
+
+	beforeEach(() => writeFile(join(root, "show.json"), JSON.stringify(shown)));
+
+	it("shows the phases, agents and child runs of the chosen run, and selects the agent that works", async () => {
 		const fake = fakeUi();
+		const { view, ended } = await opened(fake);
+		const lines = view.render(200);
+		expect(fake.selects).toEqual([["Show workflow run", listed]]);
+		expect(
+			lines.slice(0, -1).map((line) => line.replace(/ \S+$/, (time) => (line.includes("◉ You") ? " <time>" : time))),
+		).toEqual([
+			`mine ${good} running Mine`,
+			"  plan",
+			"    ✓ You plan the fleet.  sonnet  1 ask  31s",
+			"  work",
+			'    ✗ You coordinate "a".  sonnet  1 ask  32s',
+			'>   ◉ You coordinate "b".  sonnet  1 ask  <time>',
+			"    ◉ run ship 20261025T120045-cccc3333",
+			"      plan",
+			"        ✓ Plan the item.  sonnet  1 ask  31s",
+		]);
+		view.handleInput("cancel");
+		await ended;
+		expect((await commands()).slice(0, 2)).toEqual(["list --json", `show ${good} --agents --json`]);
+	});
+
+	it("attaches to the selected agent in Herdr, or gives the command", async () => {
+		const saved = process.env.HERDR_ENV;
 
 		try {
 			process.env.HERDR_ENV = "1";
-			await pi.runCommand("workflows", fake.ui);
-			expect([fake.selects, await commands()]).toEqual([[["Attach to workflow run", lines]], ["list --json"]]);
-
-			fake.choose(0);
-			await pi.runCommand("workflows", fake.ui);
-			expect([await commands(), fake.notes]).toEqual([["list --json", "list --json", `attach ${good}`], []]);
-
-			fake.choose(1);
-			await pi.runCommand("workflows", fake.ui);
-			expect(fake.notes).toEqual([
-				[`workflows: run ${bad} has no session. Run in another terminal: workflows attach ${bad}`, "error"],
-			]);
+			const fake = fakeUi();
+			const herdr = await opened(fake);
+			herdr.view.handleInput("down");
+			herdr.view.handleInput("confirm");
+			await herdr.ended;
+			expect([(await commands()).at(-1), fake.notes]).toEqual([`attach ${good} --conversation 4`, []]);
 
 			delete process.env.HERDR_ENV;
-			fake.choose(0);
-			await pi.runCommand("workflows", fake.ui);
+			const plain = await opened(fake);
+			plain.view.handleInput("up");
+			plain.view.handleInput("confirm");
+			await plain.ended;
 			expect((await commands()).filter((line) => line.startsWith("attach"))).toEqual([
-				`attach ${good}`,
-				`attach ${bad}`,
+				`attach ${good} --conversation 4`,
 			]);
-			expect(fake.notes.at(-1)).toEqual([`Run in another terminal: workflows attach ${good}`, "info"]);
+			expect(fake.notes).toEqual([[`Run in another terminal: workflows attach ${good} --conversation 2`, "info"]]);
+		} finally {
+			if (saved === undefined) delete process.env.HERDR_ENV;
+			else process.env.HERDR_ENV = saved;
+		}
+	});
+
+	it("shows the error of a first read that fails in place of the run", async () => {
+		await rm(join(root, "show.json"));
+		const fake = fakeUi();
+		const { view, ended } = await opened(fake, `workflows: no run ${good}`);
+		expect(view.render(200)).toEqual([`workflows: no run ${good}`]);
+		view.handleInput("cancel");
+		await ended;
+	});
+
+	it("gives the error of an attach that fails", async () => {
+		const saved = process.env.HERDR_ENV;
+		await writeFile(join(root, "runs.json"), JSON.stringify([runs[1]]));
+		await writeFile(join(root, "show.json"), JSON.stringify({ ...shown, runId: bad }));
+
+		try {
+			process.env.HERDR_ENV = "1";
+			const fake = fakeUi();
+			const pi = fakePi();
+			fake.choose(0);
+			const ended = pi.runCommand("workflows", fake.ui);
+			await vi.waitFor(() => expect(fake.views[0]?.render(200)[0]).toContain(bad));
+			fake.views[0]?.handleInput("confirm");
+			await ended;
+			expect(fake.notes).toEqual([
+				[
+					`workflows: run ${bad} has no session. Run in another terminal: workflows attach ${bad} --conversation 3`,
+					"error",
+				],
+			]);
 		} finally {
 			if (saved === undefined) delete process.env.HERDR_ENV;
 			else process.env.HERDR_ENV = saved;
