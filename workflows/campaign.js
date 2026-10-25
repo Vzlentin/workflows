@@ -68,6 +68,8 @@ for (let n = 1; queue.length > 0; n++) {
 	if (result.status !== "shipped" || result.score === 0) {
 		// `start` is the last shipped commit: every earlier item shipped or was reset to its own start.
 		await sh(["git", "reset", "--hard", start])
+		const file = `${patches}/round-${result.rounds}.patch`
+		const patch = (await ok(["test", "-f", file])) ? file : ""
 		const shipped = JSON.stringify(done.map(({ item, result }) => ({ item, commit: result.head })))
 
 		const { rundown, suggestions, queue: proposed } = await agent(
@@ -81,6 +83,7 @@ for (let n = 1; queue.length > 0; n++) {
 				findings: (result.findings ?? []).join("\n"),
 				memory: result.memory.join("\n"),
 				queue: JSON.stringify(rest),
+				patch,
 			}),
 			{ as: "planner", schema: RUNDOWN },
 		)
@@ -89,6 +92,7 @@ for (let n = 1; queue.length > 0; n++) {
 			rundown,
 			["Suggestions:", ...suggestions.map((suggestion) => `- ${suggestion}`)].join("\n"),
 			["Proposed queue:", ...proposed.map((next, i) => `${i + 1}. ${next}`)].join("\n\n"),
+			...(patch ? [`Patch of the failed item: ${patch}`] : []),
 		].join("\n\n")
 
 		const reply = (

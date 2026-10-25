@@ -287,6 +287,7 @@ function workflowExtension(host: Host) {
 			result: Type.Optional(Type.Unknown()),
 			report: Type.Optional(Type.Array(Type.String())),
 			error: Type.Optional(Type.String()),
+			workflow: Type.Optional(Type.String()),
 		}),
 		// A call that a restart interrupted does not run again, so it cannot start a second run.
 		replay: "unsafe",

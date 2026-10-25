@@ -235,7 +235,7 @@ describe("runs in the harness host", { timeout: 30_000 }, () => {
 		const id = started.id ?? "";
 
 		try {
-			const line = JSON.stringify({ runId: id, status: "started" });
+			const line = JSON.stringify({ runId: id, status: "started", workflow: "gated" });
 			expect([started.code, started.stdout]).toEqual([0, [`run ${id}`, line]]);
 			expect(await rootTasks(id)).toEqual([{ status: expect.stringMatching(/^(pending|running)$/) }]);
 			const resumed = await workflows(["resume", id, "--background", "--json"], { cwd: root, host });

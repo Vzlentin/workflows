@@ -36,13 +36,6 @@ const FIXED = "# Demo\n\nHello world\n";
 const THANKED = `${FIXED}Thanks.\n`;
 const THIRD = "# Thank the reader\n\nEnd the README with Thanks.";
 
-const QUESTION = [
-	"Rundown 1: the item failed.",
-	"Suggestions:\n- Split the item.",
-	"Proposed queue:",
-	"How should the campaign continue? Answer stop, or nothing, to end it.",
-].join("\n\n");
-
 const SHIP = ["research", "plan", "challenge", "handoff", "implement", "review", "verdict", "judge", "commit"];
 
 const THANKS: Commit = {
@@ -174,15 +167,26 @@ describe("workflows campaign", () => {
 		});
 
 		expect(run.code).toBe(3);
-		expect(run.stdout).toEqual([`run ${run.id}`, QUESTION]);
+		const patch = join(runs(), run.id ?? "", "item-1", "round-1.patch");
+		expect(run.stdout).toEqual([
+			`run ${run.id}`,
+			[
+				"Rundown 1: the item failed.",
+				"Suggestions:\n- Split the item.",
+				"Proposed queue:",
+				`Patch of the failed item: ${patch}`,
+				"How should the campaign continue? Answer stop, or nothing, to end it.",
+			].join("\n\n"),
+		]);
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-parse", "HEAD")).toBe(start);
-		expect(existsSync(join(runs(), run.id ?? "", "item-1", "round-1.patch"))).toBe(true);
+		expect(existsSync(patch)).toBe(true);
 		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "rundown"]);
 		const rundown = run.model.find("rundown")?.prompt;
 		expect(rundown).toContain("## status\nshipped with judge score 0");
 		expect(rundown).toContain("## findings\n1 FAIL");
 		expect(rundown).toContain(`## queue\n${JSON.stringify([SECOND])}`);
+		expect(rundown).toContain(`## patch\n${patch}`);
 
 		const stopped = await workflows(["resume", run.id ?? "", "--answer", " Stop "], { cwd: root });
 		expect(stopped.code).toBe(1);
@@ -194,7 +198,10 @@ describe("workflows campaign", () => {
 		expect(stopped.model.calls).toEqual([]);
 		expect(git(worktree, "branch", "--show-current")).toBe(`campaign/${run.id}`);
 		const json = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
-		expect(JSON.parse(json.stdout[1] ?? "").result.rundown).toBe("Rundown 1: the item failed.");
+		const result = JSON.parse(json.stdout[1] ?? "").result;
+		expect(result.rundown).toBe("Rundown 1: the item failed.");
+		git(worktree, "apply", "--index", patch);
+		expect(git(worktree, "write-tree")).toBe(git(worktree, "rev-parse", `${result.items[0].result.head}^{tree}`));
 	});
 
 	it("resets to the last shipped commit after a stopped item, and goes on with the answer", async () => {
