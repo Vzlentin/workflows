@@ -114,14 +114,11 @@ export const OUTCOME = Type.Union([
 		report: Type.Array(Type.String()),
 	}),
 	Type.Object({ runId: Type.String(), status: Type.Literal("failed"), error: Type.String() }),
+	/** `workflow` is the name of the run's workflow, which a background run shows while it runs. */
+	Type.Object({ runId: Type.String(), status: Type.Literal("started"), workflow: Type.String() }),
 	Type.Object({
 		runId: Type.String(),
-		status: Type.Union([
-			Type.Literal("started"),
-			Type.Literal("detached"),
-			Type.Literal("stopped"),
-			Type.Literal("host-stopped"),
-		]),
+		status: Type.Union([Type.Literal("detached"), Type.Literal("stopped"), Type.Literal("host-stopped")]),
 	}),
 ]);
 

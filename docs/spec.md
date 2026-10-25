@@ -201,12 +201,13 @@ conflict with an existing branch; kept campaign/<run-id>`.
   failed, is not a failure. The run resets the worktree with `git reset --hard` to the commit that the item started
   from: the last shipped commit, or the start commit when no item shipped. Then a new planner session gets the
   `rundown` prompt with the inputs `goal`, `shipped` (the shipped items with their commits, as JSON), `item`, `status`
-  (the ship status, or `shipped with judge score 0`), `reply`, `handoff`, `findings`, `memory` and `queue` (the
-  remaining items, as JSON). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and
-  a proposed queue. The run asks the question of [Input](#input): the rundown, `Suggestions:` with one `- <suggestion>`
-  line each, `Proposed queue:` with the numbered items, and `How should the campaign continue? Answer stop, or nothing,
-  to end it.` The command prints the question and exits 3 with the status `waiting`. Continue with `workflows resume
-  <run-id> --answer <text>`.
+  (the ship status, or `shipped with judge score 0`), `reply`, `handoff`, `findings`, `memory`, `queue` (the
+  remaining items, as JSON) and `patch` (the path of `item-<n>/round-<rounds of the item>.patch`, when that file
+  exists). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and a proposed queue.
+  The run asks the question of [Input](#input): the question summary, which is the rundown, `Suggestions:` with one
+  `- <suggestion>` line each, `Proposed queue:` with the numbered items, and `Patch of the failed item: <path>` when
+  the patch exists, then `How should the campaign continue? Answer stop, or nothing, to end it.` The command prints
+  the question and exits 3 with the status `waiting`. Continue with `workflows resume <run-id> --answer <text>`.
 - When the answer is `stop`, in any case, or empty, the command prints `stopped <subject> at item <n>: <worktree>`,
   then the rundown, and exits 1. The branch keeps its name `campaign/<run-id>`.
 - Any other answer goes to a new planner session with the `split` prompt and the inputs `goal`, `shipped`, `rundown`
@@ -594,9 +595,10 @@ repository again, or create another branch. Answered turns are not sent to the m
 progress is sent again.
 
 With `--background`, at any position before `--`, start and resume print `run <run-id>` once the host has the run's
-task, and exit 0 without following it. With `--json`, they also print `{"runId":"<run-id>","status":"started"}`. A
-Ctrl+C after the host accepted the task does not change this. The other commands ignore `--background`. Follow such a
-run with `workflows wait <run-id>` or `workflows resume <run-id>`. A start with `--background` saves `notify` in the
+task, and exit 0 without following it. With `--json`, they also print
+`{"runId":"<run-id>","status":"started","workflow":"<workflow>"}`, where `<workflow>` is the name of the run's workflow,
+as `workflows show` gives it. A Ctrl+C after the host accepted the task does not change this. The other commands
+ignore `--background`. Follow such a run with `workflows wait <run-id>` or `workflows resume <run-id>`. A start with `--background` saves `notify` in the
 input of the run. A resume that starts a new task saves `notify` only with `--background`, whatever the last task
 had. A resume that follows a task that has not ended does not change it. See
 [The `workflow` tool of the host](#the-workflow-tool-of-the-host) for what `notify` does.
@@ -692,19 +694,22 @@ on in the host. A second Ctrl+C exits and never stops the run. Bad usage prints 
 
 ## Herdr
 
-The command opens nothing in Herdr by itself. A Herdr key composes the commands instead, such as one that picks a run
-and follows it in a new pane, from which `workflows attach <run-id>` opens a session:
+`workflows` binds no Herdr key. A Herdr key composes the commands instead, such as one that picks a run
+in a popup and attaches to it:
 
 ```toml
 [[keys.command]]
 key = "prefix+w"
-type = "shell"
-description = "follow a workflows run"
+type = "popup"
+description = "attach to a workflows run"
 command = '''
-pane=$("$HERDR_BIN_PATH" pane split $HERDR_ACTIVE_PANE_ID --direction right --focus | jq -r '.result.pane.pane_id')
-[ -n "$pane" ] && "$HERDR_BIN_PATH" pane run "$pane" 'id=$(workflows list --pick) && workflows wait "$id"'
+id=$(workflows list --pick) || exit 0
+HERDR_PANE_ID=$HERDR_ACTIVE_PANE_ID workflows attach "$id" || { printf 'Press Enter to close'; read -r _; }
 '''
 ```
+
+A popup command does not get `HERDR_PANE_ID`, so the key gives `attach` the pane under the popup. The popup closes
+when `attach` has opened Pi.
 
 `prune` and `attach` use Herdr when `HERDR_ENV` is set: see [Prune](#prune) and [Attach](#attach).
 
@@ -725,8 +730,9 @@ line of JSON in place of the report lines, `{ "runId", "status", "result"?, "rep
   A run that waits for an answer is `finished` with the result `{"status":"waiting","question":"<question>","report":["<question>"]}`
   and the exit code 3.
 - `failed`: `error` is the error message.
-- `started`: with `--background`, the host has the run's task, and the command does not follow it. The `workflow`
-  tool of the host and the `workflow` tool of Pi give it as a result that is not an error.
+- `started`: with `--background`, the host has the run's task, and the command does not follow it. `workflow` is the
+  name of the run's workflow. The `workflow` tool of the host and the `workflow` tool of Pi give it as a result that
+  is not an error.
 - `detached`: Ctrl+C detached the command, and the run goes on in the host.
 - `stopped`: a second Ctrl+C or `workflows stop` stopped the run.
 - `host-stopped`: the host stopped while the command followed the run, which stays pending.
@@ -1104,7 +1110,7 @@ These are the fields of the JSON outcome line of the command.
 ### Background runs in Pi
 
 After a `started` result, the extension appends the session entry `workflow-background` with the data
-`{ runId, cwd }`, and follows the run with `workflows wait <run-id> --json` in `cwd`. When the wait prints a
+`{ runId, cwd, workflow }`, with the `workflow` of the outcome, and follows the run with `workflows wait <run-id> --json` in `cwd`. When the wait prints a
 `finished`, `failed` or `stopped` outcome, the extension sends the message `workflow-result`, with the text of a
 call without `background` for that outcome (the summary, with no report lines; for a waiting run, the question and
 how to answer it), the `details` `{ steps, outcome }`,
@@ -1117,6 +1123,16 @@ whose last `workflow-background` entry comes after its last `workflow-background
 has at most one wait for a run, so a second `session_start` or a `background` resume of a followed run starts no
 second wait. `session_shutdown` sends SIGINT to the waits, which detach and post nothing.
 
+When the context of `session_start` has a UI (`hasUI`), the widget `workflows` above the editor shows the runs that
+the session follows, in the order that they started to be followed, on one line:
+`<workflow>: <id> <step> | <workflow>: <id> <step>`, such as
+`campaign: 935f6d89 item 2/3: round 1: review | ship: e235d11b plan`. The workflow is the one of the
+`workflow-background` entry, or `?` for an entry with no `workflow`. The short ID is the part of the run ID after its
+last `-`. The step is the last progress line of the wait, trimmed, with its mark, or `starting` before the first one;
+another stderr line does not change it. The widget redraws when a run starts to be followed, at each progress line,
+and at the end of each wait. When the session follows no run, the extension removes the widget. After shutdown, the
+extension draws nothing. As `session_start` follows the pending runs again, they show again after a reload.
+
 A `detached` or `host-stopped` outcome, an outcome line that is not valid, or no outcome line posts nothing and
 appends no end entry, so the next `session_start` follows the run again. A crash between the message and the end entry
 posts the outcome again at the next `session_start`.
@@ -1127,6 +1143,16 @@ file that it wrote. A `save` that fails is a normal tool error with the stderr t
 A failed, detached, stopped or host-stopped result is an error result that keeps `structuredContent`. Thus
 `await tools.workflow({ name: "ship", args: { item } })` in a codemode script gets this object. A call that fails
 before a run exists, such as an unknown workflow name, is a normal tool error with the stderr text.
+
+### The `/workflows` command
+
+`/workflows` composes [`workflows list`](#list) and [`workflows attach`](#attach). It runs
+`workflows list --json` in Pi's working directory, and lists the runs in that order, one line each:
+`<run-id>  <workflow>  <status>  <title>`. With no run, it notifies `No workflow runs in this project`. When the list
+fails, it notifies its stderr as an error. When `HERDR_ENV` is set, the chosen run gets `workflows attach <run-id>`,
+which opens the run's live session in a Herdr tab or pane. Only `HERDR_ENV` counts, because `workflows attach` opens
+a Herdr pane only with it. Without it, the command notifies `Run in another terminal: workflows attach <run-id>`. When
+the attach fails, it notifies the error `<stderr>. Run in another terminal: workflows attach <run-id>`.
 
 ## Run directory
 

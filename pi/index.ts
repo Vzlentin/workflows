@@ -1,6 +1,7 @@
 /**
- * The Pi extension: the `workflow` tool. Each run is a child process of the `workflows` command of the install that
- * holds this folder, so a run started in Pi is a normal run that `workflows resume` also continues.
+ * The Pi extension: the `workflow` tool and the `/workflows` command. Each run is a child process of the `workflows`
+ * command of the install that holds this folder, so a run started in Pi is a normal run that `workflows resume` also
+ * continues.
  */
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -8,7 +9,17 @@ import { basename } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { type Static, Type } from "@earendil-works/pi-ai";
-import type { AgentToolResult, ExtensionAPI, Theme, ThemeColor, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+	AgentToolResult,
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	ExtensionUIContext,
+	RegisteredCommand,
+	Theme,
+	ThemeColor,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Value } from "typebox/value";
 
@@ -68,14 +79,11 @@ const OUTCOME = Type.Union([
 		report: Type.Array(Type.String()),
 	}),
 	Type.Object({ runId: Type.String(), status: Type.Literal("failed"), error: Type.String() }),
+	/** `workflow` is the name of the run's workflow, which a background run shows while it runs. */
+	Type.Object({ runId: Type.String(), status: Type.Literal("started"), workflow: Type.String() }),
 	Type.Object({
 		runId: Type.String(),
-		status: Type.Union([
-			Type.Literal("started"),
-			Type.Literal("detached"),
-			Type.Literal("stopped"),
-			Type.Literal("host-stopped"),
-		]),
+		status: Type.Union([Type.Literal("detached"), Type.Literal("stopped"), Type.Literal("host-stopped")]),
 	}),
 ]);
 
@@ -98,7 +106,8 @@ const PROGRESS = Type.Object({ progress: Type.Array(Type.Unknown()) });
 const STARTED_ENTRY = Type.Object({
 	type: Type.Literal("custom"),
 	customType: Type.Literal("workflow-background"),
-	data: Type.Object({ runId: Type.String(), cwd: Type.String() }),
+	/** Without `workflow`, the widget shows `?` for the run. */
+	data: Type.Object({ runId: Type.String(), cwd: Type.String(), workflow: Type.Optional(Type.String()) }),
 });
 
 /** The entry that the watcher records after it posts the outcome of a background run. */
@@ -217,6 +226,11 @@ class Steps {
 
 	get lines(): string[] {
 		return [...this.#drawn, ...this.#other];
+	}
+
+	/** The last progress line, trimmed, or `starting` before the first one. */
+	get step(): string {
+		return this.#drawn.at(-1)?.trim() ?? "starting";
 	}
 }
 
@@ -395,6 +409,7 @@ export function workflowTool(command: readonly string[], watcher: Watcher) {
 			result: Type.Optional(Type.Unknown()),
 			report: Type.Optional(Type.Array(Type.String())),
 			error: Type.Optional(Type.String()),
+			workflow: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			if (params.save !== undefined) {
@@ -416,7 +431,7 @@ export function workflowTool(command: readonly string[], watcher: Watcher) {
 
 			const outcome = outcomeOf(output);
 
-			if (outcome.status === "started") watcher.started(outcome.runId, ctx.cwd);
+			if (outcome.status === "started") watcher.started(outcome.runId, ctx.cwd, outcome.workflow);
 
 			return resultOf(outcome, steps.lines);
 		},
@@ -440,18 +455,78 @@ export function workflowTool(command: readonly string[], watcher: Watcher) {
 	} satisfies ToolDefinition<typeof PARAMETERS, WorkflowDetails>;
 }
 
-type Api = Pick<ExtensionAPI, "registerTool" | "registerMessageRenderer" | "on" | "sendMessage" | "appendEntry">;
+/** The stdout line of `workflows list --json`, as far as the `/workflows` command reads it. */
+const LISTED = Type.Array(
+	Type.Object({ runId: Type.String(), workflow: Type.String(), status: Type.String(), title: Type.String() }),
+);
+
+/**
+ * The `/workflows` command: it lists the runs of the project with `workflows list --json`, and opens the chosen one with
+ * `workflows attach` in Herdr, or says how to attach from another terminal.
+ */
+export function workflowsCommand(command: readonly string[]) {
+	return {
+		description: "Attach to a workflow run of this project, in Herdr",
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
+			const listed = await runCli(command, ["list", "--json"], ctx.cwd, {});
+			const runs = listed.code === 0 ? JSON.parse(listed.stdout.join("\n")) : undefined;
+
+			if (!Value.Check(LISTED, runs)) {
+				ctx.ui.notify(listed.stderr.join("\n") || `workflows list exited with ${listed.code}`, "error");
+
+				return;
+			}
+
+			if (runs.length === 0) {
+				ctx.ui.notify("No workflow runs in this project", "info");
+
+				return;
+			}
+
+			const lines = new Map(
+				runs.map((run) => [`${run.runId}  ${run.workflow}  ${run.status}  ${run.title}`, run.runId]),
+			);
+
+			const chosen = await ctx.ui.select("Attach to workflow run", [...lines.keys()]);
+			const runId = chosen === undefined ? undefined : lines.get(chosen);
+
+			if (runId === undefined) return;
+			const hint = `Run in another terminal: workflows attach ${runId}`;
+
+			// `workflows attach` opens a Herdr pane only with HERDR_ENV.
+			if (!process.env.HERDR_ENV) {
+				ctx.ui.notify(hint, "info");
+
+				return;
+			}
+
+			const output = await runCli(command, ["attach", runId], ctx.cwd, {});
+
+			if (output.code !== 0) ctx.ui.notify(`${output.stderr.join("\n")}. ${hint}`, "error");
+		},
+	} satisfies Omit<RegisteredCommand, "name" | "sourceInfo">;
+}
+
+type Api = Pick<
+	ExtensionAPI,
+	"registerTool" | "registerCommand" | "registerMessageRenderer" | "on" | "sendMessage" | "appendEntry"
+>;
+
+/** A run that the watcher follows: its ID, its directory, its workflow name, or `?` when unknown, and its steps. */
+type Followed = { readonly runId: string; readonly cwd: string; readonly workflow: string; readonly steps: Steps };
 
 /**
  * Follows the background runs of a session with `workflows wait`, and posts the outcome of each one as a
- * `workflow-result` message that starts a turn. Shutdown sends SIGINT to the waits, which detach and post nothing.
+ * `workflow-result` message that starts a turn. Shutdown sends SIGINT to the waits, which detach and post nothing. With
+ * a UI from `session_start`, the widget `workflows` above the editor shows the step of each followed run.
  */
 class Watcher {
 	readonly #pi: Api;
 	readonly #command: readonly string[];
 	readonly #controller = new AbortController();
-	/** The runs that a wait of this instance follows. */
-	readonly #watched = new Set<string>();
+	/** The runs that a wait of this instance follows, by run ID, in the order they started to be followed. */
+	readonly #watched = new Map<string, Followed>();
+	#ui: ExtensionUIContext | undefined;
 
 	constructor(pi: Api, command: readonly string[]) {
 		this.#pi = pi;
@@ -459,42 +534,80 @@ class Watcher {
 	}
 
 	/** Records the run that a call started in the background, and follows it. */
-	started(runId: string, cwd: string): void {
-		this.#pi.appendEntry("workflow-background", { runId, cwd });
-		this.watch(runId, cwd);
+	started(runId: string, cwd: string, workflow: string): void {
+		this.#pi.appendEntry("workflow-background", { runId, cwd, workflow });
+		this.#watch(runId, cwd, workflow);
 	}
 
-	/** Follows each run of the session that has a start entry after its last end entry. */
-	resume(entries: readonly unknown[]): void {
-		const pending = new Map<string, string>();
+	/**
+	 * Takes the UI of the session when it has one, and follows each run of the session that has a start entry after its
+	 * last end entry.
+	 */
+	resume(ctx: ExtensionContext): void {
+		if (ctx.hasUI) this.#ui = ctx.ui;
+		const pending = new Map<string, { cwd: string; workflow: string }>();
 
-		for (const entry of entries) {
-			if (Value.Check(STARTED_ENTRY, entry)) pending.set(entry.data.runId, entry.data.cwd);
-			else if (Value.Check(ENDED_ENTRY, entry)) pending.delete(entry.data.runId);
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if (Value.Check(STARTED_ENTRY, entry)) {
+				const { runId, cwd, workflow = "?" } = entry.data;
+				pending.set(runId, { cwd, workflow });
+			} else if (Value.Check(ENDED_ENTRY, entry)) pending.delete(entry.data.runId);
 		}
 
-		for (const [runId, cwd] of pending) this.watch(runId, cwd);
+		for (const [runId, { cwd, workflow }] of pending) this.#watch(runId, cwd, workflow);
+		this.#draw();
 	}
 
 	stop(): void {
 		this.#controller.abort();
+		this.#ui = undefined;
 	}
 
-	watch(runId: string, cwd: string): void {
+	#watch(runId: string, cwd: string, workflow: string): void {
 		if (this.#watched.has(runId)) return;
-		this.#watched.add(runId);
-		this.#post(runId, cwd)
+		const run: Followed = { runId, cwd, workflow, steps: new Steps() };
+		this.#watched.set(runId, run);
+		this.#draw();
+		this.#post(run)
 			.catch(() => {})
-			.finally(() => this.#watched.delete(runId));
+			.finally(() => {
+				this.#watched.delete(runId);
+				this.#draw();
+			});
 	}
 
-	async #post(runId: string, cwd: string): Promise<void> {
+	/** Draws one line with the workflow name, the short ID and the step of each followed run, or removes the widget. */
+	#draw(): void {
+		const ui = this.#ui;
+
+		if (ui === undefined) return;
+
+		if (this.#watched.size === 0) {
+			ui.setWidget("workflows", undefined);
+
+			return;
+		}
+
+		const { theme } = ui;
+
+		const shown = [...this.#watched.values()].map(({ runId, workflow, steps }) => {
+			const short = runId.slice(runId.lastIndexOf("-") + 1);
+
+			return `${theme.fg("dim", `${workflow}:`)} ${short} ${steps.step}`;
+		});
+
+		ui.setWidget("workflows", [shown.join(theme.fg("dim", " | "))]);
+	}
+
+	async #post({ runId, cwd, steps }: Followed): Promise<void> {
 		const { signal } = this.#controller;
-		const steps = new Steps();
 
 		const output = await runCli(this.#command, ["wait", runId, "--json"], cwd, {
 			signal,
-			progress: (line) => steps.add(line),
+			progress: (line) => {
+				steps.add(line);
+				this.#draw();
+			},
 		});
 
 		// No outcome, or an outcome that is not valid, posts nothing: the next start of the session watches the run again.
@@ -516,7 +629,8 @@ class Watcher {
 export default function workflows(pi: Api, command: readonly string[] = cli()) {
 	const watcher = new Watcher(pi, command);
 	pi.registerTool(workflowTool(command, watcher));
-	pi.on("session_start", (_event, ctx) => watcher.resume(ctx.sessionManager.getEntries()));
+	pi.registerCommand("workflows", workflowsCommand(command));
+	pi.on("session_start", (_event, ctx) => watcher.resume(ctx));
 	pi.on("session_shutdown", () => watcher.stop());
 	pi.registerMessageRenderer("workflow-result", (message, _options, theme) => {
 		if (Value.Check(DETAILS, message.details)) {

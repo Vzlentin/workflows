@@ -1201,7 +1201,7 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 		client.close();
 		terminal.following(false);
 
-		if (json) terminal.stdout(JSON.stringify({ runId: id, status: "started" }));
+		if (json) terminal.stdout(JSON.stringify({ runId: id, status: "started", workflow: input.name }));
 
 		return 0;
 	}

@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
-import type { CustomEntry, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+	CustomEntry,
+	ExtensionCommandContext,
+	ExtensionContext,
+	ExtensionUIContext,
+	Theme,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension, { type workflowTool } from "../pi/index.ts";
 import { hostModel, sandbox, startHost } from "./support.ts";
@@ -16,7 +23,8 @@ let tool: Tool;
 /** A fake `workflows` command: its behavior comes from its arguments, which it appends to `args.log`. */
 const FAKE = `#!/bin/sh
 echo "$@" >> args.log
-case " $* " in *" --background "*) echo "run rb"; echo '{"runId":"rb","status":"started"}'; exit 0 ;; esac
+case "$1 $3" in "resume --background") echo "run $2"; echo '{"runId":"'"$2"'","status":"started","workflow":"campaign"}'; exit 0 ;; esac
+case " $* " in *" --background "*) echo "run rb"; echo '{"runId":"rb","status":"started","workflow":"ship"}'; exit 0 ;; esac
 case "$1" in
 ok)
 	echo "run r1"; echo '{"progress":["◉ item 1/2: one"]}' >&2
@@ -60,7 +68,16 @@ wait)
 		trap 'touch detached; echo '"'"'{"runId":"long","status":"detached"}'"'"'; exit 130' INT
 		touch waiting
 		while :; do sleep 0.02; done ;;
+	*-*)
+		until [ -e "go-$2" ]; do sleep 0.02; done
+		echo "warning: slow disk" >&2; echo '{"progress":["◉ item 2/5: x","  ◉ round 1: review"]}' >&2
+		until [ -e "end-$2" ]; do sleep 0.02; done
+		echo '{"runId":"'"$2"'","status":"finished","result":1,"report":["one"]}' ;;
 	esac ;;
+list)
+	if [ -e list.fails ]; then echo "workflows: no harness project" >&2; exit 1; fi
+	if [ -e runs.json ]; then cat runs.json; else echo '[]'; fi ;;
+attach) case "$2" in *-bad) echo "workflows: run $2 has no session" >&2; exit 1 ;; esac ;;
 *) exit 9 ;;
 esac
 `;
@@ -129,8 +146,11 @@ type MessageOptions = Parameters<Api["sendMessage"]>[1];
 
 type Renderer = Parameters<Api["registerMessageRenderer"]>[1];
 
+type Command = Parameters<Api["registerCommand"]>[1];
+
 /** The part of a context that the handlers of the extension read. */
-type Context = Pick<ExtensionContext, "cwd"> & {
+type Context = Pick<ExtensionContext, "cwd" | "hasUI"> & {
+	readonly ui: ExtensionUIContext | undefined;
 	readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getEntries">;
 };
 
@@ -148,6 +168,7 @@ function fakePi(entries: CustomEntry[] = [], command = ["/bin/sh", join(root, "w
 	const tools: Tool[] = [];
 	const names: string[] = [];
 	const renderers = new Map<string, Renderer>();
+	const commands = new Map<string, Command>();
 	const handlers = new Map<string, Handler[]>();
 	const messages: { message: Message; options: MessageOptions }[] = [];
 	let id = entries.length;
@@ -162,10 +183,12 @@ function fakePi(entries: CustomEntry[] = [], command = ["/bin/sh", join(root, "w
 
 			if (isWorkflowTool(registered)) tools.push(registered);
 		},
+		registerCommand: (name, command) => commands.set(name, command),
 		// SAFETY: the extension registers only the renderer of `workflow-result`, which checks its details.
 		registerMessageRenderer: (customType, renderer) => renderers.set(customType, renderer as Renderer),
 		// SAFETY: `on` has one overload for each event, and the fake keeps every handler by its event name. The handlers
-		// of the extension read only `ctx.cwd` and `ctx.sessionManager.getEntries()`, which `fire` gives.
+		// of the extension read only `ctx.cwd`, `ctx.hasUI`, `ctx.ui` and `ctx.sessionManager.getEntries()`, which `fire`
+		// gives.
 		on: on as Api["on"],
 		sendMessage: (message, options) => messages.push({ message, options }),
 		appendEntry: (customType, data) => {
@@ -176,25 +199,32 @@ function fakePi(entries: CustomEntry[] = [], command = ["/bin/sh", join(root, "w
 
 	extension(pi, command);
 
-	/** Fires `event` with a context in `root` whose session has `entries`. */
-	const fire = async (event: string) => {
-		const ctx: Context = { cwd: root, sessionManager: { getEntries: () => entries } };
+	/** Fires `event` with a context in `root` whose session has `entries`, with `ui` when given. */
+	const fire = async (event: string, ui?: ExtensionUIContext, hasUI = ui !== undefined) => {
+		const ctx: Context = { cwd: root, hasUI, ui, sessionManager: { getEntries: () => entries } };
 
 		for (const handler of handlers.get(event) ?? []) await handler({ type: event }, ctx);
+	};
+
+	/** Runs the command `name` with a context in `root` that has `ui`. */
+	const runCommand = async (name: string, ui: ExtensionUIContext) => {
+		// SAFETY: the `/workflows` command reads only `ctx.cwd` and `ctx.ui` of its context.
+		const ctx = { cwd: root, hasUI: true, ui } as ExtensionCommandContext;
+		await commands.get(name)?.handler("", ctx);
 	};
 
 	const [registered] = tools;
 
 	if (registered === undefined) throw new Error("the extension registered no tool");
 
-	return { names, registered, renderers, messages, entries, fire };
+	return { names, registered, renderers, messages, entries, fire, runCommand };
 }
 
-/** A start entry of a background run, as the extension records it. */
-const startEntry = (runId: string, cwd: string): CustomEntry => ({
+/** A start entry of a background run, with `workflow` when it is given. */
+const startEntry = (runId: string, cwd: string, workflow?: string): CustomEntry => ({
 	type: "custom",
 	customType: "workflow-background",
-	data: { runId, cwd },
+	data: workflow === undefined ? { runId, cwd } : { runId, cwd, workflow },
 	id: `s-${runId}`,
 	parentId: null,
 	timestamp: "",
@@ -208,6 +238,50 @@ const endEntry = (runId: string): CustomEntry => ({
 	parentId: null,
 	timestamp: "",
 });
+
+/**
+ * A fake UI that records each `setWidget`, `select` and `notify` call and each read of its theme. `select` gives the
+ * line at the index that `choose` sets, or undefined.
+ */
+function fakeUi() {
+	const widgets: [string, string[] | undefined][] = [];
+	const selects: [string, string[]][] = [];
+	const notes: [string, string | undefined][] = [];
+	let chosen: number | undefined;
+	let reads = 0;
+
+	const fake = {
+		setWidget: (key: string, content: string[] | undefined) => {
+			widgets.push([key, content]);
+		},
+		select: async (title: string, lines: string[]) => {
+			selects.push([title, lines]);
+
+			return chosen === undefined ? undefined : lines[chosen];
+		},
+		notify: (message: string, type?: string) => {
+			notes.push([message, type]);
+		},
+		get theme() {
+			reads += 1;
+
+			return theme;
+		},
+	};
+
+	// SAFETY: the watcher calls only `setWidget` with lines or undefined, and reads only `theme`. The `/workflows` command
+	// calls only `select` with a title and lines, and `notify` with a message and a type.
+	return {
+		ui: fake as ExtensionUIContext,
+		widgets,
+		selects,
+		notes,
+		reads: () => reads,
+		choose: (index: number | undefined) => {
+			chosen = index;
+		},
+	};
+}
 
 const waits = async () =>
 	(await readFile(join(root, "args.log"), "utf8").catch(() => ""))
@@ -479,7 +553,7 @@ describe("a background run of the workflow tool", () => {
 			contextOf(root),
 		);
 
-		expect(result.structuredContent).toEqual({ runId: "rb", status: "started" });
+		expect(result.structuredContent).toEqual({ runId: "rb", status: "started", workflow: "ship" });
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toEqual([
 			{
@@ -488,7 +562,7 @@ describe("a background run of the workflow tool", () => {
 			},
 		]);
 		expect(pi.entries.map((entry) => [entry.customType, entry.data])).toEqual([
-			["workflow-background", { runId: "rb", cwd: root }],
+			["workflow-background", { runId: "rb", cwd: root, workflow: "ship" }],
 		]);
 		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
 		expect(pi.messages).toEqual([
@@ -558,11 +632,139 @@ describe("a background run of the workflow tool", () => {
 		expect(pi.entries).toHaveLength(1);
 	});
 
+	it("shows the step of a followed run in the widget, and removes the widget when the run ends", async () => {
+		const pi = fakePi();
+		const { ui, widgets } = fakeUi();
+		const id = "20261024T223428-bb814010";
+		await pi.fire("session_start", ui);
+		expect(widgets).toEqual([["workflows", undefined]]);
+		await pi.registered.execute("call-1", { resume: id, background: true }, undefined, undefined, contextOf(root));
+		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", ["campaign: bb814010 starting"]]));
+
+		await writeFile(join(root, `go-${id}`), "");
+		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", ["campaign: bb814010 ◉ round 1: review"]]));
+		expect(widgets.some(([, lines]) => lines?.some((line) => line.includes("slow disk")))).toBe(false);
+
+		await writeFile(join(root, `end-${id}`), "");
+		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
+		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", undefined]));
+		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: `run ${id} finished: 1` }]);
+		expect(pi.entries[1]?.data).toEqual({ runId: id });
+	});
+
+	it("shows each run that a resume at start or a call follows, in one line", async () => {
+		const first = "20261024T223428-aaaa1111";
+		const second = "20261024T223428-bb814010";
+		const pi = fakePi([startEntry(first, root, "ship")]);
+		const { ui, widgets } = fakeUi();
+		await pi.fire("session_start", ui);
+		await pi.registered.execute("call-1", { resume: second, background: true }, undefined, undefined, contextOf(root));
+		await vi.waitFor(() =>
+			expect(widgets.at(-1)).toEqual(["workflows", ["ship: aaaa1111 starting | campaign: bb814010 starting"]]),
+		);
+
+		await writeFile(join(root, `go-${first}`), "");
+		await writeFile(join(root, `end-${first}`), "");
+		await vi.waitFor(() => expect(pi.messages).toHaveLength(1));
+		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", ["campaign: bb814010 starting"]]));
+
+		await writeFile(join(root, `go-${second}`), "");
+		await writeFile(join(root, `end-${second}`), "");
+		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", undefined]));
+	});
+
+	it("draws no widget without a UI", async () => {
+		const pi = fakePi([startEntry("rb", root)]);
+		const fake = fakeUi();
+		await pi.fire("session_start", fake.ui, false);
+		await pi.registered.execute("call-1", { name: "ship", background: true }, undefined, undefined, contextOf(root));
+		await vi.waitFor(() => expect(pi.messages).toHaveLength(1));
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect([fake.widgets, fake.reads()]).toEqual([[], 0]);
+	});
+
+	it("draws nothing after shutdown", async () => {
+		const pi = fakePi([startEntry("long", root, "ship")]);
+		const { ui, widgets } = fakeUi();
+		await pi.fire("session_start", ui);
+		await vi.waitFor(() => readFile(join(root, "waiting")));
+		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", ["ship: long starting"]]));
+		const drawn = widgets.length;
+		await pi.fire("session_shutdown");
+		await vi.waitFor(() => readFile(join(root, "detached")));
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(widgets).toHaveLength(drawn);
+	});
+
 	it("refuses background with save, and answer without resume, and runs no command", async () => {
 		await expect(call({ save: { runId: "r2", name: "fix" }, background: true })).rejects.toThrow(
 			"background works only with name, script or resume",
 		);
 		await expect(call({ name: "ok", answer: "y" })).rejects.toThrow("answer works only with resume");
 		await expect(readFile(join(root, "args.log"), "utf8")).rejects.toThrow();
+	});
+});
+
+describe("the /workflows command", () => {
+	const good = "20261024T223428-aaaa1111";
+	const bad = "20261024T223428-bad";
+
+	const runs = [
+		{ runId: good, workflow: "ship", title: "Fix the typo", status: "running", repository: null },
+		{ runId: bad, workflow: "campaign", title: "Docs", status: "failed", repository: null },
+	];
+
+	const lines = [`${good}  ship  running  Fix the typo`, `${bad}  campaign  failed  Docs`];
+
+	const commands = async () => (await readFile(join(root, "args.log"), "utf8")).split("\n").filter(Boolean);
+
+	it("says that the project has no run, and shows no list", async () => {
+		const pi = fakePi();
+		const fake = fakeUi();
+		await pi.runCommand("workflows", fake.ui);
+		expect([fake.notes, fake.selects]).toEqual([[["No workflow runs in this project", "info"]], []]);
+	});
+
+	it("gives the error of a list that fails", async () => {
+		await writeFile(join(root, "list.fails"), "");
+		const pi = fakePi();
+		const fake = fakeUi();
+		await pi.runCommand("workflows", fake.ui);
+		expect([fake.notes, fake.selects]).toEqual([[["workflows: no harness project", "error"]], []]);
+	});
+
+	it("lists the runs of workflows list, and attaches to the chosen one in Herdr, or gives the command", async () => {
+		await writeFile(join(root, "runs.json"), JSON.stringify(runs));
+		const saved = process.env.HERDR_ENV;
+		const pi = fakePi();
+		const fake = fakeUi();
+
+		try {
+			process.env.HERDR_ENV = "1";
+			await pi.runCommand("workflows", fake.ui);
+			expect([fake.selects, await commands()]).toEqual([[["Attach to workflow run", lines]], ["list --json"]]);
+
+			fake.choose(0);
+			await pi.runCommand("workflows", fake.ui);
+			expect([await commands(), fake.notes]).toEqual([["list --json", "list --json", `attach ${good}`], []]);
+
+			fake.choose(1);
+			await pi.runCommand("workflows", fake.ui);
+			expect(fake.notes).toEqual([
+				[`workflows: run ${bad} has no session. Run in another terminal: workflows attach ${bad}`, "error"],
+			]);
+
+			delete process.env.HERDR_ENV;
+			fake.choose(0);
+			await pi.runCommand("workflows", fake.ui);
+			expect((await commands()).filter((line) => line.startsWith("attach"))).toEqual([
+				`attach ${good}`,
+				`attach ${bad}`,
+			]);
+			expect(fake.notes.at(-1)).toEqual([`Run in another terminal: workflows attach ${good}`, "info"]);
+		} finally {
+			if (saved === undefined) delete process.env.HERDR_ENV;
+			else process.env.HERDR_ENV = saved;
+		}
 	});
 });
