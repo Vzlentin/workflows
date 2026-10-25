@@ -93,11 +93,12 @@ export function ensureHarness(dir: string): string | undefined {
 }
 
 /**
- * Sets up the package in `dir` when it is a top-level global install: it ensures harness, runs harness's setup for its
- * own Pi extension, sets the entry `workflows` in harness's `entries.json`, so a host that starts before any
- * `workflows` command runs workflows, and runs harness's setup for `dir`, which registers `<dir>/pi` in Pi. harness's
- * setup keeps a stamp for each package version and path, and writes it only when `pi` worked, so a later run is cheap
- * and a failed one tries again. It never throws: an error is a warning.
+ * Sets up the package in `dir` when it is a top-level global install: it ensures harness, runs harness's setup, which
+ * installs the Pi package `@vzlentin/pi-agents` at the version of harness, sets the entry `workflows` in harness's
+ * `entries.json`, so a host that starts before any `workflows` command runs workflows, and runs harness's setup for
+ * `dir`, which installs the Pi package `@vzlentin/pi-workflows` at the version of `dir`. harness's setup skips a Pi
+ * package that Pi already lists, keeps a stamp for each package version and path, and writes it only when `pi` worked,
+ * so a later run is cheap and a failed one tries again. It never throws: an error is a warning.
  */
 export async function setup(dir: string): Promise<void> {
 	try {
@@ -115,9 +116,9 @@ export async function setup(dir: string): Promise<void> {
 		if (harness === undefined) return;
 		const pi = await import("@vzlentin/harness/setup");
 		const entries = await import("@vzlentin/harness/entries");
-		pi.setupOnce(harness);
+		pi.setupOnce(harness, "@vzlentin/pi-agents");
 		entries.setEntry("workflows", ENTRY);
-		pi.setupOnce(dir);
+		pi.setupOnce(dir, "@vzlentin/pi-workflows");
 	} catch (error) {
 		process.stderr.write(`workflows: setup failed: ${error instanceof Error ? error.message : String(error)}\n`);
 	}

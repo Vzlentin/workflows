@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { harnessProblem, harnessRange, inRange, newerThanRange } from "../src/harness.ts";
 
@@ -25,6 +27,9 @@ if (args[0] === "install") {
 	cpSync(process.env.NPM_INSTALLS, join(args[3], "lib", "node_modules", "@vzlentin", "harness"), { recursive: true });
 }
 `;
+
+/** A package of `npm pack --json`. npm 12 prints an object of them by name, and earlier npm prints an array. */
+const Pack = Type.Object({ files: Type.Array(Type.Object({ path: Type.String() })) });
 
 let root: string;
 let built: string;
@@ -109,12 +114,24 @@ async function installWorkflows(at = join("@vzlentin", "workflows")) {
 	const dir = join(LIB(), at);
 	await mkdir(dir, { recursive: true });
 
-	for (const name of ["package.json", "pi", "scripts"])
-		await cp(join(CHECKOUT, name), join(dir, name), { recursive: true });
+	for (const name of ["package.json", "scripts"]) await cp(join(CHECKOUT, name), join(dir, name), { recursive: true });
 	await cp(built, join(dir, "dist"), { recursive: true });
 
 	return dir;
 }
+
+/** The line of `pi.log` that installs the Pi package `name` at the version of the package in `dir`. */
+async function piInstall(name: string, dir: string) {
+	const { version } = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+
+	return `install npm:${name}@${version}`;
+}
+
+/** The `pi.log` lines of a setup of harness and of the workflows package in `dir`. */
+const piInstalls = async (dir: string) => [
+	await piInstall("@vzlentin/pi-agents", HARNESS),
+	await piInstall("@vzlentin/pi-workflows", dir),
+];
 
 /** A global install of the checkout's harness next to workflows. */
 const installHarness = () => cp(HARNESS, join(LIB(), "@vzlentin", "harness"), { recursive: true });
@@ -135,7 +152,7 @@ const workflows = (dir: string, env: Readonly<Record<string, string>>, ...args: 
 
 describe("the harness range", () => {
 	it("is the peer dependency of the package", () => {
-		expect(harnessRange()).toBe("^0.3.1");
+		expect(harnessRange()).toBe("^0.4.0");
 	});
 
 	it("takes the versions of a caret range as npm does", () => {
@@ -188,23 +205,23 @@ describe("the harness check", () => {
 	it("says how to install harness when none is found, or when its version is out of the range", async () => {
 		const dir = join(root, "package");
 		expect(harnessProblem(dir)).toBe(
-			"workflows needs @vzlentin/harness ^0.3.1: npm install -g @vzlentin/harness@^0.3.1",
+			"workflows needs @vzlentin/harness ^0.4.0: npm install -g @vzlentin/harness@^0.4.0",
 		);
 		expect(harnessProblem(dir, "/p")).toBe(
-			"workflows needs @vzlentin/harness ^0.3.1: npm install -g --prefix /p @vzlentin/harness@^0.3.1",
+			"workflows needs @vzlentin/harness ^0.4.0: npm install -g --prefix /p @vzlentin/harness@^0.4.0",
 		);
 
 		await fakeHarness("0.1.0");
 		expect(harnessProblem(dir)).toBe(
-			"workflows needs @vzlentin/harness ^0.3.1, found 0.1.0: npm install -g @vzlentin/harness@^0.3.1",
+			"workflows needs @vzlentin/harness ^0.4.0, found 0.1.0: npm install -g @vzlentin/harness@^0.4.0",
 		);
 
-		await fakeHarness("0.3.3");
+		await fakeHarness("0.4.3");
 		expect(harnessProblem(dir)).toBeUndefined();
 
-		await fakeHarness("0.4.0");
+		await fakeHarness("0.5.0");
 		expect(harnessProblem(dir)).toBe(
-			"workflows needs @vzlentin/harness ^0.3.1, found 0.4.0, which is newer. Update workflows: npm install -g @vzlentin/workflows",
+			"workflows needs @vzlentin/harness ^0.4.0, found 0.5.0, which is newer. Update workflows: npm install -g @vzlentin/workflows",
 		);
 	});
 
@@ -217,14 +234,14 @@ describe("the harness check", () => {
 		expect(await node(cli, ["list"], {})).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: "workflows needs @vzlentin/harness ^0.3.1: npm install -g @vzlentin/harness@^0.3.1\n",
+			stderr: "workflows needs @vzlentin/harness ^0.4.0: npm install -g @vzlentin/harness@^0.4.0\n",
 		});
 
 		await fakeHarness("0.1.0");
 		expect(await node(cli, ["list"], {})).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: "workflows needs @vzlentin/harness ^0.3.1, found 0.1.0: npm install -g @vzlentin/harness@^0.3.1\n",
+			stderr: "workflows needs @vzlentin/harness ^0.4.0, found 0.1.0: npm install -g @vzlentin/harness@^0.4.0\n",
 		});
 		expect(await log("npm.log")).toEqual([]);
 	});
@@ -248,10 +265,7 @@ describe("the setup", () => {
 		await installHarness();
 
 		expect(await postinstall(dir)).toEqual({ code: 0, stdout: "", stderr: "" });
-		expect(await log("pi.log")).toEqual([
-			`install ${join(LIB(), "@vzlentin", "harness", "pi")}`,
-			`install ${join(dir, "pi")}`,
-		]);
+		expect(await log("pi.log")).toEqual(await piInstalls(dir));
 		expect(await entries()).toEqual({ workflows: join(dir, "dist", "entry.js") });
 		expect(await log("npm.log")).toEqual([]);
 
@@ -267,10 +281,10 @@ describe("the setup", () => {
 		expect(await workflows(dir, env, "list")).toEqual({
 			code: 0,
 			stdout: "",
-			stderr: `workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.1\n`,
+			stderr: `workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.4.0\n`,
 		});
-		expect(await log("npm.log")).toEqual([`install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.1`]);
-		const once = [`install ${join(LIB(), "@vzlentin", "harness", "pi")}`, `install ${join(dir, "pi")}`];
+		expect(await log("npm.log")).toEqual([`install -g --prefix ${PREFIX()} @vzlentin/harness@^0.4.0`]);
+		const once = await piInstalls(dir);
 		expect(await log("pi.log")).toEqual(once);
 		expect(await entries()).toEqual({ workflows: join(dir, "dist", "entry.js") });
 
@@ -281,24 +295,34 @@ describe("the setup", () => {
 		const next = json.version.replace(/\d+$/, (patch: string) => String(Number(patch) + 1));
 		await writeFile(join(dir, "package.json"), JSON.stringify({ ...json, version: next }));
 		expect(await workflows(dir, env, "list")).toEqual({ code: 0, stdout: "", stderr: "" });
-		expect(await log("pi.log")).toEqual([...once, `install ${join(dir, "pi")}`]);
+		expect(await log("pi.log")).toEqual([...once, await piInstall("@vzlentin/pi-workflows", dir)]);
+	});
+
+	it("does not install the Pi package of workflows when Pi lists the pi folder of a checkout", async () => {
+		const dir = await installWorkflows();
+		await installHarness();
+		await mkdir(join(root, "pi-agent"));
+		await writeFile(join(root, "pi-agent", "settings.json"), JSON.stringify({ packages: [join(CHECKOUT, "pi")] }));
+
+		expect(await postinstall(dir)).toEqual({ code: 0, stdout: "", stderr: "" });
+		expect(await log("pi.log")).toEqual([await piInstall("@vzlentin/pi-agents", HARNESS)]);
 	});
 
 	it("tries the Pi steps again on the next command when pi failed", async () => {
 		const dir = await installWorkflows();
 		await installHarness();
-		const extension = join(LIB(), "@vzlentin", "harness", "pi");
+		const installs = await piInstalls(dir);
+		const [agents, workflowsPi] = installs.map((line) => line.replace(/^install /, ""));
 
 		expect(await workflows(dir, { PI_FAIL: "1" }, "list")).toEqual({
 			code: 0,
 			stdout: "",
 			stderr:
-				`harness: pi install failed (exit 1). To add the Pi extension of harness, run: pi install ${extension}\n` +
-				`workflows: pi install failed (exit 1). To add the Pi extension of workflows, run: pi install ${join(dir, "pi")}\n`,
+				`harness: pi install failed (exit 1). To add the Pi extension of harness, run: pi install ${agents}\n` +
+				`workflows: pi install failed (exit 1). To add the Pi extension of workflows, run: pi install ${workflowsPi}\n`,
 		});
 		expect(await entries()).toEqual({ workflows: join(dir, "dist", "entry.js") });
 
-		const installs = [`install ${extension}`, `install ${join(dir, "pi")}`];
 		expect(await workflows(dir, {}, "list")).toEqual({ code: 0, stdout: "", stderr: "" });
 		expect(await workflows(dir, {}, "list")).toEqual({ code: 0, stdout: "", stderr: "" });
 		expect(await log("pi.log")).toEqual([...installs, ...installs]);
@@ -306,18 +330,18 @@ describe("the setup", () => {
 
 	it("gives the prefix of the install in the fix command when it is not npm's global prefix", async () => {
 		const dir = await installWorkflows();
-		const installing = `workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.1\n`;
+		const installing = `workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.4.0\n`;
 
 		expect(await workflows(dir, {}, "list")).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: `${installing}workflows needs @vzlentin/harness ^0.3.1: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.1\n`,
+			stderr: `${installing}workflows needs @vzlentin/harness ^0.4.0: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.4.0\n`,
 		});
 
 		expect(await workflows(dir, { NPM_GLOBAL_PREFIX: PREFIX() }, "list")).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: `${installing}workflows needs @vzlentin/harness ^0.3.1: npm install -g @vzlentin/harness@^0.3.1\n`,
+			stderr: `${installing}workflows needs @vzlentin/harness ^0.4.0: npm install -g @vzlentin/harness@^0.4.0\n`,
 		});
 		expect(await log("pi.log")).toEqual([]);
 	});
@@ -327,21 +351,33 @@ describe("the setup", () => {
 		await installHarness();
 		const manifest = join(LIB(), "@vzlentin", "harness", "package.json");
 		const json = JSON.parse(await readFile(manifest, "utf8"));
-		await writeFile(manifest, JSON.stringify({ ...json, version: "0.4.0" }));
+		await writeFile(manifest, JSON.stringify({ ...json, version: "0.5.0" }));
 
 		expect(await workflows(dir, { NPM_INSTALLS: HARNESS }, "list")).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: `workflows needs @vzlentin/harness ^0.3.1, found 0.4.0, which is newer. Update workflows: npm install -g --prefix ${PREFIX()} @vzlentin/workflows\n`,
+			stderr: `workflows needs @vzlentin/harness ^0.4.0, found 0.5.0, which is newer. Update workflows: npm install -g --prefix ${PREFIX()} @vzlentin/workflows\n`,
 		});
 
-		await writeFile(manifest, JSON.stringify({ ...json, version: "0.4.0-rc.1" }));
+		await writeFile(manifest, JSON.stringify({ ...json, version: "0.5.0-rc.1" }));
 		expect(await workflows(dir, { NPM_INSTALLS: HARNESS }, "list")).toEqual({
 			code: 1,
 			stdout: "",
-			stderr: `workflows needs @vzlentin/harness ^0.3.1, found 0.4.0-rc.1, which is newer. Update workflows: npm install -g --prefix ${PREFIX()} @vzlentin/workflows\n`,
+			stderr: `workflows needs @vzlentin/harness ^0.4.0, found 0.5.0-rc.1, which is newer. Update workflows: npm install -g --prefix ${PREFIX()} @vzlentin/workflows\n`,
 		});
 		expect(await log("npm.log")).toEqual(["prefix -g", "prefix -g"]);
+	});
+
+	it("publishes no pi folder", async () => {
+		const { stdout } = await promisify(execFile)("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+			cwd: CHECKOUT,
+		});
+
+		const packs = Value.Parse(Type.Array(Pack), Object.values(JSON.parse(stdout)));
+		const files = packs.flatMap((pack) => pack.files);
+
+		expect(files.length).toBeGreaterThan(0);
+		expect(files.filter(({ path }) => path.startsWith("pi/"))).toEqual([]);
 	});
 
 	it("does not fail the install when harness stays missing", async () => {
@@ -351,8 +387,8 @@ describe("the setup", () => {
 			code: 0,
 			stdout: "",
 			stderr:
-				`workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.1\n` +
-				`workflows needs @vzlentin/harness ^0.3.1: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.3.1\n`,
+				`workflows: installing @vzlentin/harness: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.4.0\n` +
+				`workflows needs @vzlentin/harness ^0.4.0: npm install -g --prefix ${PREFIX()} @vzlentin/harness@^0.4.0\n`,
 		});
 		await expect(entries()).rejects.toThrow("ENOENT");
 	});

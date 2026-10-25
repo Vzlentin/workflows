@@ -25,7 +25,8 @@ This gives you the `workflows` command, and the `workflow` tool in Pi. workflows
 with the `harness` command and harness's `subagent` tool in Pi. There is only one copy of harness.
 
 The setup runs after the install with npm 11. npm 12 runs no install script by default, so your first `workflows`
-command does the setup. It registers the `pi` folder of each global package in Pi with `pi install <path>`. npm shows
+command does the setup. It installs the Pi packages `@vzlentin/pi-agents` and `@vzlentin/pi-workflows` from npm with
+`pi install npm:<package>@<version>`. npm shows
 the output of the install only with `--foreground-scripts`, so check the result with `workflows list` and `pi list`.
 When you install with `--prefix`, give the same prefix to every `npm` command.
 
@@ -33,7 +34,7 @@ When you install with `--prefix`, give the same prefix to every `npm` command.
 
 ```sh
 npm install -g @vzlentin/workflows@latest                           # update
-pi remove "$(realpath "$(npm root -g)")/@vzlentin/workflows/pi"    # remove
+pi remove npm:@vzlentin/pi-workflows                               # remove
 npm uninstall -g @vzlentin/workflows
 ```
 
