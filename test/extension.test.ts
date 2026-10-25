@@ -1187,13 +1187,24 @@ describe("the lookup of the workflows install", () => {
 	it("is the Pi package @vzlentin/pi-workflows at the version of workflows", () => {
 		const read = (path: string) => JSON.parse(readFileSync(join(import.meta.dirname, "..", path), "utf8"));
 		const pi = read("pi/package.json");
+		const root = read("package.json");
 
-		expect([pi.name, pi.private, pi.dependencies, pi.keywords, pi.version]).toEqual([
+		expect([
+			pi.name,
+			pi.private,
+			pi.dependencies,
+			pi.keywords,
+			pi.version,
+			pi.repository?.url,
+			pi.publishConfig?.access,
+		]).toEqual([
 			"@vzlentin/pi-workflows",
 			undefined,
 			undefined,
 			["pi-package"],
-			read("package.json").version,
+			root.version,
+			root.repository.url,
+			"public",
 		]);
 	});
 });

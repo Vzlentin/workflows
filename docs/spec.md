@@ -1102,8 +1102,8 @@ project of the host and `PI_SESSION_ID` to the conversation ID.
 The `pi/` folder is the Pi package `@vzlentin/pi-workflows`, the Pi extension that gives Pi the `workflow` tool and
 the `/workflows` command. Its `package.json` has the keyword `pi-package`, no `dependencies`, the Pi packages and
 `typebox` as peer dependencies at `"*"`, and the version of `@vzlentin/workflows`; release-please sets both versions.
-The root package does not publish `pi/`: the setup of a global install installs `@vzlentin/pi-workflows` from npm,
-see [Setup](#setup).
+Both packages are released together, at one version: the publish job publishes the root and then `pi/`. The setup
+of a global install installs `@vzlentin/pi-workflows` from npm, see [Setup](#setup).
 
 When Pi loads the extension, the extension first waits until the install lock `$XDG_STATE_HOME/workflows/install.lock`
 is free: the folder is missing, or its `pid` file names a process that does not exist. A missing or bad pid counts
