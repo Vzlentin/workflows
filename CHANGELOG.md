@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/Vzlentin/workflows/compare/v0.4.2...v0.4.3) (2026-10-25)
+
+
+### Bug Fixes
+
+* **deps:** move to pi 1.4.0 and harness 0.4.1 ([#59](https://github.com/Vzlentin/workflows/issues/59)) ([54902b6](https://github.com/Vzlentin/workflows/commit/54902b621e60c7102fef5283edf35309413a7a60))
+
 ## [0.4.2](https://github.com/Vzlentin/workflows/compare/v0.4.1...v0.4.2) (2026-10-25)
 
 
