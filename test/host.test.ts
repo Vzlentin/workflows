@@ -129,7 +129,7 @@ export default function ({ durable }) {
 		phases: {
 			run: (_task, runtime, context) => {
 				writeFileSync(${JSON.stringify(join(root, "old-ran"))}, "");
-				return runtime.sleep(runtime.now() + 3600000, context);
+				return runtime.sleepUntil(runtime.now() + 3600000, { phase: "run" }, context);
 			},
 		},
 		abort: (_task, runtime, context) =>
