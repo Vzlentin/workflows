@@ -18,7 +18,7 @@
 - The workflows are data: `workflows/*.js`, `prompts/*.md` and `agents/*.md`. There is no workflow in TypeScript.
 - A workflow script declares its description, arguments, worktree and exit codes in `export const meta = { ... }`, a literal object at the top. It returns its report lines as `result.report`.
 - `optimize` is the workflow script `workflows/optimize.js`: it evaluates each candidate with `run("ship", ...)` child runs, and reads and writes files through `sh`.
-- `ship` is the workflow script `workflows/ship.js`: its `meta` gives the work item, the rounds and the worktree, and the script is the child runs `workflows/rpi.js` (research, plan, implement, one commit), `workflows/review.js` (the review loop, which owns `rounds`) and `workflows/judge.js`, then the squash and the report lines. Each also runs on its own (`workflows rpi`, and `workflows review` and `workflows judge` on the branch of the current directory), and `campaign`, a queue of ships, ends with `judge.js` on the change of all its items.
+- `ship` is the workflow script `workflows/ship.js`: its `meta` gives the work item, the rounds and the worktree, and the script is the child runs `workflows/rpi.js` (research, plan, implement, one commit), `workflows/thermoloop.js` (the thermoloop, the review loop, which owns `rounds`) and `workflows/judge.js`, then the squash and the report lines. Each also runs on its own (`workflows rpi`, and `workflows thermoloop` and `workflows judge` on the branch of the current directory), and `campaign`, a queue of ships, ends with `judge.js` on the change of all its items.
 - `src/lib.js` is the script lib: plain JavaScript that the prelude of `script.ts` gives every script (`subjectOf`, `memory`, `commitAll`, `diffStat`). It runs in the sandbox, so it uses only the script calls. The build copies it to `dist/`; declare each helper in `workflows/script.d.ts`. Put a helper that two workflow scripts need here, not in each script.
 - `status(text)` in a script sets the short status of its run, which the Pi widget shows for a background run after the statuses of its callers (`item 2/5 › round 1/3: review`). Give a new long-running workflow script statuses.
 - `src/entry.ts` also gives every conversation of the host the `workflow` tool, which runs the CLI of the same install as a child process with `HARNESS_PROJECT` and `PI_SESSION_ID` set. The run saves `PI_SESSION_ID` as `parent`, and `sessionOf` in `script.ts` opens the sessions under that conversation and removes the tool's extension from them. With `background`, the tool returns `started`, the input gets `notify`, and `notify` in `task.ts` posts the outcome to `parent` at each end of the task, with the request ID `workflows.result:<run ID>/<task ID>`.
@@ -41,7 +41,7 @@
 ## Prompts
 
 - Keep the frontmatter and the last line `$@` in `prompts/*.md`. `instructions()` removes them.
-- The SHIP or FIX answer rule and the evidence rule of the review challenge are in `workflows/review.js`. Do not move them into a template.
+- The SHIP or FIX answer rule and the evidence rule of the review challenge are in `workflows/thermoloop.js`. Do not move them into a template.
 - The judge answers the eight numbered questions of `prompts/judge.md` through `respond`, in question order, and `score()` in `workflows/judge.js` reads them. Keep the numbering and the meaning of questions 1 and 2.
 
 ## Tests

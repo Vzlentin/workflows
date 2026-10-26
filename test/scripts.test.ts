@@ -1144,9 +1144,9 @@ return [one.reply, two.reply].join(", ")`,
 			"campaign: Split a goal into work items and ship each one as a commit on one branch.",
 			"judge: Judge the change of the current branch against a work item with the fixed rubric.",
 			"optimize: Search for better ship prompts over a folder of work items.",
-			"review: Review the change of the current branch, and fix it in rounds until the reviewer answers SHIP.",
 			"rpi: Research, plan and implement one work item, and commit it on a new branch.",
 			"ship: Ship one work item onto a new branch: research, plan, implement, review rounds, judge, and one squashed commit.",
+			"thermoloop: Review the change of the current branch, and fix it in rounds until the reviewer answers SHIP.",
 			"plain",
 		]);
 		const plain = await workflows(["plain", "--help"], { cwd: root });

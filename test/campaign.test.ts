@@ -52,7 +52,7 @@ function itemSteps(stat: string, subject: string) {
 		"    ✓ plan",
 		"    ✓ implement",
 		`      ${stat}`,
-		"  ✓ review",
+		"  ✓ thermoloop",
 		"    ✓ round 1: review",
 		"      SHIP",
 		"  ✓ judge",

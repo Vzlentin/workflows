@@ -1,4 +1,4 @@
-// The review loop of a change. `workflows review` reviews the branch of the current directory from its merge base
+// The thermoloop: the review loop of a change. `workflows thermoloop` reviews the branch of the current directory from its merge base
 // with `--base`, and fixes it in rounds until the reviewer answers SHIP. `ship.js` runs it after `rpi.js` with the start
 // commit, the plan, the implementer's reply and the memory. Every Git step is safe to repeat: a resume runs a step
 // again when its result was not saved.

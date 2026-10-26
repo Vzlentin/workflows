@@ -1,5 +1,5 @@
 // The research, the plan and the implement of one work item, committed on its branch. `ship.js` runs it before the
-// review loop of `review.js`. Every Git step is safe to repeat: a resume runs a step again when its result was not
+// review loop of `thermoloop.js`. Every Git step is safe to repeat: a resume runs a step again when its result was not
 // saved.
 export const meta = {
 	description: "Research, plan and implement one work item, and commit it on a new branch.",

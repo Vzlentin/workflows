@@ -94,7 +94,7 @@ async function saveRun(kind: string, version: number, input: SavedInput = { inpu
 }
 
 const worktreeOf = (id: string | undefined) => join(runs(), id ?? "missing", "worktree");
-const progress = /^ *(rpi|research|plan|implement|review|judge|round \d: (implement|review))$/;
+const progress = /^ *(rpi|research|plan|implement|thermoloop|judge|round \d: (implement|review))$/;
 const FIXED = "# Demo\n\nHello world\n";
 const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|failed), [0-9a-f]+$/;
 
@@ -147,7 +147,7 @@ describe("workflows ship", () => {
 			"  ✓ plan",
 			"  ✓ implement",
 			"    +1 -1 in 1 file",
-			"✓ review",
+			"✓ thermoloop",
 			"  ✓ round 1: review",
 			"    FIX",
 			"  ✓ round 2: implement",
@@ -739,8 +739,8 @@ describe("workflows show", () => {
 			child(`ok git diff --quiet ${start} HEAD`),
 			child(`sh git diff --shortstat ${start} HEAD`),
 			child("sh git rev-parse --short HEAD"),
-			"review",
-			call("run review \\S+"),
+			"thermoloop",
+			call("run thermoloop \\S+"),
 			"    round 1: review",
 			// The command is cut at 80 characters.
 			child("sh git diff --binary --output=.{53}"),
@@ -922,7 +922,7 @@ describe("workflows resume of ship runs", () => {
 				expect.stringMatching(/^ *implement$/),
 				"rpi",
 				expect.stringMatching(/^ +\+1 -1 in 1 file$/),
-				"review",
+				"thermoloop",
 				"  round 1: review",
 				"    SHIP",
 				"judge",
@@ -998,7 +998,7 @@ describe("workflows resume of ship runs", () => {
 				"rpi",
 				expect.stringMatching(/^ *implement$/),
 				expect.stringMatching(/^ +\+1 -1 in 1 file$/),
-				"review",
+				"thermoloop",
 				"  round 1: review",
 				"    SHIP",
 				"judge",

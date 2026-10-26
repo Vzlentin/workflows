@@ -21,11 +21,11 @@ afterEach(() => rm(root, { recursive: true, force: true }));
 const ITEM = "Fix the README typo";
 const THANKED = "# Demo\n\nHello world\nThanks.\n";
 
-describe("workflows review", () => {
+describe("workflows thermoloop", () => {
 	it("reviews the branch from its merge base, and commits the fix of each round on it", async () => {
 		const head = git(repo, "rev-parse", "HEAD");
 
-		const run = await workflows(["review", "--json", ITEM], {
+		const run = await workflows(["thermoloop", "--json", ITEM], {
 			cwd: repo,
 			script: { edits: [THANKED], verdicts: ["FIX", "SHIP"] },
 		});
@@ -75,11 +75,15 @@ describe("workflows review", () => {
 	});
 
 	it("stops after --rounds rounds with exit 1, and refuses a checkout with changes or a branch with no change", async () => {
-		const stopped = await workflows(["review", "--rounds", "1", ITEM], { cwd: repo, script: { verdicts: ["FIX"] } });
+		const stopped = await workflows(["thermoloop", "--rounds", "1", ITEM], {
+			cwd: repo,
+			script: { verdicts: ["FIX"] },
+		});
+
 		expect([stopped.code, stopped.stdout.slice(1)]).toEqual([1, [`stopped ${ITEM} after 1 rounds`]]);
 
 		await writeFile(join(repo, "README.md"), "local edit\n");
-		const dirty = await workflows(["review", ITEM], { cwd: repo });
+		const dirty = await workflows(["thermoloop", ITEM], { cwd: repo });
 		expect(dirty.code).toBe(1);
 		expect(dirty.stderr).toContain(
 			`failed ${ITEM}: the checkout has changes that are not committed; commit or stash them before the review`,
@@ -87,7 +91,7 @@ describe("workflows review", () => {
 
 		git(repo, "checkout", "-q", "--", "README.md");
 		git(repo, "checkout", "-q", "main");
-		const empty = await workflows(["review", ITEM], { cwd: repo });
+		const empty = await workflows(["thermoloop", ITEM], { cwd: repo });
 		expect(empty.code).toBe(1);
 		expect(empty.stderr).toContain(`failed ${ITEM}: no change from main to review`);
 		expect(empty.model.calls).toEqual([]);

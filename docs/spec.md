@@ -5,8 +5,8 @@ The behaviour of the `workflows` command, the workflow scripts, runs and the `wo
 
 `workflows ship` ships one work item onto a new branch through [Pi](https://github.com/earendil-works/pi) sessions.
 `workflows campaign` splits a goal into work items and ships them one after another onto one branch.
-`workflows rpi` researches, plans and implements one work item in one commit, `workflows review` reviews the change of
-the current branch and fixes it in rounds, and `workflows judge` judges it.
+`workflows rpi` researches, plans and implements one work item in one commit, `workflows thermoloop` reviews the change
+of the current branch and fixes it in rounds, and `workflows judge` judges it.
 `workflows optimize ship` searches for better ship prompts over a set of work items. The run is
 headless and resumable. It runs in the [harness](https://github.com/Vzlentin/harness) host of its project, whose
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) store keeps the sessions, model calls, tool
@@ -16,7 +16,7 @@ calls and the progress of the run. See [Runs in the harness host](#runs-in-the-h
 workflow scripts. Every workflow script is a command: `workflows <wf>` runs `workflows/<wf>.js`, and the `meta` at
 the top of the script declares its arguments. See [Workflow scripts](#workflow-scripts). `workflows/ship.js` and
 `workflows/campaign.js` are scripts of the package. `ship` selects the repository and creates the worktree, through its
-`meta`, then runs in the worktree the child runs `workflows/rpi.js`, `workflows/review.js` and `workflows/judge.js`,
+`meta`, then runs in the worktree the child runs `workflows/rpi.js`, `workflows/thermoloop.js` and `workflows/judge.js`,
 and the squash. `campaign` does the same, runs
 `workflows/ship.js` once for each work item, and `workflows/judge.js` once on the change of all the items.
 `workflows/optimize.js` runs `workflows/ship.js` once for each candidate and work item.
@@ -30,7 +30,7 @@ judge session:      fixed rubric, then commit message, after SHIP
 ```
 
 The research, plan and first implement sessions are `workflows/rpi.js`, the review sessions and the implement
-sessions after them `workflows/review.js` (at most `--rounds` reviews), and the judge session `workflows/judge.js`.
+sessions after them `workflows/thermoloop.js` (at most `--rounds` reviews), and the judge session `workflows/judge.js`.
 
 Each box is a new session.
 
@@ -66,8 +66,8 @@ directory, and the run starts from the cloned `origin/<base>`. A bare name such 
 authenticated user, and `owner/calibre` names the owner.
 
 The command prints `run <run-id>`, then one progress step on stderr as each part starts: `rpi`, with the steps
-`research`, `plan` and `implement` of the [rpi](#rpi) child run under it, `review`, with the steps
-`round <n>: review` and `round <n>: implement` of the [review](#review) child run under it, and `judge`. See
+`research`, `plan` and `implement` of the [rpi](#rpi) child run under it, `thermoloop`, with the
+steps `round <n>: review` and `round <n>: implement` of the [thermoloop](#thermoloop) child run under it, and `judge`. See
 [Progress](#progress) for how the steps show. A resume prints the phase line of the first call that runs, such as a
 turn or a Git step, and the lines after it. The status of the run, which the [Pi widget](#background-runs-in-pi)
 shows, is `research`, `plan`, `implement`, `round <n>/<rounds>: review`, `round <n>/<rounds>: implement` and `judge`.
@@ -87,10 +87,10 @@ unchanged. Ship does not push and does not open a pull request.
 
 The run starts the child run `rpi` in the worktree with the work item and the start commit: see [RPI](#rpi). When
 it is blocked, the run prints `blocked <subject> after 1 rounds: <worktree>` and the implementer's reply, and exits 1.
-Then it starts the child run `review` in the worktree, with the work item, `--rounds`, the start commit, and the
-plan, the reply and the memory of `rpi`: see [Review](#review). The review writes its patches in the run directory
-of ship. When the review is blocked, the run prints `blocked <subject> after <n> rounds: <worktree>` and the
-implementer's reply, and exits 1. A run whose review stopped after `--rounds` rounds prints
+Then it starts the child run `thermoloop` in the worktree, with the work item, `--rounds`, the start commit, and the
+plan, the reply and the memory of `rpi`: see [Thermoloop](#thermoloop). The thermoloop writes its patches in the run directory
+of ship. When the thermoloop is blocked, the run prints `blocked <subject> after <n> rounds: <worktree>` and the
+implementer's reply, and exits 1. A run whose thermoloop stopped after `--rounds` rounds prints
 `stopped <subject> after <n> rounds: <worktree>` and exits 1.
 
 The run keeps a memory of notes, which it only appends to. The planner's handoff, each implement turn and the
@@ -103,7 +103,7 @@ every prompt of the planner, implement and review sessions starts with a `## mem
 judge's prompt has no memory. A resume builds the memory again from the saved answers, so it gives the same prompts.
 
 The review challenge has an evidence rule: a finding that reverses a note, or a choice that the implementer explained,
-stays only with a defect that the review showed, written as `reverses #k: <defect>`. `workflows/review.js` adds this
+stays only with a defect that the review showed, written as `reverses #k: <defect>`. `workflows/thermoloop.js` adds this
 rule next to the SHIP or FIX rule, and not in a template. The planner's challenge does not get it.
 
 On SHIP, the run starts the child run `judge` in the worktree, with the work item, the start commit and `commit:
@@ -154,16 +154,16 @@ blocked: it prints `blocked <subject>` and the implementer's reply, and exits 1.
 the size of the change, and the command prints `implemented <subject>, <commit>` and exits 0.
 
 The result has `status` (`implemented` or `blocked`), `head` when implemented, `plan`, the planner's handoff,
-`reply`, and `memory`, the notes of the planner and the implementer. A caller gives `memory` to the review loop.
+`reply`, and `memory`, the notes of the planner and the implementer. A caller gives `memory` to the thermoloop.
 
-## Review
+## Thermoloop
 
 ```sh
-workflows review "Fix the README typo"
-workflows review --base develop --rounds 2 item.md
+workflows thermoloop "Fix the README typo"
+workflows thermoloop --base develop --rounds 2 item.md
 ```
 
-`workflows review` reviews the change of the branch of the current directory, and fixes it in rounds until the
+`workflows thermoloop`, the review loop, reviews the change of the branch of the current directory, and fixes it in rounds until the
 reviewer answers SHIP. It runs in the current checkout, with no worktree of its own, and commits its fixes on the
 current branch. It does not push. The work item, which says what the change should do, comes as for `ship`.
 `--base` defaults to `main` and `--rounds` to 3. The change is the one from the merge base of `--base` and `HEAD` to
@@ -254,7 +254,7 @@ the split after it. The steps and log lines of the item's ship run are under the
     ✓ plan  48s
     ✓ implement  1m50s
       +1 -1 in 1 file
-  ✓ review  35s
+  ✓ thermoloop  35s
     ✓ round 1: review  35s
       SHIP
   ✓ judge  19s
@@ -390,11 +390,11 @@ tool of a conversation of the host starts puts its sessions under that conversat
 
 ```sh
 workflows                                  # lists the workflows
-workflows review --path src
+workflows audit --path src
 workflows ship --help
 workflows ./fix.js "Fix the README typo"
 cat fix.js | workflows - --json
-workflows check review
+workflows check audit
 ```
 
 `workflows <wf>` runs one workflow script. The first word selects it:
@@ -1409,7 +1409,7 @@ task of the caller's run. A child run without a worktree can have an empty run d
 `prompts/` holds the Pi prompt templates `research`, `plan`, `challenge`, `handoff`, `implement`, `review`, `judge` and
 `commit`, `split` and `rundown` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
 frontmatter and the last line `$@`: the run removes them, then adds its inputs as `## <name>` sections.
-`workflows/review.js` adds the evidence rule and the SHIP or FIX answer rule of the review challenge itself, so a
+`workflows/thermoloop.js` adds the evidence rule and the SHIP or FIX answer rule of the review challenge itself, so a
 template edit cannot remove them. `memory(...).session(...).noted` of the [script lib](#the-script-lib) adds the
 `respond` answer rule of the handoff and implement turns. In the same way,
 `workflows/campaign.js` adds the `respond` answer rule of `split`. The judge rubric is fixed: its eight

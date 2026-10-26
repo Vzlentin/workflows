@@ -1,4 +1,4 @@
-// `workflows ship` and each `workflows campaign` item, in its worktree: the child runs `rpi.js`, `review.js` and
+// `workflows ship` and each `workflows campaign` item, in its worktree: the child runs `rpi.js`, `thermoloop.js` and
 // `judge.js`, then the squash. The engine names the branch from `subject` of the result. Every Git step is safe to
 // repeat: a resume runs a step again when its result was not saved.
 export const meta = {
@@ -39,9 +39,9 @@ if (built.status === "blocked") {
 	return { status: "blocked", rounds: 1, reply, handoff: plan, memory, report }
 }
 
-phase("review")
+phase("thermoloop")
 
-const reviewed = await child("review", { item, rounds, start, patches, plan, reply, memory })
+const reviewed = await child("thermoloop", { item, rounds, start, patches, plan, reply, memory })
 
 if (reviewed.status === "blocked") {
 	const report = [`blocked ${subject} after ${reviewed.rounds} rounds: ${worktree}`, reviewed.reply]
