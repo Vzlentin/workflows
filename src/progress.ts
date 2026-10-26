@@ -59,7 +59,7 @@ type Item = Step | { readonly log: string } | { readonly run: RunNode };
  */
 type RunNode = {
 	readonly items: Item[];
-	readonly caller: RunNode | undefined;
+	caller: RunNode | undefined;
 	readonly children: RunNode[];
 	under: boolean;
 	current?: Step;
@@ -224,17 +224,38 @@ export class Progress {
 		return lines;
 	}
 
+	/**
+	 * The node of `run`. A run that a line of its child run made before its own first line has no caller yet: its own
+	 * line, with `parent`, moves it from the top to its caller.
+	 */
 	#node(run: string, parent: string | null): RunNode {
 		const found = this.#runs.get(run);
 
-		if (found !== undefined) return found;
+		if (found === undefined) {
+			const node: RunNode = { items: [], caller: undefined, children: [], under: false };
+			this.#runs.set(run, node);
+			this.#attach(node, parent);
+
+			return node;
+		}
+
+		if (found.caller === undefined && parent !== null) {
+			const at = this.#top.findIndex((item) => "run" in item && item.run === found);
+
+			if (at >= 0) this.#top.splice(at, 1);
+			this.#attach(found, parent);
+		}
+
+		return found;
+	}
+
+	/** Puts `node` under the current step of the run `parent`, or at the top without one. */
+	#attach(node: RunNode, parent: string | null): void {
 		const caller = parent === null ? undefined : this.#node(parent, null);
-		const node: RunNode = { items: [], caller, children: [], under: caller?.current !== undefined };
+		node.caller = caller;
+		node.under = caller?.current !== undefined;
 		caller?.children.push(node);
 		(caller === undefined ? this.#top : (caller.current?.items ?? caller.items)).push({ run: node });
-		this.#runs.set(run, node);
-
-		return node;
 	}
 }
 

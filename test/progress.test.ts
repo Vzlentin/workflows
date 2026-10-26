@@ -92,6 +92,19 @@ describe("the steps of a run", () => {
 	});
 });
 
+describe("the steps of child runs", () => {
+	it("move a run under its caller when a line of its own child came first", () => {
+		const progress = new Progress();
+		progress.add({ kind: "phase", run: "c", parent: null, text: "item 1/1: one", at: 0 });
+		progress.add({ kind: "phase", run: "r", parent: "s", text: "implement", at: 1 });
+		progress.add({ kind: "phase", run: "s", parent: "c", text: "rpi", at: 2 });
+		expect(progress.lines()).toEqual(["◉ item 1/1: one", "  ◉ rpi", "    ◉ implement"]);
+		progress.add({ kind: "status", run: "r", parent: "s", text: "implement", at: 3 });
+		progress.add({ kind: "status", run: "c", parent: null, text: "item 1/1", at: 3 });
+		expect(progress.status()).toBe("item 1/1 › implement");
+	});
+});
+
 describe("the status of a run", () => {
 	it("joins the statuses of the runs that have not ended, outermost first", () => {
 		const progress = new Progress();

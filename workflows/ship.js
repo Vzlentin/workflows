@@ -1,9 +1,8 @@
-// The research, the plan, the rounds, the judge and the squash of `workflows ship` and of each `workflows campaign`
-// item, in its worktree. The rounds are the child run `review.js`, and the judge the child run `judge.js`. The engine
-// names the branch from `subject` of the result. Every Git step is safe to repeat: a resume runs a step again when its
-// result was not saved.
+// `workflows ship` and each `workflows campaign` item, in its worktree: the child runs `rpi.js`, `review.js` and
+// `judge.js`, then the squash. The engine names the branch from `subject` of the result. Every Git step is safe to
+// repeat: a resume runs a step again when its result was not saved.
 export const meta = {
-	description: "Ship one work item onto a new branch: research, plan, implement and review rounds, judge, and one squashed commit.",
+	description: "Ship one work item onto a new branch: research, plan, implement, review rounds, judge, and one squashed commit.",
 	args: {
 		item: { type: "text", positional: true, label: "work item", required: true },
 		rounds: { type: "number", default: 3 },
@@ -19,61 +18,35 @@ if (start === undefined) {
 	throw new Error("ship runs only through workflows ship or workflows campaign, which give it the start commit")
 }
 
-const subject = (item.split("\n").find((line) => line.trim() !== "") ?? "").replace(/^#+/, "").trim()
+const subject = subjectOf(item)
 const worktree = `${runDir}/worktree`
 
-const NOTED = {
-	type: "object",
-	required: ["text", "notes"],
-	properties: { text: { type: "string" }, notes: { type: "array", items: { type: "string" } } },
+// The results of the child runs, without their report lines and run IDs.
+const child = async (name, values) => {
+	const { report: _report, runId: _runId, ...result } = await run(name, values)
+
+	return result
 }
 
-// The research documents the code as it is, in a session of its own, so that the plan starts from its document and
-// not from the context of the search.
-phase("research")
+phase("rpi")
 
-status("research")
+const built = await child("rpi", { item, start })
+const { plan, reply, memory } = built
 
-const research = await session("researcher").ask(prompts.research({ item }))
+if (built.status === "blocked") {
+	const report = [`blocked ${subject} after 1 rounds: ${worktree}`, reply]
 
-phase("plan")
-
-status("plan")
-
-const planner = session("planner")
-
-await planner.ask(prompts.plan({ item, research }))
-
-await planner.ask(prompts.challenge())
-
-const rule = "the document, and notes are the decisions of this session, each with its reason."
-
-const handoff = await planner.ask(`${await prompts.handoff()}\n\nWhen you are done, answer with respond: text is ${rule}`, {
-	schema: NOTED,
-})
-
-// The first notes of the run memory, which the rounds append to.
-const memory = handoff.notes
-	.map((note) => note.replace(/\s+/g, " ").trim())
-	.filter((note) => note !== "")
-	.map((note, i) => `#${i + 1} planner 0: ${note}`)
+	return { status: "blocked", rounds: 1, reply, handoff: plan, memory, report }
+}
 
 phase("review")
 
-// The rounds show their own status.
-status("")
-
-const { report: _report, runId: _runId, ...reviewed } = await run("review", {
-	item,
-	rounds,
-	start,
-	patches,
-	plan: handoff.text,
-	memory,
-})
+const reviewed = await child("review", { item, rounds, start, patches, plan, reply, memory })
 
 if (reviewed.status === "blocked") {
-	return { ...reviewed, report: [`blocked ${subject} after ${reviewed.rounds} rounds: ${worktree}`, reviewed.reply] }
+	const report = [`blocked ${subject} after ${reviewed.rounds} rounds: ${worktree}`, reviewed.reply]
+
+	return { ...reviewed, report }
 }
 
 if (reviewed.status === "stopped") {
@@ -84,12 +57,7 @@ phase("judge")
 
 status("judge")
 
-const { report: _judged, runId: _judgeRun, status: _status, commit, ...verdict } = await run("judge", {
-	item,
-	start,
-	commit: true,
-})
-
+const { status: _status, commit, ...verdict } = await child("judge", { item, start, commit: true })
 const commitSubject = commit?.subject ?? subject
 const commitMessage = commit === undefined ? subject : `${commit.subject}\n\n${commit.body}`
 

@@ -11,7 +11,7 @@ export const meta = {
 }
 
 const { item, commit = false } = args
-const subject = (item.split("\n").find((line) => line.trim() !== "") ?? "").replace(/^#+/, "").trim()
+const subject = subjectOf(item)
 const base = args.start ?? (await sh(["git", "merge-base", args.base, "HEAD"]))
 const head = await sh(["git", "rev-parse", "HEAD"])
 

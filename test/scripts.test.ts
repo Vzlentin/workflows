@@ -1145,7 +1145,8 @@ return [one.reply, two.reply].join(", ")`,
 			"judge: Judge the change of the current branch against a work item with the fixed rubric.",
 			"optimize: Search for better ship prompts over a folder of work items.",
 			"review: Review the change of the current branch, and fix it in rounds until the reviewer answers SHIP.",
-			"ship: Ship one work item onto a new branch: research, plan, implement and review rounds, judge, and one squashed commit.",
+			"rpi: Research, plan and implement one work item, and commit it on a new branch.",
+			"ship: Ship one work item onto a new branch: research, plan, implement, review rounds, judge, and one squashed commit.",
 			"plain",
 		]);
 		const plain = await workflows(["plain", "--help"], { cwd: root });

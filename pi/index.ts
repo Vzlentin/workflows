@@ -372,6 +372,11 @@ const GUIDELINES = [
 		"then returns the answer. `parallel([() => ...])` and " +
 		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +
 		"and `log(text)` write progress lines, and `status(text)` sets the short status that the Pi footer shows for the run. `args`, `runId` and `runDir` are values.",
+	"Script lib: `subjectOf(text)` gives the first non-empty line without leading `#`. `memory(lines)` is a run memory of " +
+		"numbered notes: `.note(author, round, notes)`, `.context(prompt)`, `.lines` to pass to a child run, and " +
+		"`.session(profile)`, whose `.ask` starts each prompt with the notes and whose `.noted(round, prompt, rule)` asks " +
+		"for `{ text, notes }` and keeps the notes. `commitAll(message)` stages and commits every change, and " +
+		"`diffStat(from, to)` gives `+12 -3 in 2 files`.",
 	"A script has no file system, network, modules or timers, so effects go through `sh`. `Date`, `Date.now()` and " +
 		"`Math.random()` throw. A resume runs the script again from the top: saved calls return their results, and a " +
 		"command that did not finish runs again, so keep `sh` and `ok` commands safe to repeat.",

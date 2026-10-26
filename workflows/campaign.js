@@ -14,7 +14,6 @@ export const meta = {
 }
 
 const { goal, rounds, start: first } = args
-const subjectOf = (text) => (text.split("\n").find((line) => line.trim() !== "") ?? "").replace(/^#+/, "").trim()
 const name = subjectOf(goal)
 
 const SPLIT = {

@@ -5,7 +5,8 @@ The behaviour of the `workflows` command, the workflow scripts, runs and the `wo
 
 `workflows ship` ships one work item onto a new branch through [Pi](https://github.com/earendil-works/pi) sessions.
 `workflows campaign` splits a goal into work items and ships them one after another onto one branch.
-`workflows review` reviews the change of the current branch and fixes it in rounds, and `workflows judge` judges it.
+`workflows rpi` researches, plans and implements one work item in one commit, `workflows review` reviews the change of
+the current branch and fixes it in rounds, and `workflows judge` judges it.
 `workflows optimize ship` searches for better ship prompts over a set of work items. The run is
 headless and resumable. It runs in the [harness](https://github.com/Vzlentin/harness) host of its project, whose
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) store keeps the sessions, model calls, tool
@@ -15,20 +16,21 @@ calls and the progress of the run. See [Runs in the harness host](#runs-in-the-h
 workflow scripts. Every workflow script is a command: `workflows <wf>` runs `workflows/<wf>.js`, and the `meta` at
 the top of the script declares its arguments. See [Workflow scripts](#workflow-scripts). `workflows/ship.js` and
 `workflows/campaign.js` are scripts of the package. `ship` selects the repository and creates the worktree, through its
-`meta`, then runs in the worktree for the sessions, the Git steps and the squash. Its rounds are the child run
-`workflows/review.js`, and its judge the child run `workflows/judge.js`. `campaign` does the same, runs
+`meta`, then runs in the worktree the child runs `workflows/rpi.js`, `workflows/review.js` and `workflows/judge.js`,
+and the squash. `campaign` does the same, runs
 `workflows/ship.js` once for each work item, and `workflows/judge.js` once on the change of all the items.
 `workflows/optimize.js` runs `workflows/ship.js` once for each candidate and work item.
 
 ```text
 research session:   research (documents the code as it is)
 plan session:       plan (with the research)  ->  challenge  ->  handoff
-implement session:  implement the handoff                      <- round n (at most --rounds)
+implement session:  implement the handoff                      <- round 1, then each round after FIX
 review session:     review  ->  challenge (SHIP or FIX)  ->  handoff (on FIX, back to implement)
 judge session:      fixed rubric, then commit message, after SHIP
 ```
 
-The implement and review sessions are `workflows/review.js`, and the judge session `workflows/judge.js`.
+The research, plan and first implement sessions are `workflows/rpi.js`, the review sessions and the implement
+sessions after them `workflows/review.js` (at most `--rounds` reviews), and the judge session `workflows/judge.js`.
 
 Each box is a new session.
 
@@ -63,12 +65,12 @@ uses it and its local `--base` commit. Otherwise `gh repo clone <value>` clones 
 directory, and the run starts from the cloned `origin/<base>`. A bare name such as `calibre` clones from the
 authenticated user, and `owner/calibre` names the owner.
 
-The command prints `run <run-id>`, then one progress step on stderr as each part starts: `research`, `plan`,
-`review`, with the steps `round <n>: implement` and `round <n>: review` of the [review](#review) child run under it,
-and `judge`. See [Progress](#progress) for how the steps show. A resume prints the phase line of the first call that
-runs, such as a turn or a Git step, and the lines after it. The status of the run, which the
-[Pi widget](#background-runs-in-pi) shows, is `research`, `plan`, `round <n>/<rounds>: implement`,
-`round <n>/<rounds>: review` and `judge`.
+The command prints `run <run-id>`, then one progress step on stderr as each part starts: `rpi`, with the steps
+`research`, `plan` and `implement` of the [rpi](#rpi) child run under it, `review`, with the steps
+`round <n>: review` and `round <n>: implement` of the [review](#review) child run under it, and `judge`. See
+[Progress](#progress) for how the steps show. A resume prints the phase line of the first call that runs, such as a
+turn or a Git step, and the lines after it. The status of the run, which the [Pi widget](#background-runs-in-pi)
+shows, is `research`, `plan`, `implement`, `round <n>/<rounds>: review`, `round <n>/<rounds>: implement` and `judge`.
 
 Each implement step logs the size of the round's change, `+<insertions> -<deletions> in <n> file(s)` or `no new
 changes`; each review step logs `SHIP` or `FIX`; the judge step logs `judge <score or failed>: <commit> <subject>`. See
@@ -83,11 +85,13 @@ The work item ships onto the branch `ship/<run-id>`, or `--branch`, in a worktre
 branch at the end: see [Branch name](#branch-name). The selected repository's checkout, index and local edits stay
 unchanged. Ship does not push and does not open a pull request.
 
-After the plan, the run starts the child run `review` in the worktree, with the work item, `--rounds`, the start
-commit, the planner's handoff as its plan and the memory, so that its first round implements the plan: see
-[Review](#review). It writes its patches in the run directory of ship. When the review is blocked, the run prints
-`blocked <subject> after <n> rounds: <worktree>` and the implementer's reply, and exits 1. A run whose review stopped
-after `--rounds` rounds prints `stopped <subject> after <n> rounds: <worktree>` and exits 1.
+The run starts the child run `rpi` in the worktree with the work item and the start commit: see [RPI](#rpi). When
+it is blocked, the run prints `blocked <subject> after 1 rounds: <worktree>` and the implementer's reply, and exits 1.
+Then it starts the child run `review` in the worktree, with the work item, `--rounds`, the start commit, and the
+plan, the reply and the memory of `rpi`: see [Review](#review). The review writes its patches in the run directory
+of ship. When the review is blocked, the run prints `blocked <subject> after <n> rounds: <worktree>` and the
+implementer's reply, and exits 1. A run whose review stopped after `--rounds` rounds prints
+`stopped <subject> after <n> rounds: <worktree>` and exits 1.
 
 The run keeps a memory of notes, which it only appends to. The planner's handoff, each implement turn and the
 reviewer's handoff answer through `respond` with their text and a list of notes: the planner gives its decisions with
@@ -131,6 +135,27 @@ memory lines in order or `[]` when there are no notes, for every status.
 
 Blocked and stopped runs keep their branch, worktree and round commits. Delete them when you no longer need them.
 
+## RPI
+
+```sh
+workflows rpi "Fix the README typo"
+workflows rpi --repo calibre --base develop item.md
+```
+
+`workflows rpi` researches, plans and implements one work item, and commits it on its branch: the research, plan and
+first implement of `ship`, with no review, no judge and no squash. The work item, `--repo`, `--base`, `--branch` and
+`--prompts` work as for `ship`. The work goes in a worktree in the run directory on the branch `rpi/<run-id>`, or
+`--branch`, which keeps its name. The steps are `research`, `plan` and `implement`, which are also its statuses.
+
+The research and plan sessions are those of `ship`. The implement session gets the planner's handoff. Then the run
+stages all changes and commits them with the subject of the work item as the message, when something is staged.
+Commits that the implementer made are kept. When the branch has no change from the start commit, the run is
+blocked: it prints `blocked <subject>` and the implementer's reply, and exits 1. Otherwise the implement step logs
+the size of the change, and the command prints `implemented <subject>, <commit>` and exits 0.
+
+The result has `status` (`implemented` or `blocked`), `head` when implemented, `plan`, the planner's handoff,
+`reply`, and `memory`, the notes of the planner and the implementer. A caller gives `memory` to the review loop.
+
 ## Review
 
 ```sh
@@ -146,10 +171,11 @@ current branch. It does not push. The work item, which says what the change shou
 that are not committed; commit or stash them before the review`, and a branch with no change from the merge base
 fails with `no change from <base> to review`, before any session.
 
-Each round has the steps `round <n>: implement` and `round <n>: review`, and the statuses
-`round <n>/<rounds>: implement` and `round <n>/<rounds>: review`. Without `plan`, the first round has no implement step: it reviews
-the change as it is. `ship` gives the script `plan`, the planner's handoff, so that its first round implements it,
-and `start`, the commit that the change starts from, in place of the merge base.
+Round 1 reviews the change as it is, and each round after a FIX implements the reviewer's handoff first, then
+reviews. So each round has the step `round <n>: review`, after `round <n>: implement` from round 2, with the statuses
+`round <n>/<rounds>: review` and `round <n>/<rounds>: implement`. `ship` gives the script `start`, the commit that the
+change starts from, in place of the merge base, and `plan`, `reply` and `memory` from `rpi`, which the first review
+gets.
 
 After each implement session, the run stages all changes:
 
@@ -159,9 +185,9 @@ After each implement session, the run stages all changes:
   without new changes still goes to review when earlier changes remain.
 
 The implement step logs the size of the round's change, `+<insertions> -<deletions> in <n> file(s)` or `no new
-changes`, and the review step logs `SHIP` or `FIX`. The review session gets the work item, the handoff (none in a
-first round without `plan`), the implementer's reply (none in a first round without `plan`), and the paths of the
-round's patches in the run directory, or in the `patches` folder that `ship` gives: `round-<n>.patch` from the start
+changes`, and the review step logs `SHIP` or `FIX`. The review session gets the work item, the handoff that the
+last implement session followed, the implementer's reply (both none in round 1 without a caller), and the paths of
+the round's patches in the run directory, or in the `patches` folder that `ship` gives: `round-<n>.patch` from the start
 commit, and from round 2 `round-<n>-fix.patch` from the previous round. Its challenge answers SHIP or FIX through
 `respond`. On FIX, its handoff gives the next round's instructions.
 
@@ -223,18 +249,20 @@ the split after it. The steps and log lines of the item's ship run are under the
 ✓ split  12s
   2 items
 ✓ item 1/2: Fix the README typo  4m03s
-  ✓ research  31s
-  ✓ plan  48s
-  ✓ review  2m25s
-    ✓ round 1: implement  1m50s
+  ✓ rpi  3m09s
+    ✓ research  31s
+    ✓ plan  48s
+    ✓ implement  1m50s
       +1 -1 in 1 file
+  ✓ review  35s
     ✓ round 1: review  35s
       SHIP
   ✓ judge  19s
     judge 0.83: a1b2c3d fix: correct the README typo
 ◉ item 2/2: Add a thanks line
-  ✓ research  28s
-  ◉ plan
+  ◉ rpi
+    ✓ research  28s
+    ◉ plan
 ```
 
 See [Progress](#progress). At resume, the first steps of the item it continues can come before the item step. On a
@@ -587,6 +615,18 @@ A call with an argument of the wrong type, such as a prompt that is not a string
 or an array of strings, or a `prompts.<name>` input that is not a string, fails with
 `<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run`, `input` or `prompt`, and
 `<path>` points to the deepest wrong value in the arguments, such as `/0/1` for `sh(["git", 1])`.
+
+#### The script lib
+
+Every script also gets these helpers of `src/lib.js`, which use only the calls above. A script's own declaration of
+the same name takes their place.
+
+| Global | Meaning |
+|---|---|
+| `subjectOf(text)` | The first non-empty line of `text`, without leading `#` |
+| `memory(lines)` | A run memory: numbered notes `#<k> <author> <round>: <note>`, only appended to, starting with `lines`. `.note(author, round, notes)` adds notes, with their whitespace collapsed and empty ones left out. `.context(prompt)` puts the notes as a `## memory` section before `prompt`. `.lines` gives the notes, to pass to a child run. `.session(profile)` is a session whose `.ask(prompt, { schema })` starts each prompt with the notes, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule>`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
+| `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
+| `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 
 `workflows/script.d.ts` declares these globals for editors. A project gets the same completion when it copies
 `script.d.ts` and `jsconfig.json` into `.workflows/workflows/`, and copies them again after an upgrade of the package.
@@ -1370,8 +1410,8 @@ task of the caller's run. A child run without a worktree can have an empty run d
 `commit`, `split` and `rundown` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
 frontmatter and the last line `$@`: the run removes them, then adds its inputs as `## <name>` sections.
 `workflows/review.js` adds the evidence rule and the SHIP or FIX answer rule of the review challenge itself, so a
-template edit cannot remove them. It also adds the `respond` answer rules of the handoff and implement turns, and
-`workflows/ship.js` the one of the planner's handoff. In the same way,
+template edit cannot remove them. `memory(...).session(...).noted` of the [script lib](#the-script-lib) adds the
+`respond` answer rule of the handoff and implement turns. In the same way,
 `workflows/campaign.js` adds the `respond` answer rule of `split`. The judge rubric is fixed: its eight
 answers, in question order, make the score. `judge`, `commit` and `rundown` hold their own `respond` answer rules. A run uses the
 templates as they were when it started.
@@ -1401,3 +1441,4 @@ The engine files in `src/`:
 - `run.ts`: the run ID, usage errors, and what a run gets from the command line.
 - `git.ts`: Git commands, repository selection and worktrees.
 - `prompts.ts`: the instructions of a prompt template.
+- `lib.js`: the helpers that every workflow script gets. It runs in the sandbox, and the build copies it to `dist/`.

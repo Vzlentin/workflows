@@ -6,6 +6,7 @@
 - `workflows campaign` splits a goal into work items and ships them one after another onto one branch, then judges
   the whole branch.
 - `workflows review` reviews the change of your current branch and fixes it in rounds; `workflows judge` judges it.
+- `workflows rpi` researches, plans and implements a work item in one commit, with no review.
 - `workflows optimize ship` searches for better ship prompts over a set of work items.
 - `workflows <script>` runs your own workflow script.
 

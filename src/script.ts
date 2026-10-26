@@ -10,6 +10,7 @@
  */
 import { createHash } from "node:crypto";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -187,6 +188,18 @@ export const META = /^((?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*)export\s+(const\s+met
 const checkpointWhen: CommonDocDefinition<JsonObject>["checkpointWhen"] = (_value, _ops, info) =>
 	info.deltasSinceBase >= 31;
 
+/**
+ * The lib of workflow scripts, which the prelude gives every script after the script calls. It is read at the first
+ * script, so that a command that runs no script needs no `lib.js`, which the build copies next to the engine.
+ */
+let lib: string | undefined;
+
+function libSource(): string {
+	lib ??= readFileSync(new URL("./lib.js", import.meta.url), "utf8");
+
+	return lib;
+}
+
 /** The sandbox functions that are not host calls. */
 function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun): string {
 	return `
@@ -230,7 +243,7 @@ const pipeline = (items, ...stages) =>
 			return value;
 		}),
 	);
-`;
+${libSource()}`;
 }
 
 /** A JSON value. */

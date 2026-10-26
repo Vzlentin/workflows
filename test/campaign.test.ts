@@ -47,11 +47,12 @@ const THANKS: Commit = {
 /** The step lines of an item that ships in one round, under its item line: `stat` after implement, then the judge. */
 function itemSteps(stat: string, subject: string) {
 	return [
-		"  ✓ research",
-		"  ✓ plan",
-		"  ✓ review",
-		"    ✓ round 1: implement",
+		"  ✓ rpi",
+		"    ✓ research",
+		"    ✓ plan",
+		"    ✓ implement",
 		`      ${stat}`,
+		"  ✓ review",
 		"    ✓ round 1: review",
 		"      SHIP",
 		"  ✓ judge",
@@ -108,12 +109,12 @@ describe("workflows campaign", () => {
 			"split",
 			"item 1/2 › research",
 			"item 1/2 › plan",
-			"item 1/2 › round 1/3: implement",
+			"item 1/2 › implement",
 			"item 1/2 › round 1/3: review",
 			"item 1/2 › judge",
 			"item 2/2 › research",
 			"item 2/2 › plan",
-			"item 2/2 › round 1/3: implement",
+			"item 2/2 › implement",
 			"item 2/2 › round 1/3: review",
 			"item 2/2 › judge",
 			"judge",
@@ -154,10 +155,12 @@ describe("workflows campaign", () => {
 			const item = n === 0 ? "Fix the README typo" : "Add a thanks line";
 			expect(lines[at - 3], child).toBe(`item ${n + 1}/2: ${item}`);
 			researchers.push(await conversationOf(new RegExp(`Research the codebase[\\s\\S]*${item}`)));
-			expect(lines.slice(at + 1, at + 4)).toEqual([
-				"    research",
-				`      ✓ session researcher conversation ${researchers[n]}`,
-				"      ✓ ask researcher",
+			expect(lines.slice(at + 1, at + 6)).toEqual([
+				"    rpi",
+				expect.stringMatching(/^ {6}✓ run rpi \S+$/),
+				"        research",
+				`          ✓ session researcher conversation ${researchers[n]}`,
+				"          ✓ ask researcher",
 			]);
 		}
 
@@ -169,7 +172,8 @@ describe("workflows campaign", () => {
 			expect.stringMatching(/^judge \S+$/),
 		]);
 		const shipped = ran.slice(0, -1);
-		expect(shipped[0].calls[0]).toMatchObject({
+		expect(shipped[0].calls[0]).toMatchObject({ kind: "run", phase: "rpi" });
+		expect(shipped[0].calls[0].calls[0]).toMatchObject({
 			kind: "session",
 			label: `researcher conversation ${researchers[0]}`,
 			phase: "research",
