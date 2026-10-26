@@ -4,7 +4,7 @@
  */
 import { existsSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Cursor, DocumentId, TaskRecord } from "@earendil-works/pi-durable";
@@ -19,6 +19,17 @@ import { Value } from "typebox/value";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "./progress.ts";
 import { CALL_KIND, CALL_RECORD, type SavedCall } from "./script.ts";
 import { TASK } from "./task.ts";
+
+// Node warns once that `node:sqlite` is experimental, as the module loads. The warning tells a user of the command
+// nothing, so the load mutes warnings, and only for its own duration. This works only while this module is the first
+// of the command to load `node:sqlite`.
+const emitWarning = process.emitWarning;
+
+process.emitWarning = () => {};
+
+const sqlite = process.getBuiltinModule("node:sqlite");
+
+process.emitWarning = emitWarning;
 
 /** How long a read waits for the lock of the host's commit. */
 const BUSY_TIMEOUT_MS = 60_000;
@@ -35,7 +46,7 @@ class ReadOnlyDatabase implements SqliteDatabase {
 	#transactions: Promise<unknown> = Promise.resolve();
 
 	constructor(path: string) {
-		this.#database = new DatabaseSync(path, { readOnly: true, timeout: BUSY_TIMEOUT_MS });
+		this.#database = new sqlite.DatabaseSync(path, { readOnly: true, timeout: BUSY_TIMEOUT_MS });
 	}
 
 	#statement(sql: string): StatementSync {
