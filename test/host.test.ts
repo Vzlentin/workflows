@@ -1,9 +1,11 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Cursor } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -697,6 +699,15 @@ return await agent("c", { as: "planner", model: "claude-haiku-5", schema: { type
 			1,
 			["workflows: provider uses the model gone/claude-opus-5-5, which Pi's model registry does not have"],
 		]);
+	});
+
+	it("lists the runs of the store from the command, with no warning of Node", async () => {
+		await writeFile(join(root, "quick.js"), 'return "done"');
+		const { id } = await workflows(["quick.js"], { cwd: root });
+		const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+		const { stdout, stderr } = await promisify(execFile)(process.execPath, [cli, "list"], { cwd: root });
+
+		expect([stdout, stderr]).toEqual([`${id} quick done quick\n`, ""]);
 	});
 });
 
