@@ -47,16 +47,15 @@ const THANKS: Commit = {
 /** The step lines of an item that ships in one round, under its item line: `stat` after implement, then the judge. */
 function itemSteps(stat: string, subject: string) {
 	return [
-		"  ✓ rpi",
-		"    ✓ research",
-		"    ✓ plan",
-		"    ✓ implement",
-		`      ${stat}`,
-		"  ✓ thermoloop",
-		"    ✓ round 1: review",
-		"      SHIP",
+		"  ✓ research",
+		"  ✓ plan",
+		"  ✓ implement",
+		`    ${stat}`,
+		"  ✓ round 1/3: review",
+		"    SHIP",
 		"  ✓ judge",
-		expect.stringMatching(new RegExp(`^ {4}judge 0\\.83: [0-9a-f]+ ${subject}$`)),
+		"    judge 0.83",
+		expect.stringMatching(new RegExp(`^ {2}commit [0-9a-f]+ ${subject}$`)),
 	];
 }
 
@@ -64,7 +63,7 @@ function itemSteps(stat: string, subject: string) {
 const FINDING = "  finding 4 FAIL README.md:3 adds a line the work item does not need";
 
 /** The steps of the judge of a campaign that is done. */
-const JUDGE_STEPS = ["✓ judge", "  judge 0.83: Fix the README"];
+const JUDGE_STEPS = ["✓ all 2 items", "  ✓ judge", "    judge 0.83"];
 
 /** The report line of a shipped item with the commit `subject`. */
 const itemLine = (subject: string) => expect.stringMatching(new RegExp(`^ {2}[0-9a-f]+ ${subject}, judge 0\\.83$`));
@@ -101,23 +100,26 @@ describe("workflows campaign", () => {
 			...itemSteps("+1 -0 in 1 file", THANKS.subject),
 			...JUDGE_STEPS,
 		]);
-		// The end of an item's ship run and the status of the next item come in either order, so the bare item statuses
+		// The end of an item's ship run and the step of the next item come in either order, so the bare item steps
 		// between them are left out.
-		const statuses = statusesOf(run.stderr).filter((status) => !/^item \d\/\d$/.test(status));
+		const statuses = statusesOf(run.stderr).filter((status) => !/^item \d\/\d: [^›]+$/.test(status));
+		const one = "item 1/2: Fix the README typo";
+		const two = "item 2/2: Add a thanks line";
 		expect(statuses.filter((status, i) => status !== statuses[i - 1])).toEqual([
-			"-",
 			"split",
-			"item 1/2 › research",
-			"item 1/2 › plan",
-			"item 1/2 › implement",
-			"item 1/2 › round 1/3: review",
-			"item 1/2 › judge",
-			"item 2/2 › research",
-			"item 2/2 › plan",
-			"item 2/2 › implement",
-			"item 2/2 › round 1/3: review",
-			"item 2/2 › judge",
-			"judge",
+			`${one} › research`,
+			`${one} › plan`,
+			`${one} › implement`,
+			`${one} › round 1/3: review`,
+			`${one} › judge`,
+			`${two} › research`,
+			`${two} › plan`,
+			`${two} › implement`,
+			`${two} › round 1/3: review`,
+			`${two} › judge`,
+			"all 2 items",
+			"all 2 items › judge",
+			"all 2 items",
 			"-",
 		]);
 		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, ...SHIP, "judge"]);
@@ -155,8 +157,7 @@ describe("workflows campaign", () => {
 			const item = n === 0 ? "Fix the README typo" : "Add a thanks line";
 			expect(lines[at - 3], child).toBe(`item ${n + 1}/2: ${item}`);
 			researchers.push(await conversationOf(new RegExp(`Research the codebase[\\s\\S]*${item}`)));
-			expect(lines.slice(at + 1, at + 6)).toEqual([
-				"    rpi",
+			expect(lines.slice(at + 1, at + 5)).toEqual([
 				expect.stringMatching(/^ {6}✓ run rpi \S+$/),
 				"        research",
 				`          ✓ session researcher conversation ${researchers[n]}`,
@@ -172,7 +173,7 @@ describe("workflows campaign", () => {
 			expect.stringMatching(/^judge \S+$/),
 		]);
 		const shipped = ran.slice(0, -1);
-		expect(shipped[0].calls[0]).toMatchObject({ kind: "run", phase: "rpi" });
+		expect(shipped[0].calls[0]).toMatchObject({ kind: "run", label: expect.stringMatching(/^rpi \S+$/) });
 		expect(shipped[0].calls[0].calls[0]).toMatchObject({
 			kind: "session",
 			label: `researcher conversation ${researchers[0]}`,

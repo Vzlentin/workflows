@@ -96,12 +96,6 @@ declare function phase(title: string): void;
 /** Writes the line `text` under the current step on stderr before the script's next call that runs. */
 declare function log(text: string): void;
 
-/**
- * Sets the status of the run: a short line, such as `item 2/5` or `round 1/3: review`, that the Pi footer shows for a
- * background run, after the statuses of its callers. An empty text removes it, and the end of the run removes it.
- */
-declare function status(text: string): void;
-
 // The lib: helpers that every script gets. See "The script lib" in docs/spec.md.
 
 /** The subject of a text: its first non-empty line without leading `#`. */
@@ -131,3 +125,12 @@ declare function commitAll(message: string): Promise<void>;
 
 /** `+12 -3 in 2 files` for the change from `from` to `to` (default `HEAD`), or `no new changes`. */
 declare function diffStat(from: string, to?: string): Promise<string>;
+
+/**
+ * The merge base of `base` and `HEAD`, where the change of the current branch starts. Throws when the checkout has
+ * changes that are not committed, or when the branch has no change from `base`.
+ */
+declare function branchStart(base: string): Promise<string>;
+
+/** The result of the child run `name` with `args`, without its `report` and `runId`. */
+declare function runChild(name: string, args?: { [key: string]: Json | undefined }): Promise<any>;

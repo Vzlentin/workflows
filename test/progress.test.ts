@@ -99,32 +99,34 @@ describe("the steps of child runs", () => {
 		progress.add({ kind: "phase", run: "r", parent: "s", text: "implement", at: 1 });
 		progress.add({ kind: "phase", run: "s", parent: "c", text: "rpi", at: 2 });
 		expect(progress.lines()).toEqual(["◉ item 1/1: one", "  ◉ rpi", "    ◉ implement"]);
-		progress.add({ kind: "status", run: "r", parent: "s", text: "implement", at: 3 });
-		progress.add({ kind: "status", run: "c", parent: null, text: "item 1/1", at: 3 });
-		expect(progress.status()).toBe("item 1/1 › implement");
+	});
+
+	it("put a child run under the current step of its caller at its start, before any line of its own", () => {
+		const progress = new Progress();
+		progress.add({ kind: "phase", run: "c", parent: null, text: "item 1/1: one", at: 0 });
+		progress.add({ kind: "start", run: "s", parent: "c" });
+		progress.add({ kind: "start", run: "r", parent: "s" });
+		progress.add({ kind: "phase", run: "r", parent: "s", text: "research", at: 1 });
+		expect(progress.lines()).toEqual(["◉ item 1/1: one", "  ◉ research"]);
+		expect(progress.status()).toBe("item 1/1: one › research");
 	});
 });
 
 describe("the status of a run", () => {
-	it("joins the statuses of the runs that have not ended, outermost first", () => {
+	it("chains the steps that run, outermost first, and joins child runs that run at once", () => {
 		const progress = new Progress();
 		expect(progress.status()).toBeUndefined();
 		progress.add({ kind: "phase", run: "c", parent: null, text: "item 1/2: one", at: 0 });
-		progress.add({ kind: "status", run: "c", parent: null, text: "item 1/2", at: 0 });
-		progress.add({ kind: "status", run: "s", parent: "c", text: "plan", at: 1 });
-		expect(progress.status()).toBe("item 1/2 › plan");
-		// An empty status removes the status of its run.
-		progress.add({ kind: "status", run: "s", parent: "c", text: "", at: 2 });
-		progress.add({ kind: "status", run: "r", parent: "s", text: "round 1/3: review", at: 3 });
-		expect(progress.status()).toBe("item 1/2 › round 1/3: review");
-		progress.add({ kind: "status", run: "j", parent: "s", text: "judge", at: 4 });
-		expect(progress.status()).toBe("item 1/2 › round 1/3: review, judge");
+		progress.add({ kind: "phase", run: "s", parent: "c", text: "plan", at: 1 });
+		expect(progress.status()).toBe("item 1/2: one › plan");
+		progress.add({ kind: "phase", run: "r", parent: "s", text: "round 1/3: review", at: 3 });
+		progress.add({ kind: "phase", run: "j", parent: "s", text: "judge", at: 4 });
+		expect(progress.status()).toBe("item 1/2: one › plan › round 1/3: review, judge");
 		progress.add({ kind: "end", run: "r", failed: false, at: 5 });
+		expect(progress.status()).toBe("item 1/2: one › plan › judge");
 		progress.add({ kind: "end", run: "j", failed: false, at: 5 });
 		progress.add({ kind: "end", run: "s", failed: false, at: 5 });
-		expect(progress.status()).toBe("item 1/2");
-		// The statuses are not lines of the tree.
-		expect(progress.lines()).toEqual(["◉ item 1/2: one"]);
+		expect(progress.status()).toBe("item 1/2: one");
 		progress.add({ kind: "end", run: "c", failed: false, at: 6 });
 		expect(progress.status()).toBeUndefined();
 	});

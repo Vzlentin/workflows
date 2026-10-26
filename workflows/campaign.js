@@ -47,7 +47,6 @@ const shipped = () => JSON.stringify(done.map(({ item, result }) => ({ item, com
 // `answer`.
 async function split(inputs) {
 	phase("split")
-	status("split")
 	const answered = await agent(`${await prompts.split({ goal, ...inputs })}${answer}`, { as: "planner", schema: SPLIT })
 	log(count(answered.items.length))
 
@@ -59,7 +58,6 @@ let { subject, items: queue } = await split({})
 for (let n = 1; queue.length > 0; n++) {
 	const [item, ...rest] = queue
 	phase(`item ${n}/${n + rest.length}: ${subjectOf(item)}`)
-	status(`item ${n}/${n + rest.length}`)
 	const patches = `${runDir}/item-${n}`
 	await sh(["mkdir", "-p", patches])
 	const start = await sh(["git", "rev-parse", "HEAD"])
@@ -118,14 +116,9 @@ const head = done.at(-1).result.head
 const judgedOf = (score) => (score === undefined ? "failed" : score.toFixed(2))
 
 // The judge of the whole campaign sees the change of every item at once, against the goal.
-phase("judge")
+phase(`all ${count(done.length)}`)
 
-status("judge")
-
-const { report: _report, runId: _runId, status: _status, ...verdict } = await run("judge", { item: goal, start: first })
-
-log(`judge ${judgedOf(verdict.score)}: ${name}`)
-
+const { status: _status, ...verdict } = await runChild("judge", { item: goal, start: first })
 const report = [`done ${name} in ${count(done.length)}, judge ${judgedOf(verdict.score)}, ${head}`]
 
 for (const { result } of done) report.push(`  ${result.head} ${result.subject}, judge ${judgedOf(result.score)}`)

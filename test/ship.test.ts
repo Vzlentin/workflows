@@ -94,7 +94,7 @@ async function saveRun(kind: string, version: number, input: SavedInput = { inpu
 }
 
 const worktreeOf = (id: string | undefined) => join(runs(), id ?? "missing", "worktree");
-const progress = /^ *(rpi|research|plan|implement|thermoloop|judge|round \d: (implement|review))$/;
+const progress = /^ *(research|plan|implement|judge|round \d\/\d: (implement|review))$/;
 const FIXED = "# Demo\n\nHello world\n";
 const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|failed), [0-9a-f]+$/;
 
@@ -142,24 +142,22 @@ describe("workflows ship", () => {
 		});
 
 		expect(progressOf(run.stderr)).toEqual([
-			"✓ rpi",
-			"  ✓ research",
-			"  ✓ plan",
-			"  ✓ implement",
-			"    +1 -1 in 1 file",
-			"✓ thermoloop",
-			"  ✓ round 1: review",
-			"    FIX",
-			"  ✓ round 2: implement",
-			"    +1 -0 in 1 file",
-			"  ✓ round 2: review",
-			"    SHIP",
+			"✓ research",
+			"✓ plan",
+			"✓ implement",
+			"  +1 -1 in 1 file",
+			"✓ round 1/3: review",
+			"  FIX",
+			"✓ round 2/3: implement",
+			"  +1 -0 in 1 file",
+			"✓ round 2/3: review",
+			"  SHIP",
 			"✓ judge",
-			expect.stringMatching(/^ {2}judge 0\.83: [0-9a-f]+ fix: correct the README typo$/),
+			"  judge 0.83",
+			expect.stringMatching(/^commit [0-9a-f]+ fix: correct the README typo$/),
 		]);
-		expect(JSON.parse(run.stderr[0] ?? "")).toEqual({ progress: ["◉ rpi"] });
+		expect(JSON.parse(run.stderr[0] ?? "")).toEqual({ progress: ["◉ research"], status: "research" });
 		expect(statusesOf(run.stderr)).toEqual([
-			"-",
 			"research",
 			"plan",
 			"implement",
@@ -430,7 +428,7 @@ export default function ({ events }) {
 		expect(run.stderr.slice(-2)).toEqual(failed);
 
 		const again = await workflows(["resume", run.id ?? ""], { cwd: repo });
-		expect([again.code, again.stderr, again.model.calls]).toEqual([1, ["rpi", "  implement", ...failed], []]);
+		expect([again.code, again.stderr, again.model.calls]).toEqual([1, ["implement", ...failed], []]);
 
 		await rm(hook);
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: repo });
@@ -520,10 +518,10 @@ export default function ({ events }) {
 		expect(run.stdout[1]).toMatch(SHIPPED);
 		expect(run.stdout[1]).toContain("judge failed,");
 		expect(run.stderr.filter((line) => !progress.test(line))).toEqual([
-			"    +1 -1 in 1 file",
-			"    SHIP",
+			"  +1 -1 in 1 file",
+			"  SHIP",
 			"  judge failed on Fix the README typo: the answer did not call respond",
-			expect.stringMatching(/^ {2}judge failed: [0-9a-f]+ Fix the README typo$/),
+			expect.stringMatching(/^commit [0-9a-f]+ Fix the README typo$/),
 		]);
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-parse", "HEAD^")).toBe(develop);
@@ -725,7 +723,6 @@ describe("workflows show", () => {
 
 		expect(shown.stdout).toEqual([
 			`run ${id} ship shipped Fix the README typo`,
-			"rpi",
 			call("run rpi \\S+"),
 			"    research",
 			...asks("researcher", 1, child),
@@ -739,15 +736,14 @@ describe("workflows show", () => {
 			child(`ok git diff --quiet ${start} HEAD`),
 			child(`sh git diff --shortstat ${start} HEAD`),
 			child("sh git rev-parse --short HEAD"),
-			"thermoloop",
 			call("run thermoloop \\S+"),
-			"    round 1: review",
+			"    round 1/3: review",
 			// The command is cut at 80 characters.
 			child("sh git diff --binary --output=.{53}"),
 			...asks("reviewer", 2, child),
 			child("sh git rev-parse --short HEAD"),
-			"judge",
 			call("run judge \\S+"),
+			"    judge",
 			child("sh git rev-parse HEAD"),
 			...asks("judge", 2, child),
 			call(`sh sh -c git reset -q --soft "\\$1" && git commit -q -m "\\$2" squash ${start.slice(0, 17)}`),
@@ -770,8 +766,8 @@ describe("workflows show", () => {
 		});
 		const flat = (calls: readonly Stored[]): Stored[] => calls.flatMap((c) => [c, ...flat(c.calls ?? [])]);
 		const calls = flat(tree.calls);
-		// The header, the 7 phase lines and the 2 report lines are not calls.
-		expect(calls).toHaveLength(shown.stdout.length - 10);
+		// The header, the 5 phase lines and the 2 report lines are not calls.
+		expect(calls).toHaveLength(shown.stdout.length - 8);
 
 		const conversation = await conversationOf(/Plan this change\./);
 		const planner = calls.find((c: Stored) => c.kind === "session" && c.args.profile === "planner");
@@ -913,22 +909,15 @@ describe("workflows resume of ship runs", () => {
 
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout).toEqual([`run ${first.id}`, expect.stringMatching(SHIPPED), `branch ${BRANCH}`]);
-		// The host continues the child run of the rounds as it continues the run, so its lines and the step of its caller
-		// come in either order.
-		// The child's step line repeats when it comes before the step of its caller.
-		expect([7, 8]).toContain(resumed.stderr.length);
-		expect(resumed.stderr).toEqual(
-			expect.arrayContaining([
-				expect.stringMatching(/^ *implement$/),
-				"rpi",
-				expect.stringMatching(/^ +\+1 -1 in 1 file$/),
-				"thermoloop",
-				"  round 1: review",
-				"    SHIP",
-				"judge",
-				expect.stringMatching(/^ {2}judge 0\.83: /),
-			]),
-		);
+		expect(resumed.stderr).toEqual([
+			"implement",
+			"  +1 -1 in 1 file",
+			"round 1/2: review",
+			"  SHIP",
+			"judge",
+			"  judge 0.83",
+			expect.stringMatching(/^commit [0-9a-f]+ fix: correct the README typo$/),
+		]);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "verdict", "judge", "commit"]);
 		expect(resumed.model.find("implement")?.prompt).toContain("## plan\nHandoff 1: ");
 		expect(resumed.model.find("implement")?.prompt.startsWith(`${memory(1)}Implement this plan`)).toBe(true);
@@ -988,23 +977,17 @@ describe("workflows resume of ship runs", () => {
 
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
 		expect(resumed.code).toBe(0);
-		// The step of the interrupted session comes again before the steps after it. The host continues the rpi child
-		// run as it continues the run, so the lines of the child and the steps of its caller come in either order.
-		const at = (pattern: RegExp) => resumed.stderr.findIndex((line) => pattern.test(line));
-		expect(at(/^ *plan$/)).toBeGreaterThanOrEqual(0);
-		expect(at(/^ *plan$/)).toBeLessThan(at(/^ *implement$/));
-		expect(resumed.stderr).toEqual(
-			expect.arrayContaining([
-				"rpi",
-				expect.stringMatching(/^ *implement$/),
-				expect.stringMatching(/^ +\+1 -1 in 1 file$/),
-				"thermoloop",
-				"  round 1: review",
-				"    SHIP",
-				"judge",
-				expect.stringMatching(/^ {2}judge 0\.83: /),
-			]),
-		);
+		// The step of the interrupted session comes again before the steps after it.
+		expect(resumed.stderr).toEqual([
+			"plan",
+			"implement",
+			"  +1 -1 in 1 file",
+			"round 1/3: review",
+			"  SHIP",
+			"judge",
+			"  judge 0.83",
+			expect.stringMatching(/^commit [0-9a-f]+ fix: correct the README typo$/),
+		]);
 	});
 
 	it("runs the rename step again on resume after the rename was done", async () => {

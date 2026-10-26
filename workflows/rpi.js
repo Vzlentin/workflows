@@ -1,6 +1,6 @@
 // The research, the plan and the implement of one work item, committed on its branch. `ship.js` runs it before the
-// review loop of `thermoloop.js`. Every Git step is safe to repeat: a resume runs a step again when its result was not
-// saved.
+// review loop of `thermoloop.js`, and a caller may give `memory`, the lines of a run memory to go on with. Every Git
+// step is safe to repeat: a resume runs a step again when its result was not saved.
 export const meta = {
 	description: "Research, plan and implement one work item, and commit it on a new branch.",
 	args: {
@@ -22,13 +22,9 @@ const notes = memory(args.memory)
 // not from the context of the search.
 phase("research")
 
-status("research")
-
 const research = await session("researcher").ask(prompts.research({ item }))
 
 phase("plan")
-
-status("plan")
 
 const planner = notes.session("planner")
 
@@ -44,8 +40,6 @@ const plan = await planner.noted(
 
 phase("implement")
 
-status("implement")
-
 const reply = await notes
 	.session("implementer")
 	.noted(1, prompts.implement({ plan }), "your report, and notes are what you tried and what you observed.")
@@ -53,7 +47,7 @@ const reply = await notes
 await commitAll(subject)
 
 if (await ok(["git", "diff", "--quiet", start, "HEAD"])) {
-	return { status: "blocked", plan, reply, memory: notes.lines, report: [`blocked ${subject}`, reply] }
+	return { status: "blocked", rounds: 1, reply, handoff: plan, memory: notes.lines, report: [`blocked ${subject}`, reply] }
 }
 
 log(await diffStat(start))

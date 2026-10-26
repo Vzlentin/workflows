@@ -10,7 +10,6 @@
  */
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,9 +45,14 @@ export type Profile = {
 	readonly instructions: string;
 };
 
-/** The scripts, prompt instructions and profiles of the package and the project, saved by a run before it starts. */
+/**
+ * The scripts, prompt instructions and profiles of the package and the project, and the script lib of the package,
+ * saved by a run before it starts.
+ */
 export type Bundle = {
 	readonly scripts: Readonly<Record<string, string>>;
+	/** The source of `lib.js`, which the prelude gives every script after the script calls. */
+	readonly lib: string;
 	readonly prompts: Readonly<Record<string, string>>;
 	readonly agents: Readonly<Record<string, Profile>>;
 };
@@ -89,6 +93,9 @@ export type ScriptRun = {
 export const TOOL_EXTENSION = "workflows";
 
 const PACKAGE = fileURLToPath(new URL("../", import.meta.url));
+
+/** The script lib, next to the engine: the build copies it to `dist/`. */
+const LIB = fileURLToPath(new URL("./lib.js", import.meta.url));
 
 /** `<base>/<folder>/*<extension>` by name; a missing folder has none. */
 export async function readFolder(base: string, folder: string, extension: string): Promise<Record<string, string>> {
@@ -154,16 +161,18 @@ function profileOf(name: string, text: string): Profile {
 export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle> {
 	const project = cwd === undefined ? PACKAGE : await projectFolder(cwd);
 
-	const [scripts, merged, profiles] = await Promise.all([
+	const [scripts, merged, profiles, lib] = await Promise.all([
 		loadScripts(project),
 		readMerged(project, "prompts", ".md"),
 		readMerged(project, "agents", ".md"),
+		readFile(LIB, "utf8"),
 	]);
 
 	const templates = prompts === undefined ? merged : { ...merged, ...(await overrides(prompts, merged)) };
 
 	return {
 		scripts,
+		lib,
 		prompts: Object.fromEntries(Object.entries(templates).map(([name, text]) => [name, instructions(text)])),
 		agents: Object.fromEntries(Object.entries(profiles).map(([name, text]) => [name, profileOf(name, text)])),
 	};
@@ -188,19 +197,7 @@ export const META = /^((?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*)export\s+(const\s+met
 const checkpointWhen: CommonDocDefinition<JsonObject>["checkpointWhen"] = (_value, _ops, info) =>
 	info.deltasSinceBase >= 31;
 
-/**
- * The lib of workflow scripts, which the prelude gives every script after the script calls. It is read at the first
- * script, so that a command that runs no script needs no `lib.js`, which the build copies next to the engine.
- */
-let lib: string | undefined;
-
-function libSource(): string {
-	lib ??= readFileSync(new URL("./lib.js", import.meta.url), "utf8");
-
-	return lib;
-}
-
-/** The sandbox functions that are not host calls. */
+/** The sandbox functions that are not host calls, and the script lib. */
 function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun): string {
 	return `
 const args = ${JSON.stringify(args)};
@@ -243,7 +240,7 @@ const pipeline = (items, ...stages) =>
 			return value;
 		}),
 	);
-${libSource()}`;
+${script.bundle.lib}`;
 }
 
 /** A JSON value. */
@@ -313,7 +310,7 @@ export const CallDoc = defineDocFamily<CallRecord, null>({
 });
 
 /**
- * The `phase`, `log` and `status` lines and the ends of a root run and its child runs, in commit order, keyed by the root run ID.
+ * The `phase` and `log` lines and the ends of a root run and its child runs, in commit order, keyed by the root run ID.
  * The command reads them from the store file while it follows the run.
  */
 export const ProgressDoc = defineDocFamily<{ events: ProgressEvent[] }, null>({
@@ -367,20 +364,19 @@ function keyOf(name: string, args: JsonObject, counters: Map<string, number>): s
 	return `${hash}.${n}`;
 }
 
-/** A `phase`, `log` or `status` line, with the time of its call in ms since the epoch. */
-type Line = { readonly text: string; readonly kind: "phase" | "log" | "status"; readonly at: number };
+/** A `phase` or `log` line, with the time of its call in ms since the epoch. */
+type Line = { readonly text: string; readonly phase: boolean; readonly at: number };
 
 /**
- * The lines of a script that wait for its next call that runs, in order. At most one is a phase line and one a status
- * line: a new one replaces the one of its kind. `phase` is the current phase line, which each call that starts records.
+ * The lines of a script that wait for its next call that runs, in order. At most one is a phase line: a new phase line
+ * replaces it. `phase` is the current phase line, which each call that starts records.
  */
 type Progress = { readonly lines: Line[]; phase: string | null; continued?: boolean };
 
-/** Adds the phase or status line `text`, in place of the waiting line of its kind. */
-function replacingLine(progress: Progress, kind: "phase" | "status", text: string): void {
-	if (kind === "phase") progress.phase = text;
+function phaseLine(progress: Progress, text: string): void {
+	progress.phase = text;
 	const { lines } = progress;
-	lines.splice(0, lines.length, ...lines.filter((line) => line.kind !== kind), { text, kind, at: Date.now() });
+	lines.splice(0, lines.length, ...lines.filter((line) => !line.phase), { text, phase: true, at: Date.now() });
 }
 
 /** What the calls of one script execution share. */
@@ -403,7 +399,7 @@ function takeLines(calls: Calls): ProgressEvent[] {
 	const { progress } = calls;
 
 	return progress.lines.splice(0).map((line) => {
-		if (line.kind !== "phase") return { kind: line.kind, run, parent, text: line.text, at: line.at };
+		if (!line.phase) return { kind: "log", run, parent, text: line.text, at: line.at };
 		const event: ProgressEvent = { kind: "phase", run, parent, text: line.text, at: line.at };
 
 		if (progress.continued === true) return event;
@@ -425,7 +421,7 @@ type Start = { readonly kind: CallKind; readonly args: JsonObject };
  * The result of the call `key`: its saved result, or the value of `effect`, which gets the key. The call records its
  * start, with the waiting lines, before `effect`, and its end with the value or the error after it. A stopped call
  * records no end, and a call that throws saves no result, so both run again. A call with a saved result drops the log
- * lines and keeps the phase and status lines, so a resume shows the phase and status of the first call that runs.
+ * lines and keeps the phase line, so a resume shows the phase of the first call that runs.
  */
 async function memoized(
 	calls: Calls,
@@ -438,7 +434,7 @@ async function memoized(
 	const { lines } = progress;
 
 	if (saved !== undefined) {
-		lines.splice(0, lines.length, ...lines.filter((line) => line.kind !== "log"));
+		lines.splice(0, lines.length, ...lines.filter((line) => line.phase));
 
 		return saved;
 	}
@@ -783,9 +779,8 @@ export async function runScript(
 				);
 			}),
 			global("__input", INPUT_ARGS, ([question]) => inputCall(calls, question, stop)),
-			global("phase", LINE_ARGS, ([title]) => replacingLine(progress, "phase", String(title))),
-			global("log", LINE_ARGS, ([line]) => progress.lines.push({ text: String(line), kind: "log", at: Date.now() })),
-			global("status", LINE_ARGS, ([text]) => replacingLine(progress, "status", String(text))),
+			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
+			global("log", LINE_ARGS, ([line]) => progress.lines.push({ text: String(line), phase: false, at: Date.now() })),
 			global("__prompt", PROMPT_ARGS, ([name, inputs]) => {
 				const body = bundle.prompts[name];
 

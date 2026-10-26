@@ -1,7 +1,9 @@
-// The thermoloop: the review loop of a change. `workflows thermoloop` reviews the branch of the current directory from its merge base
-// with `--base`, and fixes it in rounds until the reviewer answers SHIP. `ship.js` runs it after `rpi.js` with the start
-// commit, the plan, the implementer's reply and the memory. Every Git step is safe to repeat: a resume runs a step
-// again when its result was not saved.
+// The thermoloop: the review loop of a change. `workflows thermoloop` reviews the branch of the current directory from
+// its merge base with `--base`, and fixes it in rounds until the reviewer answers SHIP. A caller gives `start`, the
+// commit that its change starts from, and may give `plan` and `reply`, the handoff and the report of the implement
+// before, `memory`, the lines of a run memory to go on with, and `patches`, the folder of the round patches.
+// `ship.js` runs it after `rpi.js`. Every Git step is safe to repeat: a resume runs a step again when its result was
+// not saved.
 export const meta = {
 	description: "Review the change of the current branch, and fix it in rounds until the reviewer answers SHIP.",
 	args: {
@@ -15,16 +17,7 @@ export const meta = {
 const { item, rounds, patches = runDir } = args
 const subject = subjectOf(item)
 
-// A caller gives `start`, and its change; without one, the review takes the branch as it is.
-if (args.start === undefined && (await sh(["git", "status", "--porcelain"])) !== "") {
-	throw new Error("the checkout has changes that are not committed; commit or stash them before the review")
-}
-
-const start = args.start ?? (await sh(["git", "merge-base", args.base, "HEAD"]))
-
-if (args.start === undefined && (await ok(["git", "diff", "--quiet", start, "HEAD"]))) {
-	throw new Error(`no change from ${args.base} to review`)
-}
+const start = args.start ?? (await branchStart(args.base))
 
 const SHIP_OR_FIX = { enum: ["SHIP", "FIX"] }
 
@@ -44,8 +37,7 @@ let before = start
 
 for (let round = 1; round <= rounds; round++) {
 	if (round > 1) {
-		phase(`round ${round}: implement`)
-		status(`round ${round}/${rounds}: implement`)
+		phase(`round ${round}/${rounds}: implement`)
 
 		reply = await notes
 			.session("implementer")
@@ -62,8 +54,7 @@ for (let round = 1; round <= rounds; round++) {
 		log(await diffStat(before))
 	}
 
-	phase(`round ${round}: review`)
-	status(`round ${round}/${rounds}: review`)
+	phase(`round ${round}/${rounds}: review`)
 	const change = [await patch(`round-${round}.patch`, start)]
 
 	if (round > 1) change.push(await patch(`round-${round}-fix.patch`, before))

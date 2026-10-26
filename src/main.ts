@@ -661,9 +661,9 @@ async function pickRun(terminal: Terminal, choose: Choose): Promise<Listed | und
 			const progress = new Progress();
 
 			for (const event of await progressEvents(store, run.runId)) progress.add(event);
-			const running = progress.running();
+			const status = progress.status();
 
-			if (running.length > 0) found.set(run.runId, running.join(" › "));
+			if (status !== undefined) found.set(run.runId, status);
 		}
 
 		return { runs: sorted, steps: found };

@@ -21,43 +21,23 @@ if (start === undefined) {
 const subject = subjectOf(item)
 const worktree = `${runDir}/worktree`
 
-// The results of the child runs, without their report lines and run IDs.
-const child = async (name, values) => {
-	const { report: _report, runId: _runId, ...result } = await run(name, values)
+// The result of a child run that did not get to the judge, with the report lines of ship.
+const unshipped = (result) => {
+	const report = [`${result.status} ${subject} after ${result.rounds} rounds: ${worktree}`]
 
-	return result
+	return { ...result, report: result.status === "blocked" ? [...report, result.reply] : report }
 }
 
-phase("rpi")
+const built = await runChild("rpi", { item, start })
 
-const built = await child("rpi", { item, start })
-const { plan, reply, memory } = built
+if (built.status === "blocked") return unshipped(built)
 
-if (built.status === "blocked") {
-	const report = [`blocked ${subject} after 1 rounds: ${worktree}`, reply]
+const { plan, reply } = built
+const reviewed = await runChild("thermoloop", { item, rounds, start, patches, plan, reply, memory: built.memory })
 
-	return { status: "blocked", rounds: 1, reply, handoff: plan, memory, report }
-}
+if (reviewed.status !== "approved") return unshipped(reviewed)
 
-phase("thermoloop")
-
-const reviewed = await child("thermoloop", { item, rounds, start, patches, plan, reply, memory })
-
-if (reviewed.status === "blocked") {
-	const report = [`blocked ${subject} after ${reviewed.rounds} rounds: ${worktree}`, reviewed.reply]
-
-	return { ...reviewed, report }
-}
-
-if (reviewed.status === "stopped") {
-	return { ...reviewed, report: [`stopped ${subject} after ${reviewed.rounds} rounds: ${worktree}`] }
-}
-
-phase("judge")
-
-status("judge")
-
-const { status: _status, commit, ...verdict } = await child("judge", { item, start, commit: true })
+const { status: _status, commit, ...verdict } = await runChild("judge", { item, start, commit: true })
 const commitSubject = commit?.subject ?? subject
 const commitMessage = commit === undefined ? subject : `${commit.subject}\n\n${commit.body}`
 
@@ -69,7 +49,7 @@ await sh(["sh", "-c", squash, "squash", start, commitMessage])
 const short = await sh(["git", "rev-parse", "--short", "HEAD"])
 const judged = verdict.score === undefined ? "failed" : verdict.score.toFixed(2)
 
-log(`judge ${judged}: ${short} ${commitSubject}`)
+log(`commit ${short} ${commitSubject}`)
 
 return {
 	status: "shipped",

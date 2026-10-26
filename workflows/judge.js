@@ -1,6 +1,7 @@
-// The judge of a change: the fixed rubric of `prompts/judge.md`, and with `commit` the commit message, in the same
-// session. `workflows judge` judges the branch of the current directory from its merge base with `--base`.
-// `ship.js` runs it on the change of its rounds, and `campaign.js` on the change of all its items.
+// The judge of a change: the fixed rubric of `prompts/judge.md`. `workflows judge` judges the branch of the current
+// directory from its merge base with `--base`. A caller gives `start`, the commit that its change starts from, and with
+// `commit: true` also gets the commit message of the change, which the judge writes in the same session. `ship.js`
+// runs it on the change of its rounds, and `campaign.js` on the change of all its items.
 export const meta = {
 	description: "Judge the change of the current branch against a work item with the fixed rubric.",
 	args: {
@@ -11,8 +12,11 @@ export const meta = {
 }
 
 const { item, commit = false } = args
+
+phase("judge")
+
 const subject = subjectOf(item)
-const base = args.start ?? (await sh(["git", "merge-base", args.base, "HEAD"]))
+const base = args.start ?? (await branchStart(args.base))
 const head = await sh(["git", "rev-parse", "HEAD"])
 
 const VERDICT = {
@@ -42,6 +46,8 @@ try {
 }
 
 const judged = { status: "judged", score: score(verdict.answers), answers: verdict.answers, findings: verdict.findings }
+
+log(`judge ${judged.score.toFixed(2)}`)
 
 judged.report = [`judge ${judged.score.toFixed(2)}: ${subject}`, ...verdict.findings.map((finding) => `  ${finding}`)]
 
