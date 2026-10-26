@@ -92,6 +92,31 @@ describe("the steps of a run", () => {
 	});
 });
 
+describe("the status of a run", () => {
+	it("joins the statuses of the runs that have not ended, outermost first", () => {
+		const progress = new Progress();
+		expect(progress.status()).toBeUndefined();
+		progress.add({ kind: "phase", run: "c", parent: null, text: "item 1/2: one", at: 0 });
+		progress.add({ kind: "status", run: "c", parent: null, text: "item 1/2", at: 0 });
+		progress.add({ kind: "status", run: "s", parent: "c", text: "plan", at: 1 });
+		expect(progress.status()).toBe("item 1/2 › plan");
+		// An empty status removes the status of its run.
+		progress.add({ kind: "status", run: "s", parent: "c", text: "", at: 2 });
+		progress.add({ kind: "status", run: "r", parent: "s", text: "round 1/3: review", at: 3 });
+		expect(progress.status()).toBe("item 1/2 › round 1/3: review");
+		progress.add({ kind: "status", run: "j", parent: "s", text: "judge", at: 4 });
+		expect(progress.status()).toBe("item 1/2 › round 1/3: review, judge");
+		progress.add({ kind: "end", run: "r", failed: false, at: 5 });
+		progress.add({ kind: "end", run: "j", failed: false, at: 5 });
+		progress.add({ kind: "end", run: "s", failed: false, at: 5 });
+		expect(progress.status()).toBe("item 1/2");
+		// The statuses are not lines of the tree.
+		expect(progress.lines()).toEqual(["◉ item 1/2: one"]);
+		progress.add({ kind: "end", run: "c", failed: false, at: 6 });
+		expect(progress.status()).toBeUndefined();
+	});
+});
+
 describe("the program status report", () => {
 	it("writes the state, the kind of a blocked state, and the message in base64 with spaces for control characters", () => {
 		expect(programStatus("working", "plan")).toBe("\x1b]7501;state=working:app=workflows:msg=cGxhbg==\x1b\\");

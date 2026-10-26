@@ -18,7 +18,8 @@
 - The workflows are data: `workflows/*.js`, `prompts/*.md` and `agents/*.md`. There is no workflow in TypeScript.
 - A workflow script declares its description, arguments, worktree and exit codes in `export const meta = { ... }`, a literal object at the top. It returns its report lines as `result.report`.
 - `optimize` is the workflow script `workflows/optimize.js`: it evaluates each candidate with `run("ship", ...)` child runs, and reads and writes files through `sh`.
-- `ship` is the workflow script `workflows/ship.js`: its `meta` gives the work item, the rounds and the worktree, and the script does the plan, the rounds, the review, the judge, the squash and the report lines.
+- `ship` is the workflow script `workflows/ship.js`: its `meta` gives the work item, the rounds and the worktree, and the script does the research, the plan, the squash and the report lines. Its implement and review rounds are the child run `workflows/review.js`, and its judge the child run `workflows/judge.js`. Both also run on their own on the branch of the current directory (`workflows review`, `workflows judge`), and `campaign` ends with `judge.js` on the change of all its items.
+- `status(text)` in a script sets the short status of its run, which the Pi widget shows for a background run after the statuses of its callers (`item 2/5 › round 1/3: review`). Give a new long-running workflow script statuses.
 - `src/entry.ts` also gives every conversation of the host the `workflow` tool, which runs the CLI of the same install as a child process with `HARNESS_PROJECT` and `PI_SESSION_ID` set. The run saves `PI_SESSION_ID` as `parent`, and `sessionOf` in `script.ts` opens the sessions under that conversation and removes the tool's extension from them. With `background`, the tool returns `started`, the input gets `notify`, and `notify` in `task.ts` posts the outcome to `parent` at each end of the task, with the request ID `workflows.result:<run ID>/<task ID>`.
 - Every script run is the task `workflows.run`, `scriptTask(host)` in `src/task.ts`, whose name and version are `TASK`. Bump `TASK.version` when the shape of its saved input changes.
 - A run has one live task at a time. Start, resume and wait share one way to follow a task. `resume` follows the run's last task when it has not ended, and starts a new task with the same input when it ended without completing. Keep a new kind of run on that path. A child run is not a run of its own: `list` and `resume` see only root tasks. A failed task, root or child, ends as `failed`. The saved calls of a script are session-scoped documents of the store, keyed `<run ID>/<call key>`, so they stay after the task ends; a `run()` call creates a new child task with the input of a child task that ended without completing. Each call document records the call's kind, args, phase, start and end times, and its result or error; only a saved `result` replays. `show`, `list` and `save` in `main.ts` read these records and the root tasks from the project store file, with no Harness and no host, through `src/store.ts`, which opens the file read-only so the CLI takes no lock that the host waits for and runs no checkpoint.
@@ -39,8 +40,8 @@
 ## Prompts
 
 - Keep the frontmatter and the last line `$@` in `prompts/*.md`. `instructions()` removes them.
-- The SHIP or FIX answer rule and the evidence rule of the review challenge are in `workflows/ship.js`. Do not move them into a template.
-- The judge answers the eight numbered questions of `prompts/judge.md` through `respond`, in question order, and `score()` in `workflows/ship.js` reads them. Keep the numbering and the meaning of questions 1 and 2.
+- The SHIP or FIX answer rule and the evidence rule of the review challenge are in `workflows/review.js`. Do not move them into a template.
+- The judge answers the eight numbered questions of `prompts/judge.md` through `respond`, in question order, and `score()` in `workflows/judge.js` reads them. Keep the numbering and the meaning of questions 1 and 2.
 
 ## Tests
 

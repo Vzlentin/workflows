@@ -1,6 +1,7 @@
 // The split and the items of `workflows campaign`, in its worktree. Each item ships through ship.js as one commit on
-// top of the item before it. A failed item gets a rundown and a question, and the answer goes back to the split. The
-// engine names the branch from `subject` of the result. Every Git step is safe to repeat: a resume runs a step
+// top of the item before it. A failed item gets a rundown and a question, and the answer goes back to the split. When
+// every item shipped, judge.js judges the change of the whole campaign against the goal, which no item's judge sees.
+// The engine names the branch from `subject` of the result. Every Git step is safe to repeat: a resume runs a step
 // again when its result was not saved.
 export const meta = {
 	description: "Split a goal into work items and ship each one as a commit on one branch.",
@@ -12,7 +13,7 @@ export const meta = {
 	exit: { stopped: 1 },
 }
 
-const { goal, rounds } = args
+const { goal, rounds, start: first } = args
 const subjectOf = (text) => (text.split("\n").find((line) => line.trim() !== "") ?? "").replace(/^#+/, "").trim()
 const name = subjectOf(goal)
 
@@ -47,6 +48,7 @@ const shipped = () => JSON.stringify(done.map(({ item, result }) => ({ item, com
 // `answer`.
 async function split(inputs) {
 	phase("split")
+	status("split")
 	const answered = await agent(`${await prompts.split({ goal, ...inputs })}${answer}`, { as: "planner", schema: SPLIT })
 	log(count(answered.items.length))
 
@@ -58,6 +60,7 @@ let { subject, items: queue } = await split({})
 for (let n = 1; queue.length > 0; n++) {
 	const [item, ...rest] = queue
 	phase(`item ${n}/${n + rest.length}: ${subjectOf(item)}`)
+	status(`item ${n}/${n + rest.length}`)
 	const patches = `${runDir}/item-${n}`
 	await sh(["mkdir", "-p", patches])
 	const start = await sh(["git", "rev-parse", "HEAD"])
@@ -113,11 +116,21 @@ for (let n = 1; queue.length > 0; n++) {
 }
 
 const head = done.at(-1).result.head
-const report = [`done ${name} in ${count(done.length)}, ${head}`]
+const judgedOf = (score) => (score === undefined ? "failed" : score.toFixed(2))
 
-for (const { result } of done) {
-	const judged = result.score === undefined ? "failed" : result.score.toFixed(2)
-	report.push(`  ${result.head} ${result.subject}, judge ${judged}`)
-}
+// The judge of the whole campaign sees the change of every item at once, against the goal.
+phase("judge")
 
-return { status: "done", subject, head, items: done, report }
+status("judge")
+
+const { report: _report, runId: _runId, status: _status, ...verdict } = await run("judge", { item: goal, start: first })
+
+log(`judge ${judgedOf(verdict.score)}: ${name}`)
+
+const report = [`done ${name} in ${count(done.length)}, judge ${judgedOf(verdict.score)}, ${head}`]
+
+for (const { result } of done) report.push(`  ${result.head} ${result.subject}, judge ${judgedOf(result.score)}`)
+
+for (const finding of verdict.findings ?? []) report.push(`  finding ${finding}`)
+
+return { status: "done", subject, head, ...verdict, items: done, report }

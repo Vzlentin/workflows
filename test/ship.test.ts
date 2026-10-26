@@ -23,6 +23,7 @@ import {
 	runsOf,
 	sandbox,
 	startHost,
+	statusesOf,
 	storeOf,
 	workflows,
 } from "./support.ts";
@@ -45,7 +46,12 @@ const RUN_ID = Type.Object({ runId: Type.String() });
 /** The input of a task of another version: some versions wrapped it as `{ input }`. */
 type SavedInput = { readonly name?: string; readonly input?: { readonly name?: string } };
 
-type Stored = { readonly kind: string; readonly label: string; readonly args: { readonly profile?: string } };
+type Stored = {
+	readonly kind: string;
+	readonly label: string;
+	readonly args: { readonly profile?: string; readonly cmd?: readonly string[] };
+	readonly calls?: readonly Stored[];
+};
 
 /**
  * The ID of a new run of the `main` project whose store holds one pending task of `kind` at `version` with `input`, as
@@ -88,7 +94,7 @@ async function saveRun(kind: string, version: number, input: SavedInput = { inpu
 }
 
 const worktreeOf = (id: string | undefined) => join(runs(), id ?? "missing", "worktree");
-const progress = /^(research|plan|judge|round \d: (implement|review))$/;
+const progress = /^ *(research|plan|review|judge|round \d: (implement|review))$/;
 const FIXED = "# Demo\n\nHello world\n";
 const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|failed), [0-9a-f]+$/;
 
@@ -138,18 +144,32 @@ describe("workflows ship", () => {
 		expect(progressOf(run.stderr)).toEqual([
 			"✓ research",
 			"✓ plan",
-			"✓ round 1: implement",
-			"  +1 -1 in 1 file",
-			"✓ round 1: review",
-			"  FIX",
-			"✓ round 2: implement",
-			"  +1 -0 in 1 file",
-			"✓ round 2: review",
-			"  SHIP",
+			"✓ review",
+			"  ✓ round 1: implement",
+			"    +1 -1 in 1 file",
+			"  ✓ round 1: review",
+			"    FIX",
+			"  ✓ round 2: implement",
+			"    +1 -0 in 1 file",
+			"  ✓ round 2: review",
+			"    SHIP",
 			"✓ judge",
 			expect.stringMatching(/^ {2}judge 0\.83: [0-9a-f]+ fix: correct the README typo$/),
 		]);
 		expect(JSON.parse(run.stderr[0] ?? "")).toEqual({ progress: ["◉ research"] });
+		expect(statusesOf(run.stderr)).toEqual([
+			"-",
+			"research",
+			"plan",
+			"-",
+			"round 1/3: implement",
+			"round 1/3: review",
+			"round 2/3: implement",
+			"round 2/3: review",
+			"-",
+			"judge",
+			"-",
+		]);
 		expect(run.code).toBe(0);
 		const { result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(run.stdout).toHaveLength(2);
@@ -400,7 +420,7 @@ export default function ({ events }) {
 		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
 
 		const failed = [
-			"failed Fix the README typo: git commit failed: lint failed",
+			expect.stringMatching(/^failed Fix the README typo: child run \S+ failed: git commit failed: lint failed$/),
 			`continue with: workflows resume ${run.id}`,
 		];
 
@@ -409,7 +429,11 @@ export default function ({ events }) {
 		expect(run.stderr.slice(-2)).toEqual(failed);
 
 		const again = await workflows(["resume", run.id ?? ""], { cwd: repo });
-		expect([again.code, again.stderr, again.model.calls]).toEqual([1, ["round 1: implement", ...failed], []]);
+		expect([again.code, again.stderr, again.model.calls]).toEqual([
+			1,
+			["review", "  round 1: implement", ...failed],
+			[],
+		]);
 
 		await rm(hook);
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: repo });
@@ -497,8 +521,8 @@ export default function ({ events }) {
 		expect(run.stdout[1]).toMatch(SHIPPED);
 		expect(run.stdout[1]).toContain("judge failed,");
 		expect(run.stderr.filter((line) => !progress.test(line))).toEqual([
-			"  +1 -1 in 1 file",
-			"  SHIP",
+			"    +1 -1 in 1 file",
+			"    SHIP",
 			"  judge failed on Fix the README typo: the answer did not call respond",
 			expect.stringMatching(/^ {2}judge failed: [0-9a-f]+ Fix the README typo$/),
 		]);
@@ -692,28 +716,38 @@ describe("workflows show", () => {
 		const id = run.id ?? "";
 		const shown = await workflows(["show", id, "--calls"], { cwd: root });
 		expect([shown.code, shown.stderr]).toEqual([0, []]);
-		const call = (line: string) => expect.stringMatching(new RegExp(`^  ✓ ${line}  \\d+s$`));
-		const asks = (p: string, n: number) => [call(`session ${p} conversation \\d+`), ...Array(n).fill(call(`ask ${p}`))];
+		const call = (line: string, indent = "  ") => expect.stringMatching(new RegExp(`^${indent}✓ ${line}  \\d+s$`));
+		const child = (line: string) => call(line, "      ");
+
+		const asks = (p: string, n: number, at = call) => [
+			at(`session ${p} conversation \\d+`),
+			...Array(n).fill(at(`ask ${p}`)),
+		];
+
 		expect(shown.stdout).toEqual([
 			`run ${id} ship shipped Fix the README typo`,
 			"research",
 			...asks("researcher", 1),
 			"plan",
 			...asks("planner", 3),
-			"round 1: implement",
-			...asks("implementer", 1),
-			call("sh git add -A"),
-			call(`ok git diff --cached --quiet ${start}`),
-			call("ok git diff --cached --quiet"),
-			call("sh git commit --allow-empty -m round 1"),
+			"review",
+			call("run review \\S+"),
+			"    round 1: implement",
+			...asks("implementer", 1, child),
+			child("sh git add -A"),
+			child(`ok git diff --cached --quiet ${start}`),
+			child("ok git diff --cached --quiet"),
+			child("sh git commit --allow-empty -m round 1"),
+			child(`sh git diff --shortstat ${start} HEAD`),
 			// The command is cut at 80 characters.
-			call("sh git diff --binary --output=.{53}"),
-			call(`sh git diff --shortstat ${start} HEAD`),
-			"round 1: review",
-			...asks("reviewer", 2),
-			call("sh git rev-parse HEAD"),
+			child("sh git diff --binary --output=.{53}"),
+			"    round 1: review",
+			...asks("reviewer", 2, child),
+			child("sh git rev-parse --short HEAD"),
 			"judge",
-			...asks("judge", 2),
+			call("run judge \\S+"),
+			child("sh git rev-parse HEAD"),
+			...asks("judge", 2, child),
 			call(`sh sh -c git reset -q --soft "\\$1" && git commit -q -m "\\$2" squash ${start.slice(0, 17)}`),
 			call("sh git rev-parse --short HEAD"),
 			// The command is cut at 80 characters.
@@ -732,12 +766,15 @@ describe("workflows show", () => {
 			status: "shipped",
 			report: shown.stdout.slice(-2),
 		});
-		expect(tree.calls).toHaveLength(shown.stdout.length - 8);
+		const flat = (calls: readonly Stored[]): Stored[] => calls.flatMap((c) => [c, ...flat(c.calls ?? [])]);
+		const calls = flat(tree.calls);
+		// The header, the 6 phase lines and the 2 report lines are not calls.
+		expect(calls).toHaveLength(shown.stdout.length - 9);
 
 		const conversation = await conversationOf(/Plan this change\./);
-		const planner = tree.calls.find((c: Stored) => c.kind === "session" && c.args.profile === "planner");
-		const asked = tree.calls.find((c: Stored) => c.kind === "ask" && c.label === "planner");
-		const added = tree.calls.find((c: Stored) => c.kind === "sh" && c.label === "git add -A");
+		const planner = calls.find((c: Stored) => c.kind === "session" && c.args.profile === "planner");
+		const asked = calls.find((c: Stored) => c.kind === "ask" && c.label === "planner");
+		const added = calls.find((c: Stored) => c.kind === "sh" && c.label === "git add -A");
 
 		expect(planner).toEqual({
 			kind: "session",
@@ -752,7 +789,7 @@ describe("workflows show", () => {
 		});
 		expect(asked).toMatchObject({ result: "Problem: README.md says wrold." });
 		expect(added).toMatchObject({ phase: "round 1: implement" });
-		expect(added.args).toEqual({ cmd: ["git", "add", "-A"], check: true });
+		expect(added?.args).toEqual({ cmd: ["git", "add", "-A"], check: true });
 	});
 });
 
@@ -874,14 +911,20 @@ describe("workflows resume of ship runs", () => {
 
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout).toEqual([`run ${first.id}`, expect.stringMatching(SHIPPED), `branch ${BRANCH}`]);
-		expect(resumed.stderr).toEqual([
-			"round 1: implement",
-			"  +1 -1 in 1 file",
-			"round 1: review",
-			"  SHIP",
-			"judge",
-			expect.stringMatching(/^ {2}judge 0\.83: /),
-		]);
+		// The host continues the child run of the rounds as it continues the run, so its lines and the step of its caller
+		// come in either order.
+		expect(resumed.stderr).toHaveLength(7);
+		expect(resumed.stderr).toEqual(
+			expect.arrayContaining([
+				"round 1: implement",
+				"review",
+				expect.stringMatching(/^ +\+1 -1 in 1 file$/),
+				"  round 1: review",
+				"    SHIP",
+				"judge",
+				expect.stringMatching(/^ {2}judge 0\.83: /),
+			]),
+		);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "verdict", "judge", "commit"]);
 		expect(resumed.model.find("implement")?.prompt).toContain("## plan\nHandoff 1: ");
 		expect(resumed.model.find("implement")?.prompt.startsWith(`${memory(1)}Implement this plan`)).toBe(true);
@@ -943,10 +986,11 @@ describe("workflows resume of ship runs", () => {
 		expect(resumed.code).toBe(0);
 		expect(resumed.stderr).toEqual([
 			"plan",
-			"round 1: implement",
-			"  +1 -1 in 1 file",
-			"round 1: review",
-			"  SHIP",
+			"review",
+			"  round 1: implement",
+			"    +1 -1 in 1 file",
+			"  round 1: review",
+			"    SHIP",
 			"judge",
 			expect.stringMatching(/^ {2}judge 0\.83: /),
 		]);

@@ -300,7 +300,7 @@ export const CallDoc = defineDocFamily<CallRecord, null>({
 });
 
 /**
- * The `phase` and `log` lines and the ends of a root run and its child runs, in commit order, keyed by the root run ID.
+ * The `phase`, `log` and `status` lines and the ends of a root run and its child runs, in commit order, keyed by the root run ID.
  * The command reads them from the store file while it follows the run.
  */
 export const ProgressDoc = defineDocFamily<{ events: ProgressEvent[] }, null>({
@@ -354,19 +354,20 @@ function keyOf(name: string, args: JsonObject, counters: Map<string, number>): s
 	return `${hash}.${n}`;
 }
 
-/** A `phase` or `log` line, with the time of its call in ms since the epoch. */
-type Line = { readonly text: string; readonly phase: boolean; readonly at: number };
+/** A `phase`, `log` or `status` line, with the time of its call in ms since the epoch. */
+type Line = { readonly text: string; readonly kind: "phase" | "log" | "status"; readonly at: number };
 
 /**
- * The lines of a script that wait for its next call that runs, in order. At most one is a phase line: a new phase line
- * replaces it. `phase` is the current phase line, which each call that starts records.
+ * The lines of a script that wait for its next call that runs, in order. At most one is a phase line and one a status
+ * line: a new one replaces the one of its kind. `phase` is the current phase line, which each call that starts records.
  */
 type Progress = { readonly lines: Line[]; phase: string | null; continued?: boolean };
 
-function phaseLine(progress: Progress, text: string): void {
-	progress.phase = text;
+/** Adds the phase or status line `text`, in place of the waiting line of its kind. */
+function replacingLine(progress: Progress, kind: "phase" | "status", text: string): void {
+	if (kind === "phase") progress.phase = text;
 	const { lines } = progress;
-	lines.splice(0, lines.length, ...lines.filter((line) => !line.phase), { text, phase: true, at: Date.now() });
+	lines.splice(0, lines.length, ...lines.filter((line) => line.kind !== kind), { text, kind, at: Date.now() });
 }
 
 /** What the calls of one script execution share. */
@@ -389,7 +390,7 @@ function takeLines(calls: Calls): ProgressEvent[] {
 	const { progress } = calls;
 
 	return progress.lines.splice(0).map((line) => {
-		if (!line.phase) return { kind: "log", run, parent, text: line.text, at: line.at };
+		if (line.kind !== "phase") return { kind: line.kind, run, parent, text: line.text, at: line.at };
 		const event: ProgressEvent = { kind: "phase", run, parent, text: line.text, at: line.at };
 
 		if (progress.continued === true) return event;
@@ -411,7 +412,7 @@ type Start = { readonly kind: CallKind; readonly args: JsonObject };
  * The result of the call `key`: its saved result, or the value of `effect`, which gets the key. The call records its
  * start, with the waiting lines, before `effect`, and its end with the value or the error after it. A stopped call
  * records no end, and a call that throws saves no result, so both run again. A call with a saved result drops the log
- * lines and keeps the phase line, so a resume shows the phase of the first call that runs.
+ * lines and keeps the phase and status lines, so a resume shows the phase and status of the first call that runs.
  */
 async function memoized(
 	calls: Calls,
@@ -424,7 +425,7 @@ async function memoized(
 	const { lines } = progress;
 
 	if (saved !== undefined) {
-		lines.splice(0, lines.length, ...lines.filter((line) => line.phase));
+		lines.splice(0, lines.length, ...lines.filter((line) => line.kind !== "log"));
 
 		return saved;
 	}
@@ -769,8 +770,9 @@ export async function runScript(
 				);
 			}),
 			global("__input", INPUT_ARGS, ([question]) => inputCall(calls, question, stop)),
-			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
-			global("log", LINE_ARGS, ([line]) => progress.lines.push({ text: String(line), phase: false, at: Date.now() })),
+			global("phase", LINE_ARGS, ([title]) => replacingLine(progress, "phase", String(title))),
+			global("log", LINE_ARGS, ([line]) => progress.lines.push({ text: String(line), kind: "log", at: Date.now() })),
+			global("status", LINE_ARGS, ([text]) => replacingLine(progress, "status", String(text))),
 			global("__prompt", PROMPT_ARGS, ([name, inputs]) => {
 				const body = bundle.prompts[name];
 

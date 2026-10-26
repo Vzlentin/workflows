@@ -95,3 +95,9 @@ declare function phase(title: string): void;
 
 /** Writes the line `text` under the current step on stderr before the script's next call that runs. */
 declare function log(text: string): void;
+
+/**
+ * Sets the status of the run: a short line, such as `item 2/5` or `round 1/3: review`, that the Pi footer shows for a
+ * background run, after the statuses of its callers. An empty text removes it, and the end of the run removes it.
+ */
+declare function status(text: string): void;

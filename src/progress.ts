@@ -12,14 +12,15 @@ import type { Io } from "./run.ts";
 export const PROGRESS_KIND = "workflows.progress";
 
 /**
- * A `phase` or `log` line of the run `run`, whose caller is `parent`, the end of the run `run`, or the start of an
- * execution of the root run `run`, from which a command that reaches the running task shows the lines. `at` is the
- * time of the line or the end in ms since the epoch; events that an earlier version saved have none. `continues` marks
- * the first phase line of an execution of the run, which goes on with the step of that text when it is the current one.
+ * A `phase`, `log` or `status` line of the run `run`, whose caller is `parent`, the end of the run `run`, or the start
+ * of an execution of the root run `run`, from which a command that reaches the running task shows the lines. `at` is
+ * the time of the line or the end in ms since the epoch; events that an earlier version saved have none. `continues`
+ * marks the first phase line of an execution of the run, which goes on with the step of that text when it is the
+ * current one.
  */
 export const PROGRESS_EVENT = Type.Union([
 	Type.Object({
-		kind: Type.Union([Type.Literal("phase"), Type.Literal("log")]),
+		kind: Type.Union([Type.Literal("phase"), Type.Literal("log"), Type.Literal("status")]),
 		run: Type.String(),
 		parent: Type.Union([Type.String(), Type.Null()]),
 		text: Type.String(),
@@ -52,9 +53,19 @@ type Item = Step | { readonly log: string } | { readonly run: RunNode };
 
 /**
  * A run: its steps and log lines, its caller, and whether it is under a step of the caller. A child run whose caller
- * has no step yet is in the list of the caller, and moves under the next step of the caller.
+ * has no step yet is in the list of the caller, and moves under the next step of the caller. `children` are its child
+ * runs in the order of their first line, `status` the text of its last `status` line, and `ended` whether its last
+ * event is its end.
  */
-type RunNode = { readonly items: Item[]; readonly caller: RunNode | undefined; under: boolean; current?: Step };
+type RunNode = {
+	readonly items: Item[];
+	readonly caller: RunNode | undefined;
+	readonly children: RunNode[];
+	under: boolean;
+	current?: Step;
+	status?: string;
+	ended?: boolean;
+};
 
 /** The steps of a run and of its child runs. */
 export class Progress {
@@ -66,7 +77,10 @@ export class Progress {
 		if (event.kind === "start") return undefined;
 
 		if (event.kind === "end") {
-			const step = this.#runs.get(event.run)?.current;
+			const node = this.#runs.get(event.run);
+
+			if (node !== undefined) node.ended = true;
+			const step = node?.current;
 
 			if (step?.mark === "◉") {
 				step.mark = event.failed ? "✗" : "✓";
@@ -77,6 +91,15 @@ export class Progress {
 		}
 
 		const run = this.#node(event.run, event.parent);
+		run.ended = false;
+
+		if (event.kind === "status") {
+			if (event.text === "") delete run.status;
+			else run.status = event.text;
+
+			return undefined;
+		}
+
 		const { current } = run;
 
 		if (event.kind === "log") {
@@ -137,6 +160,24 @@ export class Progress {
 		return texts;
 	}
 
+	/**
+	 * The status lines of the runs that have not ended, outermost first, joined with ` › `, or undefined when none has
+	 * one. Child runs that run at once join with `, `.
+	 */
+	status(): string | undefined {
+		const chain = (node: RunNode): string[] => {
+			const own = node.status === undefined ? [] : [node.status];
+			const shown = node.children.flatMap((child) => (child.ended === true ? [] : chain(child).join(" › ") || []));
+
+			return shown.length === 0 ? own : [...own, shown.join(", ")];
+		};
+
+		const roots = [...this.#runs.values()].filter((node) => node.caller === undefined && node.ended !== true);
+		const text = roots.flatMap((node) => chain(node).join(" › ") || []).join(", ");
+
+		return text === "" ? undefined : text;
+	}
+
 	/** Whether the run has a step. */
 	get stepped(): boolean {
 		return [...this.#runs.values()].some((run) => run.current !== undefined);
@@ -188,7 +229,8 @@ export class Progress {
 
 		if (found !== undefined) return found;
 		const caller = parent === null ? undefined : this.#node(parent, null);
-		const node: RunNode = { items: [], caller, under: caller?.current !== undefined };
+		const node: RunNode = { items: [], caller, children: [], under: caller?.current !== undefined };
+		caller?.children.push(node);
 		(caller === undefined ? this.#top : (caller.current?.items ?? caller.items)).push({ run: node });
 		this.#runs.set(run, node);
 
@@ -222,7 +264,7 @@ export type Display = {
 
 /**
  * The display of a run on `io`. With `json`, each change prints one stderr line `{"progress":[<line>...]}` with every
- * line of the tree. Else, on a terminal, `io.redraw` draws the tree again in place. Else each step and log line prints
+ * line of the tree, and `"status"` with the status of the runs when one has a status line. Else, on a terminal, `io.redraw` draws the tree again in place. Else each step and log line prints
  * once, with its indent and without a mark.
  */
 export function display(io: Io, json: boolean): Display {
@@ -232,7 +274,9 @@ export function display(io: Io, json: boolean): Display {
 
 	const draw = (added: string | undefined) => {
 		if (json) {
-			const line = JSON.stringify({ progress: progress.lines() });
+			const status = progress.status();
+			const lines = progress.lines();
+			const line = JSON.stringify(status === undefined ? { progress: lines } : { progress: lines, status });
 
 			if (line !== last) io.stderr(line);
 			last = line;
