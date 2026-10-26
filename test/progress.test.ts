@@ -93,14 +93,6 @@ describe("the steps of a run", () => {
 });
 
 describe("the steps of child runs", () => {
-	it("move a run under its caller when a line of its own child came first", () => {
-		const progress = new Progress();
-		progress.add({ kind: "phase", run: "c", parent: null, text: "item 1/1: one", at: 0 });
-		progress.add({ kind: "phase", run: "r", parent: "s", text: "implement", at: 1 });
-		progress.add({ kind: "phase", run: "s", parent: "c", text: "rpi", at: 2 });
-		expect(progress.lines()).toEqual(["◉ item 1/1: one", "  ◉ rpi", "    ◉ implement"]);
-	});
-
 	it("put a child run under the current step of its caller at its start, before any line of its own", () => {
 		const progress = new Progress();
 		progress.add({ kind: "phase", run: "c", parent: null, text: "item 1/1: one", at: 0 });

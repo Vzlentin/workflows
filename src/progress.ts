@@ -55,7 +55,7 @@ type Item = Step | { readonly log: string } | { readonly run: RunNode };
  * A run: its steps and log lines, its caller, and whether it is under a step of the caller. A child run whose caller
  * has no step yet is in the list of the caller, and moves under the next step of the caller.
  */
-type RunNode = { readonly items: Item[]; caller: RunNode | undefined; under: boolean; current?: Step };
+type RunNode = { readonly items: Item[]; readonly caller: RunNode | undefined; under: boolean; current?: Step };
 
 /** The steps of a run and of its child runs. */
 export class Progress {
@@ -177,37 +177,17 @@ export class Progress {
 		return lines;
 	}
 
-	/**
-	 * The node of `run`. A run that a line of its child run made before its own first line has no caller yet: its own
-	 * line, with `parent`, moves it from the top to its caller.
-	 */
+	/** The node of `run`: a new one goes under the current step of the run `parent`, or at the top without one. */
 	#node(run: string, parent: string | null): RunNode {
 		const found = this.#runs.get(run);
 
-		if (found === undefined) {
-			const node: RunNode = { items: [], caller: undefined, under: false };
-			this.#runs.set(run, node);
-			this.#attach(node, parent);
-
-			return node;
-		}
-
-		if (found.caller === undefined && parent !== null) {
-			const at = this.#top.findIndex((item) => "run" in item && item.run === found);
-
-			if (at >= 0) this.#top.splice(at, 1);
-			this.#attach(found, parent);
-		}
-
-		return found;
-	}
-
-	/** Puts `node` under the current step of the run `parent`, or at the top without one. */
-	#attach(node: RunNode, parent: string | null): void {
+		if (found !== undefined) return found;
 		const caller = parent === null ? undefined : this.#node(parent, null);
-		node.caller = caller;
-		node.under = caller?.current !== undefined;
+		const node: RunNode = { items: [], caller, under: caller?.current !== undefined };
 		(caller === undefined ? this.#top : (caller.current?.items ?? caller.items)).push({ run: node });
+		this.#runs.set(run, node);
+
+		return node;
 	}
 }
 
@@ -264,9 +244,7 @@ export function display(io: Io, json: boolean): Display {
 
 	const draw = (added: string | undefined) => {
 		if (json) {
-			const status = progress.status();
-			const lines = progress.lines();
-			const line = JSON.stringify(status === undefined ? { progress: lines } : { progress: lines, status });
+			const line = JSON.stringify({ progress: progress.lines(), status: progress.status() });
 
 			if (line !== last) io.stderr(line);
 			last = line;
