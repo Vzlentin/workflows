@@ -53,7 +53,7 @@ invalid) echo "run r10"; echo '{"runId":"r10","status":"lost"}' ;;
 usage) echo "workflows: unknown flag" >&2; exit 2 ;;
 save)
 	if [ "$3" = taken ]; then echo "workflows: a workflow taken exists; replace it with --force" >&2; exit 1; fi
-	echo "$PWD/.workflows/workflows/$3.js" ;;
+	echo "$PWD/.workflows/scripts/$3.js" ;;
 ship)
 	echo "run r5"
 	echo '{"runId":"r5","status":"finished","result":{"status":"shipped","rounds":1,"head":"abc"},"report":["shipped Fix the README typo in 1 rounds, judge failed, abc"]}' ;;
@@ -533,7 +533,7 @@ describe("the workflow tool", () => {
 	});
 
 	it("saves the script of a run and returns the file", async () => {
-		const file = join(await realpath(root), ".workflows", "workflows", "fix.js");
+		const file = join(await realpath(root), ".workflows", "scripts", "fix.js");
 		const { result } = await call({ save: { runId: "r2", name: "fix" } });
 		expect(result.structuredContent).toEqual({ runId: "r2", status: "finished", result: { file }, report: [file] });
 		expect(result.content).toEqual([{ type: "text", text: `saved the script of run r2 as ${file}` }]);

@@ -38,7 +38,7 @@
 	},
 	"overrides": [
 		{
-			"files": ["src/lib.js"],
+			"files": ["workflows/lib/*.js"],
 			"rules": { "no-unused-vars": "off" }
 		}
 	]

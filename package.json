@@ -11,9 +11,7 @@
 		"workflows": "dist/cli.js"
 	},
 	"files": [
-		"agents",
 		"dist",
-		"prompts",
 		"scripts/postinstall.js",
 		"workflows"
 	],
@@ -24,7 +22,7 @@
 		"access": "public"
 	},
 	"scripts": {
-		"build": "rm -rf dist && tsc -p tsconfig.build.json && cp src/lib.js dist/lib.js",
+		"build": "rm -rf dist && tsc -p tsconfig.build.json",
 		"prepack": "npm run build",
 		"postinstall": "node scripts/postinstall.js",
 		"check": "biome check . && oxlint --deny-warnings && tsc -p tsconfig.json && tsc -p workflows/jsconfig.json && vitest --run",

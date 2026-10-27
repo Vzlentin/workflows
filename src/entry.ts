@@ -21,7 +21,7 @@ const SAVE = Type.Object(
 		name: Type.String({ description: "Lowercase letters, digits and -" }),
 		force: Type.Optional(Type.Boolean({ description: "Replace a workflow of that name" })),
 	},
-	{ description: "Writes the script of the run to .workflows/workflows/<name>.js of the project" },
+	{ description: "Writes the script of the run to .workflows/scripts/<name>.js of the project" },
 );
 
 const PARAMETERS = Type.Object({

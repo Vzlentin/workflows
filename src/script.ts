@@ -51,7 +51,7 @@ export type Profile = {
  */
 export type Bundle = {
 	readonly scripts: Readonly<Record<string, string>>;
-	/** The source of `lib.js`, which the prelude gives every script after the script calls. */
+	/** The files of `workflows/lib/` in name order, which the prelude gives every script after the script calls. */
 	readonly lib: string;
 	readonly prompts: Readonly<Record<string, string>>;
 	readonly agents: Readonly<Record<string, Profile>>;
@@ -92,10 +92,8 @@ export type ScriptRun = {
 /** The extension of the `workflow` tool, which the entry gives every conversation of the host but the sessions. */
 export const TOOL_EXTENSION = "workflows";
 
-const PACKAGE = fileURLToPath(new URL("../", import.meta.url));
-
-/** The script lib, next to the engine: the build copies it to `dist/`. */
-const LIB = fileURLToPath(new URL("./lib.js", import.meta.url));
+/** The script side of the package, in the same shape as a project's `.workflows/`. */
+const PACKAGE = fileURLToPath(new URL("../workflows/", import.meta.url));
 
 /** `<base>/<folder>/*<extension>` by name; a missing folder has none. */
 export async function readFolder(base: string, folder: string, extension: string): Promise<Record<string, string>> {
@@ -154,9 +152,9 @@ function profileOf(name: string, text: string): Profile {
 }
 
 /**
- * The `workflows/*.js`, `prompts/*.md` and `agents/*.md` of the package and of `.workflows/` in the Git repository of
- * `cwd`, or in `cwd` outside a repository, read now. Without `cwd`, only the package files. Each `<name>.md` of the
- * folder `prompts` replaces the template of that name.
+ * The `scripts/*.js`, `prompts/*.md` and `agents/*.md` of the package and of `.workflows/` in the Git repository of
+ * `cwd`, or in `cwd` outside a repository, read now, and the `lib/*.js` of the package. Without `cwd`, only the
+ * package files. Each `<name>.md` of the folder `prompts` replaces the template of that name.
  */
 export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle> {
 	const project = cwd === undefined ? PACKAGE : await projectFolder(cwd);
@@ -165,14 +163,14 @@ export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle
 		loadScripts(project),
 		readMerged(project, "prompts", ".md"),
 		readMerged(project, "agents", ".md"),
-		readFile(LIB, "utf8"),
+		readFolder(PACKAGE, "lib", ".js"),
 	]);
 
 	const templates = prompts === undefined ? merged : { ...merged, ...(await overrides(prompts, merged)) };
 
 	return {
 		scripts,
-		lib,
+		lib: Object.values(lib).join("\n"),
 		prompts: Object.fromEntries(Object.entries(templates).map(([name, text]) => [name, instructions(text)])),
 		agents: Object.fromEntries(Object.entries(profiles).map(([name, text]) => [name, profileOf(name, text)])),
 	};
@@ -180,7 +178,7 @@ export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle
 
 /** The scripts of the package and of the project folder `project`, where a project script replaces the package script of its name. */
 export function loadScripts(project: string): Promise<Record<string, string>> {
-	return readMerged(project, "workflows", ".js");
+	return readMerged(project, "scripts", ".js");
 }
 
 /** `.workflows/` at the root of the Git repository of `cwd`, or in `cwd` outside a repository. */
@@ -231,15 +229,6 @@ const run = async (name, args = {}) => {
 	const { runId: id, result } = await __run(name, args);
 	return result !== null && typeof result === "object" && !Array.isArray(result) ? { ...result, runId: id } : result;
 };
-const parallel = (thunks) => Promise.all(thunks.map((thunk) => thunk()));
-const pipeline = (items, ...stages) =>
-	Promise.all(
-		items.map(async (item) => {
-			let value = item;
-			for (const stage of stages) value = await stage(value);
-			return value;
-		}),
-	);
 ${script.bundle.lib}`;
 }
 

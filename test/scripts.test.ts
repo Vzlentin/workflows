@@ -156,7 +156,7 @@ async function stdinRun() {
 	const run = await workflows(["-", "--word", "a"], { cwd: repo, stdin: SOURCE });
 	expect([run.code, run.stdout.at(-1)]).toEqual([0, "word a"]);
 	// Git prints the real path of the repository, which differs from `repo` where the temporary folder is a link.
-	const file = join(await realpath(repo), ".workflows", "workflows", "fix.js");
+	const file = join(await realpath(repo), ".workflows", "scripts", "fix.js");
 
 	return { repo, id: run.id ?? "", file };
 }
@@ -200,7 +200,7 @@ describe("workflows save", () => {
 
 	it("replaces a project or package workflow of the name only with --force", async () => {
 		const { repo, id, file } = await stdinRun();
-		await mkdir(join(repo, ".workflows", "workflows"), { recursive: true });
+		await mkdir(join(repo, ".workflows", "scripts"), { recursive: true });
 		await writeFile(file, 'return "old"');
 		const taken = await workflows(["save", id, "fix"], { cwd: repo });
 		expect([taken.code, taken.stderr]).toEqual([1, ["workflows: a workflow fix exists; replace it with --force"]]);
@@ -425,7 +425,7 @@ describe("workflows show", () => {
 	it("shows the agents of a run and of its child runs, named by their first prompt line", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
-		const scripts = join(repo, ".workflows", "workflows");
+		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 
 		await writeFile(
@@ -805,7 +805,7 @@ return "done"`,
 	it("runs and resumes project workflows from .workflows/ of the repository", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
-		const scripts = join(repo, ".workflows", "workflows");
+		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(
 			join(scripts, "parent.js"),
@@ -826,7 +826,7 @@ return "done"`,
 	it("ends the task as failed when a phase fails, and a resume continues its saved calls in a new task", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
-		const scripts = join(repo, ".workflows", "workflows");
+		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(
 			join(scripts, "w.js"),
@@ -894,7 +894,7 @@ return [one, two].join(", ")`,
 	it("runs a child run with its own run directory, worktree and prompts", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
-		const scripts = join(repo, ".workflows", "workflows");
+		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(
 			join(scripts, "parent.js"),
@@ -930,7 +930,7 @@ return { runId, runDir, branch, start: args.start, plan: await prompts.plan() }`
 	it("runs a child run without repo in the directory of the caller", async () => {
 		const repo = join(root, "repo");
 		const start = await repository(repo);
-		const scripts = join(repo, ".workflows", "workflows");
+		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(join(scripts, "parent.js"), `return await run("child", { start: "${start}" })`);
 		await writeFile(
@@ -950,7 +950,7 @@ return { branch: await sh(["git", "branch", "--show-current"]), start: args.star
 	it("gives a child run without meta.worktree its repo, base and branch args", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
-		const scripts = join(repo, ".workflows", "workflows");
+		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(join(scripts, "parent.js"), 'return await run("child", { repo: "r", base: "dev", branch: "b" })');
 		await writeFile(
@@ -967,7 +967,7 @@ return args`,
 	it("fails a run call that gives a worktree script a start that is not a string", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
-		const scripts = join(repo, ".workflows", "workflows");
+		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(join(scripts, "parent.js"), 'return await run("ship", { item: "x", start: 1 })');
 
@@ -983,9 +983,9 @@ return args`,
 const two = await run("child", { word: "two" })
 return [one.reply, two.reply].join(", ")`,
 		);
-		await mkdir(join(root, ".workflows", "workflows"), { recursive: true });
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
 		await writeFile(
-			join(root, ".workflows", "workflows", "child.js"),
+			join(root, ".workflows", "scripts", "child.js"),
 			'return { reply: await agent("Script: " + args.word) }',
 		);
 
@@ -1003,8 +1003,8 @@ return [one.reply, two.reply].join(", ")`,
 
 	it("fails the caller with a failed child run, and its resume continues the child run", async () => {
 		await writeFile(join(root, "parent.js"), 'return await run("child")');
-		await mkdir(join(root, ".workflows", "workflows"), { recursive: true });
-		await writeFile(join(root, ".workflows", "workflows", "child.js"), 'return await agent("Script: one")');
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(root, ".workflows", "scripts", "child.js"), 'return await agent("Script: one")');
 
 		const run = await workflows(["parent.js"], { cwd: root, script: { failAt: { kind: "script", nth: 1 } } });
 		expect(run.code).toBe(1);
@@ -1029,8 +1029,8 @@ return [one.reply, two.reply].join(", ")`,
 
 	it("keeps one session and one child run when a run stops after it opens them", async () => {
 		await writeFile(join(root, "parent.js"), 'session()\nreturn await run("child")');
-		await mkdir(join(root, ".workflows", "workflows"), { recursive: true });
-		await writeFile(join(root, ".workflows", "workflows", "child.js"), 'await sh("./gate.sh c")\nreturn "done"');
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(root, ".workflows", "scripts", "child.js"), 'await sh("./gate.sh c")\nreturn "done"');
 
 		const first = await stopped(["parent.js"], { gate: "c" });
 		expect(first.code).toBe(130);
@@ -1052,8 +1052,8 @@ return [one.reply, two.reply].join(", ")`,
 
 	it("ends a caller that catches the failure of a child run", async () => {
 		await writeFile(join(root, "parent.js"), 'try { await run("child") } catch (error) { return "caught" }');
-		await mkdir(join(root, ".workflows", "workflows"), { recursive: true });
-		await writeFile(join(root, ".workflows", "workflows", "child.js"), 'throw new Error("no")');
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(root, ".workflows", "scripts", "child.js"), 'throw new Error("no")');
 
 		const run = await workflows(["parent.js"], { cwd: root });
 		expect([run.code, run.stdout, run.stderr]).toEqual([0, [`run ${run.id}`, "caught"], []]);
@@ -1134,7 +1134,7 @@ return [one.reply, two.reply].join(", ")`,
 	it("finds a project script before a package script of the same name", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
-		const scripts = join(repo, ".workflows", "workflows");
+		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(join(scripts, "ship.js"), 'return "project ship"');
 		await writeFile(join(scripts, "fix.js"), 'return "project fix"');
@@ -1152,7 +1152,7 @@ return [one.reply, two.reply].join(", ")`,
 			join(root, "count.js"),
 			`// Not the description.\nexport const meta = { description: "Count words.", args: { path: { type: "string", positional: true, required: true }, depth: { type: "number", default: 2 }, all: { type: "boolean" } } }\nreturn args`,
 		);
-		const scripts = join(root, ".workflows", "workflows");
+		const scripts = join(root, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(join(scripts, "plain.js"), "// Not the description.\nreturn 1");
 		const listed = await workflows([], { cwd: root });

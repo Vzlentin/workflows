@@ -7,7 +7,14 @@
 	},
 	"files": {
 		"ignoreUnknown": false,
-		"includes": ["**", "!workflows", "!tools/oxlint/anti-slop", "!.release-please-manifest.json", "!CHANGELOG.md"]
+		"includes": [
+			"**",
+			"!workflows/scripts",
+			"!workflows/script.d.ts",
+			"!tools/oxlint/anti-slop",
+			"!.release-please-manifest.json",
+			"!CHANGELOG.md"
+		]
 	},
 	"formatter": {
 		"enabled": true,

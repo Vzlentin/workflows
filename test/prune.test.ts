@@ -20,7 +20,7 @@ beforeEach(async () => {
 	root = await sandbox();
 	repo = join(root, "repo");
 	await repository(repo);
-	const scripts = join(repo, ".workflows", "workflows");
+	const scripts = join(repo, ".workflows", "scripts");
 	await mkdir(scripts, { recursive: true });
 	await writeFile(join(scripts, "w.js"), 'export const meta = { worktree: true }\nreturn "done"');
 	await writeFile(

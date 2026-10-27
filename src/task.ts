@@ -332,7 +332,7 @@ async function runPhase(
 }
 
 /** The kind and version of the task of every script run. A run saved by another version cannot resume. */
-export const TASK = { name: "workflows.run", version: 16 } as const;
+export const TASK = { name: "workflows.run", version: 17 } as const;
 
 /** Whether the script task can continue the task `latest`. */
 export function current<R>(
