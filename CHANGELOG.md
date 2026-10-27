@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.5.0](https://github.com/Vzlentin/workflows/compare/v0.4.3...v0.5.0) (2026-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* one script-side root, workflows/ with scripts, lib, prompts and agents ([#64](https://github.com/Vzlentin/workflows/issues/64))
+
+### Features
+
+* keep plain run memory notes when memo of OptMem is missing ([#66](https://github.com/Vzlentin/workflows/issues/66)) ([b647e78](https://github.com/Vzlentin/workflows/commit/b647e7851cfb1db70ba4e66fb1deb1da2e1ff9aa))
+* keep the run memory in an OptMem store owned by the outermost run ([#65](https://github.com/Vzlentin/workflows/issues/65)) ([1900cf3](https://github.com/Vzlentin/workflows/commit/1900cf3b3b095b23ea27120147779f279e1f163c))
+* put the worktree of a run next to its repository ([#67](https://github.com/Vzlentin/workflows/issues/67)) ([21a50f2](https://github.com/Vzlentin/workflows/commit/21a50f28c95176e2fa0d9c79bd804244d3f43a7c))
+* ship as rpi, thermoloop and judge, a shared implement, a campaign judge and run statuses ([#63](https://github.com/Vzlentin/workflows/issues/63)) ([f7cdf0d](https://github.com/Vzlentin/workflows/commit/f7cdf0dece49a7d43f136b2aaade2e8cdbe98c7e))
+
+
+### Bug Fixes
+
+* **deps:** move to harness 0.5.0 ([#69](https://github.com/Vzlentin/workflows/issues/69)) ([39f0453](https://github.com/Vzlentin/workflows/commit/39f0453fdb75cdbfb35b58352c0b79c4d5395c70))
+* hide the experimental SQLite warning of the command ([#61](https://github.com/Vzlentin/workflows/issues/61)) ([4e1f3e2](https://github.com/Vzlentin/workflows/commit/4e1f3e24eca6b58b460e12b0f07390e2df375a72))
+
+
+### Code Refactoring
+
+* one script-side root, workflows/ with scripts, lib, prompts and agents ([#64](https://github.com/Vzlentin/workflows/issues/64)) ([564421a](https://github.com/Vzlentin/workflows/commit/564421a9f89bf9b525103e3255be2abb5623eadf))
+
 ## [0.4.3](https://github.com/Vzlentin/workflows/compare/v0.4.2...v0.4.3) (2026-10-25)
 
 
