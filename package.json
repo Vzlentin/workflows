@@ -1,6 +1,6 @@
 {
 	"name": "@vzlentin/workflows",
-	"version": "0.5.0",
+	"version": "0.5.1",
 	"description": "Ship one work item onto a new branch through durable Pi sessions",
 	"repository": {
 		"type": "git",
