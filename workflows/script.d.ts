@@ -111,20 +111,24 @@ type RememberingSession = {
 	noted(round: number | undefined, prompt: string | Promise<string>, rule: string): Promise<string>;
 };
 
+/** Where a run memory is, and the campaign item of its notes. A child run that gets it goes on with the same memory. */
+type MemoryRef = {
+	readonly path?: string;
+	/** The store is the plain file `<path>/notes.txt`, as `memo` was missing when the store opened. */
+	readonly plain?: boolean;
+	readonly item?: number;
+};
+
 /**
- * The run memory in the OptMem store `path`, through the user's `$HOME/.optmem/memo`. Without `path`, opens the store
- * `<runDir>/memory`. A note is the line `[item <item> ]<author>[ r<round>]: <note>`, cut to 280 bytes. Pass `path` and
- * `item` to a child run to go on with the same memory.
+ * The run memory of `ref`: an OptMem store, through the user's `$HOME/.optmem/memo`, or a plain store of `#<k> <note>`
+ * lines with no summaries. Without `ref.path`, opens the store `<runDir>/memory`, plain when `memo` is missing. A note
+ * is the line `[item <item> ]<author>[ r<round>]: <note>`, cut to 280 bytes.
  */
-declare function memory(
-	path?: string,
-	item?: number,
-): Promise<{
-	readonly path: string;
-	readonly item: number | undefined;
+declare function memory(ref?: MemoryRef): Promise<{
+	readonly ref: MemoryRef & { readonly path: string; readonly plain: boolean };
 	/** Adds each note, and answers each compression that `memo` asks for with a `summarizer` turn. */
 	note(author: string, round: number | undefined, notes: readonly string[]): Promise<void>;
-	/** A session whose first prompt starts with a `## memory` section, the output of `memo wake`. */
+	/** A session whose first prompt starts with a `## memory` section of the notes. */
 	session(profile: string): RememberingSession;
 	/** The notes, one `#<k> <note>` line each. */
 	readonly text: Promise<string>;

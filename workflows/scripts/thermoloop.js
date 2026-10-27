@@ -1,8 +1,7 @@
 // The thermoloop: the review loop of a change. `workflows thermoloop` reviews the branch of the current directory from
 // its merge base with `--base`, and fixes it in rounds until the reviewer answers SHIP. A caller gives `start`, the
 // commit that its change starts from, and may give `plan` and `reply`, the handoff and the report of the implement
-// before, `memory`, the path of a run memory to go on with, `itemNumber`, the campaign item of its notes, and
-// `patches`, the folder of the round patches.
+// before, `memory`, the `ref` of a run memory to go on with, and `patches`, the folder of the round patches.
 // `ship.js` runs it after `rpi.js`. Every Git step is safe to repeat: a resume runs a step again when its result was
 // not saved.
 export const meta = {
@@ -29,7 +28,7 @@ const EVIDENCE =
 	"it as `reverses #k: <defect>`. A preference, less code, a stricter check, or a claim from a few observations is " +
 	"not a defect."
 
-const notes = await memory(args.memory, args.itemNumber)
+const notes = await memory(args.memory)
 const lines = async () => (await notes.text).split("\n").filter(Boolean)
 
 // The handoff that the last implement round followed, and the implementer's reply of that round.
@@ -70,7 +69,7 @@ for (let round = 1; ; round++) {
 	const next = round + 1
 
 	phase(`round ${next}/${rounds}: implement`)
-	const fixed = await run("implement", { plan, round: next, start, message: `round ${next}`, memory: notes.path, itemNumber: notes.item })
+	const fixed = await run("implement", { plan, round: next, start, message: `round ${next}`, memory: notes.ref })
 	reply = fixed.reply
 
 	if (fixed.status === "blocked") {

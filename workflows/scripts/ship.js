@@ -1,7 +1,7 @@
 // `workflows ship` and each `workflows campaign` item, in its worktree: the child runs `rpi.js`, `thermoloop.js` and
-// `judge.js`, then the squash. A caller may give `memory`, the path of a run memory to go on with, and `itemNumber`,
-// the campaign item of its notes. The engine names the branch from `subject` of the result. Every Git step is safe to
-// repeat: a resume runs a step again when its result was not saved.
+// `judge.js`, then the squash. A caller may give `memory`, the `ref` of a run memory to go on with. The engine names
+// the branch from `subject` of the result. Every Git step is safe to repeat: a resume runs a step again when its result
+// was not saved.
 export const meta = {
 	description: "Ship one work item onto a new branch: research, plan, implement, review rounds, judge, and one squashed commit.",
 	args: {
@@ -29,14 +29,13 @@ const unshipped = ({ status, rounds, reply, handoff, memory }) => {
 	return { status, rounds, reply, handoff, memory, report: status === "blocked" ? [...report, reply] : report }
 }
 
-const notes = await memory(args.memory, args.itemNumber)
-const remembered = { memory: notes.path, itemNumber: notes.item }
-const built = await run("rpi", { item, start, ...remembered })
+const notes = await memory(args.memory)
+const built = await run("rpi", { item, start, memory: notes.ref })
 
 if (built.status === "blocked") return unshipped(built)
 
 const { plan, reply } = built
-const reviewed = await run("thermoloop", { item, rounds, start, patches, plan, reply, ...remembered })
+const reviewed = await run("thermoloop", { item, rounds, start, patches, plan, reply, memory: notes.ref })
 
 if (reviewed.status !== "approved") return unshipped(reviewed)
 

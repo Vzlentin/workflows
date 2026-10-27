@@ -1,7 +1,7 @@
 // One implement turn: the implementer follows a plan, and every change is committed. `rpi.js` and `thermoloop.js` run
 // it in their directory. A caller gives `start`, the commit that the change starts from, and may give `memory`, the
-// path of a run memory to go on with, and `itemNumber`, the campaign item of its notes. Every Git step is safe to
-// repeat: a resume runs a step again when its result was not saved.
+// `ref` of a run memory to go on with. Every Git step is safe to repeat: a resume runs a step again when its result
+// was not saved.
 export const meta = {
 	description: "Implement a plan in the current directory, and commit the change.",
 	args: {
@@ -19,7 +19,7 @@ if (args.start === undefined) await assertClean()
 
 const before = await sh(["git", "rev-parse", "HEAD"])
 const start = args.start ?? before
-const notes = await memory(args.memory, args.itemNumber)
+const notes = await memory(args.memory)
 
 const reply = await notes
 	.session("implementer")
