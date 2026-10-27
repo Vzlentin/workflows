@@ -13,7 +13,7 @@ headless and resumable. It runs in the [harness](https://github.com/Vzlentin/har
 calls and the progress of the run. See [Runs in the harness host](#runs-in-the-harness-host).
 
 `src/` is the engine that runs workflows: run directories, the script task, sessions, retries, resume and
-workflow scripts. Every workflow script is a command: `workflows <wf>` runs `scripts/<wf>.js` of the project or `workflows/scripts/<wf>.js` of the package, and the `meta` at
+workflow scripts. Every workflow script is a command: `workflows <wf>` runs `.workflows/scripts/<wf>.js` of the project or `workflows/scripts/<wf>.js` of the package, and the `meta` at
 the top of the script declares its arguments. See [Workflow scripts](#workflow-scripts). `workflows/scripts/ship.js` and
 `workflows/scripts/campaign.js` are scripts of the package. `ship` selects the repository and creates the worktree, through its
 `meta`, then runs in the worktree the child runs `workflows/scripts/rpi.js`, `workflows/scripts/thermoloop.js` and `workflows/scripts/judge.js`,
@@ -645,9 +645,8 @@ or an array of strings, or a `prompts.<name>` input that is not a string, fails 
 
 Every script also gets these helpers of the files of `workflows/lib/`, which the run puts after the calls above. They
 use only the calls above. A lib file only declares: it runs no code when it loads, so the order of the files does not
-change the result. A run saves the lib with its
-scripts and prompts, so a resume uses the lib that the run started with. A script's own declaration of the same name
-takes their place.
+change the result. A run saves the lib with its scripts and prompts, so a resume uses the lib that the run started
+with. A script's own declaration of the same name takes their place.
 
 | Global | Meaning |
 |---|---|
