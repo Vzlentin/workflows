@@ -1,1 +1,1 @@
-{ "compilerOptions": { "lib": ["es2024"] } }
+{ "compilerOptions": { "lib": ["es2024"] }, "include": ["script.d.ts", "scripts"] }

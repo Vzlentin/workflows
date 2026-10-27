@@ -1,6 +1,4 @@
 // Script lib: the run memory.
-// It runs in the sandbox after the prelude of script.ts, so it uses only the script calls. A script's own
-// declarations shadow these names.
 
 /**
  * A run memory: numbered notes, only appended to, starting with `lines`, the `lines` of another memory. `context`

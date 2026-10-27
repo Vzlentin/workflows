@@ -1,6 +1,4 @@
 // Script lib: run calls at once.
-// It runs in the sandbox after the prelude of script.ts, so it uses only the script calls. A script's own
-// declarations shadow these names.
 
 /** Runs every thunk at once and gives their results in order. */
 const parallel = (thunks) => Promise.all(thunks.map((thunk) => thunk()));

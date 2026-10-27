@@ -1,6 +1,4 @@
 // Script lib: Git steps.
-// It runs in the sandbox after the prelude of script.ts, so it uses only the script calls. A script's own
-// declarations shadow these names.
 
 /**
  * Stages every change and commits it as `message` when something is staged. Safe to repeat: the check's result is
