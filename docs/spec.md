@@ -1290,11 +1290,12 @@ is free: the folder is missing, or its `pid` file names a process that does not 
 as held for 10 s after the mtime of the folder. The wait polls every 200 ms, with no timeout, and does not take the
 lock. Then it finds the global workflows install: the package of the first `workflows` on `PATH` (two folders above
 the real path of the command), else `@vzlentin/workflows` in the folder that `npm root -g` prints. A folder counts
-only when its `package.json` has the name `@vzlentin/workflows`. On Windows, the command on `PATH` is a shim, so only
-the npm folder counts.
+only when its `package.json` has the name `@vzlentin/workflows` and a version that is not older than the version of
+`pi/package.json`, by major, minor and patch. `pi update` moves only the extension, so an older install counts as no
+install, and the offer below updates it. On Windows, the command on `PATH` is a shim, so only the npm folder counts.
 
 When it finds no install, the `workflow` tool has the description
-`workflows is not installed: npm install -g @vzlentin/workflows@<version>`, with the version of `pi/package.json`,
+`workflows <version> is not installed: npm install -g @vzlentin/workflows@<version>`, with the version of `pi/package.json`,
 and gives that text as its result. `/workflows` shows that text as an error.
 
 Without workflows, the extension also offers to install it at each session start, but only in Pi's interactive mode
@@ -1302,7 +1303,7 @@ Without workflows, the extension also offers to install it at each session start
 `$XDG_STATE_HOME/workflows/install.declined` exists, there is no offer. Otherwise the extension takes the install lock
 `$XDG_STATE_HOME/workflows/install.lock`, as the section "Install lock" of the harness spec says, and looks up
 workflows again; when it finds workflows, it releases the lock and shows nothing. Then it runs `npm prefix -g` and
-asks `workflows is not installed`: `Install @vzlentin/workflows@<version> with npm install -g into <prefix>?`. On no,
+asks `workflows <version> is not installed`: `Install @vzlentin/workflows@<version> with npm install -g into <prefix>?`. On no,
 it writes the empty file `install.declined`, so the dialog does not come back; delete the file to get the dialog
 again. On yes, it runs `npm install -g @vzlentin/workflows@<version>`, looks up workflows again, runs
 `<install>/dist/cli.js --version` with the Node that runs Pi, which runs the [setup](#setup), and shows
