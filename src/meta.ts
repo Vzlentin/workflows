@@ -4,7 +4,7 @@
  * only that literal, in the sandbox, and never runs the script.
  */
 import { readFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -51,7 +51,7 @@ async function readItem(argument: string | undefined, io: Io, noun: string): Pro
 
 /**
  * The selected repository and its start commit, and the worktree path of `run` on the new branch `args.branch`, or
- * `<scriptName>/<run-id>`.
+ * `<scriptName>/<run-id>`. The worktree is `.worktrees/<repository name>/<run-id>` next to the repository.
  */
 async function prepareWorktree(
 	scriptName: string,
@@ -69,7 +69,9 @@ async function prepareWorktree(
 		throw new UsageError(`--branch ${branch} exists`);
 	}
 
-	return { repository: repository.path, start: repository.start, branch, worktree: join(run.directory, "worktree") };
+	const worktree = join(dirname(repository.path), ".worktrees", basename(repository.path), run.id);
+
+	return { repository: repository.path, start: repository.start, branch, worktree };
 }
 
 const ARG_TYPE = Type.Union([
@@ -543,6 +545,8 @@ export type ScriptInput = Omit<Args, "repo" | "base" | "branch"> & {
 	readonly parent?: string;
 	/** Set by `--background`: the end of the run posts its outcome as a message to the conversation `parent`. */
 	readonly notify?: true;
+	/** Set when the CLI runs in Herdr (`HERDR_ENV`): Herdr creates the worktree; a child run has its caller's. */
+	readonly herdr?: true;
 	/** Set by `resume --answer`: the answer `text` to the `input` call with the document key `call`. */
 	readonly answer?: { readonly call: string; readonly text: string };
 	readonly worktree?: {

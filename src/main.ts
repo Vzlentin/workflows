@@ -297,7 +297,9 @@ async function start(args: readonly string[], terminal: Terminal, json: boolean,
 		const prepared = await script.prepare(parsed, { id, directory, cwd: terminal.cwd });
 		// The `workflow` tool of a conversation of the host sets `PI_SESSION_ID`, so the run's sessions go under it.
 		const session = process.env.PI_SESSION_ID;
-		const own = session ? { ...prepared, parent: session } : prepared;
+		const parented = session ? { ...prepared, parent: session } : prepared;
+		// In Herdr, the run asks Herdr to create its worktrees, so they show in the sidebar.
+		const own = process.env.HERDR_ENV ? { ...parented, herdr: true as const } : parented;
 		// A run started in the background posts its outcome to that conversation when it ends.
 		input = background ? { ...own, notify: true } : own;
 		await writeFile(join(directory, "project"), `${project}\n`);

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { conversationOf, repository, runsOf, sandbox, workflows } from "./support.ts";
+import { conversationOf, repository, runsOf, sandbox, workflows, worktreeAt } from "./support.ts";
 
 let root: string;
 
@@ -155,7 +155,7 @@ esac
 		const run = await workflows(["w"], { cwd: repo });
 		expect(run.code).toBe(0);
 		id = run.id ?? "";
-		worktree = join(runsOf(root), id, "worktree");
+		worktree = worktreeAt(repo, id);
 		process.env.HERDR_ENV = "1";
 	});
 

@@ -35,6 +35,9 @@ declare const runId: string;
 /** The run directory. A script that `run()` starts gets its own value. */
 declare const runDir: string;
 
+/** The directory of `sh` and `ok`: the run's worktree, the caller's directory, or the directory of the command. */
+declare const cwd: string;
+
 /** `prompts.<name>(inputs)`: the instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section. */
 declare const prompts: Record<string, (inputs?: Record<string, string>) => string>;
 

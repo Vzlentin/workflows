@@ -1,7 +1,7 @@
 /** Git and GitHub CLI commands, repository selection, and a run's worktree. */
 import { execFile } from "node:child_process";
-import { realpath, rm, stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, realpath, rm, stat } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 
 export type Result = { readonly code: number; readonly stdout: string; readonly stderr: string };
 
@@ -135,11 +135,30 @@ export async function renameBranch(
 /**
  * A worktree at `path` on `branch`, created from `start` when the branch is new. Safe to repeat after an interruption
  * at any point: an existing worktree is kept, and a partial one is replaced. The repository's checkout stays untouched.
+ * With `herdr`, `herdr worktree create` makes it first, so it shows in Herdr; when Herdr fails, Git makes it.
  */
-export async function ensureWorktree(repository: string, path: string, branch: string, start: string): Promise<void> {
+export async function ensureWorktree(
+	repository: string,
+	path: string,
+	branch: string,
+	start: string,
+	herdr: boolean,
+): Promise<void> {
 	if ((await repositoryAt(path)) !== undefined) return;
 	await rm(path, { recursive: true, force: true });
 	await git(repository, "worktree", "prune");
+
+	if (herdr) {
+		await mkdir(dirname(path), { recursive: true });
+		const create = ["worktree", "create", "--cwd", repository, "--path", path, "--branch", branch, "--base", start];
+		// `run` rejects when `herdr` is missing, and any failure falls back to Git.
+		await run("herdr", [...create, "--no-focus"], repository).catch(() => undefined);
+
+		if ((await repositoryAt(path)) !== undefined) return;
+		await rm(path, { recursive: true, force: true });
+		await git(repository, "worktree", "prune");
+	}
+
 	const exists = await gitSucceeds(repository, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`);
 	await git(repository, "worktree", "add", ...(exists ? [path, branch] : ["-b", branch, path, start]));
 }

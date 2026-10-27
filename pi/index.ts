@@ -371,7 +371,7 @@ const GUIDELINES = [
 		"`waiting` result with the question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` " +
 		"then returns the answer. `parallel([() => ...])` and " +
 		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +
-		"and `log(text)` write progress lines. `args`, `runId` and `runDir` are values.",
+		"and `log(text)` write progress lines. `args`, `runId`, `runDir` and `cwd`, the directory of `sh`, are values.",
 	"Script lib: `subjectOf(text)` gives the first non-empty line without leading `#`. `memory(path, item)` gives a promise of a run memory in an " +
 		"OptMem store, `<runDir>/memory` without `path`: `.path` and `.item` to pass to a child run, `.note(author, round, notes)`, " +
 		"`.text` (a promise of the notes), and `.session(profile)`, whose first `.ask` starts with the notes and whose " +

@@ -1,7 +1,7 @@
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { git, progressOf, repository, sandbox, workflows } from "./support.ts";
+import { git, progressOf, repository, sandbox, workflows, worktreeAt } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -27,7 +27,7 @@ describe("workflows rpi", () => {
 
 		expect(run.code).toBe(0);
 		const { result, report } = JSON.parse(run.stdout[1] ?? "");
-		const worktree = join(root, "state", "workflows", "runs", run.id ?? "", "worktree");
+		const worktree = worktreeAt(repo, run.id);
 		const head = git(worktree, "rev-parse", "--short", "HEAD");
 		expect(report).toEqual([`implemented ${ITEM}, ${head}`]);
 		expect(git(worktree, "branch", "--show-current")).toBe(`rpi/${run.id}`);

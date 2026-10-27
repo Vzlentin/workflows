@@ -104,7 +104,7 @@ for (let n = 1; queue.length > 0; n++) {
 	const reply = (await input(`${summary}\n\nHow should the campaign continue? Answer stop, or nothing, to end it.`)).trim()
 
 	if (reply === "" || reply.toLowerCase() === "stop") {
-		const report = [`stopped ${name} at item ${n}: ${runDir}/worktree`, rundown]
+		const report = [`stopped ${name} at item ${n}: ${cwd}`, rundown]
 
 		return { status: "stopped", items: [...done, { item, result }], rundown, report }
 	}
