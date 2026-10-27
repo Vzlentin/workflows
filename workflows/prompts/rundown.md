@@ -4,7 +4,7 @@ argument-hint: "<goal, shipped items, failed item, its result and remaining item
 ---
 Give a rundown of the failed work item.
 
-The `goal` is what the campaign set out to do. The `shipped` items are already commits in the worktree, as JSON with each item and its commit. The `item` is the work item that failed, and `status` tells how it failed. The `reply` is the last report of the implementer, the `handoff` is the plan that the last round used, the `findings` are the judge's findings, and the `memory` is the run memory of the item. The `remaining` items are the items that were still to run, in order, as JSON. The `patch` is the path of the full diff of the failed item from the reset commit: `git apply <path>` applies it to the reset worktree.
+The `goal` is what the campaign set out to do. The `shipped` items are already commits in the worktree, as JSON with each item and its commit. The `item` is the work item that failed, and `status` tells how it failed. The `reply` is the last report of the implementer, the `handoff` is the plan that the last round used, the `findings` are the judge's findings, and the `memory` is the run memory of the campaign. The `remaining` items are the items that were still to run, in order, as JSON. The `patch` is the path of the full diff of the failed item from the reset commit: `git apply <path>` applies it to the reset worktree.
 
 The worktree is reset to the last shipped commit, or to the start commit when no item shipped: the worktree has no change from the failed item, but the patch keeps its work.
 

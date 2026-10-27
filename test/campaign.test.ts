@@ -107,8 +107,15 @@ describe("workflows campaign", () => {
 		expect(result.items[0].result).toMatchObject({
 			status: "shipped",
 			findings: PASSING_JUDGE.findings,
-			memory: ["#1 planner 0: Handoff 1: one word changes.", "#2 implementer 1: Implement 1: README.md had wrold."],
+			memory: [
+				"#0 item 1 planner: Handoff 1: one word changes.",
+				"#1 item 1 implementer r1: Implement 1: README.md had wrold.",
+			],
 		});
+		// The items share the memory of the campaign.
+		expect(run.model.find("plan", 1)?.prompt).toMatch(
+			/^## memory\n#0 item 1 planner: Handoff 1: [^\n]*\n#1 item 1 implementer r1: [^\n]*\n\nPlan this change\./,
+		);
 		expect(progressOf(run.stderr)).toEqual([
 			"✓ split",
 			"  2 items",
@@ -232,6 +239,9 @@ describe("workflows campaign", () => {
 		expect(rundown).toContain("## status\nshipped with judge score 0");
 		expect(rundown).toContain("## findings\n1 FAIL");
 		expect(rundown).toContain(`## remaining\n${JSON.stringify([SECOND])}`);
+		expect(rundown).toMatch(
+			/\n## memory\n#0 item 1 planner: [^\n]*\n#1 item 1 implementer r1: [^\n]*\n#2 campaign: item 1 failed and was reset: its notes describe code that is gone\n/,
+		);
 		expect(rundown).toContain(`## patch\n${patch}`);
 
 		const stopped = await workflows(["resume", run.id ?? "", "--answer", " Stop "], { cwd: root });

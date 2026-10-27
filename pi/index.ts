@@ -372,10 +372,10 @@ const GUIDELINES = [
 		"then returns the answer. `parallel([() => ...])` and " +
 		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +
 		"and `log(text)` write progress lines. `args`, `runId` and `runDir` are values.",
-	"Script lib: `subjectOf(text)` gives the first non-empty line without leading `#`. `memory(lines)` is a run memory of " +
-		"numbered notes: `.lines` to pass to a child run, `.note(author, round, notes)`, `.context(prompt)`, and " +
-		"`.session(profile)`, whose `.ask` starts each prompt with the notes and whose `.noted(round, prompt, rule)` asks " +
-		"for `{ text, notes }` and keeps the notes. `commitAll(message)` stages and commits every change, " +
+	"Script lib: `subjectOf(text)` gives the first non-empty line without leading `#`. `memory(path, item)` gives a promise of a run memory in an " +
+		"OptMem store, `<runDir>/memory` without `path`: `.path` and `.item` to pass to a child run, `.note(author, round, notes)`, " +
+		"`.text` (a promise of the notes), and `.session(profile)`, whose first `.ask` starts with the notes and whose " +
+		"`.noted(round, prompt, rule)` asks for `{ text, notes }` and keeps the notes. `commitAll(message)` stages and commits every change, " +
 		"`diffStat(from, to)` gives `+12 -3 in 2 files`, `assertClean()` throws on changes that are not committed, and " +
 		"`branchStart(base)` gives the merge base of `base` for a clean branch with changes.",
 	"A script has no file system, network, modules or timers, so effects go through `sh`. `Date`, `Date.now()` and " +

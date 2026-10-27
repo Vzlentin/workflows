@@ -33,8 +33,8 @@ describe("workflows rpi", () => {
 		expect(git(worktree, "branch", "--show-current")).toBe(`rpi/${run.id}`);
 		expect(result).toMatchObject({ status: "implemented", head, reply: "I fixed the typo in README.md." });
 		expect(result.memory).toEqual([
-			"#1 planner 0: Handoff 1: one word changes.",
-			"#2 implementer 1: Implement 1: README.md had wrold.",
+			"#0 planner: Handoff 1: one word changes.",
+			"#1 implementer r1: Implement 1: README.md had wrold.",
 		]);
 		expect(progressOf(run.stderr)).toEqual(["✓ research", "✓ plan", "✓ implement", "  +2 -1 in 1 file"]);
 		expect(run.model.calls.map((call) => call.kind)).toEqual(["research", "plan", "challenge", "handoff", "implement"]);
