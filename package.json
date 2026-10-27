@@ -41,13 +41,13 @@
 		"@biomejs/biome": "2.5.15",
 		"@oxlint/plugins": "1.88.0",
 		"@types/node": "26.6.4",
-		"@vzlentin/harness": "0.4.1",
+		"@vzlentin/harness": "0.5.0",
 		"oxlint": "1.88.0",
 		"typescript": "7.0.2",
 		"vitest": "5.0.3"
 	},
 	"peerDependencies": {
-		"@vzlentin/harness": "^0.4.1"
+		"@vzlentin/harness": "^0.5.0"
 	},
 	"peerDependenciesMeta": {
 		"@vzlentin/harness": {
