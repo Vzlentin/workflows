@@ -16,7 +16,7 @@ const { item, commit = false } = args
 phase("judge")
 
 const subject = subjectOf(item)
-const base = args.start ?? (await branchStart(args.base))
+const start = args.start ?? (await branchStart(args.base))
 const head = await sh(["git", "rev-parse", "HEAD"])
 
 const VERDICT = {
@@ -38,31 +38,37 @@ const judge = session("judge")
 let verdict
 
 try {
-	verdict = await judge.ask(prompts.judge({ item, base, head }), { schema: VERDICT })
+	verdict = await judge.ask(prompts.judge({ item, base: start, head }), { schema: VERDICT })
 } catch (error) {
 	log(`judge failed on ${subject}: ${error.message}`)
 
 	return { status: "unjudged", judgeError: error.message, report: [`judge failed on ${subject}: ${error.message}`] }
 }
 
-const judged = { status: "judged", score: score(verdict.answers), answers: verdict.answers, findings: verdict.findings }
+const { answers, findings } = verdict
+const score = scoreOf(answers)
 
-log(`judge ${judged.score.toFixed(2)}`)
+log(`judge ${score.toFixed(2)}`)
 
-judged.report = [`judge ${judged.score.toFixed(2)}: ${subject}`, ...verdict.findings.map((finding) => `  ${finding}`)]
+const report = [`judge ${score.toFixed(2)}: ${subject}`, ...findings.map((finding) => `  ${finding}`)]
+const judged = { status: "judged", score, answers, findings, report }
+const message = commit ? await commitMessage() : undefined
 
-if (commit) {
+return message === undefined ? judged : { ...judged, commit: message }
+
+// The commit message that the judge writes for the change it judged, or undefined when it gives none.
+async function commitMessage() {
 	try {
 		const answer = await judge.ask(prompts.commit(), { schema: COMMIT })
 
-		if (answer.subject.trim() !== "") judged.commit = { subject: answer.subject.trim(), body: answer.body.trim() }
-	} catch {}
+		return answer.subject.trim() === "" ? undefined : { subject: answer.subject.trim(), body: answer.body.trim() }
+	} catch {
+		return undefined
+	}
 }
 
-return judged
-
 // Zero when question 1 or 2 fails, else the passing fraction of questions 3 to 8.
-function score(answers) {
+function scoreOf(answers) {
 	if (answers[0] !== "PASS" || answers[1] !== "PASS") return 0
 
 	return answers.slice(2).filter((answer) => answer === "PASS").length / 6

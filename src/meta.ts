@@ -726,30 +726,18 @@ export async function childInput(
 		spec.default === undefined ? [] : [[arg, spec.default] as const],
 	);
 
-	const inputOf = (args: JsonObject) => ({
-		name,
-		args: { ...Object.fromEntries(defaults), ...args },
-		meta,
-		bundle: { ...bundle, prompts: replaced, main: source },
-	});
-
-	const here = (args: JsonObject) => ({
-		...inputOf(args),
-		runId: run.id,
-		root: run.root,
-		runDir: run.directory,
-		cwd: run.cwd,
-	});
-
-	if (!meta.worktree) return here(given);
+	// `repo`, `base` and `branch` place a `meta.worktree` run; any other script gets them as args.
 	const { repo, base = "main", branch, ...own } = given;
 
-	if (!Value.Check(START, own)) throw new Error(`run ${name}: start is not a string`);
+	if (meta.worktree && !Value.Check(START, own)) throw new Error(`run ${name}: start is not a string`);
+	const args = { ...Object.fromEntries(defaults), ...(meta.worktree ? own : given) };
+	const input = { name, args, meta, bundle: { ...bundle, prompts: replaced, main: source } };
 
-	if (repo === undefined) return here(own);
+	if (!meta.worktree || repo === undefined)
+		return { ...input, runId: run.id, root: run.root, runDir: run.directory, cwd: run.cwd };
 
 	return prepare(
-		{ ...inputOf(own), repo: String(repo), base: String(base), branch: branch === undefined ? branch : String(branch) },
+		{ ...input, repo: String(repo), base: String(base), branch: branch === undefined ? branch : String(branch) },
 		run,
 	);
 }

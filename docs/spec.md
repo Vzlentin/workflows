@@ -31,6 +31,7 @@ judge session:      fixed rubric, then commit message, after SHIP
 
 The research, plan and first implement sessions are `workflows/rpi.js`, the review sessions and the implement
 sessions after them `workflows/thermoloop.js` (at most `--rounds` reviews), and the judge session `workflows/judge.js`.
+Each implement session is a child run of `workflows/implement.js`, which `rpi.js` and `thermoloop.js` both run.
 
 Each box is a new session.
 
@@ -146,15 +147,41 @@ first implement of `ship`, with no review, no judge and no squash. The work item
 `--prompts` work as for `ship`. The work goes in a worktree in the run directory on the branch `rpi/<run-id>`, or
 `--branch`, which keeps its name. The steps are `research`, `plan` and `implement`.
 
-The research and plan sessions are those of `ship`. The implement session gets the planner's handoff. Then the run
-stages all changes and commits them with the subject of the work item as the message, when something is staged.
-Commits that the implementer made are kept. When the branch has no change from the start commit, the run is
-blocked: it prints `blocked <subject>` and the implementer's reply, and exits 1. Otherwise the implement step logs
-the size of the change, and the command prints `implemented <subject>, <commit>` and exits 0.
+The research and plan sessions are those of `ship`. The step `implement` runs [implement](#implement) as a child
+run, with the planner's handoff as the plan, round 1, the start commit, the subject of the work item as the message,
+and the memory of the planner. When the branch has no change from the start commit, the run is blocked: it prints
+`blocked <subject>` and the implementer's reply, and exits 1. Otherwise the implement step logs the size of the
+change, and the command prints `implemented <subject>, <commit>` and exits 0.
 
 The result has `status` (`implemented` or `blocked`), `memory`, the notes of the planner and the implementer, and
-`reply`. When implemented, it has `head` and `plan`, the planner's handoff; when blocked, `rounds`, which is 1, and
-`handoff`, the planner's handoff, as a blocked thermoloop has. A caller gives `memory` to the thermoloop.
+`reply`, both from the implement result. When implemented, it has `head` and `plan`, the planner's handoff; when
+blocked, `rounds`, which is 1, and `handoff`, the planner's handoff, as a blocked thermoloop has. A caller gives
+`memory` to the thermoloop.
+
+## Implement
+
+```sh
+workflows implement plan.md
+workflows implement --message "fix: the typo" --round 2 plan.md
+```
+
+`workflows implement` follows a plan in one implement session, and commits the change in the current directory. It
+has no worktree of its own and no step of its own: as a child run, it runs in the directory of its caller, and its
+log line goes under the step of its caller. The plan comes as the work item of `ship` does. `--message` is the commit
+message, by default the subject of the plan, and `--round`, default 1, is the round of the implementer's notes. A
+caller also gives `start`, the commit that the change starts from, and `memory`, the lines of a run memory to go on
+with. Without `start`, a checkout with changes that are not committed fails with `the checkout has changes that are
+not committed; commit or stash them first` before any session, and `start` is `HEAD`.
+
+The `implementer` session gets the `implement` prompt with the plan, after the notes of the memory, and gives its
+report and notes. The run stages all changes and commits them as the message, when something is staged. Commits that
+the implementer made are kept. When the branch has no change from `start`, the run is blocked: it prints
+`blocked <subject>` and the implementer's reply, and exits 1. Otherwise it logs the size of the change from the
+`HEAD` before the session, `+<insertions> -<deletions> in <n> file(s)` or `no new changes`, prints
+`implemented <subject>, <commit>` and exits 0. `<subject>` is the subject of the plan.
+
+The result has `status` (`implemented` or `blocked`), `reply`, the implementer's report, `memory`, the memory lines
+with the implementer's notes, and `head`, the short commit, when implemented.
 
 ## Thermoloop
 
@@ -171,16 +198,18 @@ current branch. It does not push. The work item, which says what the change shou
 that are not committed; commit or stash them first`, and a branch with no change from the merge base fails with `no
 change from <base>`, before any session.
 
-Round 1 reviews the change as it is, and each round after a FIX implements the reviewer's handoff first, then
-reviews. So each round has the step `round <n>/<rounds>: review`, after `round <n>/<rounds>: implement` from round 2.
+Each round reviews the change, and on FIX the reviewer's handoff is implemented as the next round. So each round
+has the step `round <n>/<rounds>: review`, after `round <n>/<rounds>: implement` from round 2.
 `ship` gives the script `start`, the commit that the change starts from, in place of the merge base, and `plan`,
 `reply` and `memory` from `rpi`, which the first review gets.
 
-After each implement session, the run stages all changes:
+The step `round <n>/<rounds>: implement` runs [implement](#implement) as a child run, with the handoff as the plan,
+round `<n>`, the start commit, the message `round <n>` and the memory lines. The memory goes on with the lines of its
+result:
 
-- If the staged tree matches the start commit, the run is blocked. It prints `blocked <subject> after <n> rounds` and
+- If the implement run is blocked, the thermoloop is blocked. It prints `blocked <subject> after <n> rounds` and
   the implementer's reply, and exits 1.
-- Otherwise new staged changes become the commit `round <n>`. Commits that the implementer made are kept. A round
+- Otherwise new staged changes are the commit `round <n>`. Commits that the implementer made are kept. A round
   without new changes still goes to review when earlier changes remain.
 
 The implement step logs the size of the round's change, `+<insertions> -<deletions> in <n> file(s)` or `no new
@@ -296,10 +325,10 @@ terminal and in Pi they move under the item step when it comes.
 
 `<subject>` is the first non-empty line of the goal without leading `#`. `<n>` in the `done` line counts the shipped
 items. The number of the item step counts every item that ran. The result is
-`{ "status": "done", "subject", "head", "score", "answers", "findings", "branch", "items": [{ "item", "result" }] }`,
-with `judgeError` in place of the judge fields when the campaign judge failed, or
-`{ "status": "stopped", "items", "rundown" }`, with the `ship` result of each shipped item, plus the failed item in a
-stopped result, and its child run ID as `result.runId`. `head` is the commit of the last item, and `branch` is the
+`{ "status": "done", "subject", "head", "judge": { "score", "findings" }, "branch", "items": [{ "item", "result" }] }`,
+with `judgeError` when the campaign judge failed, or `{ "status": "stopped", "items", "rundown" }`. The `result` of
+each shipped item, and of the failed item in a stopped result, is its `ship` result, with its child run ID as
+`runId`. `head` is the commit of the last item, and `branch` is the
 branch that the worktree ends on.
 
 ## Optimize
@@ -626,7 +655,6 @@ takes their place.
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 | `branchStart(base)` | The merge base of `base` and `HEAD`. Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change, and `no change from <base>` when the branch has no change from the merge base |
-| `runChild(name, args)` | `run(name, args)`, without `report` and `runId` in its result |
 
 `workflows/script.d.ts` declares these globals for editors. A project gets the same completion when it copies
 `script.d.ts` and `jsconfig.json` into `.workflows/workflows/`, and copies them again after an upgrade of the package.

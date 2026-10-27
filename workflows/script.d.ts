@@ -131,6 +131,3 @@ declare function diffStat(from: string, to?: string): Promise<string>;
  * changes that are not committed, or when the branch has no change from `base`.
  */
 declare function branchStart(base: string): Promise<string>;
-
-/** The result of the child run `name` with `args`, without its `report` and `runId`. */
-declare function runChild(name: string, args?: { [key: string]: Json | undefined }): Promise<any>;

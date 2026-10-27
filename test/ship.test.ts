@@ -419,7 +419,9 @@ export default function ({ events }) {
 		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
 
 		const failed = [
-			expect.stringMatching(/^failed Fix the README typo: child run \S+ failed: git commit failed: lint failed$/),
+			expect.stringMatching(
+				/^failed Fix the README typo: child run \S+ failed: child run \S+ failed: git commit failed: lint failed$/,
+			),
 			`continue with: workflows resume ${run.id}`,
 		];
 
@@ -715,6 +717,7 @@ describe("workflows show", () => {
 		expect([shown.code, shown.stderr]).toEqual([0, []]);
 		const call = (line: string, indent = "  ") => expect.stringMatching(new RegExp(`^${indent}✓ ${line}  \\d+s$`));
 		const child = (line: string) => call(line, "      ");
+		const grandchild = (line: string) => call(line, "          ");
 
 		const asks = (p: string, n: number, at = call) => [
 			at(`session ${p} conversation \\d+`),
@@ -729,13 +732,15 @@ describe("workflows show", () => {
 			"    plan",
 			...asks("planner", 3, child),
 			"    implement",
-			...asks("implementer", 1, child),
-			child("sh git add -A"),
-			child("ok git diff --cached --quiet"),
-			child("sh git commit --allow-empty -m Fix the README typo"),
-			child(`ok git diff --quiet ${start} HEAD`),
-			child(`sh git diff --shortstat ${start} HEAD`),
-			child("sh git rev-parse --short HEAD"),
+			child("run implement \\S+"),
+			grandchild("sh git rev-parse HEAD"),
+			...asks("implementer", 1, grandchild),
+			grandchild("sh git add -A"),
+			grandchild("ok git diff --cached --quiet"),
+			grandchild("sh git commit --allow-empty -m Fix the README typo"),
+			grandchild(`ok git diff --quiet ${start} HEAD`),
+			grandchild(`sh git diff --shortstat ${start} HEAD`),
+			grandchild("sh git rev-parse --short HEAD"),
 			call("run thermoloop \\S+"),
 			"    round 1/3: review",
 			// The command is cut at 80 characters.
@@ -786,7 +791,7 @@ describe("workflows show", () => {
 			result: expect.any(Number),
 		});
 		expect(asked).toMatchObject({ result: "Problem: README.md says wrold." });
-		expect(added).toMatchObject({ phase: "implement" });
+		expect(added).toMatchObject({ phase: null });
 		expect(added?.args).toEqual({ cmd: ["git", "add", "-A"], check: true });
 	});
 });

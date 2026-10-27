@@ -91,10 +91,3 @@ async function branchStart(base) {
 
 	return start;
 }
-
-/** The result of the child run `name` with `values`, without its report lines and its run ID. */
-async function runChild(name, values) {
-	const { report: _report, runId: _runId, ...result } = await run(name, values);
-
-	return result;
-}

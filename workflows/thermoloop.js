@@ -28,32 +28,15 @@ const EVIDENCE =
 	"it as `reverses #k: <defect>`. A preference, less code, a stricter check, or a claim from a few observations is " +
 	"not a defect."
 
-const notes = memory(args.memory)
+let notes = memory(args.memory)
 
 // The handoff that the last implement round followed, and the implementer's reply of that round.
 let plan = args.plan ?? ""
 let reply = args.reply ?? ""
 let before = start
 
-for (let round = 1; round <= rounds; round++) {
-	if (round > 1) {
-		phase(`round ${round}/${rounds}: implement`)
-
-		reply = await notes
-			.session("implementer")
-			.noted(round, prompts.implement({ plan }), "your report, and notes are what you tried and what you observed.")
-
-		await commitAll(`round ${round}`)
-
-		if (await ok(["git", "diff", "--quiet", start, "HEAD"])) {
-			const report = [`blocked ${subject} after ${round} rounds`, reply]
-
-			return { status: "blocked", rounds: round, reply, handoff: plan, memory: notes.lines, report }
-		}
-
-		log(await diffStat(before))
-	}
-
+// Each round reviews the change, and on FIX the reviewer's handoff is implemented as the next round.
+for (let round = 1; ; round++) {
 	phase(`round ${round}/${rounds}: review`)
 	const change = [await patch(`round-${round}.patch`, start)]
 
@@ -82,6 +65,18 @@ for (let round = 1; round <= rounds; round++) {
 		"the document, and notes are the decisions of your challenge, with the findings that you cut and why.",
 	)
 	before = await sh(["git", "rev-parse", "HEAD"])
+	const next = round + 1
+
+	phase(`round ${next}/${rounds}: implement`)
+	const fixed = await run("implement", { plan, round: next, start, message: `round ${next}`, memory: notes.lines })
+	reply = fixed.reply
+	notes = memory(fixed.memory)
+
+	if (fixed.status === "blocked") {
+		const report = [`blocked ${subject} after ${next} rounds`, reply]
+
+		return { status: "blocked", rounds: next, reply, handoff: plan, memory: notes.lines, report }
+	}
 }
 
 async function patch(name, from) {

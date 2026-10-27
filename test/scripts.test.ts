@@ -1159,6 +1159,7 @@ return [one.reply, two.reply].join(", ")`,
 		expect(listed.code).toBe(0);
 		expect(listed.stdout).toEqual([
 			"campaign: Split a goal into work items and ship each one as a commit on one branch.",
+			"implement: Implement a plan in the current directory, and commit the change.",
 			"judge: Judge the change of the current branch against a work item with the fixed rubric.",
 			"optimize: Search for better ship prompts over a folder of work items.",
 			"rpi: Research, plan and implement one work item, and commit it on a new branch.",

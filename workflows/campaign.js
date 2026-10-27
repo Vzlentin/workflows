@@ -61,7 +61,7 @@ for (let n = 1; queue.length > 0; n++) {
 	const patches = `${runDir}/item-${n}`
 	await sh(["mkdir", "-p", patches])
 	const start = await sh(["git", "rev-parse", "HEAD"])
-	const { report: _report, ...result } = await run("ship", { item, rounds, start, patches })
+	const result = await run("ship", { item, rounds, start, patches })
 
 	if (result.status === "shipped" && result.score !== 0) {
 		done.push({ item, result })
@@ -118,11 +118,11 @@ const judgedOf = (score) => (score === undefined ? "failed" : score.toFixed(2))
 // The judge of the whole campaign sees the change of every item at once, against the goal.
 phase(`all ${count(done.length)}`)
 
-const { status: _status, ...verdict } = await runChild("judge", { item: goal, start: first })
-const report = [`done ${name} in ${count(done.length)}, judge ${judgedOf(verdict.score)}, ${head}`]
+const { score, findings, judgeError } = await run("judge", { item: goal, start: first })
+const report = [`done ${name} in ${count(done.length)}, judge ${judgedOf(score)}, ${head}`]
 
 for (const { result } of done) report.push(`  ${result.head} ${result.subject}, judge ${judgedOf(result.score)}`)
 
-for (const finding of verdict.findings ?? []) report.push(`  finding ${finding}`)
+for (const finding of findings ?? []) report.push(`  finding ${finding}`)
 
-return { status: "done", subject, head, ...verdict, items: done, report }
+return { status: "done", subject, head, judge: { score, findings }, judgeError, items: done, report }

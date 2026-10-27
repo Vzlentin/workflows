@@ -1,0 +1,40 @@
+// One implement turn: the implementer follows a plan, and every change is committed. `rpi.js` and `thermoloop.js` run
+// it in their directory. A caller gives `start`, the commit that the change starts from, and may give `memory`, the
+// lines of a run memory to go on with. Every Git step is safe to repeat: a resume runs a step again when its result
+// was not saved.
+export const meta = {
+	description: "Implement a plan in the current directory, and commit the change.",
+	args: {
+		plan: { type: "text", positional: true, label: "plan", required: true },
+		message: { type: "string" },
+		round: { type: "number", default: 1 },
+	},
+	exit: { blocked: 1 },
+}
+
+const { plan, round } = args
+const subject = subjectOf(plan)
+
+if (args.start === undefined && (await sh(["git", "status", "--porcelain"])) !== "") {
+	throw new Error("the checkout has changes that are not committed; commit or stash them first")
+}
+
+const start = args.start ?? (await sh(["git", "rev-parse", "HEAD"]))
+const notes = memory(args.memory)
+const before = await sh(["git", "rev-parse", "HEAD"])
+
+const reply = await notes
+	.session("implementer")
+	.noted(round, prompts.implement({ plan }), "your report, and notes are what you tried and what you observed.")
+
+await commitAll(args.message ?? subject)
+
+if (await ok(["git", "diff", "--quiet", start, "HEAD"])) {
+	return { status: "blocked", reply, memory: notes.lines, report: [`blocked ${subject}`, reply] }
+}
+
+log(await diffStat(before))
+
+const head = await sh(["git", "rev-parse", "--short", "HEAD"])
+
+return { status: "implemented", head, reply, memory: notes.lines, report: [`implemented ${subject}, ${head}`] }

@@ -87,8 +87,11 @@ describe("workflows campaign", () => {
 			"branch docs/readme",
 		]);
 		expect(result).toMatchObject({ subject: "docs: readme", branch: "docs/readme" });
+		expect(result.judge).toEqual({ score: 5 / 6, findings: PASSING_JUDGE.findings });
+		expect(result).not.toHaveProperty("judgeError");
 		expect(result.items[0].result).toMatchObject({
-			...PASSING_JUDGE,
+			status: "shipped",
+			findings: PASSING_JUDGE.findings,
 			memory: ["#1 planner 0: Handoff 1: one word changes.", "#2 implementer 1: Implement 1: README.md had wrold."],
 		});
 		expect(progressOf(run.stderr)).toEqual([

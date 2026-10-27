@@ -40,18 +40,10 @@ const plan = await planner.noted(
 
 phase("implement")
 
-const reply = await notes
-	.session("implementer")
-	.noted(1, prompts.implement({ plan }), "your report, and notes are what you tried and what you observed.")
+const { status, head, reply, memory: lines } = await run("implement", { plan, round: 1, start, message: subject, memory: notes.lines })
 
-await commitAll(subject)
-
-if (await ok(["git", "diff", "--quiet", start, "HEAD"])) {
-	return { status: "blocked", rounds: 1, reply, handoff: plan, memory: notes.lines, report: [`blocked ${subject}`, reply] }
+if (status === "blocked") {
+	return { status: "blocked", rounds: 1, reply, handoff: plan, memory: lines, report: [`blocked ${subject}`, reply] }
 }
 
-log(await diffStat(start))
-
-const head = await sh(["git", "rev-parse", "--short", "HEAD"])
-
-return { status: "implemented", head, plan, reply, memory: notes.lines, report: [`implemented ${subject}, ${head}`] }
+return { status: "implemented", head, plan, reply, memory: lines, report: [`implemented ${subject}, ${head}`] }

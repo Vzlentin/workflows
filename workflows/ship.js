@@ -22,22 +22,21 @@ const subject = subjectOf(item)
 const worktree = `${runDir}/worktree`
 
 // The result of a child run that did not get to the judge, with the report lines of ship.
-const unshipped = (result) => {
-	const report = [`${result.status} ${subject} after ${result.rounds} rounds: ${worktree}`]
+const unshipped = ({ status, rounds, reply, handoff, memory }) => {
+	const report = [`${status} ${subject} after ${rounds} rounds: ${worktree}`]
 
-	return { ...result, report: result.status === "blocked" ? [...report, result.reply] : report }
+	return { status, rounds, reply, handoff, memory, report: status === "blocked" ? [...report, reply] : report }
 }
 
-const built = await runChild("rpi", { item, start })
+const built = await run("rpi", { item, start })
 
 if (built.status === "blocked") return unshipped(built)
 
-const { plan, reply } = built
-const reviewed = await runChild("thermoloop", { item, rounds, start, patches, plan, reply, memory: built.memory })
+const reviewed = await run("thermoloop", { item, rounds, start, patches, plan: built.plan, reply: built.reply, memory: built.memory })
 
 if (reviewed.status !== "approved") return unshipped(reviewed)
 
-const { status: _status, commit, ...verdict } = await runChild("judge", { item, start, commit: true })
+const { score, answers, findings, judgeError, commit } = await run("judge", { item, start, commit: true })
 const commitSubject = commit?.subject ?? subject
 const commitMessage = commit === undefined ? subject : `${commit.subject}\n\n${commit.body}`
 
@@ -47,7 +46,7 @@ const squash = 'git reset -q --soft "$1" && git commit -q -m "$2"'
 await sh(["sh", "-c", squash, "squash", start, commitMessage])
 
 const short = await sh(["git", "rev-parse", "--short", "HEAD"])
-const judged = verdict.score === undefined ? "failed" : verdict.score.toFixed(2)
+const judged = score === undefined ? "failed" : score.toFixed(2)
 
 log(`commit ${short} ${commitSubject}`)
 
@@ -56,7 +55,10 @@ return {
 	rounds: reviewed.rounds,
 	head: short,
 	subject: commitSubject,
-	...verdict,
+	score,
+	answers,
+	findings,
+	judgeError,
 	memory: reviewed.memory,
 	report: [`shipped ${subject} in ${reviewed.rounds} rounds, judge ${judged}, ${short}`],
 }

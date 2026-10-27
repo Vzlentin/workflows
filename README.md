@@ -8,6 +8,7 @@
 - `workflows thermoloop` reviews the change of your current branch and fixes it in rounds; `workflows judge` judges
   it.
 - `workflows rpi` researches, plans and implements a work item in one commit, with no review.
+- `workflows implement` implements a plan in the current directory and commits it.
 - `workflows optimize ship` searches for better ship prompts over a set of work items.
 - `workflows <script>` runs your own workflow script.
 

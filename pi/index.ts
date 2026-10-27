@@ -372,12 +372,8 @@ const GUIDELINES = [
 		"then returns the answer. `parallel([() => ...])` and " +
 		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +
 		"and `log(text)` write progress lines. `args`, `runId` and `runDir` are values.",
-	"Script lib: `subjectOf(text)` gives the first non-empty line without leading `#`. `memory(lines)` is a run memory of " +
-		"numbered notes: `.note(author, round, notes)`, `.context(prompt)`, `.lines` to pass to a child run, and " +
-		"`.session(profile)`, whose `.ask` starts each prompt with the notes and whose `.noted(round, prompt, rule)` asks " +
-		"for `{ text, notes }` and keeps the notes. `commitAll(message)` stages and commits every change, " +
-		"`diffStat(from, to)` gives `+12 -3 in 2 files`, `branchStart(base)` gives the merge base of `base` and a " +
-		"clean branch with changes, and `runChild(name, args)` is `run` without the report lines and the run ID.",
+	"Script lib helpers, declared in `workflows/script.d.ts` of the workflows package: `subjectOf`, `memory`, " +
+		"`commitAll`, `diffStat` and `branchStart`.",
 	"A script has no file system, network, modules or timers, so effects go through `sh`. `Date`, `Date.now()` and " +
 		"`Math.random()` throw. A resume runs the script again from the top: saved calls return their results, and a " +
 		"command that did not finish runs again, so keep `sh` and `ok` commands safe to repeat.",
