@@ -32,7 +32,8 @@ const built = await run("rpi", { item, start })
 
 if (built.status === "blocked") return unshipped(built)
 
-const reviewed = await run("thermoloop", { item, rounds, start, patches, plan: built.plan, reply: built.reply, memory: built.memory })
+const { plan, reply, memory: notes } = built
+const reviewed = await run("thermoloop", { item, rounds, start, patches, plan, reply, memory: notes })
 
 if (reviewed.status !== "approved") return unshipped(reviewed)
 

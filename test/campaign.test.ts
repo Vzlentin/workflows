@@ -69,6 +69,21 @@ const JUDGE_STEPS = ["✓ all 2 items", "  ✓ judge", "    judge 0.83"];
 const itemLine = (subject: string) => expect.stringMatching(new RegExp(`^ {2}[0-9a-f]+ ${subject}, judge 0\\.83$`));
 
 describe("workflows campaign", () => {
+	it("gives judgeError and no judge when the campaign judge fails", async () => {
+		const failing = "1 PASS\n2 PASS";
+
+		const run = await workflows(["campaign", "--json", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST]], edits: [FIXED], commit: [COMMIT], judge: [PASSING_JUDGE, failing, failing, failing] },
+		});
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(report[0]).toMatch(/^done Fix the README in 1 item, judge failed, [0-9a-f]+$/);
+		expect(result.judgeError).toBe("the answer did not call respond");
+		expect(result).not.toHaveProperty("judge");
+	});
+
 	it("ships two items as two commits on the campaign branch", async () => {
 		const run = await workflows(["campaign", "--json", GOAL], {
 			cwd: repo,

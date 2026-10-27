@@ -125,4 +125,6 @@ for (const { result } of done) report.push(`  ${result.head} ${result.subject}, 
 
 for (const finding of findings ?? []) report.push(`  finding ${finding}`)
 
-return { status: "done", subject, head, judge: { score, findings }, judgeError, items: done, report }
+const judge = judgeError === undefined ? { score, findings } : undefined
+
+return { status: "done", subject, head, judge, judgeError, items: done, report }

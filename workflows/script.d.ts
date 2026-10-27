@@ -131,3 +131,6 @@ declare function diffStat(from: string, to?: string): Promise<string>;
  * changes that are not committed, or when the branch has no change from `base`.
  */
 declare function branchStart(base: string): Promise<string>;
+
+/** Throws when the checkout has changes that are not committed. */
+declare function assertClean(): Promise<void>;

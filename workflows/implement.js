@@ -15,13 +15,11 @@ export const meta = {
 const { plan, round } = args
 const subject = subjectOf(plan)
 
-if (args.start === undefined && (await sh(["git", "status", "--porcelain"])) !== "") {
-	throw new Error("the checkout has changes that are not committed; commit or stash them first")
-}
+if (args.start === undefined) await assertClean()
 
-const start = args.start ?? (await sh(["git", "rev-parse", "HEAD"]))
-const notes = memory(args.memory)
 const before = await sh(["git", "rev-parse", "HEAD"])
+const start = args.start ?? before
+const notes = memory(args.memory)
 
 const reply = await notes
 	.session("implementer")

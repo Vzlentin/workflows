@@ -627,7 +627,10 @@ async function childResult(
 	const { outcome } = (await runtime.waitForTask(task, context)).state;
 
 	if (outcome.status !== "completed") {
-		throw new Error(`child run ${runId} failed: ${outcome.error?.message ?? outcome.reason ?? outcome.status}`);
+		const cause = outcome.error?.message ?? outcome.reason ?? outcome.status;
+
+		// The error of a nested child run already names the deepest run that failed.
+		throw new Error(cause.startsWith("child run ") ? cause : `child run ${runId} failed: ${cause}`);
 	}
 
 	return { runId, result: outcome.result };

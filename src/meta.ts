@@ -726,15 +726,18 @@ export async function childInput(
 		spec.default === undefined ? [] : [[arg, spec.default] as const],
 	);
 
+	const script = { name, meta, bundle: { ...bundle, prompts: replaced, main: source } };
+	const here = { runId: run.id, root: run.root, runDir: run.directory, cwd: run.cwd };
+
+	if (!meta.worktree) return { ...script, args: { ...Object.fromEntries(defaults), ...given }, ...here };
+
 	// `repo`, `base` and `branch` place a `meta.worktree` run; any other script gets them as args.
 	const { repo, base = "main", branch, ...own } = given;
 
-	if (meta.worktree && !Value.Check(START, own)) throw new Error(`run ${name}: start is not a string`);
-	const args = { ...Object.fromEntries(defaults), ...(meta.worktree ? own : given) };
-	const input = { name, args, meta, bundle: { ...bundle, prompts: replaced, main: source } };
+	if (!Value.Check(START, own)) throw new Error(`run ${name}: start is not a string`);
+	const input = { ...script, args: { ...Object.fromEntries(defaults), ...own } };
 
-	if (!meta.worktree || repo === undefined)
-		return { ...input, runId: run.id, root: run.root, runDir: run.directory, cwd: run.cwd };
+	if (repo === undefined) return { ...input, ...here };
 
 	return prepare(
 		{ ...input, repo: String(repo), base: String(base), branch: branch === undefined ? branch : String(branch) },

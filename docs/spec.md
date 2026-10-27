@@ -326,7 +326,7 @@ terminal and in Pi they move under the item step when it comes.
 `<subject>` is the first non-empty line of the goal without leading `#`. `<n>` in the `done` line counts the shipped
 items. The number of the item step counts every item that ran. The result is
 `{ "status": "done", "subject", "head", "judge": { "score", "findings" }, "branch", "items": [{ "item", "result" }] }`,
-with `judgeError` when the campaign judge failed, or `{ "status": "stopped", "items", "rundown" }`. The `result` of
+with `judgeError` in place of `judge` when the campaign judge failed, or `{ "status": "stopped", "items", "rundown" }`. The `result` of
 each shipped item, and of the failed item in a stopped result, is its `ship` result, with its child run ID as
 `runId`. `head` is the commit of the last item, and `branch` is the
 branch that the worktree ends on.
@@ -612,7 +612,7 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
 - The child run gets the caller's saved scripts, prompts and profiles.
 
 `run()` returns the child's result, with `runId`, the child run ID, added to an object result. A failed child run
-fails the call with `child run <id> failed: <error>`, and the child's task ends as failed. A caller that fails aborts
+fails the call with `child run <id> failed: <error>`, where `<id>` is the deepest child run that failed, and the child's task ends as failed. A caller that fails aborts
 its child runs that are still running. A resume of the caller continues the same child run, with the same run ID and
 run directory, also after a failed call, an abort or an interruption, and repeats no call that the child run saved. A
 child run that ended without a result continues in a new task.
@@ -654,7 +654,8 @@ takes their place.
 | `memory(lines)` | A run memory: numbered notes `#<k> <author> <round>: <note>`, only appended to, starting with `lines`. `.note(author, round, notes)` adds notes, with their whitespace collapsed and empty ones left out. `.context(prompt)` puts the notes as a `## memory` section before `prompt`. `.lines` gives the notes, to pass to a child run. `.session(profile)` is a session whose `.ask(prompt, { schema })` starts each prompt with the notes, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule>`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
-| `branchStart(base)` | The merge base of `base` and `HEAD`. Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change, and `no change from <base>` when the branch has no change from the merge base |
+| `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |
+| `branchStart(base)` | The merge base of `base` and `HEAD`. Throws as `assertClean()` on a checkout with changes, and `no change from <base>` when the branch has no change from the merge base |
 
 `workflows/script.d.ts` declares these globals for editors. A project gets the same completion when it copies
 `script.d.ts` and `jsconfig.json` into `.workflows/workflows/`, and copies them again after an upgrade of the package.

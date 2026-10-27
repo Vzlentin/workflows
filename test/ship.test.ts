@@ -419,9 +419,7 @@ export default function ({ events }) {
 		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
 
 		const failed = [
-			expect.stringMatching(
-				/^failed Fix the README typo: child run \S+ failed: child run \S+ failed: git commit failed: lint failed$/,
-			),
+			expect.stringMatching(/^failed Fix the README typo: child run \S+ failed: git commit failed: lint failed$/),
 			`continue with: workflows resume ${run.id}`,
 		];
 

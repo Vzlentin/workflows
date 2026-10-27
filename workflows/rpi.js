@@ -40,7 +40,8 @@ const plan = await planner.noted(
 
 phase("implement")
 
-const { status, head, reply, memory: lines } = await run("implement", { plan, round: 1, start, message: subject, memory: notes.lines })
+const implemented = { plan, round: 1, start, message: subject, memory: notes.lines }
+const { status, head, reply, memory: lines } = await run("implement", implemented)
 
 if (status === "blocked") {
 	return { status: "blocked", rounds: 1, reply, handoff: plan, memory: lines, report: [`blocked ${subject}`, reply] }
