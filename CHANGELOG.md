@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/Vzlentin/workflows/compare/v0.5.0...v0.5.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **pi:** count an install older than the extension as not installed ([#70](https://github.com/Vzlentin/workflows/issues/70)) ([dee6d65](https://github.com/Vzlentin/workflows/commit/dee6d65fe9ead299021f8e7d325baab3127fb2e7))
+
 ## [0.5.0](https://github.com/Vzlentin/workflows/compare/v0.4.3...v0.5.0) (2026-10-27)
 
 
