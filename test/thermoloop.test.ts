@@ -79,6 +79,31 @@ describe("workflows thermoloop", () => {
 		expect(await readFile(join(repo, "README.md"), "utf8")).toBe(THANKED);
 	});
 
+	it("keeps plain notes without memo, and warns with the install command", async () => {
+		await rm(join(root, "home", ".optmem", "memo"));
+
+		const run = await workflows(["thermoloop", "--json", ITEM], {
+			cwd: repo,
+			script: { edits: [THANKED], verdicts: ["FIX", "SHIP"] },
+		});
+
+		expect(run.code).toBe(0);
+		expect(run.stderr.join("\n")).toContain(
+			"memo of OptMem is missing, so the run memory keeps plain notes without summaries. Install it with: " +
+				"curl -fsSL https://raw.githubusercontent.com/VictorTaelin/OptMem/main/install.sh | sh",
+		);
+
+		const notes = [
+			"#0 reviewer r1: Handoff 1: one word changes.",
+			"#1 implementer r2: Implement 1: README.md had wrold.",
+		];
+
+		expect(JSON.parse(run.stdout[1] ?? "").result.memory).toEqual(notes);
+		const memory = join(runsOf(root), run.id ?? "", "memory");
+		expect(await readFile(join(memory, "notes.txt"), "utf8")).toBe(`${notes.join("\n")}\n`);
+		expect(run.model.find("review", 1)?.prompt).toMatch(new RegExp(`^## memory\\n${notes.join("\\n")}\\n\\nPerform`));
+	});
+
 	it("stops after --rounds rounds with exit 1, and refuses a checkout with changes or a branch with no change", async () => {
 		const stopped = await workflows(["thermoloop", "--rounds", "1", ITEM], {
 			cwd: repo,
@@ -86,15 +111,6 @@ describe("workflows thermoloop", () => {
 		});
 
 		expect([stopped.code, stopped.stdout.slice(1)]).toEqual([1, [`stopped ${ITEM} after 1 rounds`]]);
-
-		await rm(join(root, "home", ".optmem", "memo"));
-		const missing = await workflows(["thermoloop", ITEM], { cwd: repo });
-		expect(missing.code).toBe(1);
-		expect(missing.stderr.join("\n")).toContain("https://github.com/VictorTaelin/OptMem");
-		expect(missing.stderr.join("\n")).toContain(
-			"curl -fsSL https://raw.githubusercontent.com/VictorTaelin/OptMem/main/install.sh | sh",
-		);
-		expect(missing.model.calls).toEqual([]);
 
 		await writeFile(join(repo, "README.md"), "local edit\n");
 		const dirty = await workflows(["thermoloop", ITEM], { cwd: repo });

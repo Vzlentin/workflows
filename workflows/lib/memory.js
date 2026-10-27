@@ -1,12 +1,16 @@
-// Script lib: the run memory, an OptMem store.
+// Script lib: the run memory, an OptMem store, or a plain file of notes when `memo` of OptMem is missing.
+
+// The command that installs OptMem.
+const MEMO_INSTALL = "curl -fsSL https://raw.githubusercontent.com/VictorTaelin/OptMem/main/install.sh | sh";
 
 // The prefix of every `memo` call: `sh -c "${MEMO} ..." memo <store> <args>` runs with `$m`, the user's `memo`, and
 // with `MEMORY_DIR` set to the store, so that a run never writes to the user's own memory.
 const MEMO =
-	'm="$HOME/.optmem/memo"; [ -x "$m" ] || { echo "workflows: memo of OptMem is missing at $m. Install it from ' +
-	"https://github.com/VictorTaelin/OptMem with: curl -fsSL " +
-	'https://raw.githubusercontent.com/VictorTaelin/OptMem/main/install.sh | sh" >&2; exit 1; }; ' +
-	'export MEMORY_DIR="$1"; shift;';
+	`m="$HOME/.optmem/memo"; [ -x "$m" ] || { echo "workflows: memo of OptMem is missing at $m. Install it with: ` +
+	`${MEMO_INSTALL}" >&2; exit 1; }; export MEMORY_DIR="$1"; shift;`;
+
+// Without `memo`, the store is this file of `#<k> <note>` lines in the store folder, with no summaries.
+const PLAIN = "notes.txt";
 
 // The longest note that `memo note` and `memo nap` take, in UTF-8 bytes.
 const NOTE_BYTES = 280;
@@ -42,19 +46,37 @@ function cutNote(head, text) {
 }
 
 /**
- * The run memory in the OptMem store `path`. Without `path`, opens the store `<runDir>/memory`. `item` is the number
- * of the campaign item that the notes come from.
+ * Opens the store `<runDir>/memory`: an OptMem store, or, without `memo`, a plain store. Returns whether it is plain.
  */
-async function memory(path, item) {
-	if (path === undefined) {
-		path = `${runDir}/memory`;
-		// `wake` splits an output above PART_CHARS (20000 bytes by default) into parts, and its 96 lines of notes can
-		// reach about 29 KB. One part keeps the section whole.
-		await sh(["sh", "-c", `${MEMO} "$m" init >/dev/null && "$m" config PART_CHARS=100000 >/dev/null`, "memo", path]);
+async function openStore() {
+	const path = `${runDir}/memory`;
+
+	// `wake` splits an output above PART_CHARS (20000 bytes by default) into parts, and its 96 lines of notes can reach
+	// about 29 KB. One part keeps the section whole.
+	const opened = await sh([
+		"sh",
+		"-c",
+		'm="$HOME/.optmem/memo"; if [ -x "$m" ]; then export MEMORY_DIR="$1"; "$m" init >/dev/null && ' +
+			'"$m" config PART_CHARS=100000 >/dev/null && echo optmem; else mkdir -p "$1" && touch "$1/$2" && echo plain; fi',
+		"memory",
+		path,
+		PLAIN,
+	]);
+
+	const plain = opened === "plain";
+
+	if (plain) {
+		log(
+			"memo of OptMem is missing, so the run memory keeps plain notes without summaries. Install it with: " +
+				MEMO_INSTALL,
+		);
 	}
 
-	const prefix = item === undefined ? "" : `item ${item} `;
+	return { path, plain };
+}
 
+/** The OptMem store `path`, through `memo`. */
+function optmemStore(path) {
 	// Answers each compression that `output` asks for with a summarizer turn, until none is left.
 	const compress = async (output) => {
 		while (output.includes("Compress memories")) {
@@ -69,6 +91,44 @@ async function memory(path, item) {
 		}
 	};
 
+	return {
+		wake: async () => {
+			const woken = await memo(path, "wake");
+			await compress(woken);
+
+			return woken;
+		},
+		add: async (line) => compress(await memo(path, "note", line)),
+		// The notes as `#<k> <note>`, read from `LOG.txt`, whose fixed-width records of OptMem are `#<k> <date> <note>`
+		// padded with spaces: `memo recall` stops at 20000 bytes.
+		text: () => sh(["sh", "-c", `sed -e 's/ *$//' -e 's/^\\(#[0-9]*\\) [0-9-]* /\\1 /' "$1/LOG.txt"`, "memory", path]),
+	};
+}
+
+/** The plain store `path`: the file `<path>/notes.txt`, with one `#<k> <note>` line for each note. */
+function plainStore(path) {
+	const file = `${path}/${PLAIN}`;
+	const read = () => sh(["cat", file]);
+
+	return {
+		wake: read,
+		add: async (line) => {
+			await sh(["sh", "-c", 'n=$(wc -l < "$1"); printf "#%d %s\\n" $n "$2" >> "$1"', "memory", file, line]);
+		},
+		text: read,
+	};
+}
+
+/**
+ * The run memory of `ref`, the `.ref` of the memory of a caller. Without `ref.path`, opens the store
+ * `<runDir>/memory`. `ref.item` is the number of the campaign item that the notes come from.
+ */
+async function memory(ref = {}) {
+	const { path, plain } = ref.path === undefined ? await openStore() : ref;
+	const { item } = ref;
+	const store = plain ? plainStore(path) : optmemStore(path);
+	const prefix = item === undefined ? "" : `item ${item} `;
+
 	const note = async (author, round, texts) => {
 		for (const text of texts) {
 			const line = text.replace(/\s+/g, " ").trim();
@@ -76,7 +136,7 @@ async function memory(path, item) {
 			if (line === "") continue;
 
 			const by = round === undefined ? author : `${author} r${round}`;
-			await compress(await memo(path, "note", cutNote(`${prefix}${by}: `, line)));
+			await store.add(cutNote(`${prefix}${by}: `, line));
 		}
 	};
 
@@ -88,10 +148,8 @@ async function memory(path, item) {
 		const ask = async (prompt, options) => {
 			if (!first) return s.ask(await prompt, options);
 			first = false;
-			const woken = await memo(path, "wake");
-			await compress(woken);
 
-			const lines = woken
+			const lines = (await store.wake())
 				.split("\n")
 				.filter((line) => /^#\d+(-\d+)? /.test(line))
 				.map((line) => line.replace(/^#(\d+) \d{4}-\d{2}-\d{2} /, "#$1 "));
@@ -116,14 +174,11 @@ async function memory(path, item) {
 	};
 
 	return {
-		path,
-		item,
+		ref: { path, plain, item },
 		note,
 		session: remembering,
-		// The notes as `#<k> <note>`, read from `LOG.txt`, whose fixed-width records of OptMem are `#<k> <date> <note>`
-		// padded with spaces: `memo recall` stops at 20000 bytes.
 		get text() {
-			return sh(["sh", "-c", `sed -e 's/ *$//' -e 's/^\\(#[0-9]*\\) [0-9-]* /\\1 /' "$1/LOG.txt"`, "memory", path]);
+			return store.text();
 		},
 	};
 }

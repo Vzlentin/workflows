@@ -96,9 +96,13 @@ implementer's reply, and exits 1. A run whose thermoloop stopped after `--rounds
 The run keeps a memory of notes in an [OptMem](https://github.com/VictorTaelin/OptMem) store, `memory/` in the run
 directory, through the user's `$HOME/.optmem/memo` with `MEMORY_DIR` set to the store. `ship` opens the store with
 `memo init` and `memo config PART_CHARS=100000`, so that `memo wake` gives all its lines in one part, and gives its
-path to `rpi` and `thermoloop`; a child run that gets a path opens nothing. Without `memo`, the first call fails with
-`workflows: memo of OptMem is missing at <path>`, the URL of OptMem and its install command, `curl -fsSL
-https://raw.githubusercontent.com/VictorTaelin/OptMem/main/install.sh | sh`.
+`ref` (its path, whether it is plain, and the campaign item) to `rpi` and `thermoloop`; a child run that gets a `ref`
+opens nothing. Without `memo` when the store opens, the store is the plain file `memory/notes.txt`, with one `#<k>
+<note>` line for each note and no summaries, and the run logs `memo of OptMem is missing, so the run memory keeps
+plain notes without summaries. Install it with: curl -fsSL
+https://raw.githubusercontent.com/VictorTaelin/OptMem/main/install.sh | sh`. The runs that get the `ref` of a plain
+store keep it plain. A `memo` call on an OptMem store whose `memo` is gone fails with `workflows: memo of OptMem is
+missing at <path>. Install it with: <install command>`.
 
 The planner's handoff, each implement turn and the reviewer's handoff answer through `respond` with their text and a
 list of notes, each one line of at most 280 bytes: the planner gives its decisions with their reasons, the
@@ -162,7 +166,7 @@ first implement of `ship`, with no review, no judge and no squash. The work item
 
 The research and plan sessions are those of `ship`. The step `implement` runs [implement](#implement) as a child
 run, with the planner's handoff as the plan, round 1, the start commit, the subject of the work item as the message,
-and the path of the run memory. When the branch has no change from the start commit, the run is blocked: it prints
+and the `ref` of the run memory. When the branch has no change from the start commit, the run is blocked: it prints
 `blocked <subject>` and the implementer's reply, and exits 1. Otherwise the implement step logs the size of the
 change, and the command prints `implemented <subject>, <commit>` and exits 0.
 
@@ -183,10 +187,10 @@ workflows implement --message "fix: the typo" --round 2 plan.md
 has no worktree of its own and no step of its own: as a child run, it runs in the directory of its caller, and its
 log line goes under the step of its caller. The plan comes as the work item of `ship` does. `--message` is the commit
 message, by default the subject of the plan, and `--round`, default 1, is the round of the implementer's notes. A
-caller also gives `start`, the commit that the change starts from, `memory`, the path of the store of a run memory
-to go on with, and `itemNumber`, the campaign item of the notes. Without `memory`, the run opens its own store, as
-`ship` does. Without `start`, a checkout with changes that are not committed fails with `the checkout has changes that are
-not committed; commit or stash them first` before any session, and `start` is `HEAD`.
+caller also gives `start`, the commit that the change starts from, and `memory`, the `ref` of a run memory to go on
+with. Without `memory`, the run opens its own store, as `ship` does. Without `start`, a checkout with changes that
+are not committed fails with `the checkout has changes that are not committed; commit or stash them first` before any
+session, and `start` is `HEAD`.
 
 The `implementer` session gets the `implement` prompt with the plan, after the notes of the memory, and gives its
 report and notes. The run stages all changes and commits them as the message, when something is staged. Commits that
@@ -216,10 +220,10 @@ change from <base>`, before any session.
 Each round reviews the change, and on FIX the reviewer's handoff is implemented as the next round. So each round
 has the step `round <n>/<rounds>: review`, after `round <n>/<rounds>: implement` from round 2.
 `ship` gives the script `start`, the commit that the change starts from, in place of the merge base, and `plan`,
-`reply` from `rpi`, which the first review gets, and `memory`, the path of its store.
+`reply` from `rpi`, which the first review gets, and `memory`, the `ref` of its run memory.
 
 The step `round <n>/<rounds>: implement` runs [implement](#implement) as a child run, with the handoff as the plan,
-round `<n>`, the start commit, the message `round <n>` and the path of the run memory:
+round `<n>`, the start commit, the message `round <n>` and the `ref` of the run memory:
 
 - If the implement run is blocked, the thermoloop is blocked. It prints `blocked <subject> after <n> rounds` and
   the implementer's reply, and exits 1.
@@ -682,7 +686,7 @@ with. A script's own declaration of the same name takes their place.
 | `parallel(thunks)` | Runs the functions at once and returns their results |
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
 | `subjectOf(text)` | The first non-empty line of `text`, without leading `#` |
-| `await memory(path, item)` | The run memory in the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`; without `memo`, a call fails with the install command. Without `path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`. `.path` and `.item` go to a child run. `.note(author, round, notes)` runs `memo note` for each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section from `memo wake`, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
+| `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 | `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |

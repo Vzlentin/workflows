@@ -68,15 +68,14 @@ describe("workflows implement", () => {
 		await writeFile(
 			join(scripts, "parent.js"),
 			`phase("fix")
-const notes = await memory(undefined, 2)
+const notes = await memory({ item: 2 })
 await notes.note("planner", undefined, ["one word changes."])
 const { report: _report, runId: _runId, ...result } = await run("implement", {
 	plan: ${JSON.stringify(PLAN)},
 	round: 2,
 	start: await sh(["git", "rev-parse", "HEAD"]),
 	message: "round 2",
-	memory: notes.path,
-	itemNumber: notes.item,
+	memory: notes.ref,
 })
 return result`,
 		);

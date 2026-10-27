@@ -62,7 +62,7 @@ for (let n = 1; queue.length > 0; n++) {
 	const patches = `${runDir}/item-${n}`
 	await sh(["mkdir", "-p", patches])
 	const start = await sh(["git", "rev-parse", "HEAD"])
-	const result = await run("ship", { item, rounds, start, patches, memory: notes.path, itemNumber: n })
+	const result = await run("ship", { item, rounds, start, patches, memory: { ...notes.ref, item: n } })
 
 	if (result.status === "shipped" && result.score !== 0) {
 		done.push({ item, result })
