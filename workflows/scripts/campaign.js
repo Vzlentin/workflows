@@ -54,6 +54,7 @@ async function split(inputs) {
 }
 
 let { subject, items: queue } = await split({})
+const notes = await memory()
 
 for (let n = 1; queue.length > 0; n++) {
 	const [item, ...rest] = queue
@@ -61,7 +62,7 @@ for (let n = 1; queue.length > 0; n++) {
 	const patches = `${runDir}/item-${n}`
 	await sh(["mkdir", "-p", patches])
 	const start = await sh(["git", "rev-parse", "HEAD"])
-	const result = await run("ship", { item, rounds, start, patches })
+	const result = await run("ship", { item, rounds, start, patches, memory: notes.path, itemNumber: n })
 
 	if (result.status === "shipped" && result.score !== 0) {
 		done.push({ item, result })
@@ -71,6 +72,7 @@ for (let n = 1; queue.length > 0; n++) {
 
 	// `start` is the last shipped commit: every earlier item shipped or was reset to its own start.
 	await sh(["git", "reset", "--hard", start])
+	await notes.note("campaign", undefined, [`item ${n} failed and was reset: its notes describe code that is gone`])
 	const file = `${patches}/round-${result.rounds}.patch`
 	const patch = (await ok(["test", "-f", file])) ? file : ""
 
@@ -83,7 +85,7 @@ for (let n = 1; queue.length > 0; n++) {
 			reply: result.reply ?? "",
 			handoff: result.handoff ?? "",
 			findings: (result.findings ?? []).join("\n"),
-			memory: result.memory.join("\n"),
+			memory: await notes.text,
 			remaining: JSON.stringify(rest),
 			patch,
 		}),

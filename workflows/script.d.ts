@@ -101,24 +101,34 @@ declare function log(text: string): void;
 /** The subject of a text: its first non-empty line without leading `#`. */
 declare function subjectOf(text: string): string;
 
-/** A session whose every prompt starts with the notes of a memory. */
+/** A session whose first prompt starts with the notes of a memory. */
 type RememberingSession = {
 	ask(prompt: string | Promise<string>, options?: { schema?: object }): Promise<any>;
-	/** Asks for `{ text, notes }` with the answer rule `text is <rule>`, adds the notes under the profile, returns the text. */
-	noted(round: number, prompt: string | Promise<string>, rule: string): Promise<string>;
+	/**
+	 * Asks for `{ text, notes }` with the answer rule `text is <rule>`, adds the notes under the profile at `round`, and
+	 * returns the text.
+	 */
+	noted(round: number | undefined, prompt: string | Promise<string>, rule: string): Promise<string>;
 };
 
 /**
- * A run memory: numbered notes `#<k> <author> <round>: <note>`, only appended to, starting with `lines`. Pass `lines` to
- * a child run to go on with the same memory.
+ * The run memory in the OptMem store `path`, through the user's `$HOME/.optmem/memo`. Without `path`, opens the store
+ * `<runDir>/memory`. A note is the line `[item <item> ]<author>[ r<round>]: <note>`, cut to 280 bytes. Pass `path` and
+ * `item` to a child run to go on with the same memory.
  */
-declare function memory(lines?: readonly string[]): {
-	readonly lines: string[];
-	note(author: string, round: number, notes: readonly string[]): void;
-	/** `prompt` after a `## memory` section with the notes, or `prompt` when there are none. */
-	context(prompt: string): string;
+declare function memory(
+	path?: string,
+	item?: number,
+): Promise<{
+	readonly path: string;
+	readonly item: number | undefined;
+	/** Adds each note, and answers each compression that `memo` asks for with a `summarizer` turn. */
+	note(author: string, round: number | undefined, notes: readonly string[]): Promise<void>;
+	/** A session whose first prompt starts with a `## memory` section, the output of `memo wake`. */
 	session(profile: string): RememberingSession;
-};
+	/** The notes, one `#<k> <note>` line each. */
+	readonly text: Promise<string>;
+}>;
 
 /** Stages every change, and commits it as `message` when something is staged. */
 declare function commitAll(message: string): Promise<void>;

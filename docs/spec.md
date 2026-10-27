@@ -88,19 +88,31 @@ unchanged. Ship does not push and does not open a pull request.
 The run starts the child run `rpi` in the worktree with the work item and the start commit: see [RPI](#rpi). When
 it is blocked, the run prints `blocked <subject> after 1 rounds: <worktree>` and the implementer's reply, and exits 1.
 Then it starts the child run `thermoloop` in the worktree, with the work item, `--rounds`, the start commit, and the
-plan, the reply and the memory of `rpi`: see [Thermoloop](#thermoloop). The thermoloop writes its patches in the run directory
+plan and the reply of `rpi`: see [Thermoloop](#thermoloop). The thermoloop writes its patches in the run directory
 of ship. When the thermoloop is blocked, the run prints `blocked <subject> after <n> rounds: <worktree>` and the
 implementer's reply, and exits 1. A run whose thermoloop stopped after `--rounds` rounds prints
 `stopped <subject> after <n> rounds: <worktree>` and exits 1.
 
-The run keeps a memory of notes, which it only appends to. The planner's handoff, each implement turn and the
-reviewer's handoff answer through `respond` with their text and a list of notes: the planner gives its decisions with
-their reasons, the implementer gives what it tried and what it observed, and the reviewer gives the decisions of its
-challenge, with the findings that it cut and why. The reviewer has no handoff on SHIP or on FIX in the last round, so
-it gives no notes then. Each note becomes one line `#<k> <author> <round>: <note>`, with its whitespace collapsed,
-where the author is `planner`, `implementer` or `reviewer`, and the planner's round is 0. When the memory has notes,
-every prompt of the planner, implement and review sessions starts with a `## memory` section that lists them. The
-judge's prompt has no memory. A resume builds the memory again from the saved answers, so it gives the same prompts.
+The run keeps a memory of notes in an [OptMem](https://github.com/VictorTaelin/OptMem) store, `memory/` in the run
+directory, through the user's `$HOME/.optmem/memo` with `MEMORY_DIR` set to the store. `ship` opens the store with
+`memo init` and `memo config PART_CHARS=100000`, so that `memo wake` gives all its lines in one part, and gives its
+path to `rpi` and `thermoloop`; a child run that gets a path opens nothing. Without `memo`, the first call fails with
+`workflows: memo of OptMem is missing at <path>`, the URL of OptMem and its install command, `curl -fsSL
+https://raw.githubusercontent.com/VictorTaelin/OptMem/main/install.sh | sh`.
+
+The planner's handoff, each implement turn and the reviewer's handoff answer through `respond` with their text and a
+list of notes, each one line of at most 280 bytes: the planner gives its decisions with their reasons, the
+implementer gives what it tried and what it observed, and the reviewer gives the decisions of its challenge, with the
+findings that it cut and why. The reviewer has no handoff on SHIP or on FIX in the last round, so it gives no notes
+then. Each note becomes one `memo note` of the line `[item <n> ]<author>[ r<round>]: <note>`, with its whitespace
+collapsed, where the author is `planner`, `implementer` or `reviewer`, the item is the campaign item, and the planner
+has no round. Empty notes are left out, and a line above 280 UTF-8 bytes loses words from its end. When `memo` asks to
+compress notes, a `summarizer` session answers with one line, cut in the same way, which goes to `memo nap`.
+
+The first prompt of each planner, implement and review session starts with a `## memory` section with the lines of
+`memo wake` that start with `#<k>` or `#<lo>-<hi>`, without the date of a note, when there are any. The later prompts of
+the session have no section. The judge's prompt has no memory. The saved results of the `memo` calls replay at
+resume, so a resume gives the same prompts.
 
 The review challenge has an evidence rule: a finding that reverses a note, or a choice that the implementer explained,
 stays only with a defect that the review showed, written as `reverses #k: <defect>`. `workflows/scripts/thermoloop.js` adds this
@@ -131,7 +143,7 @@ The result of the run, which `--json` prints, has `status` and `rounds`; `head`,
 squashed commit, and `branch`, the branch that the worktree ends on, when shipped; `score`, `answers`, the eight answers in question order, and `findings`, the finding
 lines of the judge, when the judge answered; `judgeError` when the judge failed; `reply` when blocked; `handoff`, the
 handoff that the last round used, when blocked or stopped; and `memory`, the
-memory lines in order or `[]` when there are no notes, for every status.
+notes of the run memory in order as `#<k> <note>` lines, or `[]` when there are none, for every status.
 
 Blocked and stopped runs keep their branch, worktree and round commits. Delete them when you no longer need them.
 
@@ -149,14 +161,15 @@ first implement of `ship`, with no review, no judge and no squash. The work item
 
 The research and plan sessions are those of `ship`. The step `implement` runs [implement](#implement) as a child
 run, with the planner's handoff as the plan, round 1, the start commit, the subject of the work item as the message,
-and the memory of the planner. When the branch has no change from the start commit, the run is blocked: it prints
+and the path of the run memory. When the branch has no change from the start commit, the run is blocked: it prints
 `blocked <subject>` and the implementer's reply, and exits 1. Otherwise the implement step logs the size of the
 change, and the command prints `implemented <subject>, <commit>` and exits 0.
 
-The result has `status` (`implemented` or `blocked`), `memory`, the notes of the planner and the implementer, and
-`reply`, both from the implement result. When implemented, it has `head` and `plan`, the planner's handoff; when
-blocked, `rounds`, which is 1, and `handoff`, the planner's handoff, as a blocked thermoloop has. A caller gives
-`memory` to the thermoloop.
+Without a caller, the run opens its own store, as `ship` does.
+
+The result has `status` (`implemented` or `blocked`), `memory`, the notes of the store as `#<k> <note>` lines, and
+`reply`, from the implement result. When implemented, it has `head` and `plan`, the planner's handoff; when blocked,
+`rounds`, which is 1, and `handoff`, the planner's handoff, as a blocked thermoloop has.
 
 ## Implement
 
@@ -169,8 +182,9 @@ workflows implement --message "fix: the typo" --round 2 plan.md
 has no worktree of its own and no step of its own: as a child run, it runs in the directory of its caller, and its
 log line goes under the step of its caller. The plan comes as the work item of `ship` does. `--message` is the commit
 message, by default the subject of the plan, and `--round`, default 1, is the round of the implementer's notes. A
-caller also gives `start`, the commit that the change starts from, and `memory`, the lines of a run memory to go on
-with. Without `start`, a checkout with changes that are not committed fails with `the checkout has changes that are
+caller also gives `start`, the commit that the change starts from, `memory`, the path of the store of a run memory
+to go on with, and `itemNumber`, the campaign item of the notes. Without `memory`, the run opens its own store, as
+`ship` does. Without `start`, a checkout with changes that are not committed fails with `the checkout has changes that are
 not committed; commit or stash them first` before any session, and `start` is `HEAD`.
 
 The `implementer` session gets the `implement` prompt with the plan, after the notes of the memory, and gives its
@@ -180,8 +194,8 @@ the implementer made are kept. When the branch has no change from `start`, the r
 `HEAD` before the session, `+<insertions> -<deletions> in <n> file(s)` or `no new changes`, prints
 `implemented <subject>, <commit>` and exits 0. `<subject>` is the subject of the plan.
 
-The result has `status` (`implemented` or `blocked`), `reply`, the implementer's report, `memory`, the memory lines
-with the implementer's notes, and `head`, the short commit, when implemented.
+The result has `status` (`implemented` or `blocked`), `reply`, the implementer's report, `memory`, the notes of the store
+as `#<k> <note>` lines, and `head`, the short commit, when implemented.
 
 ## Thermoloop
 
@@ -201,11 +215,10 @@ change from <base>`, before any session.
 Each round reviews the change, and on FIX the reviewer's handoff is implemented as the next round. So each round
 has the step `round <n>/<rounds>: review`, after `round <n>/<rounds>: implement` from round 2.
 `ship` gives the script `start`, the commit that the change starts from, in place of the merge base, and `plan`,
-`reply` and `memory` from `rpi`, which the first review gets.
+`reply` from `rpi`, which the first review gets, and `memory`, the path of its store.
 
 The step `round <n>/<rounds>: implement` runs [implement](#implement) as a child run, with the handoff as the plan,
-round `<n>`, the start commit, the message `round <n>` and the memory lines. The memory goes on with the lines of its
-result:
+round `<n>`, the start commit, the message `round <n>` and the path of the run memory:
 
 - If the implement run is blocked, the thermoloop is blocked. It prints `blocked <subject> after <n> rounds` and
   the implementer's reply, and exits 1.
@@ -220,8 +233,8 @@ commit, and from round 2 `round-<n>-fix.patch` from the previous round. Its chal
 `respond`. On FIX, its handoff gives the next round's instructions.
 
 On SHIP, the command prints `approved <subject> in <n> rounds, <commit>` and exits 0. A run that is not approved
-after `--rounds` rounds prints `stopped <subject> after <n> rounds` and exits 1. The memory works as in `ship`, and
-starts with the `memory` lines that `ship` gives. The result has `status` (`approved`, `blocked` or `stopped`),
+after `--rounds` rounds prints `stopped <subject> after <n> rounds` and exits 1. The memory works as in `ship`, in the store
+that `ship` gives, or in its own store without a caller. The result has `status` (`approved`, `blocked` or `stopped`),
 `rounds`, `handoff`, the handoff that the last round used, `memory`, and `reply` when blocked.
 
 ## Judge
@@ -267,6 +280,10 @@ item is one commit, with the commit message that its own judge wrote, as in `shi
 and nothing is merged or pushed. Each item is a ship child run, with its own
 run ID and run directory, in the store of the campaign run: see `run` in [the script API](#the-script-api).
 
+After the split, the campaign opens one run memory, the store `memory/` in its run directory, as `ship` does, and
+gives its path and the item number to each ship. So the notes of an item are `item <n> <author>...` lines, and the
+sessions of the next items see them.
+
 The items of the split do not change while they ship. Only a failed item changes them: see below.
 
 The command prints `run <run-id>`, the step `split`, then the step `item <n>/<total>: <subject>` on stderr before the
@@ -307,9 +324,10 @@ terminal and in Pi they move under the item step when it comes.
 
 - When an item is blocked or stopped, or ships with a judge score of 0, the item fails. A missing score, when the judge
   failed, is not a failure. The run resets the worktree with `git reset --hard` to the commit that the item started
-  from: the last shipped commit, or the start commit when no item shipped. Then a new planner session gets the
+  from: the last shipped commit, or the start commit when no item shipped, and adds the note `campaign: item <n>
+failed and was reset: its notes describe code that is gone` to the run memory. Then a new planner session gets the
   `rundown` prompt with the inputs `goal`, `shipped` (the shipped items with their commits, as JSON), `item`, `status`
-  (the ship status, or `shipped with judge score 0`), `reply`, `handoff`, `findings`, `memory`, `remaining` (the
+  (the ship status, or `shipped with judge score 0`), `reply`, `handoff`, `findings`, `memory` (the notes of the run memory of the campaign, as `#<k> <note>` lines), `remaining` (the
   remaining items, as JSON) and `patch` (the path of `item-<n>/round-<rounds of the item>.patch`, when that file
   exists). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and proposed items.
   The run asks the question of [Input](#input): the question summary, which is the rundown, `Suggestions:` with one
@@ -393,7 +411,9 @@ return their saved results, and the failed ship run continues. `workflows list` 
 
 The research, plan, implement, review and judge sessions use the agent profiles `agents/researcher.md`,
 `agents/planner.md`, `agents/implementer.md`, `agents/reviewer.md` and `agents/judge.md`. Each uses
-`anthropic/claude-opus-5-5` with thinking `medium`, and every session gets the same tools. Their instructions say that
+`anthropic/claude-opus-5-5` with thinking `medium`. The `summarizer` sessions, which compress the notes of the run
+memory, use `agents/summarizer.md`, with thinking `low` and the model of the project agent. Every session gets the
+same tools. Their instructions say that
 the session is not the user's main agent and does not write to the user's memory or note tools, because the run keeps
 its own memory. Like every workflow script, `ship` and `campaign` read the scripts, prompts and profiles of the package
 and of the project folder `.workflows/` of the current directory, also when `--repo` selects another repository. See
@@ -653,7 +673,7 @@ with. A script's own declaration of the same name takes their place.
 | `parallel(thunks)` | Runs the functions at once and returns their results |
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
 | `subjectOf(text)` | The first non-empty line of `text`, without leading `#` |
-| `memory(lines)` | A run memory: numbered notes `#<k> <author> <round>: <note>`, only appended to, starting with `lines`. `.note(author, round, notes)` adds notes, with their whitespace collapsed and empty ones left out. `.context(prompt)` puts the notes as a `## memory` section before `prompt`. `.lines` gives the notes, to pass to a child run. `.session(profile)` is a session whose `.ask(prompt, { schema })` starts each prompt with the notes, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule>`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
+| `await memory(path, item)` | The run memory in the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`; without `memo`, a call fails with the install command. Without `path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`. `.path` and `.item` go to a child run. `.note(author, round, notes)` runs `memo note` for each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section from `memo wake`, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 | `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |
@@ -1421,11 +1441,15 @@ A ship run also has:
 - `worktree/`: the worktree on `ship/<run-id>`, or on the branch that a shipped run renamed it to
 - `repository/`: the clone, for a GitHub repository only
 - `round-<n>.patch`, `round-<n>-fix.patch`: the patches each review got, which its review child run writes there
+- `memory/`: the OptMem store of the run memory
 
 A campaign run has `worktree/` on `campaign/<run-id>`, or on the branch that a done run renamed it to, and
 `repository/` in the same way, plus:
 
 - `item-<n>/`: the `round-<n>.patch` and `round-<n>-fix.patch` files of item `n`
+- `memory/`: the OptMem store of the run memory of every item
+
+An `rpi`, `thermoloop` or `implement` run without a caller has `memory/`, the OptMem store of its run memory.
 
 An optimize run has:
 

@@ -1,7 +1,8 @@
 // The thermoloop: the review loop of a change. `workflows thermoloop` reviews the branch of the current directory from
 // its merge base with `--base`, and fixes it in rounds until the reviewer answers SHIP. A caller gives `start`, the
 // commit that its change starts from, and may give `plan` and `reply`, the handoff and the report of the implement
-// before, `memory`, the lines of a run memory to go on with, and `patches`, the folder of the round patches.
+// before, `memory`, the path of a run memory to go on with, `itemNumber`, the campaign item of its notes, and
+// `patches`, the folder of the round patches.
 // `ship.js` runs it after `rpi.js`. Every Git step is safe to repeat: a resume runs a step again when its result was
 // not saved.
 export const meta = {
@@ -28,7 +29,8 @@ const EVIDENCE =
 	"it as `reverses #k: <defect>`. A preference, less code, a stricter check, or a claim from a few observations is " +
 	"not a defect."
 
-let notes = memory(args.memory)
+const notes = await memory(args.memory, args.itemNumber)
+const lines = async () => (await notes.text).split("\n").filter(Boolean)
 
 // The handoff that the last implement round followed, and the implementer's reply of that round.
 let plan = args.plan ?? ""
@@ -50,13 +52,13 @@ for (let round = 1; ; round++) {
 	if (verdict === "SHIP") {
 		const head = await sh(["git", "rev-parse", "--short", "HEAD"])
 
-		return { status: "approved", rounds: round, memory: notes.lines, report: [`approved ${subject} in ${round} rounds, ${head}`] }
+		return { status: "approved", rounds: round, memory: await lines(), report: [`approved ${subject} in ${round} rounds, ${head}`] }
 	}
 
 	if (round === rounds) {
 		const report = [`stopped ${subject} after ${round} rounds`]
 
-		return { status: "stopped", rounds: round, handoff: plan, memory: notes.lines, report }
+		return { status: "stopped", rounds: round, handoff: plan, memory: await lines(), report }
 	}
 
 	plan = await reviewer.noted(
@@ -68,14 +70,13 @@ for (let round = 1; ; round++) {
 	const next = round + 1
 
 	phase(`round ${next}/${rounds}: implement`)
-	const fixed = await run("implement", { plan, round: next, start, message: `round ${next}`, memory: notes.lines })
+	const fixed = await run("implement", { plan, round: next, start, message: `round ${next}`, memory: notes.path, itemNumber: notes.item })
 	reply = fixed.reply
-	notes = memory(fixed.memory)
 
 	if (fixed.status === "blocked") {
 		const report = [`blocked ${subject} after ${next} rounds`, reply]
 
-		return { status: "blocked", rounds: next, reply, handoff: plan, memory: notes.lines, report }
+		return { status: "blocked", rounds: next, reply, handoff: plan, memory: await lines(), report }
 	}
 }
 

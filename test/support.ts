@@ -121,6 +121,9 @@ exec git clone -q "${root}/github/$source" "$4"
 `,
 	);
 	await chmod(join(bin, "gh"), 0o755);
+	await mkdir(join(root, "home", ".optmem"));
+	await writeFile(join(root, "home", ".optmem", "memo"), FAKE_MEMO);
+	await chmod(join(root, "home", ".optmem", "memo"), 0o755);
 	process.env = {
 		...ENVIRONMENT,
 		HOME: join(root, "home"),
@@ -157,6 +160,73 @@ exec git clone -q "${root}/github/$source" "$4"
 	return root;
 }
 
+/**
+ * A fake `memo` of OptMem at `$HOME/.optmem/memo`. It adds each call as `{ dir, args }` to `$HOME/.optmem/calls.log`,
+ * keeps the notes as OptMem's fixed-width `LOG.txt` records, and asks to compress #0-1 only when
+ * `$HOME/.optmem/compress` exists.
+ */
+const FAKE_MEMO = `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const home = path.join(process.env.HOME, ".optmem");
+const dir = process.env.MEMORY_DIR;
+const [command, ...args] = process.argv.slice(2);
+fs.appendFileSync(path.join(home, "calls.log"), JSON.stringify({ dir, args: [command, ...args] }) + "\\n");
+const fail = (message) => {
+	process.stderr.write(message + "\\n");
+	process.exit(1);
+};
+if (!dir) fail("MEMORY_DIR is not set");
+const log = path.join(dir, "LOG.txt");
+const summary = path.join(dir, "summary-0-1");
+if (command === "init") {
+	fs.mkdirSync(dir, { recursive: true });
+	fs.appendFileSync(log, "");
+	process.exit(0);
+}
+if (!fs.existsSync(dir)) fail("No memory at " + dir + ".");
+const notes = () => fs.readFileSync(log, "utf8").split("\\n").filter(Boolean).map((line) => line.trimEnd());
+const check = (text) => {
+	if (text === undefined || text.trim() === "") fail("Empty. A memory is one line of text.");
+	if (/[\\r\\n]/.test(text)) fail("A memory is one line.");
+	if (Buffer.byteLength(text.trim()) > 280) fail("Too long: " + Buffer.byteLength(text.trim()) + " bytes, limit 280.");
+	return text.trim();
+};
+const nap = () => {
+	const lines = notes();
+	if (!fs.existsSync(path.join(home, "compress")) || lines.length < 2 || fs.existsSync(summary)) return undefined;
+	return "Compress memories #0-1 into one line of at most 280 bytes.\\n\\n  " + lines[0] + "\\n  " + lines[1] +
+		'\\n\\nRun: ~/.optmem/memo nap 0-1 "<your line>"';
+};
+const next = () => console.log(nap() ?? "Nothing left to compress.");
+switch (command) {
+	case "config":
+		break;
+	case "note": {
+		const text = check(args[0]);
+		const i = notes().length;
+		const record = Buffer.from("#" + i + " " + new Date().toISOString().slice(0, 10) + " " + text);
+		fs.appendFileSync(log, Buffer.concat([record, Buffer.alloc(319 - record.length, " "), Buffer.from("\\n")]));
+		console.log("Saved as #" + i + ".");
+		if (nap() !== undefined) console.log("\\n" + nap());
+		break;
+	}
+	case "wake":
+		for (const line of notes()) console.log(line);
+		console.log("You are awake.");
+		if (nap() !== undefined) console.log("\\n" + nap());
+		break;
+	case "nap":
+		if (args[0] !== "0-1") fail("Wrong block: " + args[0]);
+		fs.writeFileSync(summary, check(args[1]));
+		console.log("0-1 saved.\\n");
+		next();
+		break;
+	default:
+		fail("No such command: " + command);
+}
+`;
+
 /** A repository at `path` with one commit of README.md on main. */
 export async function repository(path: string, readme = "# Demo\n\nHello wrold\n"): Promise<string> {
 	await mkdir(path, { recursive: true });
@@ -180,6 +250,7 @@ export type Kind =
 	| "commit"
 	| "split"
 	| "rundown"
+	| "summarize"
 	| "reflect"
 	| "script"
 	| "result";
@@ -209,6 +280,7 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Write the commit message", "commit"],
 	["Split this goal into work items.", "split"],
 	["Give a rundown of the failed work item", "rundown"],
+	["Compress memories", "summarize"],
 	["Improve this prompt", "reflect"],
 	["Script", "script"],
 	// The outcome that a background run posts to the conversation of its `workflow` call.
@@ -229,6 +301,8 @@ export type Script = {
 	readonly commits?: boolean;
 	/** README.md after each implement turn; undefined changes nothing. */
 	readonly edits?: readonly (string | undefined)[];
+	/** One more note of each implement turn, after its scripted note. */
+	readonly note?: string;
 	/** The review verdict of each round. */
 	readonly verdicts?: readonly ("SHIP" | "FIX")[];
 	/** The judge's `respond` answer, or a text reply without `respond`; a list gives one for each judge call. */
@@ -345,7 +419,9 @@ export class FakeModel {
 
 			if (kind === "judge") return this.#judge();
 
-			if (kind === "implement") return implemented(this.count(kind), "I fixed the typo in README.md.");
+			if (kind === "implement") {
+				return implemented(this.count(kind), "I fixed the typo in README.md.", this.#script.note);
+			}
 
 			return fauxAssistantMessage("I fixed the typo in README.md.");
 		}
@@ -409,7 +485,7 @@ export class FakeModel {
 			case "implement": {
 				const edit = this.#script.edits?.[nth - 1];
 
-				if (edit === undefined) return implemented(nth, "I found nothing to change.");
+				if (edit === undefined) return implemented(nth, "I found nothing to change.", this.#script.note);
 
 				const call = this.#script.commits
 					? fauxToolCall("bash", {
@@ -433,6 +509,8 @@ export class FakeModel {
 					subject: this.#script.subject ?? "docs: readme",
 					items: [...(this.#script.items?.[nth - 1] ?? this.#script.items?.at(-1) ?? [])],
 				});
+			case "summarize":
+				return fauxAssistantMessage(`Summary ${nth}: README.md had wrold.`);
 			case "rundown":
 				return respond({ rundown: `Rundown ${nth}: the item failed.`, suggestions: ["Split the item."], items: [] });
 			case "reflect": {
@@ -522,8 +600,11 @@ function respond(answer: ToolCall["arguments"][string]): AssistantMessage {
 }
 
 /** The `respond` answer of the nth implement turn. */
-function implemented(nth: number, reply: string): AssistantMessage {
-	return respond({ text: reply, notes: [`Implement ${nth}: README.md had wrold.`] });
+function implemented(nth: number, reply: string, note?: string): AssistantMessage {
+	return respond({
+		text: reply,
+		notes: [`Implement ${nth}: README.md had wrold.`, ...(note === undefined ? [] : [note])],
+	});
 }
 
 export type Outcome = {

@@ -31,7 +31,7 @@ describe("workflows implement", () => {
 			status: "implemented",
 			head,
 			reply: "I fixed the typo in README.md.",
-			memory: ["#1 implementer 1: Implement 1: README.md had wrold."],
+			memory: ["#0 implementer r1: Implement 1: README.md had wrold."],
 			report,
 		});
 		expect(progressOf(run.stderr)).toEqual(["+1 -1 in 1 file"]);
@@ -68,12 +68,15 @@ describe("workflows implement", () => {
 		await writeFile(
 			join(scripts, "parent.js"),
 			`phase("fix")
+const notes = await memory(undefined, 2)
+await notes.note("planner", undefined, ["one word changes."])
 const { report: _report, runId: _runId, ...result } = await run("implement", {
 	plan: ${JSON.stringify(PLAN)},
 	round: 2,
 	start: await sh(["git", "rev-parse", "HEAD"]),
 	message: "round 2",
-	memory: ["#1 planner 0: one word changes."],
+	memory: notes.path,
+	itemNumber: notes.item,
 })
 return result`,
 		);
@@ -86,10 +89,10 @@ return result`,
 		const { result } = JSON.parse(run.stdout[1] ?? "");
 		expect(result).toMatchObject({
 			status: "implemented",
-			memory: ["#1 planner 0: one word changes.", "#2 implementer 2: Implement 1: README.md had wrold."],
+			memory: ["#0 item 2 planner: one word changes.", "#1 item 2 implementer r2: Implement 1: README.md had wrold."],
 		});
 		expect(progressOf(run.stderr)).toEqual(["✓ fix", "  +1 -1 in 1 file"]);
-		expect(run.model.find("implement")?.prompt).toMatch(/^## memory\n#1 planner 0: one word changes\.\n\n/);
+		expect(run.model.find("implement")?.prompt).toMatch(/^## memory\n#0 item 2 planner: one word changes\.\n\n/);
 		expect(git(repo, "log", "--format=%s", "HEAD^..HEAD")).toBe("round 2");
 		expect(git(repo, "log", "--format=%s", "-1", "HEAD^")).toBe("add the parent script");
 	});

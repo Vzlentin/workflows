@@ -1,7 +1,7 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { git, progressOf, repository, sandbox, statusesOf, workflows } from "./support.ts";
+import { git, progressOf, repository, runsOf, sandbox, statusesOf, workflows } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -36,7 +36,7 @@ describe("workflows thermoloop", () => {
 		expect(result).toMatchObject({
 			status: "approved",
 			rounds: 2,
-			memory: ["#1 reviewer 1: Handoff 1: one word changes.", "#2 implementer 2: Implement 1: README.md had wrold."],
+			memory: ["#0 reviewer r1: Handoff 1: one word changes.", "#1 implementer r2: Implement 1: README.md had wrold."],
 		});
 		expect(progressOf(run.stderr)).toEqual([
 			"✓ round 1/3: review",
@@ -62,6 +62,17 @@ describe("workflows thermoloop", () => {
 		expect(await readFile(patch, "utf8")).toContain("+Hello world\n");
 		expect(run.model.find("implement")?.prompt).toContain("## plan\nHandoff 1: ");
 
+		// The run opens its own memory, and each session gets the notes only in its first prompt.
+		const memory = join(runsOf(root), run.id ?? "", "memory");
+		expect(await readFile(join(memory, "LOG.txt"), "utf8")).toMatch(/^#0 \d{4}-\d{2}-\d{2} reviewer r1: Handoff 1: /);
+		const calls = (await readFile(join(root, "home", ".optmem", "calls.log"), "utf8")).trim().split("\n");
+		expect(calls.map((line) => JSON.parse(line).dir)).toEqual(calls.map(() => memory));
+		expect(run.model.find("review")?.prompt).not.toContain("## memory");
+		expect(run.model.find("review", 1)?.prompt).toMatch(
+			/^## memory\n#0 reviewer r1: Handoff 1: one word changes\.\n#1 implementer r2: Implement 1: README\.md had wrold\.\n\nPerform/,
+		);
+		expect(run.model.find("verdict", 1)?.prompt).not.toContain("## memory");
+
 		expect(git(repo, "branch", "--show-current")).toBe("feature");
 		expect(git(repo, "log", "--format=%s", `${start}..HEAD`)).toBe("round 2\nfix the typo");
 		expect(git(repo, "rev-parse", "HEAD^")).toBe(head);
@@ -75,6 +86,15 @@ describe("workflows thermoloop", () => {
 		});
 
 		expect([stopped.code, stopped.stdout.slice(1)]).toEqual([1, [`stopped ${ITEM} after 1 rounds`]]);
+
+		await rm(join(root, "home", ".optmem", "memo"));
+		const missing = await workflows(["thermoloop", ITEM], { cwd: repo });
+		expect(missing.code).toBe(1);
+		expect(missing.stderr.join("\n")).toContain("https://github.com/VictorTaelin/OptMem");
+		expect(missing.stderr.join("\n")).toContain(
+			"curl -fsSL https://raw.githubusercontent.com/VictorTaelin/OptMem/main/install.sh | sh",
+		);
+		expect(missing.model.calls).toEqual([]);
 
 		await writeFile(join(repo, "README.md"), "local edit\n");
 		const dirty = await workflows(["thermoloop", ITEM], { cwd: repo });

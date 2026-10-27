@@ -109,10 +109,10 @@ const answers = (kind: string) =>
 	["verdict", "judge", "commit", "implement", "handoff"].includes(kind) ? ["respond"] : [];
 
 const NOTES = [
-	"#1 planner 0: Handoff 1: one word changes.",
-	"#2 implementer 1: Implement 1: README.md had wrold.",
-	"#3 reviewer 1: Handoff 2: one word changes.",
-	"#4 implementer 2: Implement 2: README.md had wrold.",
+	"#0 planner: Handoff 1: one word changes.",
+	"#1 implementer r1: Implement 1: README.md had wrold.",
+	"#2 reviewer r1: Handoff 2: one word changes.",
+	"#3 implementer r2: Implement 2: README.md had wrold.",
 ];
 
 /** The run memory of the first `n` notes of the fake model, as the start of a prompt. */
@@ -228,12 +228,13 @@ describe("workflows ship", () => {
 		for (const call of [research, plan, challenge, planned]) expect(call?.prompt).not.toContain("## memory");
 		expect(implement?.prompt.startsWith(`${memory(1)}Implement this plan`)).toBe(true);
 
-		for (const call of [review, verdict, handoff]) expect(call?.prompt.startsWith(memory(2))).toBe(true);
+		expect(review?.prompt.startsWith(`${memory(2)}Perform a deep code quality audit`)).toBe(true);
 		expect(run.model.find("implement", 1)?.prompt.startsWith(`${memory(3)}Implement this plan`)).toBe(true);
+		expect(run.model.find("review", 1)?.prompt.startsWith(`${memory(4)}Perform a deep code quality audit`)).toBe(true);
 
-		for (const call of [run.model.find("review", 1), run.model.find("verdict", 1)]) {
-			expect(call?.prompt.startsWith(memory(4))).toBe(true);
-		}
+		// Only the first prompt of a session gets the memory.
+		for (const call of [verdict, handoff, run.model.find("verdict", 1)])
+			expect(call?.prompt).not.toContain("## memory");
 
 		expect(run.model.find("judge")?.prompt.startsWith("## Vocabulary")).toBe(true);
 		expect(research?.prompt).toMatch(
@@ -254,7 +255,7 @@ describe("workflows ship", () => {
 		expect(planned?.prompt).toMatch(
 			/^Write a handoff document[\s\S]*information\.\n\nWhen you are done, answer with respond: text /,
 		);
-		expect(handoff?.prompt).toMatch(/\n\nWrite a handoff document[\s\S]*the findings that you cut and why\./);
+		expect(handoff?.prompt).toMatch(/^Write a handoff document[\s\S]*the findings that you cut and why\./);
 		expect(run.model.find("implement", 1)?.prompt).toMatch(/## plan\nHandoff 2: /);
 		expect(run.model.find("review", 1)?.prompt).toContain(
 			`## change\n${patch.replace("round-1", "round-2")}\n${patch.replace("round-1", "round-2-fix")}\n`,
@@ -386,10 +387,13 @@ export default function ({ events }) {
 		expect(item.stdout.slice(1, 2)).toEqual([expect.stringMatching(/^blocked --json after 1 rounds: /)]);
 	});
 
-	it("stops at the round limit and keeps the implementer's own commits", async () => {
+	it("stops at the round limit, keeps the implementer's own commits, and compresses the memory", async () => {
+		await writeFile(join(root, "home", ".optmem", "compress"), "");
+		const note = `${"/very/long/path".repeat(30)} ${"word ".repeat(80)}ends here.`;
+
 		const run = await workflows(["ship", "--json", "--rounds", "2", "Fix the README typo"], {
 			cwd: repo,
-			script: { edits: [FIXED, `${FIXED}More.\n`], verdicts: ["FIX", "FIX"], commits: true },
+			script: { edits: [FIXED, `${FIXED}More.\n`], verdicts: ["FIX", "FIX"], commits: true, note },
 		});
 
 		expect(run.code).toBe(1);
@@ -397,15 +401,36 @@ export default function ({ events }) {
 		expect(run.stdout).toHaveLength(2);
 		expect(run.stdout[0]).toBe(`run ${run.id}`);
 		expect(report).toEqual([`stopped Fix the README typo after 2 rounds: ${worktreeOf(run.id)}`]);
-		expect(result.memory).toEqual(NOTES);
 		expect(result.handoff).toBe("Handoff 2: replace wrold with world in README.md.");
 		expect(run.model.calls.map((call) => call.kind)).toEqual(
 			[
 				["research", "plan", "challenge", "handoff"],
-				["implement", "review", "verdict", "handoff"],
+				["implement", "summarize", "review", "verdict", "handoff"],
 				["implement", "review", "verdict"],
 			].flat(),
 		);
+
+		// The second note asks to compress #0-1. The long note loses its words, then the end of its first word, a path
+		// longer than a note, to fit the 280 bytes of a note.
+		expect(run.model.find("summarize")?.thinking).toBe("low");
+		expect(run.model.find("summarize")?.prompt).toMatch(/^Compress memories #0-1 [\s\S]*  #1 \S+ implementer r1: /);
+		const calls = (await readFile(join(root, "home", ".optmem", "calls.log"), "utf8")).trim().split("\n");
+		expect(calls.map((line) => JSON.parse(line).args)).toContainEqual([
+			"nap",
+			"0-1",
+			"Summary 1: README.md had wrold.",
+		]);
+		const long = result.memory.find((line: string) => line.startsWith("#2 "));
+		const cut = long.slice("#2 ".length);
+		expect(cut).toMatch(/^implementer r1: (\/very\/long\/path)+\/[a-z/]*$/);
+		expect(Buffer.byteLength(cut)).toBe(280);
+		expect(result.memory).toEqual([
+			...NOTES.slice(0, 2),
+			`#2 ${cut}`,
+			"#3 reviewer r1: Handoff 2: one word changes.",
+			"#4 implementer r2: Implement 2: README.md had wrold.",
+			`#5 ${cut.replace("r1", "r2")}`,
+		]);
 		expect(git(worktreeOf(run.id), "log", "--format=%s")).toBe("implementer 2\nimplementer 1\ninitial");
 		expect(run.model.find("review")?.prompt).toContain("round-1.patch");
 		expect(await readFile(join(runs(), run.id ?? "", "round-2-fix.patch"), "utf8")).toContain("+More.");
@@ -722,29 +747,46 @@ describe("workflows show", () => {
 			...Array(n).fill(at(`ask ${p}`)),
 		];
 
+		// The `memo` calls of the run memory, and the read of its notes, cut at 80 characters.
+		const memo = (at = call) => at('sh sh -c m="\\$HOME/\\.optmem/memo".*');
+		const notes = (at = call) => at("sh sh -c sed .*");
+
+		// The first ask of a remembering session reads the memory with `memo wake`.
+		const remembering = (p: string, n: number, at = call) => [
+			at(`session ${p} conversation \\d+`),
+			memo(at),
+			...Array(n).fill(at(`ask ${p}`)),
+		];
+
 		expect(shown.stdout).toEqual([
 			`run ${id} ship shipped Fix the README typo`,
+			memo(),
 			call("run rpi \\S+"),
 			"    research",
 			...asks("researcher", 1, child),
 			"    plan",
-			...asks("planner", 3, child),
+			...remembering("planner", 3, child),
+			memo(child),
 			"    implement",
 			child("run implement \\S+"),
 			grandchild("sh git rev-parse HEAD"),
-			...asks("implementer", 1, grandchild),
+			...remembering("implementer", 1, grandchild),
+			memo(grandchild),
 			grandchild("sh git add -A"),
 			grandchild("ok git diff --cached --quiet"),
 			grandchild("sh git commit --allow-empty -m Fix the README typo"),
+			notes(grandchild),
 			grandchild(`ok git diff --quiet ${start} HEAD`),
 			grandchild(`sh git diff --shortstat ${start} HEAD`),
 			grandchild("sh git rev-parse --short HEAD"),
+			notes(child),
 			call("run thermoloop \\S+"),
 			"    round 1/3: review",
 			// The command is cut at 80 characters.
 			child("sh git diff --binary --output=.{53}"),
-			...asks("reviewer", 2, child),
+			...remembering("reviewer", 2, child),
 			child("sh git rev-parse --short HEAD"),
+			notes(child),
 			call("run judge \\S+"),
 			"    judge",
 			child("sh git rev-parse HEAD"),
