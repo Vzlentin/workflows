@@ -27,8 +27,14 @@ import { releaseInstallLock, stateFolder, takeInstallLock, waitInstallLockFree }
 import { MARKS, parseRun, RunView } from "./run-view.ts";
 
 const WORKFLOWS_PACKAGE = "@vzlentin/workflows";
-const WorkflowsManifest = Type.Object({ name: Type.Literal(WORKFLOWS_PACKAGE) });
+const WorkflowsManifest = Type.Object({ name: Type.Literal(WORKFLOWS_PACKAGE), version: Type.String() });
 const OwnManifest = Type.Object({ version: Type.String() });
+
+const { version: OWN_VERSION } = Value.Parse(
+	OwnManifest,
+	JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")),
+);
+
 const CommandOutput = Type.Object({ stdout: Type.String(), stderr: Type.String() });
 const runFile = promisify(execFile);
 
@@ -719,25 +725,33 @@ function npmFolder(): string | undefined {
 	}
 }
 
+/** Whether `folder` is a workflows install at the version of this extension or later: `pi update` moves only the extension. */
 function isWorkflows(folder: string): boolean {
 	try {
-		return Value.Check(WorkflowsManifest, JSON.parse(readFileSync(join(folder, "package.json"), "utf8")));
+		const manifest: unknown = JSON.parse(readFileSync(join(folder, "package.json"), "utf8"));
+
+		return Value.Check(WorkflowsManifest, manifest) && !olderThan(manifest.version, OWN_VERSION);
 	} catch {
 		return false;
 	}
 }
 
+/** Whether the version `found` is older than `wanted`, by major, minor and patch. A prerelease counts as its release. */
+function olderThan(found: string, wanted: string): boolean {
+	const parts = (version: string) => (version.split("-")[0] ?? "").split(".").map(Number);
+	const [have, want] = [parts(found), parts(wanted)];
+	const at = want.findIndex((part, index) => part !== have[index]);
+
+	return at !== -1 && (have[at] ?? 0) < (want[at] ?? 0);
+}
+
 /**
- * Registers the tool and `/workflows` without workflows: each one gives the command that installs it. A session start in
- * the TUI offers the install.
+ * Registers the tool and `/workflows` without workflows at the version of this extension: each one gives the command
+ * that installs it. A session start in the TUI offers the install.
  */
 function registerMissing(pi: Api): void {
-	const { version } = Value.Parse(
-		OwnManifest,
-		JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")),
-	);
-
-	const message = `workflows is not installed: npm install -g ${WORKFLOWS_PACKAGE}@${version}`;
+	const version = OWN_VERSION;
+	const message = `workflows ${version} is not installed: npm install -g ${WORKFLOWS_PACKAGE}@${version}`;
 
 	pi.registerTool({
 		name: "workflow",
@@ -781,7 +795,9 @@ async function offerInstall(ui: Pick<ExtensionUIContext, "confirm" | "notify">, 
 		if (existsSync(declined) || workflowsFolder() !== undefined) return;
 		const prefix = (await runUserCommand("npm", ["prefix", "-g"])).trim();
 
-		if (!(await ui.confirm("workflows is not installed", `Install ${spec} with npm install -g into ${prefix}?`))) {
+		const title = `workflows ${version} is not installed`;
+
+		if (!(await ui.confirm(title, `Install ${spec} with npm install -g into ${prefix}?`))) {
 			writeFileSync(declined, "");
 
 			return;

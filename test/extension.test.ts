@@ -984,7 +984,7 @@ async function notesOf(registered: Awaited<ReturnType<typeof load>>, cwd: string
 
 describe("the lookup of the workflows install", () => {
 	const { version } = JSON.parse(readFileSync(join(import.meta.dirname, "..", "pi", "package.json"), "utf8"));
-	const MESSAGE = `workflows is not installed: npm install -g @vzlentin/workflows@${version}`;
+	const MESSAGE = `workflows ${version} is not installed: npm install -g @vzlentin/workflows@${version}`;
 	const EMPTY = [["No workflow runs in this project", "info"]];
 	let saved: NodeJS.ProcessEnv;
 	let home: string;
@@ -1004,7 +1004,7 @@ describe("the lookup of the workflows install", () => {
 		const pkg = join(globalRoot, "@vzlentin", "workflows");
 		await mkdir(join(pkg, "dist"), { recursive: true });
 		await mkdir(join(home, "empty"));
-		await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "@vzlentin/workflows" }));
+		await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "@vzlentin/workflows", version }));
 		await writeFile(join(pkg, "dist", "cli.js"), 'process.stdout.write("[]\\n");\n');
 	});
 
@@ -1063,6 +1063,16 @@ describe("the lookup of the workflows install", () => {
 		}
 	});
 
+	it("counts a workflows older than the extension as not installed, and a newer one as installed", async () => {
+		const manifest = join(globalRoot, "@vzlentin", "workflows", "package.json");
+		await fakeNpm(globalRoot);
+		await writeFile(manifest, JSON.stringify({ name: "@vzlentin/workflows", version: "0.0.1" }));
+		expect(await notesOf(await load(), home)).toEqual([[MESSAGE, "error"]]);
+
+		await writeFile(manifest, JSON.stringify({ name: "@vzlentin/workflows", version: "99.0.0-rc.1" }));
+		expect(await notesOf(await load(), home)).toEqual(EMPTY);
+	});
+
 	it("answers with the install command when workflows is not installed", async () => {
 		await fakeNpm(join(home, "empty"));
 		const registered = await load();
@@ -1103,7 +1113,7 @@ describe("the lookup of the workflows install", () => {
 					? `  i=1; while [ $i -le 30 ]; do echo "line $i"; i=$((i + 1)); done; echo "npm error failed" >&2; exit 1`
 					: "  :",
 				`  mkdir -p "${join(pkg, "dist")}"`,
-				`  echo '{"name":"@vzlentin/workflows"}' > "${join(pkg, "package.json")}"`,
+				`  echo '{"name":"@vzlentin/workflows","version":"${version}"}' > "${join(pkg, "package.json")}"`,
 				`  cat > "${join(pkg, "dist", "cli.js")}" <<'EOF'`,
 				cli,
 				"EOF",
@@ -1123,7 +1133,10 @@ describe("the lookup of the workflows install", () => {
 			await vi.waitFor(() => expect(notes).toHaveLength(1), { timeout: 10_000 });
 
 			expect(dialogs).toEqual([
-				["workflows is not installed", `Install @vzlentin/workflows@${version} with npm install -g into ${prefix()}?`],
+				[
+					`workflows ${version} is not installed`,
+					`Install @vzlentin/workflows@${version} with npm install -g into ${prefix()}?`,
+				],
 			]);
 
 			expect(logLines()).toEqual([
