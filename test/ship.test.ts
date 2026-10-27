@@ -652,7 +652,7 @@ export default function ({ events }) {
 	});
 
 	it("runs ship.js from another script in a new worktree on its branch, and leaves the checkout of the caller unchanged", async () => {
-		const scripts = join(repo, ".workflows", "workflows");
+		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(
 			join(scripts, "caller.js"),

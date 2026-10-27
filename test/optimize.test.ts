@@ -24,7 +24,7 @@ const passing = (passes: number): Verdict => ({
 });
 
 async function promptsHash(): Promise<string> {
-	const folder = fileURLToPath(new URL("../prompts/", import.meta.url));
+	const folder = fileURLToPath(new URL("../workflows/prompts/", import.meta.url));
 	const hash = createHash("sha256");
 
 	for (const file of (await readdir(folder)).sort()) hash.update(file).update(await readFile(join(folder, file)));

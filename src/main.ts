@@ -1060,7 +1060,7 @@ async function save(args: readonly string[], terminal: Terminal): Promise<number
 		throw new Error(`a workflow ${name} exists; replace it with --force`);
 	}
 
-	const folder = join(project, "workflows");
+	const folder = join(project, "scripts");
 	const file = join(folder, `${name}.js`);
 	await mkdir(folder, { recursive: true });
 	await writeFile(file, input.bundle.main);

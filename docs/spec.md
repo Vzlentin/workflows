@@ -13,13 +13,13 @@ headless and resumable. It runs in the [harness](https://github.com/Vzlentin/har
 calls and the progress of the run. See [Runs in the harness host](#runs-in-the-harness-host).
 
 `src/` is the engine that runs workflows: run directories, the script task, sessions, retries, resume and
-workflow scripts. Every workflow script is a command: `workflows <wf>` runs `workflows/<wf>.js`, and the `meta` at
-the top of the script declares its arguments. See [Workflow scripts](#workflow-scripts). `workflows/ship.js` and
-`workflows/campaign.js` are scripts of the package. `ship` selects the repository and creates the worktree, through its
-`meta`, then runs in the worktree the child runs `workflows/rpi.js`, `workflows/thermoloop.js` and `workflows/judge.js`,
+workflow scripts. Every workflow script is a command: `workflows <wf>` runs `.workflows/scripts/<wf>.js` of the project or `workflows/scripts/<wf>.js` of the package, and the `meta` at
+the top of the script declares its arguments. See [Workflow scripts](#workflow-scripts). `workflows/scripts/ship.js` and
+`workflows/scripts/campaign.js` are scripts of the package. `ship` selects the repository and creates the worktree, through its
+`meta`, then runs in the worktree the child runs `workflows/scripts/rpi.js`, `workflows/scripts/thermoloop.js` and `workflows/scripts/judge.js`,
 and the squash. `campaign` does the same, runs
-`workflows/ship.js` once for each work item, and `workflows/judge.js` once on the change of all the items.
-`workflows/optimize.js` runs `workflows/ship.js` once for each candidate and work item.
+`workflows/scripts/ship.js` once for each work item, and `workflows/scripts/judge.js` once on the change of all the items.
+`workflows/scripts/optimize.js` runs `workflows/scripts/ship.js` once for each candidate and work item.
 
 ```text
 research session:   research (documents the code as it is)
@@ -29,9 +29,9 @@ review session:     review  ->  challenge (SHIP or FIX)  ->  handoff (on FIX, ba
 judge session:      fixed rubric, then commit message, after SHIP
 ```
 
-The research, plan and first implement sessions are `workflows/rpi.js`, the review sessions and the implement
-sessions after them `workflows/thermoloop.js` (at most `--rounds` reviews), and the judge session `workflows/judge.js`.
-Each implement session is a child run of `workflows/implement.js`, which `rpi.js` and `thermoloop.js` both run.
+The research, plan and first implement sessions are `workflows/scripts/rpi.js`, the review sessions and the implement
+sessions after them `workflows/scripts/thermoloop.js` (at most `--rounds` reviews), and the judge session `workflows/scripts/judge.js`.
+Each implement session is a child run of `workflows/scripts/implement.js`, which `rpi.js` and `thermoloop.js` both run.
 
 Each box is a new session.
 
@@ -103,7 +103,7 @@ every prompt of the planner, implement and review sessions starts with a `## mem
 judge's prompt has no memory. A resume builds the memory again from the saved answers, so it gives the same prompts.
 
 The review challenge has an evidence rule: a finding that reverses a note, or a choice that the implementer explained,
-stays only with a defect that the review showed, written as `reverses #k: <defect>`. `workflows/thermoloop.js` adds this
+stays only with a defect that the review showed, written as `reverses #k: <defect>`. `workflows/scripts/thermoloop.js` adds this
 rule next to the SHIP or FIX rule, and not in a template. The planner's challenge does not get it.
 
 On SHIP, the run starts the child run `judge` in the worktree, with the work item, the start commit and `commit:
@@ -262,7 +262,7 @@ In the step `split`, a planner session splits the goal into work items with the 
 `respond` with a `subject`, a Conventional Commit subject for the whole goal, and the work items. The step logs the
 number of items, such as `2 items`. Then each
 work item ships in turn, in one worktree on the branch `campaign/<run-id>`, or `--branch`: the research, the plan, the rounds, the
-review, the judge and the squash of `workflows/ship.js`, from the commit that the item before it made. So each shipped
+review, the judge and the squash of `workflows/scripts/ship.js`, from the commit that the item before it made. So each shipped
 item is one commit, with the commit message that its own judge wrote, as in `ship`. No `ship/<run-id>` branch is made,
 and nothing is merged or pushed. Each item is a ship child run, with its own
 run ID and run directory, in the store of the campaign run: see `run` in [the script API](#the-script-api).
@@ -339,7 +339,7 @@ workflows optimize --workflow ship --items items/ --improve review,handoff --tri
 ```
 
 `workflows optimize ship` searches for better texts of some ship prompts with a reflective loop. It never changes
-`prompts/`: the result is a diff to apply by hand. It is the package script `workflows/optimize.js`. The workflow to
+`prompts/`: the result is a diff to apply by hand. It is the package script `workflows/scripts/optimize.js`. The workflow to
 optimize, `ship`, is one argument or `--workflow`, and defaults to `ship`.
 
 The items folder, relative to the current directory, holds at least 2 work items as `<name>.md` files. Each file has
@@ -442,8 +442,9 @@ such as `usage: workflows show <run-id> [--calls | --agents] [--json]`, and exit
 argument. Like every command of a global install, it runs the [setup](#setup) first.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
-directory outside a repository. Like the package, it can hold `workflows/*.js`, `prompts/*.md` and `agents/*.md`. A
-project file adds to the package files, and replaces the package file of the same name in the same folder.
+directory outside a repository. It has the shape of the script side of the package, `workflows/` of the package: it
+can hold `scripts/*.js`, `prompts/*.md` and `agents/*.md`. A project file adds to the package files, and replaces
+the package file of the same name in the same folder. Only the package has `lib/`.
 
 `workflows` without arguments prints one line `<name>: <description>` for each script, or `<name>` for a script
 without `meta.description`.
@@ -573,7 +574,7 @@ more then. A command that follows a run shows only the lines that come after it 
 is the subject of the first `text` argument, or else the file name without `.js`, the workflow name, or `stdin`. The
 run's task ends as failed, and its saved calls stay in the project store for the resume. `workflows show <run-id> --calls` shows the failed call. See [Show](#show).
 
-`workflows/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
+`workflows/scripts/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
 workflows campaign, which give it the start commit`. `run("ship", { repo })` gets its own worktree and `start`, as
 `workflows ship` does. `run("ship")` without `repo` runs in the caller's directory and needs `start` from the caller.
 The script does not check where `start` comes from: with `start` from another script, it runs in that script's
@@ -620,7 +621,7 @@ child run that ended without a result continues in a new task.
 ### The script API
 
 A script is the body of an async function: top-level `await` and `return` work. Each call below is a durable call,
-except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
+except `phase`, `log`, `args` and `prompts`.
 
 | Global | Meaning |
 |---|---|
@@ -630,11 +631,9 @@ except `phase`, `log`, `args`, `prompts`, `parallel` and `pipeline`.
 | `session(profile)`, `session({ as, provider, model, thinking })` | A new session of the profile (default `default`), with the model of [Agent profiles](#agent-profiles). `.ask(prompt, { schema })` is one turn in it |
 | `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
 | `ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
-| `run(name, args)` | Runs the script `name` of `workflows/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
+| `run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
 | `input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`, or of the `workflow` tool with `resume` and `answer`. See [Input](#input) |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
-| `parallel(thunks)` | Runs the functions at once and returns their results |
-| `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
 
 A call with an argument of the wrong type, such as a prompt that is not a string, a `sh` command that is not a string
@@ -644,12 +643,15 @@ or an array of strings, or a `prompts.<name>` input that is not a string, fails 
 
 #### The script lib
 
-Every script also gets these helpers of `src/lib.js`, which use only the calls above. A run saves the lib with its
-scripts and prompts, so a resume uses the lib that the run started with. A script's own declaration of the same name
-takes their place.
+Every script also gets these helpers of the files of `workflows/lib/`, which the run puts after the calls above. They
+use only the calls above. A lib file only declares: it runs no code when it loads, so the order of the files does not
+change the result. A run saves the lib with its scripts and prompts, so a resume uses the lib that the run started
+with. A script's own declaration of the same name takes their place.
 
 | Global | Meaning |
 |---|---|
+| `parallel(thunks)` | Runs the functions at once and returns their results |
+| `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
 | `subjectOf(text)` | The first non-empty line of `text`, without leading `#` |
 | `memory(lines)` | A run memory: numbered notes `#<k> <author> <round>: <note>`, only appended to, starting with `lines`. `.note(author, round, notes)` adds notes, with their whitespace collapsed and empty ones left out. `.context(prompt)` puts the notes as a `## memory` section before `prompt`. `.lines` gives the notes, to pass to a child run. `.session(profile)` is a session whose `.ask(prompt, { schema })` starts each prompt with the notes, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule>`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
@@ -658,7 +660,7 @@ takes their place.
 | `branchStart(base)` | The merge base of `base` and `HEAD`. Throws as `assertClean()` on a checkout with changes, and `no change from <base>` when the branch has no change from the merge base |
 
 `workflows/script.d.ts` declares these globals for editors. A project gets the same completion when it copies
-`script.d.ts` and `jsconfig.json` into `.workflows/workflows/`, and copies them again after an upgrade of the package.
+`script.d.ts` and `jsconfig.json` into `.workflows/`, and copies them again after an upgrade of the package.
 
 With `schema`, a JSON Schema, the session gets a `respond` tool for that turn. The model gives its answer as
 `respond({ answer })`, which ends the turn, and the call returns the checked answer. The schema goes to the model as
@@ -689,7 +691,7 @@ anthropic/nope`.
 
 ### Saved inputs and resume
 
-Before the run starts, it saves the script, every `workflows/*.js` of the package and the project, the instructions
+Before the run starts, it saves the script, every `scripts/*.js` of the package and the project, the lib, the instructions
 of every prompt, every profile, the args and the current directory. Resume and `run()` use these saved inputs, so a
 later edit of a script, prompt or profile, in the package or in `.workflows/`, changes only new runs.
 
@@ -742,8 +744,8 @@ with the script that the run saved. The `project` file of the run directory name
 the host of that project from any directory.
 
 Resume continues the pending work in the host. For a script, see [Saved inputs and resume](#saved-inputs-and-resume).
-For `ship`, it uses the work item, repository, start commit, `workflows/ship.js`, prompts, profiles and round limit
-that the run saved before it started. `campaign` does the same with its goal and `workflows/campaign.js`: the split,
+For `ship`, it uses the work item, repository, start commit, `workflows/scripts/ship.js`, prompts, profiles and round limit
+that the run saved before it started. `campaign` does the same with its goal and `workflows/scripts/campaign.js`: the split,
 the splits, the shipped items and the rundown are not run again. It does not read the work item file again, select or clone the
 repository again, or create another branch. Answered turns are not sent to the model again. A turn that was in
 progress is sent again.
@@ -1083,7 +1085,7 @@ exits 2.
 workflows save <run-id> <name> [--force]
 ```
 
-`workflows save` writes the script of a run to `workflows/<name>.js` of the project folder, and prints the absolute
+`workflows save` writes the script of a run to `scripts/<name>.js` of the project folder, and prints the absolute
 path of the file. The folder is made when it does not exist. Then `workflows <name>` runs the script, so a script that
 started from stdin or from a file can run again by name. The file has the full text of the script that the run saved,
 with its `export const meta` header. Only the script is saved: no prompts, agent profiles or scripts of child runs.
@@ -1435,17 +1437,18 @@ task of the caller's run. A child run without a worktree can have an empty run d
 
 ## Prompts
 
-`prompts/` holds the Pi prompt templates `research`, `plan`, `challenge`, `handoff`, `implement`, `review`, `judge` and
+`workflows/prompts/` holds the Pi prompt templates `research`, `plan`, `challenge`, `handoff`, `implement`, `review`, `judge` and
 `commit`, `split` and `rundown` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
 frontmatter and the last line `$@`: the run removes them, then adds its inputs as `## <name>` sections.
-`workflows/thermoloop.js` adds the evidence rule and the SHIP or FIX answer rule of the review challenge itself, so a
+`workflows/scripts/thermoloop.js` adds the evidence rule and the SHIP or FIX answer rule of the review challenge itself, so a
 template edit cannot remove them. `memory(...).session(...).noted` of the [script lib](#the-script-lib) adds the
 `respond` answer rule of the handoff and implement turns. In the same way,
-`workflows/campaign.js` adds the `respond` answer rule of `split`. The judge rubric is fixed: its eight
+`workflows/scripts/campaign.js` adds the `respond` answer rule of `split`. The judge rubric is fixed: its eight
 answers, in question order, make the score. `judge`, `commit` and `rundown` hold their own `respond` answer rules. A run uses the
 templates as they were when it started.
 
-Workflow scripts get every template of `prompts/` as `prompts.<name>`, and the agent profiles of `agents/`. A run
+Workflow scripts get every template of `prompts/` as `prompts.<name>`, and the agent profiles of `agents/`, from the
+package and the project. A run
 uses the profiles as they were when it started.
 
 ## Source
@@ -1470,4 +1473,12 @@ The engine files in `src/`:
 - `run.ts`: the run ID, usage errors, and what a run gets from the command line.
 - `git.ts`: Git commands, repository selection and worktrees.
 - `prompts.ts`: the instructions of a prompt template.
-- `lib.js`: the helpers that every workflow script gets. It runs in the sandbox, and the build copies it to `dist/`.
+
+The script side in `workflows/`, published as it is:
+
+- `scripts/`: the workflow scripts of the package.
+- `lib/`: the helpers that every workflow script gets, in themed files. They run in the sandbox. A function that
+  needs only the script calls goes here; one that needs Node or the store, or that every script must have, such as
+  the lockdown of `Date` and `Math.random`, stays in `src/`.
+- `prompts/` and `agents/`: the prompt templates and the agent profiles.
+- `script.d.ts` and `jsconfig.json`: the types of the script globals and the lib, for editors.

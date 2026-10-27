@@ -63,7 +63,7 @@ describe("workflows implement", () => {
 	});
 
 	it("logs the size of the change under the step of its caller, with the caller's memory", async () => {
-		const scripts = join(repo, ".workflows", "workflows");
+		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(
 			join(scripts, "parent.js"),

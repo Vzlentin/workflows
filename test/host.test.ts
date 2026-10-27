@@ -559,9 +559,9 @@ await Promise.all([...asks, Promise.reject(new Error("no"))])`,
 	});
 
 	it("closes the sessions of a failed child run that the script caught when the run completes", async () => {
-		await mkdir(join(root, ".workflows", "workflows"), { recursive: true });
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
 		await writeFile(
-			join(root, ".workflows", "workflows", "child.js"),
+			join(root, ".workflows", "scripts", "child.js"),
 			'await session().ask("Script spawn: child")\nthrow new Error("no")',
 		);
 		await writeFile(join(root, "parent.js"), 'try { await run("child") } catch { return "caught" }');
@@ -840,7 +840,7 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 		// The project agent of a project runs in its folder, so the inline script finds the project's `child` workflow.
 		await mkdir(join(root, "project"));
 		const project = addProject("demo", join(root, "project"));
-		const scripts = join(project, ".workflows", "workflows");
+		const scripts = join(project, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(
 			join(scripts, "child.js"),

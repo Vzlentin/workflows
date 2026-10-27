@@ -38,7 +38,8 @@
 	},
 	"overrides": [
 		{
-			"files": ["src/lib.js"],
+			// A lib file only declares helpers. The scripts call them, after the run puts the lib in front of each script.
+			"files": ["workflows/lib/*.js"],
 			"rules": { "no-unused-vars": "off" }
 		}
 	]

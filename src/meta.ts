@@ -17,7 +17,7 @@ import { instructions } from "./prompts.ts";
 import { type Io, type Run, UsageError, withUsage } from "./run.ts";
 import { type Bundle, loadBundle, META, type RunBundle } from "./script.ts";
 
-/** The first non-empty line of `item`, without leading #, as `subjectOf` of `lib.js`, which the engine cannot import. */
+/** The first non-empty line of `item`, without leading #, as `subjectOf` of `workflows/lib/text.js`, which the engine cannot import. */
 function subject(item: string): string {
 	const line = item.split("\n").find((candidate) => candidate.trim() !== "") ?? "";
 
