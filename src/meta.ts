@@ -17,7 +17,7 @@ import { instructions } from "./prompts.ts";
 import { type Io, type Run, UsageError, withUsage } from "./run.ts";
 import { type Bundle, loadBundle, META, type RunBundle } from "./script.ts";
 
-/** The first non-empty line of `item`, without leading #. */
+/** The first non-empty line of `item`, without leading #, as `subjectOf` of `lib.js`, which the engine cannot import. */
 function subject(item: string): string {
 	const line = item.split("\n").find((candidate) => candidate.trim() !== "") ?? "";
 
@@ -698,9 +698,10 @@ export function report(input: ScriptInput, result: JsonValue, io: Io): number {
 
 /**
  * The input of the child run `run` of a `run(name, args)` call: the script `name` of the caller's `bundle`, with the
- * `meta` defaults and the given args. With `meta.worktree` and `repo`, the child gets its own worktree from `repo` and
- * `base`; otherwise it runs in the caller's directory. `prompts` maps prompt names to texts that replace them in this
- * run only. The args are not checked against `meta`, but a `meta.worktree` script gets `start` as a string or not at all.
+ * `meta` defaults and the given args. With `meta.worktree`, `repo`, `base` and `branch` are not args: with `repo`, the
+ * child gets its own worktree from `repo` and `base`, and otherwise it runs in the caller's directory, as a script
+ * without `meta.worktree` does. `prompts` maps prompt names to texts that replace them in this run only. The args are
+ * not checked against `meta`, but a `meta.worktree` script gets `start` as a string or not at all.
  */
 export async function childInput(
 	request: { readonly name: string; readonly args: JsonObject; readonly bundle: RunBundle },
@@ -711,11 +712,9 @@ export async function childInput(
 
 	if (source === undefined) throw new Error(`no workflow ${name}`);
 	const meta = await readMeta(source, name);
-	const { repo, base = "main", branch, prompts = {}, ...given } = request.args;
+	const { prompts = {}, ...given } = request.args;
 
 	if (!Value.Check(OBJECT, prompts)) throw new Error(`run ${name}: prompts is not an object of prompt texts`);
-
-	if (meta.worktree && !Value.Check(START, given)) throw new Error(`run ${name}: start is not a string`);
 	const replaced = { ...bundle.prompts };
 
 	for (const [prompt, value] of Object.entries(prompts)) {
@@ -727,12 +726,18 @@ export async function childInput(
 		spec.default === undefined ? [] : [[arg, spec.default] as const],
 	);
 
-	const args = { ...Object.fromEntries(defaults), ...given };
-	const input = { name, args, meta, bundle: { ...bundle, prompts: replaced, main: source } };
+	const script = { name, meta, bundle: { ...bundle, prompts: replaced, main: source } };
+	const here = { runId: run.id, root: run.root, runDir: run.directory, cwd: run.cwd };
 
-	if (repo === undefined || !meta.worktree) {
-		return { ...input, runId: run.id, root: run.root, runDir: run.directory, cwd: run.cwd };
-	}
+	if (!meta.worktree) return { ...script, args: { ...Object.fromEntries(defaults), ...given }, ...here };
+
+	// `repo`, `base` and `branch` place a `meta.worktree` run; any other script gets them as args.
+	const { repo, base = "main", branch, ...own } = given;
+
+	if (!Value.Check(START, own)) throw new Error(`run ${name}: start is not a string`);
+	const input = { ...script, args: { ...Object.fromEntries(defaults), ...own } };
+
+	if (repo === undefined) return { ...input, ...here };
 
 	return prepare(
 		{ ...input, repo: String(repo), base: String(base), branch: branch === undefined ? branch : String(branch) },

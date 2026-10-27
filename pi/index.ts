@@ -109,7 +109,7 @@ type WorkflowDetails = Static<typeof DETAILS>;
 /** The part of `DETAILS` that a result of an older session must have to draw its steps. */
 const STEPS = Type.Object({ steps: Type.Array(Type.String()) });
 
-const PROGRESS = Type.Object({ progress: Type.Array(Type.Unknown()) });
+const PROGRESS = Type.Object({ progress: Type.Array(Type.Unknown()), status: Type.Optional(Type.String()) });
 
 /** The entry that a background call records, so a later start of the session watches the run again. */
 const STARTED_ENTRY = Type.Object({
@@ -126,14 +126,17 @@ const ENDED_ENTRY = Type.Object({
 	data: Type.Object({ runId: Type.String() }),
 });
 
-/** The lines of a `{"progress":[...]}` stderr line of `workflows --json`, or undefined for any other line. */
-function progressLines(line: string): string[] | undefined {
+/**
+ * The lines and the status of a `{"progress":[...]}` stderr line of `workflows --json`, or undefined for any other
+ * line.
+ */
+function progressLines(line: string): { lines: string[]; status: string | undefined } | undefined {
 	if (!line.startsWith('{"progress":')) return undefined;
 
 	try {
 		const parsed = JSON.parse(line);
 
-		return Value.Check(PROGRESS, parsed) ? parsed.progress.map(String) : undefined;
+		return Value.Check(PROGRESS, parsed) ? { lines: parsed.progress.map(String), status: parsed.status } : undefined;
 	} catch {
 		return undefined;
 	}
@@ -215,30 +218,32 @@ async function runCli(
  */
 class Steps {
 	#drawn: readonly string[] = [];
+	#status: string | undefined;
 	readonly #other: string[] = [];
 
 	/** Adds a stderr line, and returns the text of its update: the last progress line, or the line itself. */
 	add(line: string): string {
-		const lines = progressLines(line);
+		const progress = progressLines(line);
 
-		if (lines === undefined) {
+		if (progress === undefined) {
 			this.#other.push(line);
 
 			return line;
 		}
 
-		this.#drawn = lines;
+		this.#drawn = progress.lines;
+		this.#status = progress.status;
 
-		return lines.at(-1)?.trim() ?? "";
+		return progress.lines.at(-1)?.trim() ?? "";
 	}
 
 	get lines(): string[] {
 		return [...this.#drawn, ...this.#other];
 	}
 
-	/** The last progress line, trimmed, or `starting` before the first one. */
+	/** The status of the last progress line, else its last line, trimmed, or `starting` before the first one. */
 	get step(): string {
-		return this.#drawn.at(-1)?.trim() ?? "starting";
+		return this.#status ?? this.#drawn.at(-1)?.trim() ?? "starting";
 	}
 }
 
@@ -367,6 +372,12 @@ const GUIDELINES = [
 		"then returns the answer. `parallel([() => ...])` and " +
 		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +
 		"and `log(text)` write progress lines. `args`, `runId` and `runDir` are values.",
+	"Script lib: `subjectOf(text)` gives the first non-empty line without leading `#`. `memory(lines)` is a run memory of " +
+		"numbered notes: `.lines` to pass to a child run, `.note(author, round, notes)`, `.context(prompt)`, and " +
+		"`.session(profile)`, whose `.ask` starts each prompt with the notes and whose `.noted(round, prompt, rule)` asks " +
+		"for `{ text, notes }` and keeps the notes. `commitAll(message)` stages and commits every change, " +
+		"`diffStat(from, to)` gives `+12 -3 in 2 files`, `assertClean()` throws on changes that are not committed, and " +
+		"`branchStart(base)` gives the merge base of `base` for a clean branch with changes.",
 	"A script has no file system, network, modules or timers, so effects go through `sh`. `Date`, `Date.now()` and " +
 		"`Math.random()` throw. A resume runs the script again from the top: saved calls return their results, and a " +
 		"command that did not finish runs again, so keep `sh` and `ok` commands safe to repeat.",

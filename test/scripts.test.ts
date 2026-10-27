@@ -947,6 +947,23 @@ return { branch: await sh(["git", "branch", "--show-current"]), start: args.star
 		expect(git(repo, "worktree", "list", "--porcelain").split("\n\n")).toHaveLength(1);
 	});
 
+	it("gives a child run without meta.worktree its repo, base and branch args", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "workflows");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { repo: "r", base: "dev", branch: "b" })');
+		await writeFile(
+			join(scripts, "child.js"),
+			`export const meta = { args: { base: { type: "string", default: "main" } } }
+return args`,
+		);
+
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(0);
+		expect(JSON.parse(run.stdout[1] ?? "")).toEqual({ repo: "r", base: "dev", branch: "b", runId: expect.any(String) });
+	});
+
 	it("fails a run call that gives a worktree script a start that is not a string", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
@@ -1142,8 +1159,12 @@ return [one.reply, two.reply].join(", ")`,
 		expect(listed.code).toBe(0);
 		expect(listed.stdout).toEqual([
 			"campaign: Split a goal into work items and ship each one as a commit on one branch.",
+			"implement: Implement a plan in the current directory, and commit the change.",
+			"judge: Judge the change of the current branch against a work item with the fixed rubric.",
 			"optimize: Search for better ship prompts over a folder of work items.",
-			"ship: Ship one work item onto a new branch: research, plan, implement and review rounds, judge, and one squashed commit.",
+			"rpi: Research, plan and implement one work item, and commit it on a new branch.",
+			"ship: Ship one work item onto a new branch: research, plan, implement, review rounds, judge, and one squashed commit.",
+			"thermoloop: Review the change of the current branch, and fix it in rounds until the reviewer answers SHIP.",
 			"plain",
 		]);
 		const plain = await workflows(["plain", "--help"], { cwd: root });

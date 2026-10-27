@@ -45,9 +45,14 @@ export type Profile = {
 	readonly instructions: string;
 };
 
-/** The scripts, prompt instructions and profiles of the package and the project, saved by a run before it starts. */
+/**
+ * The scripts, prompt instructions and profiles of the package and the project, and the script lib of the package,
+ * saved by a run before it starts.
+ */
 export type Bundle = {
 	readonly scripts: Readonly<Record<string, string>>;
+	/** The source of `lib.js`, which the prelude gives every script after the script calls. */
+	readonly lib: string;
 	readonly prompts: Readonly<Record<string, string>>;
 	readonly agents: Readonly<Record<string, Profile>>;
 };
@@ -88,6 +93,9 @@ export type ScriptRun = {
 export const TOOL_EXTENSION = "workflows";
 
 const PACKAGE = fileURLToPath(new URL("../", import.meta.url));
+
+/** The script lib, next to the engine: the build copies it to `dist/`. */
+const LIB = fileURLToPath(new URL("./lib.js", import.meta.url));
 
 /** `<base>/<folder>/*<extension>` by name; a missing folder has none. */
 export async function readFolder(base: string, folder: string, extension: string): Promise<Record<string, string>> {
@@ -153,16 +161,18 @@ function profileOf(name: string, text: string): Profile {
 export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle> {
 	const project = cwd === undefined ? PACKAGE : await projectFolder(cwd);
 
-	const [scripts, merged, profiles] = await Promise.all([
+	const [scripts, merged, profiles, lib] = await Promise.all([
 		loadScripts(project),
 		readMerged(project, "prompts", ".md"),
 		readMerged(project, "agents", ".md"),
+		readFile(LIB, "utf8"),
 	]);
 
 	const templates = prompts === undefined ? merged : { ...merged, ...(await overrides(prompts, merged)) };
 
 	return {
 		scripts,
+		lib,
 		prompts: Object.fromEntries(Object.entries(templates).map(([name, text]) => [name, instructions(text)])),
 		agents: Object.fromEntries(Object.entries(profiles).map(([name, text]) => [name, profileOf(name, text)])),
 	};
@@ -187,7 +197,7 @@ export const META = /^((?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*)export\s+(const\s+met
 const checkpointWhen: CommonDocDefinition<JsonObject>["checkpointWhen"] = (_value, _ops, info) =>
 	info.deltasSinceBase >= 31;
 
-/** The sandbox functions that are not host calls. */
+/** The sandbox functions that are not host calls, and the script lib. */
 function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun): string {
 	return `
 const args = ${JSON.stringify(args)};
@@ -230,7 +240,7 @@ const pipeline = (items, ...stages) =>
 			return value;
 		}),
 	);
-`;
+${script.bundle.lib}`;
 }
 
 /** A JSON value. */
@@ -617,7 +627,10 @@ async function childResult(
 	const { outcome } = (await runtime.waitForTask(task, context)).state;
 
 	if (outcome.status !== "completed") {
-		throw new Error(`child run ${runId} failed: ${outcome.error?.message ?? outcome.reason ?? outcome.status}`);
+		const cause = outcome.error?.message ?? outcome.reason ?? outcome.status;
+
+		// The error of a nested child run already names the deepest run that failed.
+		throw new Error(cause.startsWith("child run ") ? cause : `child run ${runId} failed: ${cause}`);
 	}
 
 	return { runId, result: outcome.result };

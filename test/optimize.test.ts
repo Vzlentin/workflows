@@ -33,7 +33,10 @@ async function promptsHash(): Promise<string> {
 }
 
 describe("workflows optimize", () => {
-	it("evaluates the baseline and one candidate per trial in ship child runs, and resumes a failed one", async () => {
+	// Each of the six ship runs is three child runs of its own.
+	it("evaluates the baseline and one candidate per trial in ship child runs, and resumes a failed one", {
+		timeout: 30_000,
+	}, async () => {
 		const items = join(root, "items");
 		await mkdir(items);
 

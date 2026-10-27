@@ -77,6 +77,8 @@ wait)
 	*-*)
 		until [ -e "go-$2" ]; do sleep 0.02; done
 		echo "warning: slow disk" >&2; echo '{"progress":["◉ item 2/5: x","  ◉ round 1: review"]}' >&2
+		until [ -e "end-$2" ] || [ -e "status-$2" ]; do sleep 0.02; done
+		[ -e "status-$2" ] && echo '{"progress":["◉ item 2/5: x","  ◉ round 1: review"],"status":"item 2/5 › round 1/3: review"}' >&2
 		until [ -e "end-$2" ]; do sleep 0.02; done
 		echo '{"runId":"'"$2"'","status":"finished","result":1,"report":["one"]}' ;;
 	esac ;;
@@ -662,6 +664,12 @@ describe("a background run of the workflow tool", () => {
 		await writeFile(join(root, `go-${id}`), "");
 		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", ["campaign: bb814010 ◉ round 1: review"]]));
 		expect(widgets.some(([, lines]) => lines?.some((line) => line.includes("slow disk")))).toBe(false);
+
+		// The status of a progress line takes the place of its last line.
+		await writeFile(join(root, `status-${id}`), "");
+		await vi.waitFor(() =>
+			expect(widgets.at(-1)).toEqual(["workflows", ["campaign: bb814010 item 2/5 › round 1/3: review"]]),
+		);
 
 		await writeFile(join(root, `end-${id}`), "");
 		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));

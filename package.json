@@ -24,7 +24,7 @@
 		"access": "public"
 	},
 	"scripts": {
-		"build": "rm -rf dist && tsc -p tsconfig.build.json",
+		"build": "rm -rf dist && tsc -p tsconfig.build.json && cp src/lib.js dist/lib.js",
 		"prepack": "npm run build",
 		"postinstall": "node scripts/postinstall.js",
 		"check": "biome check . && oxlint --deny-warnings && tsc -p tsconfig.json && tsc -p workflows/jsconfig.json && vitest --run",

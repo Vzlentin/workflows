@@ -540,7 +540,7 @@ export type Outcome = {
 	readonly exits: number;
 };
 
-const PROGRESS = Type.Object({ progress: Type.Array(Type.String()) });
+const PROGRESS = Type.Object({ progress: Type.Array(Type.String()), status: Type.Optional(Type.String()) });
 
 /** `line` without the duration at the end of a step line, which depends on how fast the test runs. */
 export function untimed(line: string): string {
@@ -561,6 +561,22 @@ export function progressOf(stderr: readonly string[]): string[] {
 	});
 
 	return (snapshots.at(-1) ?? []).map(untimed);
+}
+
+/** The statuses of the `{"progress":[...]}` stderr lines of a `--json` run, each once, in order, `-` for none. */
+export function statusesOf(stderr: readonly string[]): string[] {
+	const statuses: string[] = [];
+
+	for (const line of stderr) {
+		const parsed = JSON.parse(line);
+
+		if (!Value.Check(PROGRESS, parsed)) throw new Error(`not a progress line: ${line}`);
+		const status = parsed.status ?? "-";
+
+		if (statuses.at(-1) !== status) statuses.push(status);
+	}
+
+	return statuses;
 }
 
 /** A connection to the host of `project` that runs in this process. */

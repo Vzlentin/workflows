@@ -11,6 +11,7 @@ import {
 	progressOf,
 	repository,
 	sandbox,
+	statusesOf,
 	untimed,
 	workflows,
 } from "./support.ts";
@@ -48,19 +49,41 @@ function itemSteps(stat: string, subject: string) {
 	return [
 		"  ✓ research",
 		"  ✓ plan",
-		"  ✓ round 1: implement",
+		"  ✓ implement",
 		`    ${stat}`,
-		"  ✓ round 1: review",
+		"  ✓ round 1/3: review",
 		"    SHIP",
 		"  ✓ judge",
-		expect.stringMatching(new RegExp(`^ {4}judge 0\\.83: [0-9a-f]+ ${subject}$`)),
+		"    judge 0.83",
+		expect.stringMatching(new RegExp(`^ {2}commit [0-9a-f]+ ${subject}$`)),
 	];
 }
+
+/** The report line of the finding of the campaign judge, from `PASSING_JUDGE`. */
+const FINDING = "  finding 4 FAIL README.md:3 adds a line the work item does not need";
+
+/** The steps of the judge of a campaign that is done. */
+const JUDGE_STEPS = ["✓ all 2 items", "  ✓ judge", "    judge 0.83"];
 
 /** The report line of a shipped item with the commit `subject`. */
 const itemLine = (subject: string) => expect.stringMatching(new RegExp(`^ {2}[0-9a-f]+ ${subject}, judge 0\\.83$`));
 
 describe("workflows campaign", () => {
+	it("gives judgeError and no judge when the campaign judge fails", async () => {
+		const failing = "1 PASS\n2 PASS";
+
+		const run = await workflows(["campaign", "--json", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST]], edits: [FIXED], commit: [COMMIT], judge: [PASSING_JUDGE, failing, failing, failing] },
+		});
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(report[0]).toMatch(/^done Fix the README in 1 item, judge failed, [0-9a-f]+$/);
+		expect(result.judgeError).toBe("the answer did not call respond");
+		expect(result).not.toHaveProperty("judge");
+	});
+
 	it("ships two items as two commits on the campaign branch", async () => {
 		const run = await workflows(["campaign", "--json", GOAL], {
 			cwd: repo,
@@ -72,14 +95,18 @@ describe("workflows campaign", () => {
 		expect(run.stdout).toHaveLength(2);
 		expect(run.stdout[0]).toBe(`run ${run.id}`);
 		expect(report).toEqual([
-			expect.stringMatching(/^done Fix the README in 2 items, [0-9a-f]+$/),
+			expect.stringMatching(/^done Fix the README in 2 items, judge 0\.83, [0-9a-f]+$/),
 			itemLine(COMMIT.subject),
 			itemLine(THANKS.subject),
+			FINDING,
 			"branch docs/readme",
 		]);
 		expect(result).toMatchObject({ subject: "docs: readme", branch: "docs/readme" });
+		expect(result.judge).toEqual({ score: 5 / 6, findings: PASSING_JUDGE.findings });
+		expect(result).not.toHaveProperty("judgeError");
 		expect(result.items[0].result).toMatchObject({
-			...PASSING_JUDGE,
+			status: "shipped",
+			findings: PASSING_JUDGE.findings,
 			memory: ["#1 planner 0: Handoff 1: one word changes.", "#2 implementer 1: Implement 1: README.md had wrold."],
 		});
 		expect(progressOf(run.stderr)).toEqual([
@@ -89,8 +116,32 @@ describe("workflows campaign", () => {
 			...itemSteps("+1 -1 in 1 file", COMMIT.subject),
 			"✓ item 2/2: Add a thanks line",
 			...itemSteps("+1 -0 in 1 file", THANKS.subject),
+			...JUDGE_STEPS,
 		]);
-		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, ...SHIP]);
+		// The end of an item's ship run and the step of the next item come in either order, so the bare item steps
+		// between them are left out.
+		const statuses = statusesOf(run.stderr).filter((status) => !/^item \d\/\d: [^›]+$/.test(status));
+		const one = "item 1/2: Fix the README typo";
+		const two = "item 2/2: Add a thanks line";
+		expect(statuses.filter((status, i) => status !== statuses[i - 1])).toEqual([
+			"split",
+			`${one} › research`,
+			`${one} › plan`,
+			`${one} › implement`,
+			`${one} › round 1/3: review`,
+			`${one} › judge`,
+			`${two} › research`,
+			`${two} › plan`,
+			`${two} › implement`,
+			`${two} › round 1/3: review`,
+			`${two} › judge`,
+			"all 2 items",
+			"all 2 items › judge",
+			"all 2 items",
+			"-",
+		]);
+		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, ...SHIP, "judge"]);
+		expect(run.model.calls.at(-1)?.prompt).toMatch(new RegExp(`## item\\n${GOAL.trim()}\\n\\n## base\\n${start}\\n`));
 		const [split] = run.model.calls;
 		expect(split?.prompt).toMatch(/^Split this goal into work items\.\n[\s\S]*\n\n## goal\n# Fix the README\n/);
 		expect(split?.prompt).not.toContain("## answer");
@@ -124,20 +175,24 @@ describe("workflows campaign", () => {
 			const item = n === 0 ? "Fix the README typo" : "Add a thanks line";
 			expect(lines[at - 3], child).toBe(`item ${n + 1}/2: ${item}`);
 			researchers.push(await conversationOf(new RegExp(`Research the codebase[\\s\\S]*${item}`)));
-			expect(lines.slice(at + 1, at + 4)).toEqual([
-				"    research",
-				`      ✓ session researcher conversation ${researchers[n]}`,
-				"      ✓ ask researcher",
+			expect(lines.slice(at + 1, at + 5)).toEqual([
+				expect.stringMatching(/^ {6}✓ run rpi \S+$/),
+				"        research",
+				`          ✓ session researcher conversation ${researchers[n]}`,
+				"          ✓ ask researcher",
 			]);
 		}
 
-		expect(lines.slice(-4)).toEqual(report);
+		expect(lines.slice(-report.length)).toEqual(report);
 		const { calls } = JSON.parse((await workflows(["show", run.id ?? "", "--json"], { cwd: root })).stdout[0] ?? "");
-		const shipped = calls.filter((call: { kind: string }) => call.kind === "run");
-		expect(shipped.map((call: { label: string }) => call.label)).toEqual(
-			children.map((child: string) => `ship ${child}`),
-		);
-		expect(shipped[0].calls[0]).toMatchObject({
+		const ran = calls.filter((call: { kind: string }) => call.kind === "run");
+		expect(ran.map((call: { label: string }) => call.label)).toEqual([
+			...children.map((child: string) => `ship ${child}`),
+			expect.stringMatching(/^judge \S+$/),
+		]);
+		const shipped = ran.slice(0, -1);
+		expect(shipped[0].calls[0]).toMatchObject({ kind: "run", label: expect.stringMatching(/^rpi \S+$/) });
+		expect(shipped[0].calls[0].calls[0]).toMatchObject({
 			kind: "session",
 			label: `researcher conversation ${researchers[0]}`,
 			phase: "research",
@@ -218,15 +273,16 @@ describe("workflows campaign", () => {
 		});
 
 		expect(resumed.code).toBe(0);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "judge"]);
 		const split = resumed.model.find("split")?.prompt;
 		expect(split).toContain("## rundown\nRundown 1");
 		expect(split).toContain("## answer\nThank the reader in one line");
 		expect(progressOf(resumed.stderr)).toEqual(expect.arrayContaining(["✓ split", "✓ item 3/3: Thank the reader"]));
 		expect(JSON.parse(resumed.stdout[1] ?? "").report).toEqual([
-			expect.stringMatching(/^done Fix the README in 2 items, [0-9a-f]+$/),
+			expect.stringMatching(/^done Fix the README in 2 items, judge 0\.83, [0-9a-f]+$/),
 			itemLine(COMMIT.subject),
 			itemLine(THANKS.subject),
+			FINDING,
 			"branch docs/readme",
 		]);
 		expect(git(worktree, "rev-parse", "HEAD~2")).toBe(start);
@@ -248,9 +304,10 @@ describe("workflows campaign", () => {
 
 		expect(resumed.code).toBe(0);
 		expect(JSON.parse(resumed.stdout[1] ?? "").report).toEqual([
-			expect.stringMatching(/^done Fix the README in 2 items, [0-9a-f]+$/),
+			expect.stringMatching(/^done Fix the README in 2 items, judge 0\.83, [0-9a-f]+$/),
 			itemLine(COMMIT.subject),
 			itemLine(THANKS.subject),
+			FINDING,
 			"branch docs/readme",
 		]);
 		// The pending nested ship task restarts at the same time as the campaign script replays to it, so its first
@@ -258,8 +315,9 @@ describe("workflows campaign", () => {
 		expect(progressOf(resumed.stderr)).toEqual([
 			"✓ item 2/2: Add a thanks line",
 			...itemSteps("+1 -0 in 1 file", THANKS.subject),
+			...JUDGE_STEPS,
 		]);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(SHIP);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual([...SHIP, "judge"]);
 		const worktree = worktreeOf(first.id);
 		const reflog = git(worktree, "reflog", "--format=%gs").split("\n");
 		expect(reflog.filter((line) => line === `commit: ${COMMIT.subject}`)).toHaveLength(1);
@@ -277,7 +335,7 @@ describe("workflows campaign", () => {
 		expect(run.code).toBe(0);
 		const { result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(result.branch).toBe("docs/readme-2");
-		expect(report).toEqual([expect.any(String), itemLine(COMMIT.subject), "branch docs/readme-2"]);
+		expect(report).toEqual([expect.any(String), itemLine(COMMIT.subject), FINDING, "branch docs/readme-2"]);
 		expect(git(worktreeOf(run.id), "branch", "--show-current")).toBe("docs/readme-2");
 		expect(git(repo, "rev-parse", "docs/readme")).toBe(start);
 	});
@@ -293,8 +351,9 @@ describe("workflows campaign", () => {
 		expect(run.code).toBe(0);
 		expect(run.stdout).toEqual([
 			`run ${run.id}`,
-			expect.stringMatching(/^done Fix the README in 1 item, [0-9a-f]+$/),
+			expect.stringMatching(/^done Fix the README in 1 item, judge 0\.83, [0-9a-f]+$/),
 			itemLine(COMMIT.subject),
+			FINDING,
 			`branch docs/readme is in conflict with an existing branch; kept campaign/${run.id}`,
 		]);
 		expect(git(worktreeOf(run.id), "branch", "--show-current")).toBe(`campaign/${run.id}`);
@@ -337,8 +396,9 @@ while [ ! -f "${gate}.open" ]; do sleep 0.02; done
 		expect(resumed.model.calls).toEqual([]);
 		expect(resumed.stdout).toEqual([
 			`run ${first.id}`,
-			expect.stringMatching(/^done Fix the README in 1 item, [0-9a-f]+$/),
+			expect.stringMatching(/^done Fix the README in 1 item, judge 0\.83, [0-9a-f]+$/),
 			itemLine(COMMIT.subject),
+			FINDING,
 			"branch docs/readme",
 		]);
 		expect(git(worktree, "branch", "--show-current")).toBe("docs/readme");

@@ -13,9 +13,10 @@ export const PROGRESS_KIND = "workflows.progress";
 
 /**
  * A `phase` or `log` line of the run `run`, whose caller is `parent`, the end of the run `run`, or the start of an
- * execution of the root run `run`, from which a command that reaches the running task shows the lines. `at` is the
- * time of the line or the end in ms since the epoch; events that an earlier version saved have none. `continues` marks
- * the first phase line of an execution of the run, which goes on with the step of that text when it is the current one.
+ * execution of the run `run`: of a root run, from which a command that reaches the running task shows the lines, or of
+ * a child run, with its caller `parent`. `at` is the time of the line or the end in ms since the epoch; events that an
+ * earlier version saved have none. `continues` marks the first phase line of an execution of the run, which goes on
+ * with the step of that text when it is the current one.
  */
 export const PROGRESS_EVENT = Type.Union([
 	Type.Object({
@@ -32,7 +33,7 @@ export const PROGRESS_EVENT = Type.Union([
 		failed: Type.Boolean(),
 		at: Type.Optional(Type.Number()),
 	}),
-	Type.Object({ kind: Type.Literal("start"), run: Type.String() }),
+	Type.Object({ kind: Type.Literal("start"), run: Type.String(), parent: Type.Optional(Type.String()) }),
 ]);
 
 export type ProgressEvent = Readonly<Static<typeof PROGRESS_EVENT>>;
@@ -63,7 +64,11 @@ export class Progress {
 
 	/** Adds `event`, and returns the line that it adds, with its indent and without a mark. */
 	add(event: ProgressEvent): string | undefined {
-		if (event.kind === "start") return undefined;
+		if (event.kind === "start") {
+			if (event.parent !== undefined) this.#node(event.run, event.parent);
+
+			return undefined;
+		}
 
 		if (event.kind === "end") {
 			const step = this.#runs.get(event.run)?.current;
@@ -118,23 +123,12 @@ export class Progress {
 		return `${"  ".repeat(depth(run))}${event.text}`;
 	}
 
-	/** The texts of the steps that run now, outermost first. */
-	running(): string[] {
-		const texts: string[] = [];
-
-		const visit = (items: readonly Item[]) => {
-			for (const item of items) {
-				if ("run" in item) visit(item.run.items);
-				else if ("mark" in item) {
-					if (item.mark === "◉") texts.push(item.text);
-					visit(item.items);
-				}
-			}
-		};
-
-		visit(this.#top);
-
-		return texts;
+	/**
+	 * The texts of the steps that run now, outermost first, joined with ` › `, or undefined when no step runs. Child
+	 * runs that run at once join with `, `.
+	 */
+	status(): string | undefined {
+		return running(this.#top).join(", ") || undefined;
 	}
 
 	/** Whether the run has a step. */
@@ -183,6 +177,7 @@ export class Progress {
 		return lines;
 	}
 
+	/** The node of `run`: a new one goes under the current step of the run `parent`, or at the top without one. */
 	#node(run: string, parent: string | null): RunNode {
 		const found = this.#runs.get(run);
 
@@ -208,6 +203,23 @@ export function duration(ms: number): string {
 	return `${Math.floor(seconds / 3600)}h${pad(Math.floor(seconds / 60) % 60)}m`;
 }
 
+/**
+ * The running step of each run in `items`, each as `<step> › <running steps under it>`, where steps under one step
+ * join with `, `.
+ */
+function running(items: readonly Item[]): string[] {
+	return items.flatMap((item) => {
+		if ("log" in item) return [];
+
+		if ("run" in item) return running(item.run.items);
+
+		if (item.mark !== "◉") return [];
+		const below = running(item.items).join(", ");
+
+		return [below === "" ? item.text : `${item.text} › ${below}`];
+	});
+}
+
 /** The level of the steps of `run`. */
 function depth(run: RunNode): number {
 	return run.caller === undefined ? 0 : depth(run.caller) + (run.under ? 1 : 0);
@@ -222,8 +234,8 @@ export type Display = {
 
 /**
  * The display of a run on `io`. With `json`, each change prints one stderr line `{"progress":[<line>...]}` with every
- * line of the tree. Else, on a terminal, `io.redraw` draws the tree again in place. Else each step and log line prints
- * once, with its indent and without a mark.
+ * line of the tree, and `"status"` with the steps that run now. Else, on a terminal, `io.redraw` draws the tree again in
+ * place. Else each step and log line prints once, with its indent and without a mark.
  */
 export function display(io: Io, json: boolean): Display {
 	const progress = new Progress();
@@ -232,7 +244,7 @@ export function display(io: Io, json: boolean): Display {
 
 	const draw = (added: string | undefined) => {
 		if (json) {
-			const line = JSON.stringify({ progress: progress.lines() });
+			const line = JSON.stringify({ progress: progress.lines(), status: progress.status() });
 
 			if (line !== last) io.stderr(line);
 			last = line;

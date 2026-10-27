@@ -280,14 +280,15 @@ async function runPhase(
 	const parent = caller !== undefined && current(caller) ? caller.input.runId : null;
 
 	try {
-		// A command that reaches the running task of a root run shows its progress from here.
-		if (task.owner === undefined) {
-			await runtime.commit(async (tx) => {
-				await addProgress(tx, root, [{ kind: "start", run: runId }]);
+		// A command that reaches the running task of a root run shows its progress from here, and a child run goes under
+		// the current step of its caller from here, also when it has no line of its own.
+		await runtime.commit(async (tx) => {
+			await addProgress(tx, root, [
+				parent === null ? { kind: "start", run: runId } : { kind: "start", run: runId, parent },
+			]);
 
-				return undefined;
-			}, context);
-		}
+			return undefined;
+		}, context);
 
 		if (worktree !== undefined)
 			await ensureWorktree(worktree.repository, worktree.path, worktree.branch, worktree.start);
@@ -331,7 +332,7 @@ async function runPhase(
 }
 
 /** The kind and version of the task of every script run. A run saved by another version cannot resume. */
-export const TASK = { name: "workflows.run", version: 15 } as const;
+export const TASK = { name: "workflows.run", version: 16 } as const;
 
 /** Whether the script task can continue the task `latest`. */
 export function current<R>(

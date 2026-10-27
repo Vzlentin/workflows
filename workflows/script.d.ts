@@ -95,3 +95,42 @@ declare function phase(title: string): void;
 
 /** Writes the line `text` under the current step on stderr before the script's next call that runs. */
 declare function log(text: string): void;
+
+// The lib: helpers that every script gets. See "The script lib" in docs/spec.md.
+
+/** The subject of a text: its first non-empty line without leading `#`. */
+declare function subjectOf(text: string): string;
+
+/** A session whose every prompt starts with the notes of a memory. */
+type RememberingSession = {
+	ask(prompt: string | Promise<string>, options?: { schema?: object }): Promise<any>;
+	/** Asks for `{ text, notes }` with the answer rule `text is <rule>`, adds the notes under the profile, returns the text. */
+	noted(round: number, prompt: string | Promise<string>, rule: string): Promise<string>;
+};
+
+/**
+ * A run memory: numbered notes `#<k> <author> <round>: <note>`, only appended to, starting with `lines`. Pass `lines` to
+ * a child run to go on with the same memory.
+ */
+declare function memory(lines?: readonly string[]): {
+	readonly lines: string[];
+	note(author: string, round: number, notes: readonly string[]): void;
+	/** `prompt` after a `## memory` section with the notes, or `prompt` when there are none. */
+	context(prompt: string): string;
+	session(profile: string): RememberingSession;
+};
+
+/** Stages every change, and commits it as `message` when something is staged. */
+declare function commitAll(message: string): Promise<void>;
+
+/** `+12 -3 in 2 files` for the change from `from` to `to` (default `HEAD`), or `no new changes`. */
+declare function diffStat(from: string, to?: string): Promise<string>;
+
+/**
+ * The merge base of `base` and `HEAD`, where the change of the current branch starts. Throws when the checkout has
+ * changes that are not committed, or when the branch has no change from `base`.
+ */
+declare function branchStart(base: string): Promise<string>;
+
+/** Throws when the checkout has changes that are not committed. */
+declare function assertClean(): Promise<void>;
