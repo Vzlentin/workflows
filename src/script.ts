@@ -195,12 +195,13 @@ export const META = /^((?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*)export\s+(const\s+met
 const checkpointWhen: CommonDocDefinition<JsonObject>["checkpointWhen"] = (_value, _ops, info) =>
 	info.deltasSinceBase >= 31;
 
-/** The sandbox functions that are not host calls, and the script lib. */
-function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun): string {
+/** The sandbox functions that are not host calls, and the script lib; `cwd` is the directory of the script calls. */
+function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun, cwd: string): string {
 	return `
 const args = ${JSON.stringify(args)};
 const runId = ${JSON.stringify(script.runId)};
 const runDir = ${JSON.stringify(script.runDir)};
+const cwd = ${JSON.stringify(cwd)};
 const __unavailable = (name) => function () {
 	throw new Error(name + " is not available in workflow scripts");
 };
@@ -787,7 +788,7 @@ export async function runScript(
 	let result: Awaited<ReturnType<CodemodeSandbox["execute"]>>;
 
 	try {
-		const wrapped = `${prelude(args, Object.keys(bundle.prompts), script)}\nreturn await (async () => {\n${source}\n})();`;
+		const wrapped = `${prelude(args, Object.keys(bundle.prompts), script, cwd)}\nreturn await (async () => {\n${source}\n})();`;
 		result = await sandbox.execute(wrapped, { signal: AbortSignal.any([signal, stop.signal]) });
 	} finally {
 		await sandbox.close();

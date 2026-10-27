@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -36,6 +37,10 @@ const ENVIRONMENT = { ...process.env };
 
 /** The run directories of the sandbox `root`. */
 export const runsOf = (root: string) => join(root, "state", "workflows", "runs");
+
+/** The worktree of the run `id` on the repository `repository`: `.worktrees/<name>/<id>` next to it. */
+export const worktreeAt = (repository: string, id: string | undefined) =>
+	join(dirname(realpathSync(repository)), ".worktrees", basename(repository), id ?? "missing");
 
 /** The line that a command prints when Ctrl+C detaches it from the run `id`. */
 export const detached = (id: string | undefined) =>

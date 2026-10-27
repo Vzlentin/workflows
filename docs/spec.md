@@ -81,7 +81,7 @@ does today, with `path:line` references, the patterns and tests of that area, an
 does not suggest changes, and if it has a subagent tool, can spawn subagents to search in parallel. The plan prompt
 gets its reply as its `research` section, after the work item. The research prompt has no memory and gives no notes.
 
-The work item ships onto the branch `ship/<run-id>`, or `--branch`, in a worktree in the run directory, and a shipped run renames that
+The work item ships onto the branch `ship/<run-id>`, or `--branch`, in a worktree next to the repository (see [The meta block](#meta)), and a shipped run renames that
 branch at the end: see [Branch name](#branch-name). The selected repository's checkout, index and local edits stay
 unchanged. Ship does not push and does not open a pull request.
 
@@ -140,7 +140,8 @@ The command prints `shipped <subject> in <n> rounds, judge <score or failed>, <c
 of [Branch name](#branch-name), and exits 0.
 
 The result of the run, which `--json` prints, has `status` and `rounds`; `head`, `subject`, the subject of the
-squashed commit, and `branch`, the branch that the worktree ends on, when shipped; `score`, `answers`, the eight answers in question order, and `findings`, the finding
+squashed commit, and `branch`, the branch that the worktree ends on, when shipped; `worktree`, the path of the
+directory that the run ran in, for every status; `score`, `answers`, the eight answers in question order, and `findings`, the finding
 lines of the judge, when the judge answered; `judgeError` when the judge failed; `reply` when blocked; `handoff`, the
 handoff that the last round used, when blocked or stopped; and `memory`, the
 notes of the run memory in order as `#<k> <note>` lines, or `[]` when there are none, for every status.
@@ -156,7 +157,7 @@ workflows rpi --repo calibre --base develop item.md
 
 `workflows rpi` researches, plans and implements one work item, and commits it on its branch: the research, plan and
 first implement of `ship`, with no review, no judge and no squash. The work item, `--repo`, `--base`, `--branch` and
-`--prompts` work as for `ship`. The work goes in a worktree in the run directory on the branch `rpi/<run-id>`, or
+`--prompts` work as for `ship`. The work goes in a worktree next to the repository on the branch `rpi/<run-id>`, or
 `--branch`, which keeps its name. The steps are `research`, `plan` and `implement`.
 
 The research and plan sessions are those of `ship`. The step `implement` runs [implement](#implement) as a child
@@ -335,6 +336,7 @@ failed and was reset: its notes describe code that is gone` to the run memory. T
   the patch exists, then `How should the campaign continue? Answer stop, or nothing, to end it.` The command prints
   the question and exits 3 with the status `waiting`. Continue with `workflows resume <run-id> --answer <text>`.
 - When the answer is `stop`, in any case, or empty, the command prints `stopped <subject> at item <n>: <worktree>`,
+  with the path of the campaign's worktree,
   then the rundown, and exits 1. The branch keeps its name `campaign/<run-id>`, or `--branch`.
 - Any other answer goes back to the step `split`: a new planner session with the `split` prompt and the inputs
   `goal`, `shipped`, `rundown` (the whole question summary) and `answer`. Its items replace the remaining items on the
@@ -384,8 +386,8 @@ A candidate is one text for each listed prompt. The baseline is the texts of the
 <folder>` sets it. Each evaluation is the child run
 `run("ship", { item, repo, base: start, prompts: candidate })`, one at a time. The score of a shipped run is
 `passes/8 - 0.1*(rounds-1)`, where `passes` is the number of PASS answers of the judge, or 0 when the judge failed. A
-blocked or stopped run scores 0. After a ship run finishes, its worktree and its branch are removed: the `branch` of its
-result, or `ship/<run-id>` when it did not ship. Its run directory stays. There is no evaluation cache: a reflect text
+blocked or stopped run scores 0. After a ship run finishes, its worktree and its branch are removed: the `worktree` of
+its result, and the `branch` of its result, or `ship/<run-id>` when it did not ship. Its run directory stays. There is no evaluation cache: a reflect text
 equal to an earlier candidate's text ships again.
 
 The run evaluates the baseline on every item first. Each later trial changes one prompt of the best candidate so far,
@@ -499,8 +501,13 @@ export const meta = {
     positional values fail with `give the <label> as one argument`.
   - A `required` argument without a value fails with `missing <label>`. `label` defaults to the argument name.
 - `worktree: true` adds `--repo` and `--base`, with the rules of [Ship](#ship), and `--branch`. The run gets a new
-  worktree on the branch `--branch` or `<wf>/<run-id>` in the run directory, runs the script there, and gives it `args.start`, the
-  start commit. At the end, the run names the branch: see [Branch name](#branch-name).
+  worktree on the branch `--branch` or `<wf>/<run-id>`, runs the script there, and gives it `args.start`, the
+  start commit. The worktree is `<parent>/.worktrees/<name>/<run-id>`, where `<parent>` is the folder that holds the
+  repository and `<name>` is the repository folder's name: `~/code/app` gets `~/code/.worktrees/app/<run-id>`, and the
+  clone of a GitHub repository gets `<run-directory>/.worktrees/repository/<run-id>`. When the command ran with
+  `HERDR_ENV` set, the run first runs `herdr worktree create --cwd <repository> --path <worktree> --branch <branch>
+  --base <start> --no-focus`, so the worktree shows in Herdr. When `herdr` fails, is missing, or makes no worktree at
+  that path, Git creates the worktree, as without Herdr. A child run uses Herdr when its root run does. At the end, the run names the branch: see [Branch name](#branch-name).
 - `exit` maps `result.status` to the exit code. Any other status, or a result without `status`, exits 0. The status
   `waiting` always exits 3, whatever `exit` says. See [Input](#input).
 
@@ -623,7 +630,8 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
 
 - The child's args are the defaults of its `meta.args`, then `args`, without `prompts`, and with `meta.worktree` also
   without `repo`, `base` and `branch`. They are not checked against `meta`, so an undeclared arg reaches the script.
-- With `meta.worktree` and `args.repo`, the child gets a new worktree on `<name>/<child-id>` in its run directory, in
+- With `meta.worktree` and `args.repo`, the child gets a new worktree on `<name>/<child-id>`, next to the repository as
+  for `meta.worktree`, in
   the repository of `args.repo` from the caller's directory, at `args.base` (default `main`), and `args.start`.
   `args.branch` works as `--branch`. Without `args.repo`, or without `meta.worktree`, the child runs in the caller's
   directory, and `start` is an ordinary arg.
@@ -641,12 +649,13 @@ child run that ended without a result continues in a new task.
 ### The script API
 
 A script is the body of an async function: top-level `await` and `return` work. Each call below is a durable call,
-except `phase`, `log`, `args` and `prompts`.
+except `phase`, `log`, `args`, `cwd` and `prompts`.
 
 | Global | Meaning |
 |---|---|
 | `args` | The argument values of `meta.args`, and `start` with `worktree: true` |
 | `runId`, `runDir` | The run ID and the run directory. A script that `run()` starts gets its own values |
+| `cwd` | The directory where `sh` and `ok` run: the run's worktree, the caller's directory, or the directory of the command |
 | `agent(prompt, { as, provider, model, thinking, schema })` | One turn in a new session of profile `as` (default `default`), with the model of [Agent profiles](#agent-profiles). Returns the reply text, or the answer with `schema` |
 | `session(profile)`, `session({ as, provider, model, thinking })` | A new session of the profile (default `default`), with the model of [Agent profiles](#agent-profiles). `.ask(prompt, { schema })` is one turn in it |
 | `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
@@ -887,7 +896,8 @@ HERDR_PANE_ID=$HERDR_ACTIVE_PANE_ID workflows attach "$id" || { printf 'Press En
 A popup command does not get `HERDR_PANE_ID`, so the key gives `attach` the pane under the popup. The popup closes
 when `attach` has opened Pi.
 
-`prune` and `attach` use Herdr when `HERDR_ENV` is set: see [Prune](#prune) and [Attach](#attach).
+`prune` and `attach` use Herdr when `HERDR_ENV` is set: see [Prune](#prune) and [Attach](#attach). A run that a
+command started with `HERDR_ENV` set asks Herdr to create its worktrees: see [The meta block](#meta).
 
 ## JSON output
 
@@ -1438,13 +1448,13 @@ host](#runs-in-the-harness-host).
 
 A ship run also has:
 
-- `worktree/`: the worktree on `ship/<run-id>`, or on the branch that a shipped run renamed it to
 - `repository/`: the clone, for a GitHub repository only
+- `.worktrees/repository/<run-id>/`: the worktree of the clone, for a GitHub repository only. The worktree of a local
+  repository is next to that repository: see [The meta block](#meta)
 - `round-<n>.patch`, `round-<n>-fix.patch`: the patches each review got, which its review child run writes there
 - `memory/`: the OptMem store of the run memory
 
-A campaign run has `worktree/` on `campaign/<run-id>`, or on the branch that a done run renamed it to, and
-`repository/` in the same way, plus:
+A campaign run has `repository/` and `.worktrees/repository/<run-id>/` in the same way, plus:
 
 - `item-<n>/`: the `round-<n>.patch` and `round-<n>-fix.patch` files of item `n`
 - `memory/`: the OptMem store of the run memory of every item
@@ -1495,7 +1505,7 @@ The engine files in `src/`:
 - `script.ts`: the workflow script calls, agent profiles, prompts for scripts, and sessions on harness's children
   library.
 - `run.ts`: the run ID, usage errors, and what a run gets from the command line.
-- `git.ts`: Git commands, repository selection and worktrees.
+- `git.ts`: Git commands, repository selection, and worktrees, made by Herdr or Git.
 - `prompts.ts`: the instructions of a prompt template.
 
 The script side in `workflows/`, published as it is:

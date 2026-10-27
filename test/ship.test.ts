@@ -26,6 +26,7 @@ import {
 	statusesOf,
 	storeOf,
 	workflows,
+	worktreeAt,
 } from "./support.ts";
 
 let root: string;
@@ -93,7 +94,7 @@ async function saveRun(kind: string, version: number, input: SavedInput = { inpu
 	return id;
 }
 
-const worktreeOf = (id: string | undefined) => join(runs(), id ?? "missing", "worktree");
+const worktreeOf = (id: string | undefined) => worktreeAt(repo, id);
 const progress = /^ *(research|plan|implement|judge|round \d\/\d: (implement|review))$/;
 const FIXED = "# Demo\n\nHello world\n";
 const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|failed), [0-9a-f]+$/;
@@ -374,9 +375,11 @@ export default function ({ events }) {
 			reply: "I found nothing to change.",
 			handoff: "Handoff 1: replace wrold with world in README.md.",
 			memory: NOTES.slice(0, 2),
+			worktree: worktreeOf(run.id),
 		};
 
 		expect(resumed.code).toBe(1);
+		expect(existsSync(join(runs(), run.id ?? "", "worktree"))).toBe(false);
 		const report = [`blocked Fix the README typo after 1 rounds: ${worktreeOf(run.id)}`, result.reply];
 		expect(resumed.stdout).toEqual([
 			`run ${run.id}`,
@@ -548,7 +551,7 @@ export default function ({ events }) {
 			"  judge failed on Fix the README typo: the answer did not call respond",
 			expect.stringMatching(/^commit [0-9a-f]+ Fix the README typo$/),
 		]);
-		const worktree = worktreeOf(run.id);
+		const worktree = join(runs(), run.id ?? "", ".worktrees", "repository", run.id ?? "");
 		expect(git(worktree, "rev-parse", "HEAD^")).toBe(develop);
 		expect(git(worktree, "log", "-1", "--format=%B")).toBe("Fix the README typo");
 		expect(git(worktree, "branch", "--show-current")).toBe("fix-the-readme-typo");
@@ -561,7 +564,8 @@ export default function ({ events }) {
 		});
 
 		expect(owned.code).toBe(0);
-		expect(git(worktreeOf(owned.id), "rev-parse", "HEAD^")).toBe(git(remote, "rev-parse", "main"));
+		const cloned = join(runs(), owned.id ?? "", ".worktrees", "repository", owned.id ?? "");
+		expect(git(cloned, "rev-parse", "HEAD^")).toBe(git(remote, "rev-parse", "main"));
 	});
 
 	it("uses a relative local repository and a piped work item", async () => {

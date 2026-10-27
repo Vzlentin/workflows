@@ -61,8 +61,9 @@ async function startChild(
 	try {
 		const run = { id, directory, cwd: caller.cwd, root: caller.input.root };
 		const own = await childInput({ name, args, bundle: caller.input.bundle }, run);
-		const { parent } = caller.input;
-		const input = parent === undefined ? own : { ...own, parent };
+		const { parent, herdr } = caller.input;
+		const parented = parent === undefined ? own : { ...own, parent };
+		const input = herdr === undefined ? parented : { ...parented, herdr };
 		await runtime.commit(async (tx) => {
 			const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 			const doc = await tx.doc(CallDoc, key, null);
@@ -291,7 +292,7 @@ async function runPhase(
 		}, context);
 
 		if (worktree !== undefined)
-			await ensureWorktree(worktree.repository, worktree.path, worktree.branch, worktree.start);
+			await ensureWorktree(worktree.repository, worktree.path, worktree.branch, worktree.start, input.herdr === true);
 
 		const ran = await runScript(runtime, context, cwd, host, {
 			runId,

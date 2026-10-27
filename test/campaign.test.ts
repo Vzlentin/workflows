@@ -14,6 +14,7 @@ import {
 	statusesOf,
 	untimed,
 	workflows,
+	worktreeAt,
 } from "./support.ts";
 
 let root: string;
@@ -29,7 +30,7 @@ beforeEach(async () => {
 afterEach(() => rm(root, { recursive: true, force: true }));
 
 const runs = () => join(root, "state", "workflows", "runs");
-const worktreeOf = (id: string | undefined) => join(runs(), id ?? "missing", "worktree");
+const worktreeOf = (id: string | undefined) => worktreeAt(repo, id);
 const GOAL = "# Fix the README\n\nFix the typo, then thank the reader.\n";
 const FIRST = "# Fix the README typo\n\nThe README says wrold.";
 const SECOND = "# Add a thanks line\n\nEnd the README with Thanks.";

@@ -20,13 +20,13 @@ if (start === undefined) {
 }
 
 const subject = subjectOf(item)
-const worktree = `${runDir}/worktree`
+const worktree = cwd
 
 // The result of a child run that did not get to the judge, with the report lines of ship.
 const unshipped = ({ status, rounds, reply, handoff, memory }) => {
 	const report = [`${status} ${subject} after ${rounds} rounds: ${worktree}`]
 
-	return { status, rounds, reply, handoff, memory, report: status === "blocked" ? [...report, reply] : report }
+	return { status, rounds, reply, handoff, memory, worktree, report: status === "blocked" ? [...report, reply] : report }
 }
 
 const notes = await memory(args.memory, args.itemNumber)
@@ -64,5 +64,6 @@ return {
 	findings,
 	judgeError,
 	memory: reviewed.memory,
+	worktree,
 	report: [`shipped ${subject} in ${reviewed.rounds} rounds, judge ${judged}, ${short}`],
 }

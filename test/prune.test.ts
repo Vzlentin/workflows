@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TASK } from "../src/task.ts";
-import { git, repository, runsOf, sandbox, storeOf, workflows } from "./support.ts";
+import { git, repository, runsOf, sandbox, storeOf, workflows, worktreeAt } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -48,7 +48,7 @@ async function mergedRun(): Promise<{ id: string; worktree: string }> {
 	const run = await workflows(["w"], { cwd: repo });
 	expect(run.code).toBe(0);
 	const id = run.id ?? "";
-	const worktree = join(runsOf(root), id, "worktree");
+	const worktree = worktreeAt(repo, id);
 	git(worktree, "branch", "-m", "feat/x");
 
 	return { id, worktree };
@@ -84,7 +84,8 @@ describe("workflows prune", () => {
 		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
 		expect(existsSync(worktree)).toBe(false);
 		expect(hasBranch("feat/x")).toBe(false);
-		expect(existsSync(join(runsOf(root), other.id ?? "", "worktree"))).toBe(true);
+		expect(existsSync(worktreeAt(repo, other.id))).toBe(true);
+		expect(existsSync(join(runsOf(root), id))).toBe(true);
 
 		const runs = await workflows(["list"], { cwd: repo });
 		expect(runs.stdout).toContain(`${id} w done w`);
@@ -104,6 +105,37 @@ describe("workflows prune", () => {
 		expect(hasBranch("feat/x")).toBe(false);
 	});
 
+	it("resumes and prunes a run whose saved worktree is in its run directory", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await writeFile(
+			join(scripts, "gated.js"),
+			`export const meta = { worktree: true }\nawait sh("test -f ${root}/go")\nreturn cwd`,
+		);
+		const failed = await workflows(["gated"], { cwd: repo });
+		expect(failed.code).toBe(1);
+		const id = failed.id ?? "";
+		git(repo, "worktree", "remove", "--force", worktreeAt(repo, id));
+		const runDir = join(runsOf(root), id);
+		const worktree = join(runDir, "worktree");
+		const database = new DatabaseSync(storeOf());
+		database
+			.prepare(
+				`UPDATE tasks SET record = json_set(record, '$.input.worktree.path', ?) WHERE record ->> '$.kind' = 'workflows.run'`,
+			)
+			.run(worktree);
+		database.close();
+		await writeFile(join(root, "go"), "");
+
+		const resumed = await workflows(["resume", id], { cwd: repo });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, worktree]);
+		git(worktree, "branch", "-m", "feat/x");
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		expect(existsSync(worktree)).toBe(false);
+		expect(existsSync(runDir)).toBe(true);
+	});
+
 	it("keeps a run that a later version saved", async () => {
 		const { worktree } = await mergedRun();
 		saveAs(TASK.version + 1, false);
@@ -117,7 +149,7 @@ describe("workflows prune", () => {
 	it("keeps a run whose branch name had a pull request merged at another commit", async () => {
 		const run = await workflows(["w"], { cwd: repo });
 		expect(run.code).toBe(0);
-		const worktree = join(runsOf(root), run.id ?? "", "worktree");
+		const worktree = worktreeAt(repo, run.id);
 		git(worktree, "branch", "-m", "feat/old");
 
 		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
@@ -130,7 +162,7 @@ describe("workflows prune", () => {
 		const broken = await workflows(["w"], { cwd: repo });
 		expect(broken.code).toBe(0);
 		const brokenRun = join(runsOf(root), broken.id ?? "");
-		await rm(join(brokenRun, "worktree", ".git"));
+		await rm(join(worktreeAt(repo, broken.id), ".git"));
 		git(root, "init", "-q", "-b", "feat/x");
 		const { id, worktree } = await mergedRun();
 
@@ -167,7 +199,7 @@ esac
 	it("keeps a run that has not ended, also on a merged branch", async () => {
 		const run = await workflows(["slow"], { cwd: repo, script: { interruptAt: { kind: "script", nth: 1 } } });
 		expect(run.code).toBe(130);
-		const worktree = join(runsOf(root), run.id ?? "", "worktree");
+		const worktree = worktreeAt(repo, run.id);
 		git(worktree, "branch", "-m", "feat/x");
 
 		const pruned = await workflows(["prune", "--yes"], { cwd: repo });

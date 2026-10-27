@@ -26,6 +26,7 @@ import {
 	sandbox,
 	storeOf,
 	workflows,
+	worktreeAt,
 } from "./support.ts";
 
 let root: string;
@@ -839,7 +840,7 @@ return [one, two].join(", ")`,
 		expect(first.code).toBe(130);
 		const id = first.id ?? "";
 		// Another worktree holds the run's branch, so the worktree step of the resume fails.
-		const worktree = join(runs(), id, "worktree");
+		const worktree = worktreeAt(repo, id);
 		const branch = git(worktree, "branch", "--show-current");
 		expect(branch).toBe(`w/${id}`);
 		await rm(worktree, { recursive: true, force: true });
@@ -905,7 +906,7 @@ return { child, runId, plan: await prompts.plan() }`,
 			join(scripts, "child.js"),
 			`export const meta = { worktree: true }
 const branch = await sh(["git", "branch", "--show-current"])
-return { runId, runDir, branch, start: args.start, plan: await prompts.plan() }`,
+return { runId, runDir, cwd, branch, start: args.start, plan: await prompts.plan() }`,
 		);
 
 		const run = await workflows(["parent"], { cwd: repo });
@@ -916,12 +917,13 @@ return { runId, runDir, branch, start: args.start, plan: await prompts.plan() }`
 		expect(child).toEqual({
 			runId: child.runId,
 			runDir: join(runs(), child.runId),
+			cwd: worktreeAt(repo, child.runId),
 			branch: `child/${child.runId}`,
 			start: git(repo, "rev-parse", "HEAD"),
 			plan: "Child plan.",
 		});
 		expect(plan).toMatch(/^Plan this change\./);
-		expect(existsSync(join(runs(), child.runId, "worktree", "README.md"))).toBe(true);
+		expect(existsSync(join(worktreeAt(repo, child.runId), "README.md"))).toBe(true);
 		expect(existsSync(join(runs(), child.runId, "project"))).toBe(false);
 		const listed = await workflows(["list"], { cwd: repo });
 		expect(listed.stdout).toEqual([`${run.id} parent done parent`]);
@@ -943,8 +945,55 @@ return { branch: await sh(["git", "branch", "--show-current"]), start: args.star
 		expect(run.code).toBe(0);
 		const child = JSON.parse(run.stdout[1] ?? "");
 		expect(child).toEqual({ branch: "main", start, runId: expect.any(String) });
-		expect(existsSync(join(runs(), child.runId, "worktree"))).toBe(false);
+		expect(existsSync(worktreeAt(repo, child.runId))).toBe(false);
 		expect(git(repo, "worktree", "list", "--porcelain").split("\n\n")).toHaveLength(1);
+	});
+
+	it("creates the worktree of a child run through herdr when the command runs in Herdr", async () => {
+		const repo = join(root, "repo");
+		const start = await repository(repo);
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { repo: "." })');
+		await writeFile(
+			join(scripts, "child.js"),
+			'export const meta = { worktree: true }\nreturn { cwd, branch: await sh(["git", "branch", "--show-current"]) }',
+		);
+		// `herdr worktree create --cwd <repo> --path <path> --branch <branch> --base <start> --no-focus`
+		await writeFile(
+			join(root, "bin", "herdr"),
+			`#!/bin/sh\necho "$@" >> "${root}/herdr.log"\nexec git -C "$4" worktree add -q -b "$8" "$6" "\${10}"\n`,
+		);
+		await chmod(join(root, "bin", "herdr"), 0o755);
+		process.env.HERDR_ENV = "1";
+
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(0);
+		const child = JSON.parse(run.stdout[1] ?? "");
+		const path = worktreeAt(repo, child.runId);
+		expect(child).toEqual({ cwd: path, branch: `child/${child.runId}`, runId: child.runId });
+		expect(await readFile(join(root, "herdr.log"), "utf8")).toBe(
+			`worktree create --cwd ${await realpath(repo)} --path ${path} --branch child/${child.runId} --base ${start} --no-focus\n`,
+		);
+	});
+
+	it("creates the worktree with Git when herdr fails", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "w.js"),
+			'export const meta = { worktree: true }\nreturn await sh(["git", "branch", "--show-current"])',
+		);
+		await writeFile(join(root, "bin", "herdr"), `#!/bin/sh\necho "$@" >> "${root}/herdr.log"\nexit 1\n`);
+		await chmod(join(root, "bin", "herdr"), 0o755);
+		process.env.HERDR_ENV = "1";
+
+		const run = await workflows(["w"], { cwd: repo });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, `w/${run.id}`]);
+		expect(await readFile(join(root, "herdr.log"), "utf8")).toContain(`--path ${worktreeAt(repo, run.id)} `);
+		expect(git(worktreeAt(repo, run.id), "branch", "--show-current")).toBe(`w/${run.id}`);
 	});
 
 	it("gives a child run without meta.worktree its repo, base and branch args", async () => {
