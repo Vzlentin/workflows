@@ -40,21 +40,82 @@ export function callTree(records: Map<string, SavedCall>, runId: string, ended: 
  * stopped or failed task cut has no duration. A working session prints `◉`.
  */
 export function treeLines(calls: readonly Shown[], indent: string, now: number): string[] {
-	const lines: string[] = [];
+	return treeEntries(calls, indent, now).map((entry) => entry.text);
+}
+
+/** A line of `treeLines`, with the conversation of its session or its ask. */
+export type TreeEntry = { readonly text: string; readonly conversation?: number };
+
+/** The lines of `treeLines`, each session with its conversation and each ask with the conversation that it asks. */
+export function treeEntries(calls: readonly Shown[], indent: string, now: number): TreeEntry[] {
+	const entries: TreeEntry[] = [];
 	let phase: string | null = null;
 
 	for (const call of calls) {
-		if (call.phase !== null && call.phase !== phase) lines.push(`${indent}${call.phase}`);
+		if (call.phase !== null && call.phase !== phase) entries.push({ text: `${indent}${call.phase}` });
 		phase = call.phase;
 		const mark = works(call, calls) ? "◉" : call.mark;
 		const end = mark === "◉" ? now : call.endedAt === undefined ? undefined : Date.parse(call.endedAt);
 		const time = end === undefined ? "" : `  ${duration(end - Date.parse(call.startedAt))}`;
-		lines.push(`${indent}  ${mark} ${call.kind} ${call.label}${time}`);
+		const text = `${indent}  ${mark} ${call.kind} ${call.label}${time}`;
+		const conversation = call.kind === "session" ? call.conversation : askedConversation(call);
 
-		if (call.calls !== undefined) lines.push(...treeLines(call.calls, `${indent}    `, now));
+		entries.push(conversation === undefined ? { text } : { text, conversation });
+
+		if (call.calls !== undefined) entries.push(...treeEntries(call.calls, `${indent}    `, now));
 	}
 
-	return lines;
+	return entries;
+}
+
+/** The conversation that the ask `call` asks, or undefined for another call. */
+function askedConversation(call: Shown): number | undefined {
+	const asked = call.args.conversation;
+
+	return call.kind === "ask" && Value.Check(Type.Number(), asked) ? asked : undefined;
+}
+
+/**
+ * The conversation of each step, keyed by `stepKey` of its run ID and its text: the first session that opened a
+ * conversation in the step, or in a child run that the step started. The summarizer of a step starts after the session
+ * whose note it compresses, so it is never the one.
+ */
+export function stepAgents(records: Map<string, SavedCall>): Map<string, number> {
+	const callers = new Map<string, { readonly run: string; readonly phase: string | null }>();
+
+	for (const [key, record] of records) {
+		if (record.kind === "run" && record.child !== undefined) {
+			callers.set(record.child.runId, { run: runOf(key), phase: record.phase });
+		}
+	}
+
+	const sessions = [...records]
+		.filter(([, record]) => record.kind === "session" && record.conversation !== undefined)
+		.sort(([, a], [, b]) => a.startedAt.localeCompare(b.startedAt));
+
+	const agents = new Map<string, number>();
+
+	for (const [key, { conversation, phase }] of sessions) {
+		if (conversation === undefined) continue;
+
+		for (let at: { run: string; phase: string | null } | undefined = { run: runOf(key), phase }; at !== undefined; ) {
+			if (at.phase !== null && !agents.has(stepKey(at.run, at.phase)))
+				agents.set(stepKey(at.run, at.phase), conversation);
+			at = callers.get(at.run);
+		}
+	}
+
+	return agents;
+}
+
+/** The key of the step `text` of the run `run` in `stepAgents`. */
+export function stepKey(run: string, text: string): string {
+	return JSON.stringify([run, text]);
+}
+
+/** The run ID of the call record key `key`: the part before its `/`. */
+function runOf(key: string): string {
+	return key.slice(0, key.indexOf("/"));
 }
 
 /**

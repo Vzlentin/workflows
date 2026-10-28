@@ -17,7 +17,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { branchOf, ensureWorktree, renameBranch } from "./git.ts";
+import { branchOf, ensureWorktree, renameBranch, typePickLoop } from "./git.ts";
 import { childInput, report, type ScriptInput, statusOf } from "./meta.ts";
 import { newRunId } from "./run.ts";
 import { addProgress, CallDoc, type Child, type Host, JSON_VALUE, ownerOf, runScript, SessionsDoc } from "./script.ts";
@@ -291,8 +291,13 @@ async function runPhase(
 			return undefined;
 		}, context);
 
-		if (worktree !== undefined)
-			await ensureWorktree(worktree.repository, worktree.path, worktree.branch, worktree.start, input.herdr === true);
+		if (worktree !== undefined) {
+			const { repository, path, branch, start } = worktree;
+			const workspace = await ensureWorktree(repository, path, branch, start, input.herdr === true);
+
+			// The workspace that Herdr opened on the worktree of a root run shows the agents of the run beside its steps.
+			if (parent === null && workspace !== undefined) await typePickLoop(workspace, runId, path);
+		}
 
 		const ran = await runScript(runtime, context, cwd, host, {
 			runId,

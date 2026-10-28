@@ -25,6 +25,7 @@ import {
 	startHost,
 	statusesOf,
 	storeOf,
+	untimed,
 	workflows,
 	worktreeAt,
 } from "./support.ts";
@@ -828,6 +829,53 @@ describe("workflows show", () => {
 		expect(asked).toMatchObject({ result: "Problem: README.md says wrold." });
 		expect(added).toMatchObject({ phase: null });
 		expect(added?.args).toEqual({ cmd: ["git", "add", "-A"], check: true });
+	});
+});
+
+describe("workflows show --pick", () => {
+	it("picks the agent of each step of a ship run, not the summarizer of its memory", async () => {
+		// The memory asks to compress after the handoff note of the planner, so a summarizer runs in `plan`.
+		await writeFile(join(root, "home", ".optmem", "compress"), "1");
+
+		const run = await workflows(["ship", "--repo", ".", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED] },
+		});
+
+		expect(run.code).toBe(0);
+		const id = run.id ?? "";
+		const agents = (await workflows(["show", id, "--agents"], { cwd: root })).stdout;
+		const plan = agents.slice(agents.indexOf("    plan"), agents.indexOf("    implement"));
+		expect(plan).toContainEqual(expect.stringMatching(/^ +✓ Compress memories #0-1 /));
+		const asked: { items: readonly string[]; pickable: readonly boolean[] | undefined }[] = [];
+
+		const pick = async (line: string) => {
+			const picked = await workflows(["show", id, "--pick"], {
+				cwd: root,
+				choose: async (_question, items, pickable) => {
+					asked.push({ items, pickable });
+
+					return items.findIndex((item) => untimed(item) === line);
+				},
+			});
+
+			expect(picked.code).toBe(0);
+
+			return Number(picked.stdout[0]);
+		};
+
+		expect(await pick("✓ plan")).toBe(await conversationOf(/Plan this change\./));
+		expect(await pick("  +1 -1 in 1 file")).toBe(await conversationOf(/Implement this plan/));
+		expect(await pick("  SHIP")).toBe(await conversationOf(/Perform a deep code quality audit/));
+		const [{ items, pickable } = { items: [], pickable: [] }] = asked;
+		const closed = items.flatMap((item, index) => (pickable?.[index] === false ? [untimed(item)] : []));
+
+		expect(closed).toEqual([
+			`run ${id} ship shipped Fix the README typo`,
+			expect.stringMatching(/^commit [0-9a-f]+ fix: correct the README typo$/),
+			expect.stringMatching(SHIPPED),
+			`branch ${BRANCH}`,
+		]);
 	});
 });
 

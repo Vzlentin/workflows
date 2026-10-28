@@ -21,6 +21,12 @@ describe("the pick of a run", () => {
 		expect(press(ITEMS, none, { type: "enter" })).toEqual({ pick: none });
 	});
 
+	it("keeps the pick open at Enter on an item that cannot be taken", () => {
+		const pick = { query: "ship", cursor: 1 };
+		expect(press(ITEMS, pick, { type: "enter" }, [true, false, true])).toEqual({ pick });
+		expect(press(ITEMS, pick, { type: "enter" }, [false, true, false])).toEqual({ taken: 1 });
+	});
+
 	it("scrolls the matches to keep the cursor in view", () => {
 		expect(render("Pick?", ITEMS, { query: "", cursor: 2 }, 4)).toEqual(["Pick? ", `  ${ITEMS[1]}`, `› ${ITEMS[2]}`]);
 	});

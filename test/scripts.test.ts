@@ -226,8 +226,8 @@ describe("usage errors", () => {
 			[["resume", "a/b"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
 			[["resume", "--background"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
 			[["wait", "r1", "r2"], "usage: workflows wait <run-id> [--json]"],
-			[["show", "r1", "r2"], "usage: workflows show <run-id> [--calls | --agents] [--json]"],
-			[["show", ".."], "usage: workflows show <run-id> [--calls | --agents] [--json]"],
+			[["show", "r1", "r2"], "usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]"],
+			[["show", ".."], "usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]"],
 			[["list", "x"], "usage: workflows list [--pick] [--json]"],
 			[["check"], "usage: workflows check <workflow>"],
 		];
@@ -474,6 +474,70 @@ describe("workflows show", () => {
 		expect(agents.at(-1)).toMatchObject({ kind: "agent", depth: 1, text: "Script: child." });
 		const both = await workflows(["show", id, "--agents", "--calls"], { cwd: repo });
 		expect([both.code, both.stderr[0]]).toEqual([2, "workflows: give --calls or --agents, not both"]);
+	});
+
+	it("picks the agent of a session or ask line of a run without steps, and exits 130 or 2 without a pick", async () => {
+		await writeFile(join(root, "x.js"), 'await sh("true")\nawait agent("Script: one")');
+		const run = await workflows(["x.js"], { cwd: root });
+		const id = run.id ?? "";
+		const one = await conversationOf(/Script: one/);
+		const asked: (readonly [string, readonly string[], readonly boolean[] | undefined])[] = [];
+
+		const choose =
+			(index: number) => async (question: string, items: readonly string[], pickable?: readonly boolean[]) => {
+				asked.push([question, items, pickable]);
+
+				return index;
+			};
+
+		const picked = await workflows(["show", id, "--pick"], { cwd: root, choose: choose(2) });
+		expect([picked.code, picked.stdout, picked.stderr]).toEqual([0, [String(one)], []]);
+		const asks = await workflows(["show", id, "--pick"], { cwd: root, choose: choose(3) });
+		expect([asks.code, asks.stdout]).toEqual([0, [String(one)]]);
+		expect(asked[0]).toEqual([
+			"Pick an agent:",
+			[
+				`run ${id} x done x`,
+				expect.stringMatching(/^ {2}✓ sh true {2}\d+s$/),
+				expect.stringMatching(new RegExp(`^ {2}✓ session default conversation ${one} {2}\\d+s$`)),
+				expect.stringMatching(/^ {2}✓ ask default {2}\d+s$/),
+				...run.stdout.slice(-1),
+			],
+			[false, false, true, true, false],
+		]);
+		const cancelled = await workflows(["show", id, "--pick"], { cwd: root, choose: async () => undefined });
+		expect([cancelled.code, cancelled.stdout, cancelled.stderr]).toEqual([130, [], []]);
+		const bare = await workflows(["show", id, "--pick"], { cwd: root });
+		expect([bare.code, bare.stderr[0]]).toEqual([2, "workflows: --pick needs a terminal on stdin and stderr"]);
+		const calls = await workflows(["show", id, "--pick", "--calls"], { cwd: root, choose: choose(2) });
+		expect([calls.code, calls.stderr[0]]).toEqual([2, "workflows: give --pick without --calls, --agents or --json"]);
+		await writeFile(join(root, "y.js"), 'phase("a")\nreturn "done"');
+		const none = (await workflows(["y.js"], { cwd: root })).id ?? "";
+		const empty = await workflows(["show", none, "--pick"], { cwd: root, choose: choose(0) });
+		expect([empty.code, empty.stderr]).toEqual([1, [`workflows: run ${none} has no agent`]]);
+	});
+
+	it("waits with --pick while a running run has no agent, until Ctrl+C", async () => {
+		await writeFile(join(root, "x.js"), 'const s = session()\nphase("talk")\nawait s.ask("Script: one")');
+		const running = await stopped(["x.js"], { nth: 1 });
+		const id = running.id ?? "";
+		const interrupt = new AbortController();
+		const started = Date.now();
+		setTimeout(() => interrupt.abort(), 1500);
+		let asked = 0;
+
+		const waited = await workflows(["show", id, "--pick"], {
+			cwd: root,
+			interrupt,
+			choose: async () => {
+				asked++;
+
+				return 0;
+			},
+		});
+
+		expect([waited.code, waited.stdout, waited.stderr, asked]).toEqual([130, [], [], 0]);
+		expect(Date.now() - started).toBeGreaterThanOrEqual(1400);
 	});
 
 	it("reads the store while another process holds its write lock", async () => {
@@ -977,6 +1041,54 @@ return { branch: await sh(["git", "branch", "--show-current"]), start: args.star
 		);
 	});
 
+	it("types the pick loop once in the workspace that herdr opens on the worktree of a root run", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "w.js"), 'export const meta = { worktree: true }\nawait agent("Script: one")');
+
+		/** A fake herdr whose `pane list` exits with `list`: `worktree create --cwd <repo> --path <path> --branch <branch> --base <start>`. */
+		const herdr = (list: number) =>
+			writeFile(
+				join(root, "bin", "herdr"),
+				`#!/bin/sh
+echo "$@" >> "${root}/herdr.log"
+case "$1 $2" in
+"worktree create") git -C "$4" worktree add -q -b "$8" "$6" "\${10}" && echo '{"result":{"workspace":{"workspace_id":"w7"}}}' ;;
+"pane list") echo '{"result":{"panes":[{"pane_id":"p3"},{"pane_id":"p4"}]}}'; exit ${list} ;;
+esac
+`,
+				{ mode: 0o755 },
+			);
+
+		const typed = async () =>
+			(await readFile(join(root, "herdr.log"), "utf8")).split("\n").filter((line) => line.startsWith("pane run "));
+
+		await herdr(0);
+		process.env.HERDR_ENV = "1";
+		const run = await workflows(["w"], { cwd: repo });
+		expect(run.code).toBe(0);
+		const id = run.id ?? "";
+		const loop = `while c=$(workflows show ${id} --pick); do workflows attach ${id} --conversation "$c" --side; done`;
+		expect(await typed()).toEqual([`pane run p3 ${loop}`]);
+		expect(await readFile(join(root, "herdr.log"), "utf8")).toContain("pane list --workspace w7\n");
+
+		// A resume finds the worktree, and types nothing again.
+		await rm(join(root, "herdr.log"));
+		const stopped = await workflows(["w"], { cwd: repo, script: { interruptAt: { kind: "script", nth: 1 } } });
+		expect(stopped.code).toBe(130);
+		const resumed = await workflows(["resume", stopped.id ?? ""], { cwd: repo });
+		expect(resumed.code).toBe(0);
+		expect((await typed()).length).toBe(1);
+
+		// A failed `pane list` types nothing, and the run goes on.
+		await rm(join(root, "herdr.log"));
+		await herdr(1);
+		const failed = await workflows(["w"], { cwd: repo });
+		expect([failed.code, await typed()]).toEqual([0, []]);
+	});
+
 	it("creates the worktree with Git when herdr fails", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
@@ -992,7 +1104,9 @@ return { branch: await sh(["git", "branch", "--show-current"]), start: args.star
 
 		const run = await workflows(["w"], { cwd: repo });
 		expect([run.code, run.stdout.at(-1)]).toEqual([0, `w/${run.id}`]);
-		expect(await readFile(join(root, "herdr.log"), "utf8")).toContain(`--path ${worktreeAt(repo, run.id)} `);
+		const log = await readFile(join(root, "herdr.log"), "utf8");
+		expect(log).toContain(`--path ${worktreeAt(repo, run.id)} `);
+		expect(log).not.toContain("pane run ");
 		expect(git(worktreeAt(repo, run.id), "branch", "--show-current")).toBe(`w/${run.id}`);
 	});
 

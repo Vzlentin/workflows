@@ -22,8 +22,8 @@ export type Action =
 	| { readonly type: "enter" | "cancel" | "backspace" }
 	| { readonly type: "text"; readonly text: string };
 
-/** What `action` does to `pick` over `items`. */
-export function press(items: readonly string[], pick: Pick, action: Action): Step {
+/** What `action` does to `pick` over `items`. Enter on an item whose flag in `pickable` is false keeps the pick open. */
+export function press(items: readonly string[], pick: Pick, action: Action, pickable?: readonly boolean[]): Step {
 	const shown = matching(items, pick.query);
 
 	switch (action.type) {
@@ -36,7 +36,7 @@ export function press(items: readonly string[], pick: Pick, action: Action): Ste
 		case "enter": {
 			const index = shown[pick.cursor];
 
-			return index === undefined ? { pick } : { taken: index };
+			return index === undefined || pickable?.[index] === false ? { pick } : { taken: index };
 		}
 
 		case "move": {

@@ -526,7 +526,7 @@ export function workflowsCommand(command: readonly string[]) {
 			const attach = ["attach", runId, "--conversation", String(conversation)];
 			const hint = `Run in another terminal: workflows ${attach.join(" ")}`;
 
-			// `workflows attach` opens a Herdr pane only with HERDR_ENV.
+			// `workflows attach` opens a Herdr tab only with HERDR_ENV.
 			if (!process.env.HERDR_ENV) {
 				ctx.ui.notify(hint, "info");
 

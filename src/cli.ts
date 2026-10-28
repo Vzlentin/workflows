@@ -36,9 +36,9 @@ function readLine(): Promise<string | undefined> {
 
 /**
  * Asks which of `items` to take, on stderr, with the keys of stdin in raw mode, and gives its index, or undefined when
- * cancelled. It clears its lines before it returns.
+ * cancelled. Only an item whose flag in `pickable` is not false can be taken. It clears its lines before it returns.
  */
-const choose: Choose = (question, items) => {
+const choose: Choose = (question, items, pickable) => {
 	live?.forget();
 	const { stdin, stderr } = process;
 	const screen = terminalRedraw(stderr);
@@ -64,7 +64,7 @@ const choose: Choose = (question, items) => {
 			const action = actionOf(key);
 
 			if (action === undefined) return;
-			const step = press(items, pick, action);
+			const step = press(items, pick, action, pickable);
 
 			if ("taken" in step) done(step.taken);
 			else if ("cancelled" in step) done(undefined);

@@ -489,7 +489,7 @@ workflows check audit
 
 `resume`, `wait`, `stop`, `list`, `show`, `attach`, `save`, `prune` and `check` are commands, so no script of these
 names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command,
-such as `usage: workflows show <run-id> [--calls | --agents] [--json]`, and exits 2.
+such as `usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]`, and exits 2.
 
 `workflows --version` prints the version of the package, from its `package.json`, and exits 0. It ignores any other
 argument.
@@ -539,7 +539,10 @@ export const meta = {
   clone of a GitHub repository gets `<run-directory>/.worktrees/repository/<run-id>`. When the command ran with
   `HERDR_ENV` set, the run first runs `herdr worktree create --cwd <repository> --path <worktree> --branch <branch>
   --base <start> --no-focus`, so the worktree shows in Herdr. When `herdr` fails, is missing, or makes no worktree at
-  that path, Git creates the worktree, as without Herdr. A child run uses Herdr when its root run does. At the end, the run names the branch: see [Branch name](#branch-name).
+  that path, Git creates the worktree, as without Herdr. A child run uses Herdr when its root run does. When
+  `herdr worktree create` made the worktree of a root run and printed the workspace ID that it opened, in
+  `result.workspace.workspace_id`, the run types the pick loop in that workspace: see [Herdr](#herdr). At the end, the
+  run names the branch: see [Branch name](#branch-name).
 - `exit` maps `result.status` to the exit code. Any other status, or a result without `status`, exits 0. The status
   `waiting` always exits 3, whatever `exit` says. See [Input](#input).
 
@@ -919,22 +922,33 @@ on in the host. A second Ctrl+C exits and never stops the run. Bad usage prints 
 
 ## Herdr
 
-`workflows` binds no Herdr key. A Herdr key composes the commands instead, such as one that picks a run
-in a popup and attaches to it:
+`workflows` binds no Herdr key. A Herdr key composes the commands instead, such as one that picks a run, then one of
+its agents, in a popup, and opens the agent in a new tab:
 
 ```toml
 [[keys.command]]
 key = "prefix+w"
 type = "popup"
-description = "attach to a workflows run"
+description = "attach to an agent of a workflows run"
 command = '''
-id=$(workflows list --pick) || exit 0
-HERDR_PANE_ID=$HERDR_ACTIVE_PANE_ID workflows attach "$id" || { printf 'Press Enter to close'; read -r _; }
+id=$(workflows list --pick) && c=$(workflows show "$id" --pick) && workflows attach "$id" --conversation "$c"
 '''
 ```
 
-A popup command does not get `HERDR_PANE_ID`, so the key gives `attach` the pane under the popup. The popup closes
-when `attach` has opened Pi.
+A popup command does not get `HERDR_PANE_ID`, so `attach` opens the tab in the workspace that has the run's worktree
+open, or runs Pi in the popup when no workspace has it open.
+
+When `herdr worktree create` made the worktree of a root run, the run types the pick loop in the first pane of the new
+workspace, as `herdr pane list --workspace <id>` lists it, with `herdr pane run <pane> <loop>`:
+
+```sh
+while c=$(workflows show <run-id> --pick); do workflows attach <run-id> --conversation "$c" --side; done
+```
+
+So the shell of the workspace shows the steps of the run, and each pick opens its agent in a new pane beside the
+steps. Escape or Ctrl+C in the pick ends the loop. The loop needs `workflows` on the `PATH` of the shell. A failure of
+`herdr pane list` or `herdr pane run` types nothing, and the run goes on. A worktree that Git made gets no loop, and a
+resume, which finds the worktree, types nothing again. A child run types nothing.
 
 `prune` and `attach` use Herdr when `HERDR_ENV` is set: see [Prune](#prune) and [Attach](#attach). A run that a
 command started with `HERDR_ENV` set asks Herdr to create its worktrees: see [The meta block](#meta).
@@ -1039,6 +1053,7 @@ workflows show <run-id>
 workflows show <run-id> --calls
 workflows show <run-id> --agents [--json]
 workflows show <run-id> --json
+workflows show <run-id> --pick
 ```
 
 `workflows show` prints one run from the store of its project: the line `run <run-id> <workflow> <status> <title>`,
@@ -1110,44 +1125,58 @@ With `--agents --json`, the command prints one JSON object `{ "runId", "workflow
 session, or `null` before the first phase line, `endedAt` is absent while the agent works, and `facts` is the text
 after the agent text in its line, such as `sonnet  1 ask  31s`. `depth` is the nesting of child runs. `--calls` and `--agents` together are bad usage.
 
+With `--pick`, on a terminal, the command asks `Pick an agent:` with the lines that `show` prints: the first line, the
+steps, or the calls of a run without steps, then the footer. It prints the conversation ID of the agent of the line
+that the pick takes, for [`attach --conversation`](#attach). Only a line with an agent can be taken; Enter on another
+line keeps the pick open.
+
+- A step line has the first session that opened a conversation under the step: a `session` call whose phase line is the
+  step, in the run of the step, or a session of a child run that a `run` call under the step started, at any depth. The
+  first session to start counts, so the summarizer of the run memory, which starts after the session whose note it
+  compresses, never counts. A log line, and a line of a child run under a step, has the agent of the step.
+- For a run without steps, a `session` line has its conversation, and an `ask` line the conversation of its session.
+- The first line, a line outside every step, a step with no session, and the footer have no agent.
+
+While no line has an agent and the run's task has not ended, the command reads the store again every second, and
+Ctrl+C exits 130. A run that ended with no agent prints `workflows: run <run-id> has no agent` and exits 1. A cancel of
+the pick exits 130. `--pick` without a terminal, or with `--calls`, `--agents` or `--json`, is bad usage.
+
 `show` exits 0 for every run it can show. It reads the project store through pi-durable's storage functions, as `list`
 does, and does not start the host. It reads the file read-only as `list` does. An unknown run ID, or a run directory
 without a `project` file, prints the
 `no run` error of `resume`. A run saved by an earlier version prints `workflows: run
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
 `workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
-as no run ID, prints `usage: workflows show <run-id> [--calls | --agents] [--json]` and exits 2.
+as no run ID, prints `usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]` and exits 2.
 
 ## Attach
 
 ```sh
-workflows attach <run-id>
-workflows attach <run-id> <step>
-workflows attach <run-id> --conversation <id>
+workflows attach <run-id> [--conversation <id>] [--side]
 ```
 
 `workflows attach` opens one session of a run in Pi, as `harness attach --conversation <id>` does:
 
 - The sessions are the agents of `show --agents`, the `session` calls of the run and of its child runs that opened a
-  conversation, in the order they started. With `<step>`, only the sessions under the phase line `<step>` count. The
-  step is all the words after the run ID, and must be equal to the phase line. With `--conversation <id>`, only the
-  session of that conversation counts, as `show --json` gives it in `conversation`. A step and `--conversation`
-  together are bad usage.
+  conversation, in the order they started. With `--conversation <id>`, only the session of that conversation counts,
+  as `show --json` and `show --pick` give it.
 - The command opens the session that works now, as `show --agents` marks it `◉`. When no session works, it opens the
   last session that started.
 - It connects to the host of the run's project, and starts the host when none runs. It sends `watch` for the
   conversation of the session, so an unknown conversation fails before Pi starts.
 - Outside Herdr, or in Herdr with no place to open Pi, it runs `harness --project <project> attach --conversation <id>`
   in this terminal, and exits with its code. A child that a signal ends exits 1.
-- With `HERDR_ENV`, it opens Pi in a new tab of the Herdr workspace that has the run's worktree open, or else in a new
-  pane to the right of the pane `HERDR_PANE_ID`, and exits 0. A run with no worktree, or whose worktree is gone, uses
-  only the pane.
+- With `HERDR_ENV`, it opens Pi in Herdr and exits 0. With `--side` and `HERDR_PANE_ID`, it opens Pi in a new pane to
+  the right of that pane. Else it opens Pi in a new tab of the Herdr workspace that has the run's worktree open, as
+  `herdr worktree list` shows it. A run with no worktree, or whose worktree is gone or open in no workspace, opens the
+  tab in the workspace of the pane `HERDR_PANE_ID`, as `herdr pane get <pane>` gives it in
+  `result.pane.workspace_id`. Without `HERDR_PANE_ID` either, Pi runs in this terminal.
 
-A run with no session prints `workflows: run <run-id> has no session`, and a step with no session prints
-`workflows: run <run-id> has no session in <step>`. A conversation that is not a session of the run prints
+A run with no session prints `workflows: run <run-id> has no session`. A conversation that is not a session of the run prints
 `workflows: run <run-id> has no session with conversation <id>`. An unknown run ID prints the `no run` error of `resume`, and a run
 saved by another version prints the error of `show` with `cannot be attached`. A Herdr failure prints
-`workflows: <error>`. These exit 1. Bad usage, such as no run ID, prints `usage: workflows attach <run-id> [<step>] [--conversation <id>]` and
+`workflows: <error>`. These exit 1. Bad usage, such as no run ID or a second argument, prints `usage: workflows attach <run-id> [--conversation <id>]
+[--side]` and
 exits 2.
 
 ## Save
@@ -1403,8 +1432,8 @@ view shows `Reading the run...`, or the error of the last read in its place: the
 `workflows: no run <run-id>`, or `workflows show did not print the expected JSON`.
 
 Escape closes the view. Enter on an agent runs `workflows attach <run-id> --conversation <id>` when `HERDR_ENV` is set,
-which opens the agent in a Herdr tab or pane. Only `HERDR_ENV` counts, because `workflows attach` opens a Herdr pane only
-with it. Without it, the command notifies `Run in another terminal: workflows attach <run-id> --conversation <id>`.
+which opens the agent in a Herdr tab. Only `HERDR_ENV` counts, because `workflows attach` opens a Herdr tab only with
+it. Without it, the command notifies `Run in another terminal: workflows attach <run-id> --conversation <id>`.
 When the attach fails, it notifies the error `<stderr>. Run in another terminal: workflows attach <run-id>
 --conversation <id>`.
 
@@ -1464,7 +1493,8 @@ The engine files in `src/`:
 - `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show`, `attach`, `save` and `prune`, a client of the
   harness host, and the run directory.
 - `entry.ts`: the entry that the harness host loads, with the script task.
-- `calls.ts`: the call tree of a saved run, and its lines and agent rows for `show` and `attach`.
+- `calls.ts`: the call tree of a saved run, its lines and agent rows for `show` and `attach`, and the agent of each
+  step for `show --pick`.
 - `progress.ts`: the tree of steps of a run, and how the command draws it on stderr.
 - `store.ts`: the command's read-only reads of the project store: the tasks of the runs, their progress and calls.
 - `meta.ts`: the `meta` of a workflow script, its arguments, its usage, `check`, and the report lines and exit code of
