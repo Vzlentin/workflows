@@ -38,7 +38,7 @@ const FIXED = "# Demo\n\nHello world\n";
 const THANKED = `${FIXED}Thanks.\n`;
 const THIRD = "# Thank the reader\n\nEnd the README with Thanks.";
 
-const SHIP = ["research", "plan", "challenge", "handoff", "implement", "review", "judge", "commit"];
+const SHIP = ["research", "plan", "handoff", "implement", "review", "judge", "commit"];
 
 const THANKS: Commit = {
 	subject: "docs: thank the reader",

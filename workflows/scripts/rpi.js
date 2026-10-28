@@ -30,8 +30,6 @@ const planner = notes.session("planner")
 
 await planner.ask(prompts.plan({ item, research }))
 
-await planner.ask(prompts.challenge())
-
 const plan = await planner.noted(
 	undefined,
 	prompts.handoff(),

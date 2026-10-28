@@ -23,7 +23,7 @@ and the squash. `campaign` does the same, runs
 
 ```text
 research session:   research (documents the code as it is)
-plan session:       plan (with the research)  ->  challenge  ->  handoff
+plan session:       plan (with the research)  ->  handoff
 implement session:  implement the handoff                      <- round 1, then each round after FIX
 review session:     review (SHIP or FIX)  ->  handoff (on FIX, back to implement)
 judge session:      fixed rubric, then commit message, after SHIP
@@ -380,7 +380,7 @@ start: "4dfb5c8"
 The README says wrold.
 ```
 
-`--improve` lists the prompts to optimize, separated by commas: any of `research`, `plan`, `challenge`, `handoff`,
+`--improve` lists the prompts to optimize, separated by commas: any of `research`, `plan`, `handoff`,
 `implement` and `review`. The default is `review,handoff`, the prompts of the review loop. `judge` gives the score, so
 it is never a candidate. `--trials` is the number of candidates that the run evaluates, the baseline included, and
 defaults to 3. A workflow other than `ship`, an unknown prompt name, fewer than 2 items, or an item without `repo` or
@@ -1406,7 +1406,7 @@ task of the caller's run. A child run without a worktree can have an empty run d
 
 ## Prompts
 
-`workflows/prompts/` holds the Pi prompt templates `research`, `plan`, `challenge`, `handoff`, `implement`, `review`, `judge` and
+`workflows/prompts/` holds the Pi prompt templates `research`, `plan`, `handoff`, `implement`, `review`, `judge` and
 `commit`, `split` and `rundown` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
 frontmatter and the last line `$@`: the run removes them, then adds its inputs as `## <name>` sections.
 `workflows/scripts/thermoloop.js` adds the rules of the [review loop](#thermoloop), so a template edit cannot
