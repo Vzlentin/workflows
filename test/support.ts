@@ -246,7 +246,6 @@ export async function repository(path: string, readme = "# Demo\n\nHello wrold\n
 
 export type Kind =
 	| "plan"
-	| "challenge"
 	| "handoff"
 	| "implement"
 	| "research"
@@ -277,7 +276,6 @@ const MEMORY = /^## memory\n[\s\S]*?\n\n/;
 const KINDS: readonly (readonly [string, Kind])[] = [
 	["Research the codebase", "research"],
 	["Plan this change.", "plan"],
-	["Challenge the plan", "challenge"],
 	["Write a handoff document", "handoff"],
 	["Implement this plan", "implement"],
 	["Perform a deep code quality audit", "review"],
@@ -481,8 +479,6 @@ export class FakeModel {
 				return fauxAssistantMessage("Summary: README.md:1 says wrold.");
 			case "plan":
 				return fauxAssistantMessage("Problem: README.md says wrold.");
-			case "challenge":
-				return fauxAssistantMessage("Keep: one word changes.");
 			case "handoff":
 				return respond({
 					text: `Handoff ${nth}: replace wrold with world in README.md.`,

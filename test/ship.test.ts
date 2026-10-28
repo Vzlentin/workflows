@@ -195,7 +195,6 @@ describe("workflows ship", () => {
 		expect(calls.map((call) => call.kind)).toEqual([
 			"research",
 			"plan",
-			"challenge",
 			"handoff",
 			"implement",
 			"review",
@@ -217,13 +216,12 @@ describe("workflows ship", () => {
 
 		const research = run.model.find("research");
 		const plan = run.model.find("plan");
-		const challenge = run.model.find("challenge");
 		const planned = run.model.find("handoff");
 		const implement = run.model.find("implement");
 		const review = run.model.find("review");
 		const handoff = run.model.find("handoff", 1);
 
-		for (const call of [research, plan, challenge, planned]) expect(call?.prompt).not.toContain("## memory");
+		for (const call of [research, plan, planned]) expect(call?.prompt).not.toContain("## memory");
 		expect(implement?.prompt.startsWith(`${memory(1)}Implement this plan`)).toBe(true);
 
 		expect(review?.prompt.startsWith(`${memory(2)}Perform a deep code quality audit`)).toBe(true);
@@ -328,7 +326,6 @@ export default function ({ events }) {
 		expect(run.model.calls.map((call) => call.kind)).toEqual([
 			"research",
 			"plan",
-			"challenge",
 			"handoff",
 			"implement",
 			"review",
@@ -355,7 +352,7 @@ export default function ({ events }) {
 			`blocked Fix the README typo after 1 rounds: ${worktreeOf(run.id)}`,
 			"I found nothing to change.",
 		]);
-		expect(run.model.calls.map((call) => call.kind)).toEqual(["research", "plan", "challenge", "handoff", "implement"]);
+		expect(run.model.calls.map((call) => call.kind)).toEqual(["research", "plan", "handoff", "implement"]);
 		expect(git(repo, "branch", "--list", `ship/${run.id}`)).toContain(`ship/${run.id}`);
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
 	});
@@ -409,7 +406,7 @@ export default function ({ events }) {
 		expect(result.handoff).toBe("Handoff 2: replace wrold with world in README.md.");
 		expect(run.model.calls.map((call) => call.kind)).toEqual(
 			[
-				["research", "plan", "challenge", "handoff"],
+				["research", "plan", "handoff"],
 				["implement", "summarize", "review", "handoff"],
 				["implement", "review"],
 			].flat(),
@@ -470,7 +467,7 @@ export default function ({ events }) {
 	it("sends a failed turn again on resume, with Pi's retry settings", async () => {
 		const run = await workflows(["ship", "Fix the README typo"], {
 			cwd: repo,
-			script: { edits: [FIXED], failAt: { kind: "challenge", nth: 1 } },
+			script: { edits: [FIXED], failAt: { kind: "handoff", nth: 1 } },
 		});
 
 		expect(run.code).toBe(1);
@@ -482,20 +479,13 @@ export default function ({ events }) {
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout).toEqual([`run ${run.id}`, expect.stringMatching(SHIPPED), `branch ${BRANCH}`]);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual([
-			"challenge",
-			"handoff",
-			"implement",
-			"review",
-			"judge",
-			"commit",
-		]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["handoff", "implement", "review", "judge", "commit"]);
 	});
 
 	it("uses the retry settings of Pi's settings, not those of the project", async () => {
 		await mkdir(join(repo, ".pi"));
 		await writeFile(join(repo, ".pi", "settings.json"), JSON.stringify({ retry: { enabled: true, baseDelayMs: 1 } }));
-		const script = { edits: [FIXED], failAt: { kind: "challenge", nth: 1 } } as const;
+		const script = { edits: [FIXED], failAt: { kind: "handoff", nth: 1 } } as const;
 
 		const project = await workflows(["ship", "Fix the README typo"], { cwd: repo, script });
 		expect(project.code).toBe(1);
@@ -659,7 +649,7 @@ export default function ({ events }) {
 		expect(run.model.find("plan")?.prompt).toMatch(
 			/^Plan this change\. MARKER\n\n## item\nFix the README typo\n\n## research\n/,
 		);
-		expect(run.model.find("challenge")?.prompt).toMatch(/^Challenge the plan/);
+		expect(run.model.find("handoff")?.prompt).toMatch(/^Write a handoff document/);
 	});
 
 	it("uses the profiles and prompts of the project folder", async () => {
@@ -770,7 +760,7 @@ describe("workflows show", () => {
 			"    research",
 			...asks("researcher", 1, child),
 			"    plan",
-			...remembering("planner", 3, child),
+			...remembering("planner", 2, child),
 			memo(child),
 			"    implement",
 			child("run implement \\S+"),
@@ -946,7 +936,7 @@ describe("workflows resume of ship runs", () => {
 
 		expect(first.code).toBe(130);
 		expect(first.stderr.at(-1)).toBe(detached(first.id));
-		expect(first.model.calls.map((call) => call.kind)).toEqual(["research", "plan", "challenge", "handoff"]);
+		expect(first.model.calls.map((call) => call.kind)).toEqual(["research", "plan", "handoff"]);
 
 		await writeFile(join(repo, "item.md"), "# Something else\n");
 		await writeFile(join(repo, "README.md"), "changed on main\n");
@@ -1020,7 +1010,7 @@ describe("workflows resume of ship runs", () => {
 
 		const first = await workflows(["ship", "item.md"], {
 			cwd: repo,
-			script: { interruptAt: { kind: "challenge", nth: 1 } },
+			script: { interruptAt: { kind: "handoff", nth: 1 } },
 		});
 
 		expect(first.code).toBe(130);
@@ -1094,13 +1084,7 @@ while [ ! -f "${gate}.open" ]; do sleep 0.02; done
 		const first = await pending;
 		await writeFile(`${gate}.open`, "");
 		expect(first.code).toBe(130);
-		expect(first.model.calls.map((call) => call.kind)).toEqual([
-			"research",
-			"plan",
-			"challenge",
-			"handoff",
-			"implement",
-		]);
+		expect(first.model.calls.map((call) => call.kind)).toEqual(["research", "plan", "handoff", "implement"]);
 		expect(git(worktreeOf(first.id), "log", "--format=%s")).toBe("initial");
 
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: repo });

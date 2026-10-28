@@ -37,7 +37,7 @@ describe("workflows rpi", () => {
 			"#1 implementer r1: Implement 1: README.md had wrold.",
 		]);
 		expect(progressOf(run.stderr)).toEqual(["✓ research", "✓ plan", "✓ implement", "  +2 -1 in 1 file"]);
-		expect(run.model.calls.map((call) => call.kind)).toEqual(["research", "plan", "challenge", "handoff", "implement"]);
+		expect(run.model.calls.map((call) => call.kind)).toEqual(["research", "plan", "handoff", "implement"]);
 		expect(git(worktree, "log", "--format=%s", `${start}..HEAD`)).toBe(ITEM);
 		expect(git(repo, "branch", "--show-current")).toBe("feature");
 	});
