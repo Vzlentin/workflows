@@ -47,22 +47,17 @@ describe("workflows thermoloop", () => {
 			"  SHIP",
 		]);
 		expect(statusesOf(run.stderr)).toEqual(["round 1/3: review", "round 2/3: implement", "round 2/3: review", "-"]);
-		expect(run.model.calls.map((call) => call.kind)).toEqual([
-			"review",
-			"verdict",
-			"handoff",
-			"implement",
-			"review",
-			"verdict",
-		]);
+		expect(run.model.calls.map((call) => call.kind)).toEqual(["review", "handoff", "implement", "review"]);
 
 		// The first round reviews the commits of the branch, with no plan and no reply.
 		const patch = join(root, "state", "workflows", "runs", run.id ?? "", "round-1.patch");
-		expect(run.model.find("review")?.prompt).toMatch(new RegExp(`## item\\n${ITEM}\\n\\n## change\\n${patch}$`));
+		expect(run.model.find("review")?.prompt).toMatch(
+			new RegExp(`## item\\n${ITEM}\\n\\n## change\\n${patch}\\n\\nWhen you are done`),
+		);
 		expect(await readFile(patch, "utf8")).toContain("+Hello world\n");
 		expect(run.model.find("implement")?.prompt).toContain("## plan\nHandoff 1: ");
 
-		// The run opens its own memory, and each session gets the notes only in its first prompt.
+		// The run opens its own memory, and the review of each later round gets the notes.
 		const memory = join(runsOf(root), run.id ?? "", "memory");
 		expect(await readFile(join(memory, "LOG.txt"), "utf8")).toMatch(/^#0 \d{4}-\d{2}-\d{2} reviewer r1: Handoff 1: /);
 		const calls = (await readFile(join(root, "home", ".optmem", "calls.log"), "utf8")).trim().split("\n");
@@ -71,7 +66,6 @@ describe("workflows thermoloop", () => {
 		expect(run.model.find("review", 1)?.prompt).toMatch(
 			/^## memory\n#0 reviewer r1: Handoff 1: one word changes\.\n#1 implementer r2: Implement 1: README\.md had wrold\.\n\nPerform/,
 		);
-		expect(run.model.find("verdict", 1)?.prompt).not.toContain("## memory");
 
 		expect(git(repo, "branch", "--show-current")).toBe("feature");
 		expect(git(repo, "log", "--format=%s", `${start}..HEAD`)).toBe("round 2\nfix the typo");

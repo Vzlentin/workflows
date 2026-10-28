@@ -19,14 +19,22 @@ const subject = subjectOf(item)
 
 const start = args.start ?? (await branchStart(args.base))
 
+// In the script, and not in a template, so that a template edit cannot remove them.
 const SHIP_OR_FIX = { enum: ["SHIP", "FIX"] }
+const VERDICT = "When you are done, answer with respond: SHIP if your review has no finding, FIX if it has one or more."
 
-// With the SHIP or FIX rule, and not in a template, so that a template edit cannot remove it.
-const EVIDENCE =
-	"A reversal of a memory note, or of a choice that the implementer explained, stays only with a defect that this " +
-	"review showed: a reproduced bug, a failing check, or a quoted rule of the work item that the choice breaks. Write " +
-	"it as `reverses #k: <defect>`. A preference, less code, a stricter check, or a claim from a few observations is " +
-	"not a defect."
+// From round 2, the review covers only the last fix, so the rounds end.
+const scope = (round) =>
+	round === 1
+		? ""
+		: `Review the fix patch, round-${round}-fix.patch. The code of the earlier rounds is settled. A finding is a ` +
+			"part of the plan that is not done, a problem that the fix added, or a reproduced bug."
+
+const EVERY_FINDING = "Give every finding of your review, each with its fix. The next round fixes all of them."
+
+const NOTES =
+	"the document, and notes are what your review checked and found sound, and the lessons that later work needs, " +
+	"one in each note. Do not repeat the findings: the document gives them."
 
 const notes = await memory(args.memory)
 const lines = async () => (await notes.text).split("\n").filter(Boolean)
@@ -43,9 +51,8 @@ for (let round = 1; ; round++) {
 
 	if (round > 1) change.push(await patch(`round-${round}-fix.patch`, before))
 	const reviewer = notes.session("reviewer")
-	await reviewer.ask(prompts.review({ item, plan, change: change.join("\n"), reply }))
-	const answer = "Answer with respond: SHIP if nothing needs to change, FIX otherwise."
-	const verdict = await reviewer.ask(`${await prompts.challenge()}\n\n${EVIDENCE}\n\n${answer}`, { schema: SHIP_OR_FIX })
+	const review = await prompts.review({ item, plan, change: change.join("\n"), scope: scope(round), reply })
+	const verdict = await reviewer.ask(`${review}\n\n${VERDICT}`, { schema: SHIP_OR_FIX })
 	log(verdict)
 
 	if (verdict === "SHIP") {
@@ -60,11 +67,7 @@ for (let round = 1; ; round++) {
 		return { status: "stopped", rounds: round, handoff: plan, memory: await lines(), report }
 	}
 
-	plan = await reviewer.noted(
-		round,
-		prompts.handoff(),
-		"the document, and notes are the decisions of your challenge, with the findings that you cut and why.",
-	)
+	plan = await reviewer.noted(round, `${await prompts.handoff()}\n\n${EVERY_FINDING}`, NOTES)
 	before = await sh(["git", "rev-parse", "HEAD"])
 	const next = round + 1
 

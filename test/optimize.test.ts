@@ -84,7 +84,7 @@ describe("workflows optimize", () => {
 			/^first: baseline 0\.75, best 1\.00\nsecond: baseline 0\.75, best 1\.00\nthird: baseline 0\.75, best 0\.88\ndiff --git baseline\/review\.md best\/review\.md\n/,
 		);
 		expect(text).toContain("\n+Improved prompt 1.\n");
-		expect((await readdir(join(directory, "best"))).sort()).toEqual(["challenge.md", "handoff.md", "review.md"]);
+		expect((await readdir(join(directory, "best"))).sort()).toEqual(["handoff.md", "review.md"]);
 		expect(await readFile(join(directory, "best", "review.md"), "utf8")).toMatch(/\nImproved prompt 1\.\n$/);
 		expect(git(join(root, "repo"), "branch", "--format=%(refname:short)")).toBe("main");
 		expect(git(join(root, "repo"), "worktree", "list", "--porcelain").split("\n\n")).toHaveLength(1);
