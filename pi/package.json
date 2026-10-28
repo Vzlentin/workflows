@@ -12,8 +12,14 @@
 	"type": "module",
 	"pi": {
 		"extensions": [
-			"./index.ts"
+			"./index.ts",
+			"../pi-agents/index.ts",
+			"./node_modules/@vzlentin/pi-agents/index.ts"
 		]
+	},
+	"dependencies": {
+		"@vzlentin/pi-agents": "^0.6.0",
+		"@vzlentin/workflows": "0.5.1"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",

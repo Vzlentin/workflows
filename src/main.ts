@@ -13,6 +13,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -22,18 +23,16 @@ import { type Client, connect } from "@vzlentin/harness/client";
 import { setEntry } from "@vzlentin/harness/entries";
 import { openConversationPane } from "@vzlentin/harness/herdr";
 import { resolveProject } from "@vzlentin/harness/projects";
-import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
+import { cliPath, statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { agentLines, agentRows, callTree, treeLines } from "./calls.ts";
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
-import { ENTRY, harnessDir, manifest } from "./harness.ts";
 import * as script from "./meta.ts";
 import { display, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
 import type { SavedCall } from "./script.ts";
 import { loadScripts, projectFolder } from "./script.ts";
-import { PACKAGE } from "./setup.ts";
 import {
 	callRecords,
 	inputString,
@@ -46,6 +45,15 @@ import {
 	type Store,
 } from "./store.ts";
 import { current, TASK } from "./task.ts";
+
+/**
+ * The entry of workflows that the harness host loads: `dist/entry.js`, or `src/entry.ts` in a checkout. The command sets
+ * it in harness's `entries.json` before it can start a host.
+ */
+const ENTRY = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./entry.ts" : "./entry.js", import.meta.url));
+
+/** The part of the `package.json` of workflows that `--version` reads. */
+const MANIFEST = Type.Object({ version: Type.String() });
 
 /** How often the command reads the progress of a run that it follows. */
 const POLL_MS = 500;
@@ -150,7 +158,8 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		}
 
 		if (command === "--version") {
-			terminal.stdout(manifest(join(PACKAGE, "package.json"))?.version ?? "");
+			const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+			terminal.stdout(Value.Parse(MANIFEST, manifest).version);
 
 			return 0;
 		}
@@ -1025,9 +1034,7 @@ async function attach(args: readonly string[], terminal: Terminal): Promise<numb
 			}
 		}
 
-		// cli.ts refused to start without harness, so harness is there.
-		const cli = join(harnessDir(PACKAGE) ?? "", "dist", "cli.js");
-		const argv = [cli, "--project", run.project, "attach", "--conversation", watched];
+		const argv = [cliPath(), "--project", run.project, "attach", "--conversation", watched];
 		const [code]: (number | null)[] = await once(spawn(process.execPath, argv, { stdio: "inherit" }), "exit");
 
 		return code ?? 1;

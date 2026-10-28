@@ -465,7 +465,7 @@ names can run. Bad usage of a command prints `workflows: <error>`, then `usage:`
 such as `usage: workflows show <run-id> [--calls | --agents] [--json]`, and exits 2.
 
 `workflows --version` prints the version of the package, from its `package.json`, and exits 0. It ignores any other
-argument. Like every command of a global install, it runs the [setup](#setup) first.
+argument.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. It has the shape of the script side of the package, `workflows/` of the package: it
@@ -1140,71 +1140,12 @@ has no effect.
 
 ## Install
 
-workflows has no copy of harness. `@vzlentin/harness` is an optional peer dependency of `@vzlentin/workflows`, in the
-caret range of its `package.json`. A global install of workflows uses the global install of harness next to it, so the
-`workflows` command, the harness host and the `harness` command all load the same harness.
-
-### Setup
-
-The setup acts only on a top-level global install: the package folder, with symbolic links resolved, is
-`<prefix>/lib/node_modules/@vzlentin/workflows` (`<prefix>/node_modules/...` on Windows), with no other
-`node_modules` above. npm also sets `npm_config_global` for the dependencies of a global package, so the path decides.
-Two places run it:
-
-- The postinstall, `scripts/postinstall.js`, when npm runs install scripts (npm 11; npm 12 does not by default) and
-  `npm_config_global` is `true`. It never fails the install: when npm installs a new package and its postinstall
-  fails, npm removes the package and keeps its `bin` link, which then points to nothing.
-- The installed command (`dist/cli.js`), on each start, before it loads `main.ts`. The Pi steps run through
-  `setupOnce` of `@vzlentin/harness/setup`, which keeps a stamp for each package path and version and writes it only
-  when its `pi` commands worked (see harness's spec). So once the setup is done, a start only checks harness, the
-  stamps and the entry, and after a failed `pi` command the next start tries again. A checkout (`node src/cli.ts`)
-  runs no setup.
-
-The steps:
-
-1. It first waits while a live process holds harness's
-   [install lock](https://github.com/Vzlentin/harness/blob/main/docs/spec.md#install-lock), also when harness looks
-   installed. When harness is missing or older than the range, it takes the lock and checks harness again. When harness
-   is still missing or older than the range, it prints `workflows: installing @vzlentin/harness: npm install -g
-   --prefix <prefix> @vzlentin/harness@<range>` and runs that command, with the npm of the install in an install
-   script, or the `npm` on `PATH`. It prints the output of npm on stderr only when npm fails. It releases the lock, also
-   when the install fails. When harness still does not fit, it prints the error line below, and stops. When the lock
-   fails, for example when the state folder is not writable, it prints `workflows: setup failed: <message>` and checks
-   harness as without the lock.
-2. It runs harness's setup (`setupOnce` of `@vzlentin/harness/setup`) for the global harness with the Pi package
-   `@vzlentin/pi-agents`, which runs `pi install npm:@vzlentin/pi-agents@<harness version>`, also when npm ran no
-   install script of harness.
-3. It sets the entry `workflows` in harness's `entries.json` to `dist/entry.js` of the install. So a host that starts
-   before any `workflows` command, such as one that `harness` or Pi starts, runs workflows. The path has no version,
-   so it stays the same across updates.
-4. With harness's `setupOnce` for the workflows package and the Pi package `@vzlentin/pi-workflows`: it runs `pi
-   install npm:@vzlentin/pi-workflows@<workflows version>`. `pi` is looked up on `PATH` without the folders that end
-   in `node_modules/.bin`, as a dependency has a `pi` of its own. A Pi failure prints `workflows: pi install failed
-   (<reason>). To add the Pi extension of workflows, run: pi install npm:@vzlentin/pi-workflows@<workflows version>`.
-
-In steps 2 and 4, harness's setup runs no `pi install` when Pi's settings already list the Pi package: the same
-`npm:` source, or a local folder whose `package.json` has the name of the Pi package, such as the `pi/` folder of a
-checkout.
-
-A failure of the setup prints `workflows: setup failed: <message>`, or `harness: setup failed: <message>` when it
-comes from harness's `setupOnce`, and the command goes on.
-
-### The harness check
-
-Every `workflows` command checks harness before it loads any harness module. When harness is missing or older than
-the range, an installed command runs step 1 of the setup and goes on when harness then fits. A harness newer than the
-range, also a prerelease such as `0.3.0-rc.1` for `^0.2.0`, is never replaced. Otherwise it prints one of
-these lines and exits 1:
-
-- `workflows needs @vzlentin/harness <range>: npm install -g [--prefix <prefix>] @vzlentin/harness@<range>`
-- `workflows needs @vzlentin/harness <range>, found <version>: npm install -g [--prefix <prefix>]
-  @vzlentin/harness@<range>`
-- `workflows needs @vzlentin/harness <range>, found <version>, which is newer. Update workflows: npm install -g
-  [--prefix <prefix>] @vzlentin/workflows`
-
-`--prefix <prefix>` is there when the install is a top-level global install whose prefix is not the output of `npm
-prefix -g`. In an install script, npm sets `npm_config_prefix` to the `--prefix` of the install, so the setup runs
-`npm prefix -g` without it.
+`@vzlentin/harness` is a dependency of `@vzlentin/workflows`, at the caret range of its `package.json`. The Pi
+package `@vzlentin/pi-workflows` depends on `@vzlentin/workflows` and `@vzlentin/pi-agents`, which depends on
+`@vzlentin/harness`, so `pi install npm:@vzlentin/pi-workflows` puts them all in Pi's npm folder, with one copy of
+harness. Without Pi, `npm install -g @vzlentin/workflows` installs the command and its harness. No setup step, install
+script or install lock runs: npm is the only installer. The [README](../README.md) gives the install
+lines.
 
 ## Runs in the harness host
 
@@ -1219,8 +1160,8 @@ directory, starts the host when none runs, asks it to start the run's task, and 
 
 - The host loads its entries when it starts: the `piDurable` entries of the packages in Pi's settings, and the entries
   of harness's `entries.json`. Each command that can start a host sets the entry `workflows` there to `dist/entry.js`
-  of its install, or `src/entry.ts` of a checkout. The setup of a global install sets it too, see
-  [Setup](#setup). A host that started with another version of workflows runs that
+  of its install, or `src/entry.ts` of a checkout. The Pi extension sets it too when it loads, see [Pi](#pi). A
+  host that started with another version of workflows runs that
   version until it restarts. A host that started before the entry was set refuses a start with
   `workflows: Unknown task kind: workflows.run: the harness host started before it had the entry of workflows; stop it
   so it starts again with the entry (the harness host of project <project> has pid <pid>: kill <pid>)`, and no run
@@ -1280,40 +1221,28 @@ project of the host and `PI_SESSION_ID` to the conversation ID.
 ## Pi
 
 The `pi/` folder is the Pi package `@vzlentin/pi-workflows`, the Pi extension that gives Pi the `workflow` tool and
-the `/workflows` command. Its `package.json` has the keyword `pi-package`, no `dependencies`, the Pi packages and
-`typebox` as peer dependencies at `"*"`, and the version of `@vzlentin/workflows`; release-please sets both versions.
-Both packages are released together, at one version: the publish job publishes the root and then `pi/`. The setup
-of a global install installs `@vzlentin/pi-workflows` from npm, see [Setup](#setup).
+the `/workflows` command. Its `package.json` has the keyword `pi-package`, the Pi packages and `typebox` as peer
+dependencies at `"*"`, and the version of `@vzlentin/workflows`. Its `dependencies` are `@vzlentin/workflows` at that
+exact version and `@vzlentin/pi-agents` at a caret range; release-please sets the version and the dependency on
+workflows. Both packages are released together, at one version: the publish job publishes the root and then `pi/`.
 
-When Pi loads the extension, the extension first waits until the install lock `$XDG_STATE_HOME/workflows/install.lock`
-is free: the folder is missing, or its `pid` file names a process that does not exist. A missing or bad pid counts
-as held for 10 s after the mtime of the folder. The wait polls every 200 ms, with no timeout, and does not take the
-lock. Then it finds the global workflows install: the package of the first `workflows` on `PATH` (two folders above
-the real path of the command), else `@vzlentin/workflows` in the folder that `npm root -g` prints. A folder counts
-only when its `package.json` has the name `@vzlentin/workflows` and a version that is not older than the version of
-`pi/package.json`, by major, minor and patch. `pi update` moves only the extension, so an older install counts as no
-install, and the offer below updates it. On Windows, the command on `PATH` is a shim, so only the npm folder counts.
+`pi.extensions` names `./index.ts` and the extension of pi-agents at both places where npm can put it,
+`../pi-agents/index.ts` and `./node_modules/@vzlentin/pi-agents/index.ts`. Pi skips the one that does not exist, and
+loads a file with the same real path once, also when Pi's settings list pi-agents too.
 
-When it finds no install, the `workflow` tool has the description
-`workflows <version> is not installed: npm install -g @vzlentin/workflows@<version>`, with the version of `pi/package.json`,
-and gives that text as its result. `/workflows` shows that text as an error.
+When Pi loads the extension, it resolves `@vzlentin/workflows/package.json` from its own folder, and:
 
-Without workflows, the extension also offers to install it at each session start, but only in Pi's interactive mode
-(mode `tui`): print, JSON and RPC modes show no dialog. The session does not wait for the offer. When the file
-`$XDG_STATE_HOME/workflows/install.declined` exists, there is no offer. Otherwise the extension takes the install lock
-`$XDG_STATE_HOME/workflows/install.lock`, as the section "Install lock" of the harness spec says, and looks up
-workflows again; when it finds workflows, it releases the lock and shows nothing. Then it runs `npm prefix -g` and
-asks `workflows <version> is not installed`: `Install @vzlentin/workflows@<version> with npm install -g into <prefix>?`. On no,
-it writes the empty file `install.declined`, so the dialog does not come back; delete the file to get the dialog
-again. On yes, it runs `npm install -g @vzlentin/workflows@<version>`, looks up workflows again, runs
-`<install>/dist/cli.js --version` with the Node that runs Pi, which runs the [setup](#setup), and shows
-`workflows installed, run /reload`. `npm prefix -g`, `npm install -g` and `--version` run with `PATH` without the
-`node_modules/.bin` folders, and without `sudo`. When a step fails, the extension shows an error with the last 20
-lines of the command output (stdout, then stderr) and `Run by hand: npm install -g @vzlentin/workflows@<version>`, and
-the next session start asks again. The extension releases the lock in all cases.
+1. It puts the `.bin` folder of the `node_modules` folder that holds `@vzlentin/workflows` last on the `PATH` of Pi's
+   process, so Pi's tools find `workflows` and `harness`. It goes last because the folder also holds the commands of
+   other dependencies, such as an older `pi`. It removes the folder first, so each load leaves it on `PATH` once.
+2. It sets the entry `workflows` in harness's `entries.json` to `dist/entry.js` of that package, with the harness that
+   the package imports, so a host that the tool starts loads the entry of the same install.
 
-The extension runs each workflow as a child process of the `workflows` command of the install that it found
-(`<install>/dist/cli.js`), with the Node that runs Pi, in the session's directory, always with `--json`. With `background`, the call returns at once, and the extension posts the outcome of the run to the
+When `@vzlentin/workflows` does not resolve, the load fails and Pi reports the error. In a checkout, `pi/` resolves the
+checkout through the link `pi/node_modules/@vzlentin/workflows`, see the README.
+
+The extension runs each workflow as a child process of the `workflows` command of its dependency
+(`<package>/dist/cli.js`), with the Node that runs Pi, in the session's directory, always with `--json`. With `background`, the call returns at once, and the extension posts the outcome of the run to the
 session as a message, see [Background runs in Pi](#background-runs-in-pi). So a run that starts in Pi is a normal run of the project of the session's directory, and `workflows resume`
 follows or continues it from a terminal.
 
@@ -1495,8 +1424,6 @@ uses the profiles as they were when it started.
 The engine files in `src/`:
 
 - `cli.ts`: the `workflows` command entry point.
-- `harness.ts`: the check of the harness install and the path of the entry.
-- `setup.ts`: the setup of a global install, for the command and the postinstall.
 - `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show`, `attach`, `save` and `prune`, a client of the
   harness host, and the run directory.
 - `entry.ts`: the entry that the harness host loads, with the script task.
