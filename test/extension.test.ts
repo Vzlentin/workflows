@@ -1,8 +1,10 @@
-import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { readFileSync, realpathSync } from "node:fs";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
 import type {
@@ -13,10 +15,13 @@ import type {
 	Theme,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { entriesPath } from "@vzlentin/harness/entries";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import extension, { type workflowTool } from "../pi/index.ts";
 import { RunView } from "../pi/run-view.ts";
 import { hostModel, sandbox, startHost } from "./support.ts";
+
+const run = promisify(execFile);
 
 /** The factory that `/workflows` gives `ctx.ui.custom`. */
 type CustomFactory = Parameters<ExtensionUIContext["custom"]>[0];
@@ -894,118 +899,67 @@ describe("the /workflows command", () => {
 	});
 });
 
-/** A tool that `load` records: its description, and a call in `cwd` with no params that gives its content. */
-type LoadedTool = { readonly description: string; readonly call: (cwd: string) => Promise<Result["content"]> };
+/**
+ * The `node_modules` folder of a fake install of the Pi package, as npm installs it: `@vzlentin/pi-workflows` from
+ * `pi/`, next to its dependency `@vzlentin/workflows` built from this checkout.
+ */
+let modules: string;
+let installed: typeof extension;
 
-/** A handler of `session_start` of an extension load without a command. */
-type StartHandler = (event: { readonly type: string }, ctx: ExtensionContext) => void | Promise<void>;
-
-/** A fake Pi API that records the tools, the commands and the handlers of an extension load without a command. */
-async function load() {
-	const tools = new Map<string, LoadedTool>();
-	const commands = new Map<string, Command>();
-	const handlers = new Map<string, StartHandler[]>();
-
-	const on = (event: string, handler: StartHandler) => {
-		handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-	};
+/** Loads the installed extension without a command against a fake Pi, and gives the `workflow` tool that it registers. */
+async function load(): Promise<Tool> {
+	const tools: Tool[] = [];
 
 	const pi: Api = {
-		registerTool: (registered) =>
-			tools.set(registered.name, {
-				description: registered.description,
-				call: async (cwd) => {
-					// SAFETY: the tests call only the tool without workflows, whose parameters are an empty object.
-					const params = {} as Parameters<typeof registered.execute>[1];
-					const { content } = await registered.execute("call-1", params, undefined, undefined, contextOf(cwd));
-
-					return content;
-				},
-			}),
-		registerCommand: (name, command) => commands.set(name, command),
+		registerTool: (registered) => {
+			if (isWorkflowTool(registered)) tools.push(registered);
+		},
+		registerCommand: () => {},
 		registerMessageRenderer: () => {},
-		// SAFETY: `on` has one overload for each event, and the fake keeps every handler by its event name.
-		on: on as Api["on"],
+		on: () => () => {},
 		sendMessage: () => {},
 		appendEntry: () => {},
 	};
 
-	await extension(pi);
+	await installed(pi);
+	const [registered] = tools;
 
-	return { tools, commands, handlers };
+	if (registered === undefined) throw new Error("the extension registered no tool");
+
+	return registered;
 }
 
-/** A fake UI that answers `answer` to each dialog and records the dialogs and the notifications. */
-function fakeUI(answer: boolean) {
-	const dialogs: [string, string][] = [];
-	const notes: [string, string | undefined][] = [];
-
-	const ui: Pick<ExtensionUIContext, "confirm" | "notify"> = {
-		confirm: async (title, message) => {
-			dialogs.push([title, message]);
-
-			return answer;
-		},
-		notify: (message, type) => {
-			notes.push([message, type]);
-		},
-	};
-
-	return { ui, dialogs, notes };
-}
-
-/** Calls the `session_start` handlers of `registered` at startup in the mode `mode`, with `ui`. */
-async function startSession(
-	registered: Awaited<ReturnType<typeof load>>,
-	mode: ExtensionContext["mode"],
-	ui: Pick<ExtensionUIContext, "confirm" | "notify">,
-): Promise<void> {
-	for (const handler of registered.handlers.get("session_start") ?? []) {
-		// SAFETY: the session_start handler without workflows reads only `mode` and `ui`.
-		await handler({ type: "session_start" }, { mode, hasUI: true, ui } as ExtensionContext);
-	}
-}
-
-/** The notes that the command `name` of `registered` shows when it runs in `cwd`. */
-async function notesOf(registered: Awaited<ReturnType<typeof load>>, cwd: string, name = "workflows") {
-	const notes: [string, string | undefined][] = [];
-
-	const ui: Pick<ExtensionUIContext, "notify"> = {
-		notify: (message, type) => {
-			notes.push([message, type]);
-		},
-	};
-
-	// SAFETY: `/workflows` reads only `ctx.cwd` and `ctx.ui.notify` when the list is empty or workflows is missing.
-	await registered.commands.get(name)?.handler("", { cwd, ui } as ExtensionCommandContext);
-
-	return notes;
-}
-
-describe("the lookup of the workflows install", () => {
-	const { version } = JSON.parse(readFileSync(join(import.meta.dirname, "..", "pi", "package.json"), "utf8"));
-	const MESSAGE = `workflows ${version} is not installed: npm install -g @vzlentin/workflows@${version}`;
-	const EMPTY = [["No workflow runs in this project", "info"]];
+describe("the installed extension", () => {
+	const repo = join(import.meta.dirname, "..");
 	let saved: NodeJS.ProcessEnv;
 	let home: string;
-	let globalRoot: string;
 
-	/** A fake `npm` whose `root -g` prints `folder`. */
-	const fakeNpm = async (folder: string) => {
-		await writeFile(join(home, "bin", "npm"), `#!/bin/sh\necho "${folder}"\n`);
-		await chmod(join(home, "bin", "npm"), 0o755);
-	};
+	beforeAll(async () => {
+		modules = join(realpathSync(await mkdtemp(join(tmpdir(), "workflows-install-"))), "node_modules");
+		const workflows = join(modules, "@vzlentin", "workflows");
+		const piWorkflows = join(modules, "@vzlentin", "pi-workflows");
+		const tsc = join(repo, "node_modules", "typescript", "bin", "tsc");
+		await run(process.execPath, [tsc, "-p", "tsconfig.build.json", "--outDir", join(workflows, "dist")], { cwd: repo });
+		await copyFile(join(repo, "package.json"), join(workflows, "package.json"));
+		await symlink(join(repo, "workflows"), join(workflows, "workflows"));
+		await symlink(join(repo, "node_modules"), join(workflows, "node_modules"));
+		await mkdir(piWorkflows, { recursive: true });
+
+		for (const file of await readdir(join(repo, "pi"))) {
+			if (file.endsWith(".ts") || file === "package.json")
+				await copyFile(join(repo, "pi", file), join(piWorkflows, file));
+		}
+
+		for (const name of ["@earendil-works", "typebox"])
+			await symlink(join(repo, "node_modules", name), join(modules, name));
+		({ default: installed } = await import(pathToFileURL(join(piWorkflows, "index.ts")).href));
+	}, 60_000);
+
+	afterAll(() => rm(dirname(modules), { recursive: true, force: true }));
 
 	beforeEach(async () => {
 		saved = process.env;
 		home = await sandbox();
-		process.env.PATH = `${home}/bin:/usr/bin:/bin`;
-		globalRoot = join(home, "global");
-		const pkg = join(globalRoot, "@vzlentin", "workflows");
-		await mkdir(join(pkg, "dist"), { recursive: true });
-		await mkdir(join(home, "empty"));
-		await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "@vzlentin/workflows", version }));
-		await writeFile(join(pkg, "dist", "cli.js"), 'process.stdout.write("[]\\n");\n');
 	});
 
 	afterEach(async () => {
@@ -1013,199 +967,33 @@ describe("the lookup of the workflows install", () => {
 		await rm(home, { recursive: true, force: true });
 	});
 
-	it("uses the package of the first workflows on PATH", async () => {
-		await symlink(join(globalRoot, "@vzlentin", "workflows", "dist", "cli.js"), join(home, "bin", "workflows"));
-		await fakeNpm(join(home, "empty"));
-
-		expect(await notesOf(await load(), home)).toEqual(EMPTY);
-	});
-
-	it("uses the package in npm's global root when workflows is not on PATH", async () => {
-		await fakeNpm(globalRoot);
-
-		expect(await notesOf(await load(), home)).toEqual(EMPTY);
-	});
-
-	it("skips a workflows on PATH whose package is not @vzlentin/workflows", async () => {
-		const other = join(home, "other");
-		await mkdir(join(other, "dist"), { recursive: true });
-		await writeFile(join(other, "package.json"), JSON.stringify({ name: "workflows" }));
-		await writeFile(join(other, "dist", "cli.js"), "process.exit(9);\n");
-		await symlink(join(other, "dist", "cli.js"), join(home, "bin", "workflows"));
-		await fakeNpm(globalRoot);
-
-		expect(await notesOf(await load(), home)).toEqual(EMPTY);
-	});
-
-	it("waits until the install lock is free before it looks up workflows", async () => {
-		await fakeNpm(globalRoot);
-		const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
-
-		try {
-			const lock = join(home, "state", "workflows", "install.lock");
-			await mkdir(lock, { recursive: true });
-			await writeFile(join(lock, "pid"), String(holder.pid));
-			let loaded = false;
-
-			const loading = load().then((registered) => {
-				loaded = true;
-
-				return registered;
-			});
-
-			await new Promise((resolve) => setTimeout(resolve, 600));
-			expect(loaded).toBe(false);
-			await rm(lock, { recursive: true, force: true });
-
-			expect(await notesOf(await loading, home)).toEqual(EMPTY);
-		} finally {
-			holder.kill();
-		}
-	});
-
-	it("counts a workflows older than the extension as not installed, and a newer one as installed", async () => {
-		const manifest = join(globalRoot, "@vzlentin", "workflows", "package.json");
-		await fakeNpm(globalRoot);
-		await writeFile(manifest, JSON.stringify({ name: "@vzlentin/workflows", version: "0.0.1" }));
-		expect(await notesOf(await load(), home)).toEqual([[MESSAGE, "error"]]);
-
-		await writeFile(manifest, JSON.stringify({ name: "@vzlentin/workflows", version: "99.0.0-rc.1" }));
-		expect(await notesOf(await load(), home)).toEqual(EMPTY);
-	});
-
-	it("answers with the install command when workflows is not installed", async () => {
-		await fakeNpm(join(home, "empty"));
+	it("runs dist/cli.js of its workflows dependency", async () => {
 		const registered = await load();
-		const missing = registered.tools.get("workflow");
-		const content = await missing?.call(home);
+		const called = registered.execute("call-1", { name: "nope" }, undefined, undefined, contextOf(home));
 
-		expect([...registered.tools.keys()]).toEqual(["workflow"]);
-		expect([...registered.commands.keys()]).toEqual(["workflows"]);
-		expect(missing?.description).toBe(MESSAGE);
-		expect(content).toEqual([{ type: "text", text: MESSAGE }]);
-		expect(await notesOf(registered, home)).toEqual([[MESSAGE, "error"]]);
+		// Only the CLI, after it read the scripts of the install, knows that no workflow has that name.
+		await expect(called).rejects.toThrow("workflows: unknown command nope");
 	});
 
-	describe("the install offer", () => {
-		const log = () => join(home, "log");
-		const prefix = () => join(home, "prefix");
-		const lock = () => join(home, "state", "workflows", "install.lock");
-		const declined = () => join(home, "state", "workflows", "install.declined");
-		const logLines = () => (existsSync(log()) ? readFileSync(log(), "utf8").trim().split("\n") : []);
+	it("puts the .bin folder next to its workflows last on PATH, once for each load", async () => {
+		process.env.PATH = ["/usr/bin", "/bin"].join(delimiter);
+		await load();
+		await load();
 
-		/**
-		 * A `npm` on `PATH` that logs its arguments. `npm install -g` creates `@vzlentin/workflows` in its global root,
-		 * with a `dist/cli.js` that logs its arguments too, or prints 30 lines and fails with `fail`.
-		 */
-		const installingNpm = async (fail: boolean) => {
-			const global = join(prefix(), "lib", "node_modules");
-			const pkg = join(global, "@vzlentin", "workflows");
-			const cli = `require("node:fs").appendFileSync(${JSON.stringify(log())}, "workflows " + process.argv.slice(2).join(" ") + "\\n");`;
-
-			const script = [
-				"#!/bin/sh",
-				`echo "npm $*" >> "${log()}"`,
-				`case "$1" in`,
-				`prefix) echo "${prefix()}" ;;`,
-				`root) echo "${global}" ;;`,
-				"install)",
-				fail
-					? `  i=1; while [ $i -le 30 ]; do echo "line $i"; i=$((i + 1)); done; echo "npm error failed" >&2; exit 1`
-					: "  :",
-				`  mkdir -p "${join(pkg, "dist")}"`,
-				`  echo '{"name":"@vzlentin/workflows","version":"${version}"}' > "${join(pkg, "package.json")}"`,
-				`  cat > "${join(pkg, "dist", "cli.js")}" <<'EOF'`,
-				cli,
-				"EOF",
-				"  ;;",
-				"esac",
-			].join("\n");
-
-			await writeFile(join(home, "bin", "npm"), `${script}\n`);
-			await chmod(join(home, "bin", "npm"), 0o755);
-		};
-
-		it("installs workflows and runs it when the answer is yes", async () => {
-			await installingNpm(false);
-			const registered = await load();
-			const { ui, dialogs, notes } = fakeUI(true);
-			await startSession(registered, "tui", ui);
-			await vi.waitFor(() => expect(notes).toHaveLength(1), { timeout: 10_000 });
-
-			expect(dialogs).toEqual([
-				[
-					`workflows ${version} is not installed`,
-					`Install @vzlentin/workflows@${version} with npm install -g into ${prefix()}?`,
-				],
-			]);
-
-			expect(logLines()).toEqual([
-				"npm root -g",
-				"npm root -g",
-				"npm prefix -g",
-				`npm install -g @vzlentin/workflows@${version}`,
-				"npm root -g",
-				"workflows --version",
-			]);
-
-			expect(notes).toEqual([["workflows installed, run /reload", "info"]]);
-			expect(existsSync(lock())).toBe(false);
-		});
-
-		it("shows the end of the output and the command when npm install fails", async () => {
-			await installingNpm(true);
-			const { ui, notes } = fakeUI(true);
-			await startSession(await load(), "tui", ui);
-			await vi.waitFor(() => expect(notes).toHaveLength(1), { timeout: 10_000 });
-			const tail = Array.from({ length: 19 }, (_, i) => `line ${i + 12}`);
-
-			expect(notes).toEqual([
-				[
-					[...tail, "npm error failed", `Run by hand: npm install -g @vzlentin/workflows@${version}`].join("\n"),
-					"error",
-				],
-			]);
-
-			expect(existsSync(lock())).toBe(false);
-		});
-
-		it("remembers a no and does not ask again", async () => {
-			await installingNpm(false);
-			const { ui, dialogs, notes } = fakeUI(false);
-			await startSession(await load(), "tui", ui);
-
-			await vi.waitFor(
-				() => {
-					expect(existsSync(declined())).toBe(true);
-					expect(existsSync(lock())).toBe(false);
-				},
-				{ timeout: 10_000 },
-			);
-
-			const next = await load();
-			await startSession(next, "tui", ui);
-			await new Promise((resolve) => setTimeout(resolve, 300));
-
-			expect(dialogs).toHaveLength(1);
-			expect(notes).toEqual([]);
-			expect(logLines()).not.toContain(`npm install -g @vzlentin/workflows@${version}`);
-			expect(await next.tools.get("workflow")?.call(home)).toEqual([{ type: "text", text: MESSAGE }]);
-		});
-
-		it("does not ask in print mode or in RPC mode", async () => {
-			await installingNpm(false);
-			const registered = await load();
-			const { ui, dialogs } = fakeUI(true);
-
-			for (const mode of ["print", "rpc"] as const) await startSession(registered, mode, ui);
-			await new Promise((resolve) => setTimeout(resolve, 300));
-
-			expect(dialogs).toEqual([]);
-			expect(logLines()).toEqual(["npm root -g"]);
-		});
+		expect((process.env.PATH ?? "").split(delimiter)).toEqual(["/usr/bin", "/bin", join(modules, ".bin")]);
 	});
 
-	it("is the Pi package @vzlentin/pi-workflows at the version of workflows", () => {
+	it("sets the entry of harness to dist/entry.js of its workflows dependency", async () => {
+		const entry = async () => JSON.parse(await readFile(entriesPath(), "utf8")).workflows;
+
+		expect(await entry()).toBe(join(repo, "src", "entry.ts"));
+		await load();
+		expect(await entry()).toBe(join(modules, "@vzlentin", "workflows", "dist", "entry.js"));
+	});
+});
+
+describe("the Pi package", () => {
+	it("is @vzlentin/pi-workflows at the version of workflows, and brings workflows and pi-agents", () => {
 		const read = (path: string) => JSON.parse(readFileSync(join(import.meta.dirname, "..", path), "utf8"));
 		const pi = read("pi/package.json");
 		const root = read("package.json");
@@ -1214,6 +1002,7 @@ describe("the lookup of the workflows install", () => {
 			pi.name,
 			pi.private,
 			pi.dependencies,
+			pi.pi?.extensions,
 			pi.keywords,
 			pi.version,
 			pi.repository?.url,
@@ -1221,11 +1010,19 @@ describe("the lookup of the workflows install", () => {
 		]).toEqual([
 			"@vzlentin/pi-workflows",
 			undefined,
-			undefined,
+			{ "@vzlentin/workflows": root.version, "@vzlentin/pi-agents": "^0.6.0" },
+			["./index.ts", "../pi-agents/index.ts", "./node_modules/@vzlentin/pi-agents/index.ts"],
 			["pi-package"],
 			root.version,
 			root.repository.url,
 			"public",
 		]);
+
+		// release-please moves the dependency on workflows with the version.
+		expect(read("release-please-config.json").packages["."]["extra-files"]).toContainEqual({
+			type: "json",
+			path: "pi/package.json",
+			jsonpath: "$.dependencies['@vzlentin/workflows']",
+		});
 	});
 });

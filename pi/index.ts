@@ -1,15 +1,15 @@
 /**
  * The Pi extension: the `workflow` tool and the `/workflows` command. Each run is a child process of the `workflows`
- * command of the global workflows install that the extension finds, so a run started in Pi is a normal run that
- * `workflows resume` also continues. Without that install, the tool and the command give the command that installs it,
- * and an interactive session offers to install it.
+ * command of `@vzlentin/workflows`, the dependency of this package, so a run started in Pi is a normal run that
+ * `workflows resume` also continues. The `.bin` folder that holds its `workflows` command goes last on `PATH`.
  */
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { basename, delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
-import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { type Static, Type } from "@earendil-works/pi-ai";
 import type {
 	AgentToolResult,
@@ -23,20 +23,9 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Value } from "typebox/value";
-import { releaseInstallLock, stateFolder, takeInstallLock, waitInstallLockFree } from "./install-lock.ts";
 import { MARKS, parseRun, RunView } from "./run-view.ts";
 
 const WORKFLOWS_PACKAGE = "@vzlentin/workflows";
-const WorkflowsManifest = Type.Object({ name: Type.Literal(WORKFLOWS_PACKAGE), version: Type.String() });
-const OwnManifest = Type.Object({ version: Type.String() });
-
-const { version: OWN_VERSION } = Value.Parse(
-	OwnManifest,
-	JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")),
-);
-
-const CommandOutput = Type.Object({ stdout: Type.String(), stderr: Type.String() });
-const runFile = promisify(execFile);
 
 const SAVE = Type.Object(
 	{
@@ -668,9 +657,9 @@ class Watcher {
 }
 
 /**
- * Registers the tool, the command, the watcher and the renderer that run `command`. Without `command`, it waits until
- * the install lock is free, and runs `dist/cli.js` of the workflows install it finds with the Node of Pi. With
- * `command`, it registers at once.
+ * Registers the tool, the command, the watcher and the renderer that run `command`. Without `command`, they run
+ * `dist/cli.js` of the workflows package that this extension resolves, with the Node of Pi, and the harness host loads
+ * the entry of that package.
  */
 export default async function workflows(pi: Api, command?: readonly string[]): Promise<void> {
 	if (command !== undefined) {
@@ -679,165 +668,37 @@ export default async function workflows(pi: Api, command?: readonly string[]): P
 		return;
 	}
 
-	await waitInstallLockFree();
-	const folder = workflowsFolder();
-
-	if (folder === undefined) registerMissing(pi);
-	else register(pi, [process.execPath, join(folder, "dist", "cli.js")]);
+	const require = createRequire(import.meta.url);
+	const folder = dirname(require.resolve(`${WORKFLOWS_PACKAGE}/package.json`));
+	putWorkflowsBinLast(require);
+	await setWorkflowsEntry(folder);
+	register(pi, [process.execPath, join(folder, "dist", "cli.js")]);
 }
 
 /**
- * The folder of the global workflows install: the package of the first `workflows` on `PATH`, else the package in the
- * global `node_modules` of npm. A folder counts only when its `package.json` names `@vzlentin/workflows`.
+ * Puts the `.bin` folder next to the workflows package last on `PATH`, so Pi's tools find `workflows`. It goes last
+ * because the folder also holds the commands of other dependencies, such as an older `pi`, which must not hide the
+ * user's own. It removes the folder first, so each load of the extension leaves it on `PATH` once.
  */
-function workflowsFolder(): string | undefined {
-	const onPath = pathFolder();
+function putWorkflowsBinLast(require: NodeJS.Require): void {
+	const modules = require.resolve
+		.paths(WORKFLOWS_PACKAGE)
+		?.find((dir) => existsSync(join(dir, WORKFLOWS_PACKAGE, "package.json")));
 
-	if (onPath !== undefined && isWorkflows(onPath)) return onPath;
-	const global = npmFolder();
-
-	return global !== undefined && isWorkflows(global) ? global : undefined;
+	if (modules === undefined) return;
+	const bin = join(modules, ".bin");
+	const rest = process.env.PATH ? process.env.PATH.split(delimiter).filter((entry) => entry !== bin) : [];
+	process.env.PATH = [...rest, bin].join(delimiter);
 }
 
 /**
- * The package of the first `workflows` on `PATH`: `<package>/dist/cli.js` is the real path of the command. On Windows
- * the command is a `.cmd` shim whose real path is not `dist/cli.js`, so there only `npmFolder` finds the install.
+ * Sets the entry `workflows` in harness's `entries.json` to `dist/entry.js` of the workflows package in `folder`, with
+ * the harness that this package imports, so a host that the tool starts loads the entry of the same install.
  */
-function pathFolder(): string | undefined {
-	try {
-		const dirs = (process.env.PATH ?? "").split(delimiter).filter((dir) => dir !== "");
-		const found = dirs.map((dir) => join(dir, "workflows")).find((path) => existsSync(path));
-
-		return found === undefined ? undefined : dirname(dirname(realpathSync(found)));
-	} catch {
-		return undefined;
-	}
-}
-
-/** The workflows package in the global `node_modules` of npm. */
-function npmFolder(): string | undefined {
-	try {
-		const root = execFileSync("npm", ["root", "-g"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-
-		return join(root.trim(), WORKFLOWS_PACKAGE);
-	} catch {
-		return undefined;
-	}
-}
-
-/** Whether `folder` is a workflows install at the version of this extension or later: `pi update` moves only the extension. */
-function isWorkflows(folder: string): boolean {
-	try {
-		const manifest: unknown = JSON.parse(readFileSync(join(folder, "package.json"), "utf8"));
-
-		return Value.Check(WorkflowsManifest, manifest) && !olderThan(manifest.version, OWN_VERSION);
-	} catch {
-		return false;
-	}
-}
-
-/** Whether the version `found` is older than `wanted`, by major, minor and patch. A prerelease counts as its release. */
-function olderThan(found: string, wanted: string): boolean {
-	const parts = (version: string) => (version.split("-")[0] ?? "").split(".").map(Number);
-	const [have, want] = [parts(found), parts(wanted)];
-	const at = want.findIndex((part, index) => part !== have[index]);
-
-	return at !== -1 && (have[at] ?? 0) < (want[at] ?? 0);
-}
-
-/**
- * Registers the tool and `/workflows` without workflows at the version of this extension: each one gives the command
- * that installs it. A session start in the TUI offers the install.
- */
-function registerMissing(pi: Api): void {
-	const version = OWN_VERSION;
-	const message = `workflows ${version} is not installed: npm install -g ${WORKFLOWS_PACKAGE}@${version}`;
-
-	pi.registerTool({
-		name: "workflow",
-		label: "Workflow",
-		description: message,
-		parameters: Type.Object({}),
-		async execute() {
-			return { content: [{ type: "text", text: message }], details: undefined };
-		},
-	});
-
-	pi.registerCommand("workflows", {
-		description: message,
-		handler: async (_args, ctx) => ctx.ui.notify(message, "error"),
-	});
-
-	// Pi waits for each handler, so the session starts while the dialog and the install run.
-	pi.on("session_start", (_event, ctx) => {
-		if (ctx.mode !== "tui") return;
-		void offerInstall(ctx.ui, version);
-	});
-}
-
-/**
- * Asks to install workflows `version` with npm, and installs it when the answer is yes. It does nothing when the user
- * declined before (`install.declined` in the state folder) or when workflows is found under the install lock. It shows
- * each failure as an error and never rejects.
- */
-async function offerInstall(ui: Pick<ExtensionUIContext, "confirm" | "notify">, version: string): Promise<void> {
-	const declined = join(stateFolder(), "install.declined");
-	const spec = `${WORKFLOWS_PACKAGE}@${version}`;
-
-	let held = false;
-
-	if (existsSync(declined)) return;
-
-	try {
-		await takeInstallLock();
-		held = true;
-
-		if (existsSync(declined) || workflowsFolder() !== undefined) return;
-		const prefix = (await runUserCommand("npm", ["prefix", "-g"])).trim();
-
-		const title = `workflows ${version} is not installed`;
-
-		if (!(await ui.confirm(title, `Install ${spec} with npm install -g into ${prefix}?`))) {
-			writeFileSync(declined, "");
-
-			return;
-		}
-
-		await runUserCommand("npm", ["install", "-g", spec]);
-		const folder = workflowsFolder();
-
-		if (folder === undefined) throw new Error(`npm installed ${spec}, but workflows is not found`);
-		await runUserCommand(process.execPath, [join(folder, "dist", "cli.js"), "--version"]);
-		ui.notify("workflows installed, run /reload", "info");
-	} catch (error) {
-		const output = Value.Check(CommandOutput, error) ? `${error.stdout}\n${error.stderr}` : "";
-		const reason = error instanceof Error ? error.message : String(error);
-
-		const lines = (output.trim() === "" ? reason : output)
-			.split("\n")
-			.filter((line) => line.trim() !== "")
-			.slice(-20);
-
-		ui.notify([...lines, `Run by hand: npm install -g ${spec}`].join("\n"), "error");
-	} finally {
-		if (held) releaseInstallLock();
-	}
-}
-
-/** Runs `file` with `PATH` without the `node_modules/.bin` folders, as the setup of harness does, and gives its stdout. */
-async function runUserCommand(file: string, args: string[]): Promise<string> {
-	const path = (process.env.PATH ?? "")
-		.split(delimiter)
-		.filter((entry) => !entry.endsWith(join("node_modules", ".bin")))
-		.join(delimiter);
-
-	const { stdout } = await runFile(file, args, {
-		encoding: "utf8",
-		env: { ...process.env, PATH: path },
-		maxBuffer: 64 * 1024 * 1024,
-	});
-
-	return stdout;
+async function setWorkflowsEntry(folder: string): Promise<void> {
+	const resolved = createRequire(join(folder, "package.json")).resolve("@vzlentin/harness/entries");
+	const entries: typeof import("@vzlentin/harness/entries") = await import(pathToFileURL(resolved).href);
+	entries.setEntry("workflows", join(folder, "dist", "entry.js"));
 }
 
 function register(pi: Api, command: readonly string[]): void {
