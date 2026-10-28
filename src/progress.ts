@@ -58,14 +58,11 @@ type Step = {
 
 type Item = Step | { readonly log: string } | { readonly run: RunNode };
 
-/**
- * A line of the tree, with the step that it belongs to, if any: its run, its text and the time of its first start. The
- * lines of one step share one `step` object.
- */
-export type Entry = {
-	readonly text: string;
-	readonly step?: { readonly run: string; readonly text: string; readonly started: number | undefined };
-};
+/** A step as a reader of `Progress.entries` sees it: its run, its text and the time of its first start. */
+export type StepView = Readonly<Pick<Step, "runId" | "text" | "firstStart">>;
+
+/** A line of the tree, with the step that it belongs to, if any. The lines of one step share one `step` object. */
+export type Entry = { readonly text: string; readonly step?: StepView | undefined };
 
 /**
  * A run: its steps and log lines, its caller, and whether it is under a step of the caller. A child run whose caller
@@ -195,14 +192,12 @@ export class Progress {
 		const visit = (items: readonly Item[], indent: string, step: Entry["step"]) => {
 			for (const item of items) {
 				if ("run" in item) visit(item.run.items, indent, step);
-				else if ("log" in item)
-					entries.push(step === undefined ? { text: `${indent}${item.log}` } : { text: `${indent}${item.log}`, step });
+				else if ("log" in item) entries.push({ text: `${indent}${item.log}`, step });
 				else {
 					const { started, ended } = item;
 					const time = started === undefined || ended === undefined ? "" : `  ${duration(ended - started)}`;
-					const own = { run: item.runId, text: item.text, started: item.firstStart };
-					entries.push({ text: `${indent}${item.mark} ${item.text}${time}`, step: own });
-					visit(item.items, `${indent}  `, own);
+					entries.push({ text: `${indent}${item.mark} ${item.text}${time}`, step: item });
+					visit(item.items, `${indent}  `, item);
 				}
 			}
 		};

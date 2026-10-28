@@ -5,7 +5,7 @@
 import type { JsonValue } from "@earendil-works/chord";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { duration, type Entry, type Mark } from "./progress.ts";
+import { duration, type Mark, type Progress, type StepView } from "./progress.ts";
 import type { SavedCall } from "./script.ts";
 
 /** One call of the run `runId` in `workflows show`, with the calls of its child run when it is a `run` call. */
@@ -45,7 +45,7 @@ export function treeLines(calls: readonly Shown[], indent: string, now: number):
 }
 
 /** A line of `treeLines`, with the conversation of its session or its ask. */
-export type TreeEntry = { readonly text: string; readonly conversation?: number };
+export type TreeEntry = { readonly text: string; readonly conversation?: number | undefined };
 
 /** The lines of `treeLines`, each session with its conversation and each ask with the conversation that it asks. */
 export function treeEntries(calls: readonly Shown[], indent: string, now: number): TreeEntry[] {
@@ -61,7 +61,7 @@ export function treeEntries(calls: readonly Shown[], indent: string, now: number
 		const text = `${indent}  ${mark} ${call.kind} ${call.label}${time}`;
 		const conversation = call.kind === "session" ? call.conversation : askedConversation(call);
 
-		entries.push(conversation === undefined ? { text } : { text, conversation });
+		entries.push({ text, conversation });
 
 		if (call.calls !== undefined) entries.push(...treeEntries(call.calls, `${indent}    `, now));
 	}
@@ -77,40 +77,41 @@ function askedConversation(call: Shown): number | undefined {
 }
 
 /**
- * The lines of `show` with the agent of each, for `show --pick`: the step lines `steps` of `Progress.entries`, each
- * with the agent of its step, or the lines of `treeEntries` of `calls` when the run has no steps.
+ * The lines of `show` with the agent of each: the step lines of `progress`, each with the agent of its step, or the
+ * lines of `treeEntries` of `calls` when the run has no steps.
  */
-export function pickEntries(calls: readonly Shown[], steps: readonly Entry[] | undefined, now: number): TreeEntry[] {
-	if (steps === undefined) return treeEntries(calls, "", now);
+export function pickEntries(calls: readonly Shown[], progress: Progress, now: number): TreeEntry[] {
+	if (!progress.stepped) return treeEntries(calls, "", now);
+
+	const entries = progress.entries();
 
 	const agents = stepAgents(
 		calls,
-		steps.flatMap(({ step }) => (step === undefined ? [] : [step])),
+		entries.flatMap(({ step }) => (step === undefined ? [] : [step])),
 	);
 
-	return steps.map(({ text, step }) => {
-		const conversation = step === undefined ? undefined : agents.get(step);
-
-		return conversation === undefined ? { text } : { text, conversation };
-	});
+	return entries.map(({ text, step }) => ({ text, conversation: step === undefined ? undefined : agents.get(step) }));
 }
-
-/** A step of a run, as `Progress.entries` gives it: its run, its text, and the time of its first start. */
-type StepStart = NonNullable<Entry["step"]>;
 
 /**
  * The agent of each of `steps`: the first session of `calls` that opened a conversation in the step, or in a child run
- * that a `run` call of the step started. A session is in the last step of its run with the text of its phase line that
+ * that a `run` call of the step started. A call is in the last step of its run with the text of its phase line that
  * started at or before it, so a step whose text comes back gets the sessions of its own time; a step with no start
- * time counts as started before every session. The summarizer of a step starts after the session whose note it
+ * time counts as started before every call. The summarizer of a step starts after the session whose note it
  * compresses, so it is never the one.
  */
-function stepAgents(calls: readonly Shown[], steps: readonly StepStart[]): Map<StepStart, number> {
-	const sessions: { readonly call: Shown; readonly at: readonly { run: string; text: string }[] }[] = [];
+function stepAgents(calls: readonly Shown[], steps: readonly StepView[]): Map<StepView, number> {
+	const sessions: { readonly call: Shown; readonly at: readonly StepView[] }[] = [];
 
-	const visit = (shown: readonly Shown[], outer: readonly { run: string; text: string }[]) => {
+	const visit = (shown: readonly Shown[], outer: readonly StepView[]) => {
 		for (const call of shown) {
-			const at = call.phase === null ? outer : [...outer, { run: call.runId, text: call.phase }];
+			const started = Date.parse(call.startedAt);
+
+			const step = steps.findLast(
+				(s) => s.runId === call.runId && s.text === call.phase && (s.firstStart ?? -Infinity) <= started,
+			);
+
+			const at = step === undefined ? outer : [...outer, step];
 
 			if (call.kind === "session") sessions.push({ call, at });
 			visit(call.calls ?? [], at);
@@ -120,21 +121,12 @@ function stepAgents(calls: readonly Shown[], steps: readonly StepStart[]): Map<S
 	visit(calls, []);
 	// Child runs can work at once, so the first session is the first to start in the whole tree.
 	sessions.sort((a, b) => a.call.startedAt.localeCompare(b.call.startedAt));
-	const agents = new Map<StepStart, number>();
+	const agents = new Map<StepView, number>();
 
 	for (const { call, at } of sessions) {
-		const { conversation } = call;
-		const started = Date.parse(call.startedAt);
+		if (call.conversation === undefined) continue;
 
-		if (conversation === undefined) continue;
-
-		for (const { run, text } of at) {
-			const step = steps.findLast(
-				(step) => step.run === run && step.text === text && (step.started ?? -Infinity) <= started,
-			);
-
-			if (step !== undefined && !agents.has(step)) agents.set(step, conversation);
-		}
+		for (const step of at) if (!agents.has(step)) agents.set(step, call.conversation);
 	}
 
 	return agents;

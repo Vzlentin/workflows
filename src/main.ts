@@ -882,11 +882,9 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	}
 
 	const mode = values.agents ? "agents" : values.calls ? "calls" : "steps";
-	const shown = await readRun(await savedRun(id, SHOW), terminal, mode !== "steps" || json);
+	const shown = await readRun(await savedRun(id, SHOW), terminal, mode !== "steps" || json, "be shown");
 	const { input, title, status, head, calls, progress, footer, end } = shown;
-
 	const now = Date.now();
-	const steps = progress.lines();
 
 	if (mode === "agents" && json) {
 		const agents = agentRows(calls, 0, now);
@@ -894,9 +892,11 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	} else if (mode === "agents") {
 		for (const line of [head, ...agentLines(agentRows(calls, 0, now)), ...footer]) terminal.stdout(line);
 	} else if (json) {
+		const steps = progress.lines();
 		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, steps, calls }));
 	} else {
-		const body = mode === "calls" || !progress.stepped ? treeLines(calls, "", now) : steps;
+		const body =
+			mode === "calls" ? treeLines(calls, "", now) : pickEntries(calls, progress, now).map((entry) => entry.text);
 
 		for (const line of [head, ...body, ...footer]) terminal.stdout(line);
 	}
@@ -919,9 +919,10 @@ type ShownRun = {
 
 /**
  * The saved run `run` as `show` prints it: its task, its head line, its steps, its calls, and its footer lines. It
- * reads the call records `withCalls`, or when the run has no steps.
+ * reads the call records `withCalls`, or when the run has no steps. `verb` completes the error for a run that cannot
+ * be read, as in `cannot <verb>`.
  */
-async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean): Promise<ShownRun> {
+async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean, verb: string): Promise<ShownRun> {
 	const { id } = run;
 	const empty = { task: undefined, saved: new Map<string, SavedCall>(), progress: new Progress() };
 
@@ -934,7 +935,7 @@ async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean): P
 		return { task: taskOf((await runTasks(store)).get(id) ?? []), saved: calls, progress: read };
 	});
 
-	const checkedTask = checked(task, id, "be shown");
+	const checkedTask = checked(task, id, verb);
 	const { input, state } = checkedTask;
 	const outcome = state.status === "terminal" ? state.outcome : undefined;
 	const title = script.title(input);
@@ -968,19 +969,17 @@ async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean): P
  */
 async function pickAgent(run: SavedRun, terminal: Terminal, choose: Choose): Promise<number> {
 	for (;;) {
-		const read = await readRun(run, terminal, true);
-		const steps = read.progress.stepped ? read.progress.entries() : undefined;
-		const body = pickEntries(read.calls, steps, Date.now());
+		const read = await readRun(run, terminal, true, "be shown");
+		const body = pickEntries(read.calls, read.progress, Date.now());
 
 		if (body.some((item) => item.conversation !== undefined)) {
 			const items: TreeEntry[] = [{ text: read.head }, ...body, ...read.footer.map((text) => ({ text }))];
 			const pickable = items.map((item) => item.conversation !== undefined);
 			const texts = items.map((item) => item.text);
 			const index = await choose("Pick an agent:", texts, pickable);
-			const conversation = index === undefined ? undefined : items[index]?.conversation;
 
-			if (conversation === undefined) return 130;
-			terminal.stdout(String(conversation));
+			if (index === undefined) return 130;
+			terminal.stdout(String(items[index]?.conversation));
 
 			return 0;
 		}
@@ -1019,15 +1018,9 @@ async function attach(args: readonly string[], terminal: Terminal): Promise<numb
 	const conversation = wanted === undefined ? undefined : Number(wanted);
 
 	const run = await savedRun(id, ATTACH);
+	const { input, calls } = await readRun(run, terminal, true, "be attached");
 
-	const { task, records } = await reading(run.store, { task: undefined, records: new Map() }, async (store) => ({
-		task: taskOf((await runTasks(store)).get(id) ?? []),
-		records: await callRecords(store, id),
-	}));
-
-	const { input, state } = checked(task, id, "be attached");
-
-	const list = agentRows(callTree(records, id, state.status === "terminal"), 0, Date.now())
+	const list = agentRows(calls, 0, Date.now())
 		.flatMap((row) => (row.kind === "agent" ? [row] : []))
 		.filter((row) => conversation === undefined || row.conversation === conversation)
 		.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
