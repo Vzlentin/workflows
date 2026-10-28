@@ -25,7 +25,7 @@ and the squash. `campaign` does the same, runs
 research session:   research (documents the code as it is)
 plan session:       plan (with the research)  ->  challenge  ->  handoff
 implement session:  implement the handoff                      <- round 1, then each round after FIX
-review session:     review  ->  challenge (SHIP or FIX)  ->  handoff (on FIX, back to implement)
+review session:     review (SHIP or FIX)  ->  handoff (on FIX, back to implement)
 judge session:      fixed rubric, then commit message, after SHIP
 ```
 
@@ -106,21 +106,18 @@ missing at <path>. Install it with: <install command>`.
 
 The planner's handoff, each implement turn and the reviewer's handoff answer through `respond` with their text and a
 list of notes, each one line of at most 280 bytes: the planner gives its decisions with their reasons, the
-implementer gives what it tried and what it observed, and the reviewer gives the decisions of its challenge, with the
-findings that it cut and why. The reviewer has no handoff on SHIP or on FIX in the last round, so it gives no notes
-then. Each note becomes one `memo note` of the line `[item <n> ]<author>[ r<round>]: <note>`, with its whitespace
-collapsed, where the author is `planner`, `implementer` or `reviewer`, the item is the campaign item, and the planner
-has no round. Empty notes are left out, and a line above 280 UTF-8 bytes loses words from its end. When `memo` asks to
-compress notes, a `summarizer` session answers with one line, cut in the same way, which goes to `memo nap`.
+implementer gives what it tried and what it observed, and the reviewer gives what its review checked and found sound,
+and the lessons that later work needs, but not its findings, which its handoff gives. The reviewer has no handoff on
+SHIP or on FIX in the last round, so it gives no notes then. Each note becomes one `memo note` of the line
+`[item <n> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, where the author is `planner`, `implementer`
+or `reviewer`, the item is the campaign item, and the planner has no round. Empty notes are left out, and a line above
+280 UTF-8 bytes loses words from its end. When `memo` asks to compress notes, a `summarizer` session answers with one
+line, cut in the same way, which goes to `memo nap`.
 
 The first prompt of each planner, implement and review session starts with a `## memory` section with the lines of
 `memo wake` that start with `#<k>` or `#<lo>-<hi>`, without the date of a note, when there are any. The later prompts of
 the session have no section. The judge's prompt has no memory. The saved results of the `memo` calls replay at
 resume, so a resume gives the same prompts.
-
-The review challenge has an evidence rule: a finding that reverses a note, or a choice that the implementer explained,
-stays only with a defect that the review showed, written as `reverses #k: <defect>`. `workflows/scripts/thermoloop.js` adds this
-rule next to the SHIP or FIX rule, and not in a template. The planner's challenge does not get it.
 
 On SHIP, the run starts the child run `judge` in the worktree, with the work item, the start commit and `commit:
 true`: see [Judge](#judge). If the judge fails or does not answer through `respond`, the command prints
@@ -234,8 +231,11 @@ The implement step logs the size of the round's change, `+<insertions> -<deletio
 changes`, and the review step logs `SHIP` or `FIX`. The review session gets the work item, the handoff that the
 last implement session followed, the implementer's reply (both none in round 1 without a caller), and the paths of
 the round's patches in the run directory, or in the `patches` folder that `ship` gives: `round-<n>.patch` from the start
-commit, and from round 2 `round-<n>-fix.patch` from the previous round. Its challenge answers SHIP or FIX through
-`respond`. On FIX, its handoff gives the next round's instructions.
+commit, and from round 2 `round-<n>-fix.patch` from the previous round. From round 2, the prompt also gets a `## scope`
+section: the review covers only the fix patch, and a finding is a part of the plan that is not done, a problem that the
+fix added, or a reproduced bug, so the rounds end. The review turn ends with SHIP or FIX through `respond`: SHIP when
+the review has no finding, FIX when it has one or more. On FIX, its handoff gives every finding with its fix, and the
+next round fixes all of them.
 
 On SHIP, the command prints `approved <subject> in <n> rounds, <commit>` and exits 0. A run that is not approved
 after `--rounds` rounds prints `stopped <subject> after <n> rounds` and exits 1. The memory works as in `ship`, in the store
@@ -381,10 +381,11 @@ The README says wrold.
 ```
 
 `--improve` lists the prompts to optimize, separated by commas: any of `research`, `plan`, `challenge`, `handoff`,
-`implement` and `review`. The default is `review,challenge,handoff`. `judge` gives the score, so it is never a
-candidate. `--trials` is the number of candidates that the run evaluates, the baseline included, and defaults to 3. A
-workflow other than `ship`, an unknown prompt name, fewer than 2 items, or an item without `repo` or `start` fails the
-run after `run <run-id>`, with `failed optimize: <error>`, and exits 1, because the script checks them when it runs.
+`implement` and `review`. The default is `review,handoff`, the prompts of the review loop. `judge` gives the score, so
+it is never a candidate. `--trials` is the number of candidates that the run evaluates, the baseline included, and
+defaults to 3. A workflow other than `ship`, an unknown prompt name, fewer than 2 items, or an item without `repo` or
+`start` fails the run after `run <run-id>`, with `failed optimize: <error>`, and exits 1, because the script checks
+them when it runs.
 
 A candidate is one text for each listed prompt. The baseline is the texts of the run's prompts, so `--prompts
 <folder>` sets it. Each evaluation is the child run
@@ -1408,9 +1409,9 @@ task of the caller's run. A child run without a worktree can have an empty run d
 `workflows/prompts/` holds the Pi prompt templates `research`, `plan`, `challenge`, `handoff`, `implement`, `review`, `judge` and
 `commit`, `split` and `rundown` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
 frontmatter and the last line `$@`: the run removes them, then adds its inputs as `## <name>` sections.
-`workflows/scripts/thermoloop.js` adds the evidence rule and the SHIP or FIX answer rule of the review challenge itself, so a
-template edit cannot remove them. `memory(...).session(...).noted` of the [script lib](#the-script-lib) adds the
-`respond` answer rule of the handoff and implement turns. In the same way,
+`workflows/scripts/thermoloop.js` adds the rules of the [review loop](#thermoloop), so a template edit cannot
+remove them. `memory(...).session(...).noted` of the [script lib](#the-script-lib) adds the `respond` answer rule
+of the handoff and implement turns. In the same way,
 `workflows/scripts/campaign.js` adds the `respond` answer rule of `split`. The judge rubric is fixed: its eight
 answers, in question order, make the score. `judge`, `commit` and `rundown` hold their own `respond` answer rules. A run uses the
 templates as they were when it started.

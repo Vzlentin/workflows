@@ -4,7 +4,7 @@ argument-hint: "[scope]"
 ---
 Perform a deep code quality audit of this change.
 
-Report reproduced correctness bugs first. The plan is what this round implemented. From round 1, the decisions in the memory are settled: only the evidence rule of the challenge can reopen one. Unfinished fixes and regressions since the previous round can still block.
+Report reproduced correctness bugs first. The plan is what this round implemented, and the reply explains the choices of the implementer. The memory has the notes of the earlier sessions. Do not reopen a choice that the reply or a note explains without a new reason. When the prompt has a scope, it limits the review and the findings.
 
 Rethink how to structure / implement the change to meaningfully improve code quality without impacting behavior. Improve abstractions and modularity, reduce spaghetti code, improve succinctness and legibility. Be ambitious: if there is a clear path to improving the implementation that involves restructuring some of the codebase, go for it. Be extremely thorough and rigorous. Measure twice, cut once.
 
@@ -40,11 +40,11 @@ Prioritize findings in this order:
 5. File-size and decomposition concerns
 6. Modularity, legibility and maintainability concerns
 
-Do not flood the review with low-value nits if there are larger structural issues. Prefer a smaller number of high-conviction comments over a long list of cosmetic notes. Be direct, serious, and demanding about quality. Do not be rude, but do not soften major maintainability issues into mild suggestions.
+Report only what must change: the next round fixes every finding that you report. Do not flood the review with low-value nits if there are larger structural issues. Prefer a smaller number of high-conviction comments over a long list of cosmetic notes. Be direct, serious, and demanding about quality. Do not be rude, but do not soften major maintainability issues into mild suggestions.
 
 ## Approval bar
 
-Do not approve merely because behavior seems correct. Treat these as presumptive blockers:
+Do not approve merely because behavior seems correct. Every finding blocks the approval. Look hard for these:
 
 - a plausible code-judo move would delete a lot of preserved incidental complexity
 - a file goes from below 1000 lines to above 1000 lines

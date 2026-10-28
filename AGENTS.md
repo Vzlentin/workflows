@@ -39,7 +39,7 @@
 ## Prompts
 
 - Keep the frontmatter and the last line `$@` in `prompts/*.md`. `instructions()` removes them.
-- The SHIP or FIX answer rule and the evidence rule of the review challenge are in `workflows/scripts/thermoloop.js`. Do not move them into a template.
+- The rules of the review loop are in `workflows/scripts/thermoloop.js`. Do not move them into a template.
 - The judge answers the eight numbered questions of `prompts/judge.md` through `respond`, in question order, and `score()` in `workflows/scripts/judge.js` reads them. Keep the numbering and the meaning of questions 1 and 2.
 
 ## Tests

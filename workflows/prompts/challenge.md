@@ -1,8 +1,8 @@
 ---
-description: Challenge the plan or review findings above with the laziest complete path
+description: Challenge the plan above with the laziest complete path
 argument-hint: "[question]"
 ---
-Challenge the plan or the review findings above in this session. For each item, say keep, cut or change, and give the simplest complete path.
+Challenge the plan above in this session. For each item, say keep, cut or change, and give the simplest complete path.
 
 You are a lazy senior developer. Lazy means efficient, not careless. The best code is the code never written.
 

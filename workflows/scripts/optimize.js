@@ -6,7 +6,7 @@ export const meta = {
 	args: {
 		workflow: { type: "string", positional: true, default: "ship" },
 		items: { type: "string", required: true },
-		improve: { type: "string", default: "review,challenge,handoff" },
+		improve: { type: "string", default: "review,handoff" },
 		trials: { type: "number", default: 3 },
 	},
 }

@@ -11,6 +11,7 @@ import {
 	type FauxResponseFactory,
 	fauxAssistantMessage,
 	fauxProvider,
+	fauxText,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { EntryRecord } from "@earendil-works/pi-durable";
@@ -250,7 +251,6 @@ export type Kind =
 	| "implement"
 	| "research"
 	| "review"
-	| "verdict"
 	| "judge"
 	| "commit"
 	| "split"
@@ -408,10 +408,9 @@ export class FakeModel {
 		// harness puts `Task:` before the prompt of a spawned subagent.
 		const prompt = user === undefined ? "" : textOf(user).replace(/^Task:\n/, "");
 		const lastUser = messages.findLast((message) => message.role === "user");
-		const found = KINDS.find(([start]) => prompt.replace(MEMORY, "").startsWith(start))?.[1];
+		const kind = KINDS.find(([start]) => prompt.replace(MEMORY, "").startsWith(start))?.[1];
 
-		if (found === undefined) throw new Error(`unexpected prompt: ${prompt}`);
-		const kind = found === "challenge" && tools.includes("respond") ? "verdict" : found;
+		if (kind === undefined) throw new Error(`unexpected prompt: ${prompt}`);
 		const last = messages.findLast((message) => message.role !== "system");
 
 		if (last?.role === "toolResult") {
@@ -423,6 +422,8 @@ export class FakeModel {
 			if (scripted !== undefined) return scripted;
 
 			if (kind === "judge") return this.#judge();
+
+			if (kind === "review") return this.#review();
 
 			if (kind === "implement") {
 				return implemented(this.count(kind), "I fixed the typo in README.md.", this.#script.note);
@@ -502,9 +503,7 @@ export class FakeModel {
 			}
 
 			case "review":
-				return fauxAssistantMessage(`Review ${nth}: the change is small.`);
-			case "verdict":
-				return respond(this.#script.verdicts?.[nth - 1] ?? "SHIP");
+				return this.#review();
 			case "judge":
 				return this.#judge();
 			case "commit":
@@ -569,6 +568,14 @@ export class FakeModel {
 		const judge = Array.isArray(scripted) ? (scripted[this.count("judge") - 1] ?? PASSING_JUDGE) : scripted;
 
 		return Value.Check(Type.String(), judge) ? fauxAssistantMessage(judge) : respond(judge);
+	}
+
+	/** The findings of the nth review, then its scripted verdict through `respond`. */
+	#review(): AssistantMessage {
+		const nth = this.count("review");
+		const verdict = fauxToolCall("respond", { answer: this.#script.verdicts?.[nth - 1] ?? "SHIP" });
+
+		return fauxAssistantMessage([fauxText(`Review ${nth}: the change is small.`), verdict], { stopReason: "toolUse" });
 	}
 
 	#commit(): AssistantMessage {

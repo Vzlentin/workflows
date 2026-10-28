@@ -107,7 +107,7 @@ const TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash"];
 const HARNESS_TOOLS = ["subagent", "codemode"];
 
 const answers = (kind: string) =>
-	["verdict", "judge", "commit", "implement", "handoff"].includes(kind) ? ["respond"] : [];
+	["review", "judge", "commit", "implement", "handoff"].includes(kind) ? ["respond"] : [];
 
 const NOTES = [
 	"#0 planner: Handoff 1: one word changes.",
@@ -199,11 +199,9 @@ describe("workflows ship", () => {
 			"handoff",
 			"implement",
 			"review",
-			"verdict",
 			"handoff",
 			"implement",
 			"review",
-			"verdict",
 			"judge",
 			"commit",
 		]);
@@ -223,7 +221,6 @@ describe("workflows ship", () => {
 		const planned = run.model.find("handoff");
 		const implement = run.model.find("implement");
 		const review = run.model.find("review");
-		const verdict = run.model.find("verdict");
 		const handoff = run.model.find("handoff", 1);
 
 		for (const call of [research, plan, challenge, planned]) expect(call?.prompt).not.toContain("## memory");
@@ -234,8 +231,7 @@ describe("workflows ship", () => {
 		expect(run.model.find("review", 1)?.prompt.startsWith(`${memory(4)}Perform a deep code quality audit`)).toBe(true);
 
 		// Only the first prompt of a session gets the memory.
-		for (const call of [verdict, handoff, run.model.find("verdict", 1)])
-			expect(call?.prompt).not.toContain("## memory");
+		expect(handoff?.prompt).not.toContain("## memory");
 
 		expect(run.model.find("judge")?.prompt.startsWith("## Vocabulary")).toBe(true);
 		expect(research?.prompt).toMatch(
@@ -250,13 +246,20 @@ describe("workflows ship", () => {
 		const patch = join(runs(), run.id ?? "", "round-1.patch");
 		expect(review?.prompt).toContain(`\n\n## change\n${patch}\n\n## reply\nI fixed the typo in README.md.`);
 		expect(await readFile(patch, "utf8")).toContain("-Hello wrold\n+Hello world\n");
-		expect(verdict?.prompt).toMatch(/\n\nAnswer with respond: SHIP if nothing needs to change, FIX otherwise\.$/);
-		expect(verdict?.prompt).toContain("\n\nA reversal of a memory note");
-		expect(challenge?.prompt).not.toContain("A reversal of a memory note");
+		expect(review?.prompt).toMatch(
+			/\n\nWhen you are done, answer with respond: SHIP if your review has no finding, FIX if it has one or more\.$/,
+		);
+		// From round 2, the review covers only the last fix.
+		expect(review?.prompt).not.toContain("## scope");
+		expect(run.model.find("review", 1)?.prompt).toContain(
+			`-fix.patch\n\n## scope\nReview the fix patch, round-2-fix.patch. The code of the earlier rounds is settled. `,
+		);
 		expect(planned?.prompt).toMatch(
 			/^Write a handoff document[\s\S]*information\.\n\nWhen you are done, answer with respond: text /,
 		);
-		expect(handoff?.prompt).toMatch(/^Write a handoff document[\s\S]*the findings that you cut and why\./);
+		expect(handoff?.prompt).toMatch(
+			/^Write a handoff document[\s\S]*\n\nGive every finding of your review, each with its fix\. The next round fixes all of them\.\n\nWhen you are done, answer with respond: text is the document, and notes are what your review checked and found sound, [\s\S]* Do not repeat the findings: the document gives them\./,
+		);
 		expect(run.model.find("implement", 1)?.prompt).toMatch(/## plan\nHandoff 2: /);
 		expect(run.model.find("review", 1)?.prompt).toContain(
 			`## change\n${patch.replace("round-1", "round-2")}\n${patch.replace("round-1", "round-2-fix")}\n`,
@@ -329,7 +332,6 @@ export default function ({ events }) {
 			"handoff",
 			"implement",
 			"review",
-			"verdict",
 			"judge",
 			"commit",
 		]);
@@ -408,8 +410,8 @@ export default function ({ events }) {
 		expect(run.model.calls.map((call) => call.kind)).toEqual(
 			[
 				["research", "plan", "challenge", "handoff"],
-				["implement", "summarize", "review", "verdict", "handoff"],
-				["implement", "review", "verdict"],
+				["implement", "summarize", "review", "handoff"],
+				["implement", "review"],
 			].flat(),
 		);
 
@@ -462,7 +464,7 @@ export default function ({ events }) {
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: repo });
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout[1]).toMatch(SHIPPED);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "verdict", "judge", "commit"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "judge", "commit"]);
 	});
 
 	it("sends a failed turn again on resume, with Pi's retry settings", async () => {
@@ -485,7 +487,6 @@ export default function ({ events }) {
 			"handoff",
 			"implement",
 			"review",
-			"verdict",
 			"judge",
 			"commit",
 		]);
@@ -788,7 +789,7 @@ describe("workflows show", () => {
 			"    round 1/3: review",
 			// The command is cut at 80 characters.
 			child("sh git diff --binary --output=.{53}"),
-			...remembering("reviewer", 2, child),
+			...remembering("reviewer", 1, child),
 			child("sh git rev-parse --short HEAD"),
 			notes(child),
 			call("run judge \\S+"),
@@ -967,7 +968,7 @@ describe("workflows resume of ship runs", () => {
 			"  judge 0.83",
 			expect.stringMatching(/^commit [0-9a-f]+ fix: correct the README typo$/),
 		]);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "verdict", "judge", "commit"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "judge", "commit"]);
 		expect(resumed.model.find("implement")?.prompt).toContain("## plan\nHandoff 1: ");
 		expect(resumed.model.find("implement")?.prompt.startsWith(`${memory(1)}Implement this plan`)).toBe(true);
 		const worktree = worktreeOf(first.id);
@@ -1011,7 +1012,7 @@ describe("workflows resume of ship runs", () => {
 
 		const resumed = await workflows(["resume", stopped.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
 		expect(resumed.code).toBe(0);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "verdict", "judge", "commit"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "judge", "commit"]);
 	});
 
 	it("prints the phase of a session that a later turn interrupted", async () => {
@@ -1104,7 +1105,7 @@ while [ ! -f "${gate}.open" ]; do sleep 0.02; done
 
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: repo });
 		expect(resumed.code).toBe(0);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "verdict", "judge", "commit"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "judge", "commit"]);
 		expect(resumed.model.find("review")?.prompt).toContain("## reply\nI fixed the typo in README.md.");
 		expect(resumed.model.find("review")?.prompt.startsWith(`${memory(2)}Perform a deep code quality audit`)).toBe(true);
 		expect(git(worktreeOf(first.id), "log", "--format=%s")).toBe(`${COMMIT.subject}\ninitial`);
