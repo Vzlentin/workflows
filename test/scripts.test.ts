@@ -517,6 +517,29 @@ describe("workflows show", () => {
 		expect([empty.code, empty.stderr]).toEqual([1, [`workflows: run ${none} has no agent`]]);
 	});
 
+	it("picks the agent of its own time for a step whose text comes back", async () => {
+		const body = 'phase("split")\nawait agent("Script: one")\nphase("b")\nphase("split")\nawait agent("Script: two")';
+		await writeFile(join(root, "x.js"), body);
+		const id = (await workflows(["x.js"], { cwd: root })).id ?? "";
+
+		const pick = async (nth: number) => {
+			const picked = await workflows(["show", id, "--pick"], {
+				cwd: root,
+				choose: async (_question, items) =>
+					items.flatMap((item, index) => (item.startsWith("✓ split") ? [index] : []))[nth],
+			});
+
+			return [picked.code, picked.stdout];
+		};
+
+		const one = String(await conversationOf(/Script: one/));
+		const two = String(await conversationOf(/Script: two/));
+		expect([await pick(0), await pick(1)]).toEqual([
+			[0, [one]],
+			[0, [two]],
+		]);
+	});
+
 	it("waits with --pick while a running run has no agent, until Ctrl+C", async () => {
 		await writeFile(join(root, "x.js"), 'const s = session()\nphase("talk")\nawait s.ask("Script: one")');
 		const running = await stopped(["x.js"], { nth: 1 });

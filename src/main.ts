@@ -10,7 +10,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,17 +26,9 @@ import { resolveProject } from "@vzlentin/harness/projects";
 import { cliPath, statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import {
-	agentLines,
-	agentRows,
-	callTree,
-	stepAgents,
-	stepKey,
-	type TreeEntry,
-	treeEntries,
-	treeLines,
-} from "./calls.ts";
+import { agentLines, agentRows, callTree, pickEntries, type Shown, type TreeEntry, treeLines } from "./calls.ts";
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
+import { herdrPlace, removedByHerdr } from "./herdr.ts";
 import * as script from "./meta.ts";
 import { display, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
@@ -75,12 +67,12 @@ const HOST_CLOSED = "The harness host closed the connection";
 
 /**
  * A question with `items` to pick one of, on a terminal: the index of the item, or undefined when cancelled. Only an
- * item whose flag in `pickable` is not false can be taken.
+ * item that `pickable` flags can be taken, and the cursor starts on the first one.
  */
 export type Choose = (
 	question: string,
 	items: readonly string[],
-	pickable?: readonly boolean[],
+	pickable: readonly boolean[],
 ) => Promise<number | undefined>;
 
 export type Terminal = Io & {
@@ -707,7 +699,11 @@ async function pickRun(terminal: Terminal, choose: Choose): Promise<Listed | und
 		return `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${step === undefined ? "" : `: ${step}`}`;
 	});
 
-	const index = await choose("Pick a run:", items);
+	const index = await choose(
+		"Pick a run:",
+		items,
+		items.map(() => true),
+	);
 
 	return index === undefined ? undefined : runs[index];
 }
@@ -723,15 +719,6 @@ function markOf(status: string): Mark | "?" | "·" {
 
 /** The line of the post-merge hook that `prune --install-hook` writes. */
 const HOOK_LINE = "workflows prune --yes >/dev/null 2>&1 &";
-
-/** The worktrees that `herdr worktree list` prints, with the workspace that has each one open. */
-const HERDR_WORKTREES = Type.Object({
-	result: Type.Object({
-		worktrees: Type.Array(
-			Type.Object({ path: Type.String(), open_workspace_id: Type.Optional(Type.Union([Type.String(), Type.Null()])) }),
-		),
-	}),
-});
 
 type Worktree = NonNullable<script.ScriptInput["worktree"]>;
 
@@ -827,76 +814,6 @@ async function removeWorktree({ branch, worktree }: Prunable): Promise<void> {
 	}
 }
 
-/** The ID of the herdr workspace that has `worktree` open, if any. It throws when herdr fails. */
-async function herdrWorkspace(worktree: Worktree): Promise<string | undefined> {
-	const argv = ["worktree", "list", "--cwd", worktree.path];
-	const listed = await runCommand("herdr", argv, worktree.path);
-
-	if (listed.code !== 0) throw new Error(failure(["herdr", ...argv], listed));
-	const parsed: unknown = JSON.parse(listed.stdout);
-
-	if (!Value.Check(HERDR_WORKTREES, parsed))
-		throw new Error(`herdr worktree list printed no worktrees: ${listed.stdout}`);
-	const path = await realpath(worktree.path);
-
-	for (const entry of parsed.result.worktrees) {
-		const workspace = entry.open_workspace_id;
-
-		if (workspace && (await realpath(entry.path).catch(() => undefined)) === path) return workspace;
-	}
-
-	return undefined;
-}
-
-/** The part of the output of `herdr pane get` that has the workspace of the pane. */
-const HERDR_PANE = Type.Object({ result: Type.Object({ pane: Type.Object({ workspace_id: Type.String() }) }) });
-
-/** The ID of the herdr workspace of the pane `pane`. It throws when herdr fails. */
-async function paneWorkspace(pane: string): Promise<string> {
-	const argv = ["pane", "get", pane];
-	const got = await runCommand("herdr", argv, process.cwd());
-
-	if (got.code !== 0) throw new Error(failure(["herdr", ...argv], got));
-	const parsed: unknown = JSON.parse(got.stdout);
-
-	if (!Value.Check(HERDR_PANE, parsed)) throw new Error(`herdr pane get printed no workspace: ${got.stdout}`);
-
-	return parsed.result.pane.workspace_id;
-}
-
-/**
- * Where `attach` opens Pi in Herdr: with `side`, a pane to the right of `pane`; else a tab of the workspace that has
- * `worktree` open, else of the workspace of `pane`. Undefined without a place: Pi runs in this terminal.
- */
-async function herdrPlace(
-	worktree: Worktree | undefined,
-	side: boolean,
-	pane: string | undefined,
-): Promise<{ pane: string } | { workspace: string } | undefined> {
-	if (side && pane !== undefined) return { pane };
-	const workspace = worktree !== undefined && existsSync(worktree.path) ? await herdrWorkspace(worktree) : undefined;
-
-	if (workspace !== undefined) return { workspace };
-
-	return pane === undefined ? undefined : { workspace: await paneWorkspace(pane) };
-}
-
-/** Whether herdr removed `worktree` with the workspace that has it open. Any herdr failure is false. */
-async function removedByHerdr(worktree: Worktree): Promise<boolean> {
-	if (!process.env.HERDR_ENV) return false;
-
-	try {
-		const workspace = await herdrWorkspace(worktree);
-
-		if (workspace === undefined) return false;
-		const removed = await runCommand("herdr", ["worktree", "remove", "--workspace", workspace], worktree.repository);
-
-		return removed.code === 0;
-	} catch {
-		return false;
-	}
-}
-
 /** Writes the post-merge hook of the repository of the current directory, unless a hook or a hooks path is set. */
 async function installHook(terminal: Terminal): Promise<number> {
 	const hooks = resolve(terminal.cwd, await git(terminal.cwd, "rev-parse", "--git-path", "hooks"));
@@ -956,16 +873,17 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 		throw new UsageError("give --pick without --calls, --agents or --json", SHOW);
 	}
 
-	const { choose } = terminal;
+	const id = oneRunId(positionals, SHOW);
 
-	if (values.pick && choose === undefined) throw new UsageError("--pick needs a terminal on stdin and stderr", SHOW);
+	if (values.pick) {
+		if (terminal.choose === undefined) throw new UsageError("--pick needs a terminal on stdin and stderr", SHOW);
+
+		return pickAgent(await savedRun(id, SHOW), terminal, terminal.choose);
+	}
+
 	const mode = values.agents ? "agents" : values.calls ? "calls" : "steps";
-	const run = await savedRun(oneRunId(positionals, SHOW), SHOW);
-
-	if (values.pick && choose !== undefined) return pickAgent(run, terminal, choose);
-	const { id } = run;
-	const records = mode !== "steps" || json;
-	const { input, title, status, head, calls, progress, footer, end } = await readRun(run, terminal, records);
+	const shown = await readRun(await savedRun(id, SHOW), terminal, mode !== "steps" || json);
+	const { input, title, status, head, calls, progress, footer, end } = shown;
 
 	const now = Date.now();
 	const steps = progress.lines();
@@ -986,11 +904,24 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	return 0;
 }
 
+/** A saved run as `show` prints it. `end` has the report lines or the error of a run that ended. */
+type ShownRun = {
+	readonly input: script.ScriptInput;
+	readonly title: string;
+	readonly status: string;
+	readonly head: string;
+	readonly ended: boolean;
+	readonly calls: Shown[];
+	readonly progress: Progress;
+	readonly footer: readonly string[];
+	readonly end: { report: string[] } | { error: string } | undefined;
+};
+
 /**
- * The saved run `run` as `show` prints it: its task, its head line, its steps, its call records and calls, and its
- * footer lines. It reads the call records with `records`, or when the run has no steps.
+ * The saved run `run` as `show` prints it: its task, its head line, its steps, its calls, and its footer lines. It
+ * reads the call records `withCalls`, or when the run has no steps.
  */
-async function readRun(run: SavedRun, terminal: Terminal, records: boolean) {
+async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean): Promise<ShownRun> {
 	const { id } = run;
 	const empty = { task: undefined, saved: new Map<string, SavedCall>(), progress: new Progress() };
 
@@ -998,7 +929,7 @@ async function readRun(run: SavedRun, terminal: Terminal, records: boolean) {
 		const read = new Progress();
 
 		for (const event of await progressEvents(store, id)) read.add(event);
-		const calls = records || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
+		const calls = withCalls || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
 
 		return { task: taskOf((await runTasks(store)).get(id) ?? []), saved: calls, progress: read };
 	});
@@ -1026,7 +957,7 @@ async function readRun(run: SavedRun, terminal: Terminal, records: boolean) {
 	const head = `run ${id} ${input.name} ${status} ${title}`;
 	const calls = callTree(saved, id, outcome !== undefined);
 
-	return { input, title, status, head, ended: outcome !== undefined, records: saved, calls, progress, footer, end };
+	return { input, title, status, head, ended: outcome !== undefined, calls, progress, footer, end };
 }
 
 /**
@@ -1038,23 +969,14 @@ async function readRun(run: SavedRun, terminal: Terminal, records: boolean) {
 async function pickAgent(run: SavedRun, terminal: Terminal, choose: Choose): Promise<number> {
 	for (;;) {
 		const read = await readRun(run, terminal, true);
-		const agents = stepAgents(read.records);
+		const steps = read.progress.stepped ? read.progress.entries() : undefined;
+		const body = pickEntries(read.calls, steps, Date.now());
 
-		const body: TreeEntry[] = read.progress.stepped
-			? read.progress.entries().map(({ text, step }) => {
-					const conversation = step === undefined ? undefined : agents.get(stepKey(step.run, step.text));
-
-					return conversation === undefined ? { text } : { text, conversation };
-				})
-			: treeEntries(read.calls, "", Date.now());
-
-		const items: TreeEntry[] = [{ text: read.head }, ...body, ...read.footer.map((text) => ({ text }))];
-
-		if (items.some((item) => item.conversation !== undefined)) {
+		if (body.some((item) => item.conversation !== undefined)) {
+			const items: TreeEntry[] = [{ text: read.head }, ...body, ...read.footer.map((text) => ({ text }))];
 			const pickable = items.map((item) => item.conversation !== undefined);
 			const texts = items.map((item) => item.text);
 			const index = await choose("Pick an agent:", texts, pickable);
-
 			const conversation = index === undefined ? undefined : items[index]?.conversation;
 
 			if (conversation === undefined) return 130;

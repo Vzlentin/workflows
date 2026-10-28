@@ -22,21 +22,31 @@ export type Action =
 	| { readonly type: "enter" | "cancel" | "backspace" }
 	| { readonly type: "text"; readonly text: string };
 
-/** What `action` does to `pick` over `items`. Enter on an item whose flag in `pickable` is false keeps the pick open. */
-export function press(items: readonly string[], pick: Pick, action: Action, pickable?: readonly boolean[]): Step {
+/** The pick of `query` over `items`, with the cursor on the first match that `pickable` flags, else on the first match. */
+export function startPick(items: readonly string[], pickable: readonly boolean[], query: string): Pick {
+	const cursor = matching(items, query).findIndex((index) => pickable[index] === true);
+
+	return { query, cursor: Math.max(cursor, 0) };
+}
+
+/**
+ * What `action` does to `pick` over `items`. A new filter text starts the cursor on the first match that `pickable`
+ * flags, and Enter on an item that it does not flag keeps the pick open.
+ */
+export function press(items: readonly string[], pickable: readonly boolean[], pick: Pick, action: Action): Step {
 	const shown = matching(items, pick.query);
 
 	switch (action.type) {
 		case "text":
-			return { pick: { query: pick.query + action.text, cursor: 0 } };
+			return { pick: startPick(items, pickable, pick.query + action.text) };
 		case "backspace":
-			return { pick: { query: pick.query.slice(0, -1), cursor: 0 } };
+			return { pick: startPick(items, pickable, pick.query.slice(0, -1)) };
 		case "cancel":
 			return { cancelled: true };
 		case "enter": {
 			const index = shown[pick.cursor];
 
-			return index === undefined || pickable?.[index] === false ? { pick } : { taken: index };
+			return index === undefined || pickable[index] !== true ? { pick } : { taken: index };
 		}
 
 		case "move": {

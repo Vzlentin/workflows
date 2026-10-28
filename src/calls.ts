@@ -5,11 +5,12 @@
 import type { JsonValue } from "@earendil-works/chord";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { duration, type Mark } from "./progress.ts";
+import { duration, type Entry, type Mark } from "./progress.ts";
 import type { SavedCall } from "./script.ts";
 
-/** One call of `workflows show`, with the calls of its child run when it is a `run` call. */
-type Shown = Omit<SavedCall, "child"> & {
+/** One call of the run `runId` in `workflows show`, with the calls of its child run when it is a `run` call. */
+export type Shown = Omit<SavedCall, "child"> & {
+	readonly runId: string;
 	readonly label: string;
 	readonly mark: Mark;
 	readonly calls?: Shown[];
@@ -29,7 +30,7 @@ export function callTree(records: Map<string, SavedCall>, runId: string, ended: 
 			const mark = record.error !== undefined || cut ? "✗" : record.endedAt !== undefined ? "✓" : "◉";
 			// A `run` call that failed before its child run started has no `child`.
 			const child = started?.runId;
-			const shown = { ...record, label: labelOf(record, child, records), mark } as const;
+			const shown = { ...record, runId, label: labelOf(record, child, records), mark } as const;
 
 			return child === undefined ? shown : { ...shown, calls: callTree(records, child, ended) };
 		});
@@ -76,46 +77,67 @@ function askedConversation(call: Shown): number | undefined {
 }
 
 /**
- * The conversation of each step, keyed by `stepKey` of its run ID and its text: the first session that opened a
- * conversation in the step, or in a child run that the step started. The summarizer of a step starts after the session
- * whose note it compresses, so it is never the one.
+ * The lines of `show` with the agent of each, for `show --pick`: the step lines `steps` of `Progress.entries`, each
+ * with the agent of its step, or the lines of `treeEntries` of `calls` when the run has no steps.
  */
-export function stepAgents(records: Map<string, SavedCall>): Map<string, number> {
-	const callers = new Map<string, { readonly run: string; readonly phase: string | null }>();
+export function pickEntries(calls: readonly Shown[], steps: readonly Entry[] | undefined, now: number): TreeEntry[] {
+	if (steps === undefined) return treeEntries(calls, "", now);
 
-	for (const [key, record] of records) {
-		if (record.kind === "run" && record.child !== undefined) {
-			callers.set(record.child.runId, { run: runOf(key), phase: record.phase });
+	const agents = stepAgents(
+		calls,
+		steps.flatMap(({ step }) => (step === undefined ? [] : [step])),
+	);
+
+	return steps.map(({ text, step }) => {
+		const conversation = step === undefined ? undefined : agents.get(step);
+
+		return conversation === undefined ? { text } : { text, conversation };
+	});
+}
+
+/** A step of a run, as `Progress.entries` gives it: its run, its text, and the time of its first start. */
+type StepStart = NonNullable<Entry["step"]>;
+
+/**
+ * The agent of each of `steps`: the first session of `calls` that opened a conversation in the step, or in a child run
+ * that a `run` call of the step started. A session is in the last step of its run with the text of its phase line that
+ * started at or before it, so a step whose text comes back gets the sessions of its own time; a step with no start
+ * time counts as started before every session. The summarizer of a step starts after the session whose note it
+ * compresses, so it is never the one.
+ */
+function stepAgents(calls: readonly Shown[], steps: readonly StepStart[]): Map<StepStart, number> {
+	const sessions: { readonly call: Shown; readonly at: readonly { run: string; text: string }[] }[] = [];
+
+	const visit = (shown: readonly Shown[], outer: readonly { run: string; text: string }[]) => {
+		for (const call of shown) {
+			const at = call.phase === null ? outer : [...outer, { run: call.runId, text: call.phase }];
+
+			if (call.kind === "session") sessions.push({ call, at });
+			visit(call.calls ?? [], at);
 		}
-	}
+	};
 
-	const sessions = [...records]
-		.filter(([, record]) => record.kind === "session" && record.conversation !== undefined)
-		.sort(([, a], [, b]) => a.startedAt.localeCompare(b.startedAt));
+	visit(calls, []);
+	// Child runs can work at once, so the first session is the first to start in the whole tree.
+	sessions.sort((a, b) => a.call.startedAt.localeCompare(b.call.startedAt));
+	const agents = new Map<StepStart, number>();
 
-	const agents = new Map<string, number>();
+	for (const { call, at } of sessions) {
+		const { conversation } = call;
+		const started = Date.parse(call.startedAt);
 
-	for (const [key, { conversation, phase }] of sessions) {
 		if (conversation === undefined) continue;
 
-		for (let at: { run: string; phase: string | null } | undefined = { run: runOf(key), phase }; at !== undefined; ) {
-			if (at.phase !== null && !agents.has(stepKey(at.run, at.phase)))
-				agents.set(stepKey(at.run, at.phase), conversation);
-			at = callers.get(at.run);
+		for (const { run, text } of at) {
+			const step = steps.findLast(
+				(step) => step.run === run && step.text === text && (step.started ?? -Infinity) <= started,
+			);
+
+			if (step !== undefined && !agents.has(step)) agents.set(step, conversation);
 		}
 	}
 
 	return agents;
-}
-
-/** The key of the step `text` of the run `run` in `stepAgents`. */
-export function stepKey(run: string, text: string): string {
-	return JSON.stringify([run, text]);
-}
-
-/** The run ID of the call record key `key`: the part before its `/`. */
-function runOf(key: string): string {
-	return key.slice(0, key.indexOf("/"));
 }
 
 /**
@@ -158,11 +180,10 @@ export function agentRows(calls: readonly Shown[], depth: number, now: number): 
 	const prompts = new Map<number, string[]>();
 
 	for (const call of calls) {
-		const { conversation } = call.args;
+		const conversation = askedConversation(call);
 
-		if (call.kind === "ask" && Value.Check(Type.Number(), conversation) && !prompts.has(conversation)) {
+		if (conversation !== undefined && !prompts.has(conversation))
 			prompts.set(conversation, textLines(call.args.prompt));
-		}
 	}
 
 	const textOf = (lines: readonly string[]): string | undefined => {
@@ -189,7 +210,7 @@ export function agentRows(calls: readonly Shown[], depth: number, now: number): 
 		const { conversation } = call;
 
 		if (conversation === undefined) continue;
-		const asks = calls.filter((ask) => ask.kind === "ask" && ask.args.conversation === conversation);
+		const asks = calls.filter((ask) => askedConversation(ask) === conversation);
 		const working = works(call, calls);
 		const failed = call.mark === "✗" || asks.some((ask) => ask.mark === "✗");
 		const ends = [call, ...asks].flatMap(({ endedAt }) => (endedAt === undefined ? [] : [endedAt])).sort();
@@ -232,9 +253,12 @@ export function agentLines(rows: readonly AgentRow[]): string[] {
 
 /** Whether `call` is a session that one of its asks among `siblings` works in now. */
 function works(call: Shown, siblings: readonly Shown[]): boolean {
+	const { conversation } = call;
+
 	return (
 		call.kind === "session" &&
-		siblings.some((ask) => ask.kind === "ask" && ask.mark === "◉" && ask.args.conversation === call.conversation)
+		conversation !== undefined &&
+		siblings.some((ask) => ask.mark === "◉" && askedConversation(ask) === conversation)
 	);
 }
 

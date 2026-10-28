@@ -814,9 +814,11 @@ describe("workflows show", () => {
 		const planner = calls.find((c: Stored) => c.kind === "session" && c.args.profile === "planner");
 		const asked = calls.find((c: Stored) => c.kind === "ask" && c.label === "planner");
 		const added = calls.find((c: Stored) => c.kind === "sh" && c.label === "git add -A");
+		const rpi = calls.find((c: Stored) => c.kind === "run" && c.label.startsWith("rpi "));
 
 		expect(planner).toEqual({
 			kind: "session",
+			runId: rpi?.label.split(" ")[1],
 			label: `planner conversation ${conversation}`,
 			phase: "plan",
 			args: { profile: "planner" },

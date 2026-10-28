@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { actionOf } from "../src/keys.ts";
-import { matching, press, render } from "../src/pick.ts";
+import { matching, press, render, startPick } from "../src/pick.ts";
 
 const UP = { type: "move", by: -1 } as const;
 const DOWN = { type: "move", by: 1 } as const;
@@ -13,18 +13,29 @@ describe("the pick of a run", () => {
 	});
 
 	it("filters by each word, in any case, moves round the ends of the matches, and takes only a match", () => {
+		const all = ITEMS.map(() => true);
 		expect(matching(ITEMS, "SHIP a")).toEqual([0, 1]);
-		expect(press(ITEMS, { query: "", cursor: 0 }, UP)).toEqual({ pick: { query: "", cursor: 2 } });
-		expect(press(ITEMS, { query: "ship", cursor: 1 }, DOWN)).toEqual({ pick: { query: "ship", cursor: 0 } });
-		expect(press(ITEMS, { query: "docs", cursor: 0 }, { type: "enter" })).toEqual({ taken: 2 });
+		expect(press(ITEMS, all, { query: "", cursor: 0 }, UP)).toEqual({ pick: { query: "", cursor: 2 } });
+		expect(press(ITEMS, all, { query: "ship", cursor: 1 }, DOWN)).toEqual({ pick: { query: "ship", cursor: 0 } });
+		expect(press(ITEMS, all, { query: "docs", cursor: 0 }, { type: "enter" })).toEqual({ taken: 2 });
 		const none = { query: "nothing", cursor: 0 };
-		expect(press(ITEMS, none, { type: "enter" })).toEqual({ pick: none });
+		expect(press(ITEMS, all, none, { type: "enter" })).toEqual({ pick: none });
 	});
 
 	it("keeps the pick open at Enter on an item that cannot be taken", () => {
 		const pick = { query: "ship", cursor: 1 };
-		expect(press(ITEMS, pick, { type: "enter" }, [true, false, true])).toEqual({ pick });
-		expect(press(ITEMS, pick, { type: "enter" }, [false, true, false])).toEqual({ taken: 1 });
+		expect(press(ITEMS, [true, false, true], pick, { type: "enter" })).toEqual({ pick });
+		expect(press(ITEMS, [false, true, false], pick, { type: "enter" })).toEqual({ taken: 1 });
+	});
+
+	it("starts the cursor on the first match that can be taken, also after a new filter text", () => {
+		const pickable = [false, true, true];
+		expect(startPick(ITEMS, pickable, "")).toEqual({ query: "", cursor: 1 });
+		expect(press(ITEMS, pickable, startPick(ITEMS, pickable, ""), { type: "enter" })).toEqual({ taken: 1 });
+		expect(press(ITEMS, pickable, { query: "", cursor: 0 }, { type: "text", text: "s" })).toEqual({
+			pick: { query: "s", cursor: 1 },
+		});
+		expect(startPick(ITEMS, [false, false, false], "")).toEqual({ query: "", cursor: 0 });
 	});
 
 	it("scrolls the matches to keep the cursor in view", () => {

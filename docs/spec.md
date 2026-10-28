@@ -1091,8 +1091,8 @@ run <run-id> <workflow> <status> <title>
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
 object with both trees: `{ "runId", "workflow", "title", "status", "report"?, "error"?, "steps", "calls" }`, where
 `steps` has the step lines of the text, without the first line and the footer. Each call is
-`{ "kind", "label", "phase", "args", "mark", "startedAt", "endedAt"?, "conversation"?, "result"?, "error"?, "calls"? }`,
-with ISO times. `conversation` is the conversation ID of a `session` that opened. The JSON `mark` of a working session
+`{ "kind", "runId", "label", "phase", "args", "mark", "startedAt", "endedAt"?, "conversation"?, "result"?, "error"?, "calls"? }`,
+with ISO times. `runId` is the ID of the run that made the call. `conversation` is the conversation ID of a `session` that opened. The JSON `mark` of a working session
 is `✓`: only the text shows it as `◉`. `phase` is `null` before the first phase line. The `result` of a `run` call is
 `{ "runId", "result" }`, with the result of its child run, and its `calls` are the calls of the child run.
 
@@ -1128,11 +1128,13 @@ after the agent text in its line, such as `sonnet  1 ask  31s`. `depth` is the n
 With `--pick`, on a terminal, the command asks `Pick an agent:` with the lines that `show` prints: the first line, the
 steps, or the calls of a run without steps, then the footer. It prints the conversation ID of the agent of the line
 that the pick takes, for [`attach --conversation`](#attach). Only a line with an agent can be taken; Enter on another
-line keeps the pick open.
+line keeps the pick open. The cursor starts on the first line with an agent, also after each change of the typed
+filter.
 
 - A step line has the first session that opened a conversation under the step: a `session` call whose phase line is the
-  step, in the run of the step, or a session of a child run that a `run` call under the step started, at any depth. The
-  first session to start counts, so the summarizer of the run memory, which starts after the session whose note it
+  step, in the run of the step, or a session of a child run that a `run` call under the step started, at any depth. When
+  a run has more than one step with the same text, such as the `split` of a campaign after a failed item, a session
+  belongs to the last of them that started at or before it. The first session to start counts, so the summarizer of the run memory, which starts after the session whose note it
   compresses, never counts. A log line, and a line of a child run under a step, has the agent of the step.
 - For a run without steps, a `session` line has its conversation, and an `ask` line the conversation of its session.
 - The first line, a line outside every step, a step with no session, and the footer have no agent.

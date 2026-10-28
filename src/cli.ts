@@ -6,7 +6,7 @@ import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { StdinBuffer } from "@earendil-works/pi-tui";
 import { actionOf } from "./keys.ts";
 import { type Choose, main } from "./main.ts";
-import { type Pick, press, render } from "./pick.ts";
+import { type Pick, press, render, startPick } from "./pick.ts";
 import { terminalRedraw } from "./progress.ts";
 import { CtrlC } from "./run.ts";
 
@@ -36,13 +36,13 @@ function readLine(): Promise<string | undefined> {
 
 /**
  * Asks which of `items` to take, on stderr, with the keys of stdin in raw mode, and gives its index, or undefined when
- * cancelled. Only an item whose flag in `pickable` is not false can be taken. It clears its lines before it returns.
+ * cancelled. Only an item that `pickable` flags can be taken. It clears its lines before it returns.
  */
 const choose: Choose = (question, items, pickable) => {
 	live?.forget();
 	const { stdin, stderr } = process;
 	const screen = terminalRedraw(stderr);
-	let pick: Pick = { query: "", cursor: 0 };
+	let pick: Pick = startPick(items, pickable, "");
 	const drawPick = () => screen.redraw(render(question, items, pick, Math.min(stderr.rows ?? 24, 20)));
 
 	return new Promise((resolve) => {
@@ -64,7 +64,7 @@ const choose: Choose = (question, items, pickable) => {
 			const action = actionOf(key);
 
 			if (action === undefined) return;
-			const step = press(items, pick, action, pickable);
+			const step = press(items, pickable, pick, action);
 
 			if ("taken" in step) done(step.taken);
 			else if ("cancelled" in step) done(undefined);

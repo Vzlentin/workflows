@@ -42,10 +42,14 @@ export type ProgressEvent = Readonly<Static<typeof PROGRESS_EVENT>>;
 
 export type Mark = "✓" | "◉" | "✗";
 
-/** A step of the run `runId`, with the times of its start and its end when the events give them. */
+/**
+ * A step of the run `runId`, with the times of its start and its end when the events give them. `started` moves
+ * forward when the step goes on after a resume, and `firstStart` keeps the time of its first start.
+ */
 type Step = {
 	readonly runId: string;
 	readonly text: string;
+	readonly firstStart: number | undefined;
 	mark: Mark;
 	readonly items: Item[];
 	started?: number | undefined;
@@ -54,8 +58,14 @@ type Step = {
 
 type Item = Step | { readonly log: string } | { readonly run: RunNode };
 
-/** A line of the tree, with the run and the text of the step that it belongs to, if any. */
-export type Entry = { readonly text: string; readonly step?: { readonly run: string; readonly text: string } };
+/**
+ * A line of the tree, with the step that it belongs to, if any: its run, its text and the time of its first start. The
+ * lines of one step share one `step` object.
+ */
+export type Entry = {
+	readonly text: string;
+	readonly step?: { readonly run: string; readonly text: string; readonly started: number | undefined };
+};
 
 /**
  * A run: its steps and log lines, its caller, and whether it is under a step of the caller. A child run whose caller
@@ -115,7 +125,14 @@ export class Progress {
 			current.ended = event.at;
 		}
 
-		const step: Step = { runId: event.run, text: event.text, mark: "◉", items: [], started: event.at };
+		const step: Step = {
+			runId: event.run,
+			text: event.text,
+			firstStart: event.at,
+			mark: "◉",
+			items: [],
+			started: event.at,
+		};
 
 		if (current === undefined) {
 			const loose = run.items.filter((item) => "run" in item && !item.run.under);
@@ -183,7 +200,7 @@ export class Progress {
 				else {
 					const { started, ended } = item;
 					const time = started === undefined || ended === undefined ? "" : `  ${duration(ended - started)}`;
-					const own = { run: item.runId, text: item.text };
+					const own = { run: item.runId, text: item.text, started: item.firstStart };
 					entries.push({ text: `${indent}${item.mark} ${item.text}${time}`, step: own });
 					visit(item.items, `${indent}  `, own);
 				}

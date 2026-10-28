@@ -1,9 +1,7 @@
 /** Git and GitHub CLI commands, repository selection, and a run's worktree. */
 import { execFile } from "node:child_process";
-import { mkdir, realpath, rm, stat } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { type Static, type TSchema, Type } from "typebox";
-import { Value } from "typebox/value";
+import { realpath, rm, stat } from "node:fs/promises";
+import { resolve } from "node:path";
 
 export type Result = { readonly code: number; readonly stdout: string; readonly stderr: string };
 
@@ -137,74 +135,11 @@ export async function renameBranch(
 /**
  * A worktree at `path` on `branch`, created from `start` when the branch is new. Safe to repeat after an interruption
  * at any point: an existing worktree is kept, and a partial one is replaced. The repository's checkout stays untouched.
- * With `herdr`, `herdr worktree create` makes it first, so it shows in Herdr; when Herdr fails, Git makes it. It gives
- * the ID of the Herdr workspace that `herdr worktree create` opened on the worktree, and undefined in every other case.
  */
-export async function ensureWorktree(
-	repository: string,
-	path: string,
-	branch: string,
-	start: string,
-	herdr: boolean,
-): Promise<string | undefined> {
-	if ((await repositoryAt(path)) !== undefined) return undefined;
+export async function ensureWorktree(repository: string, path: string, branch: string, start: string): Promise<void> {
+	if ((await repositoryAt(path)) !== undefined) return;
 	await rm(path, { recursive: true, force: true });
 	await git(repository, "worktree", "prune");
-
-	if (herdr) {
-		await mkdir(dirname(path), { recursive: true });
-		const create = ["worktree", "create", "--cwd", repository, "--path", path, "--branch", branch, "--base", start];
-		// `run` rejects when `herdr` is missing, and any failure falls back to Git.
-		const created = await run("herdr", [...create, "--no-focus"], repository).catch(() => undefined);
-
-		if ((await repositoryAt(path)) !== undefined) return workspaceOf(created?.stdout ?? "");
-		await rm(path, { recursive: true, force: true });
-		await git(repository, "worktree", "prune");
-	}
-
 	const exists = await gitSucceeds(repository, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`);
 	await git(repository, "worktree", "add", ...(exists ? [path, branch] : ["-b", branch, path, start]));
-
-	return undefined;
-}
-
-/** The part of the output of `herdr worktree create` that has the workspace that it opened. */
-const WORKTREE_CREATED = Type.Object({
-	result: Type.Object({ workspace: Type.Object({ workspace_id: Type.String() }) }),
-});
-
-/** The part of the output of `herdr pane list` that has the panes. */
-const PANES = Type.Object({ result: Type.Object({ panes: Type.Array(Type.Object({ pane_id: Type.String() })) }) });
-
-/** The workspace ID in the output `stdout` of `herdr worktree create`, or undefined when it has none. */
-function workspaceOf(stdout: string): string | undefined {
-	return parseOutput(WORKTREE_CREATED, stdout)?.result.workspace.workspace_id;
-}
-
-/** The JSON `text` when it matches `schema`, or undefined. */
-function parseOutput<T extends TSchema>(schema: T, text: string): Static<T> | undefined {
-	try {
-		const parsed: unknown = JSON.parse(text);
-
-		return Value.Check(schema, parsed) ? parsed : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * Types the loop of `show --pick` and `attach --side` on the run `runId` in the first pane of the Herdr workspace
- * `workspace`, so the agents of the run can be opened beside the step tree. Any failure leaves the pane as it is.
- */
-export async function typePickLoop(workspace: string, runId: string, cwd: string): Promise<void> {
-	try {
-		const listed = await run("herdr", ["pane", "list", "--workspace", workspace], cwd);
-		const pane = listed.code === 0 ? parseOutput(PANES, listed.stdout)?.result.panes[0]?.pane_id : undefined;
-
-		if (pane === undefined) return;
-		const loop = `while c=$(workflows show ${runId} --pick); do workflows attach ${runId} --conversation "$c" --side; done`;
-		await run("herdr", ["pane", "run", pane, loop], cwd);
-	} catch {
-		// The loop is a help: the run goes on without it.
-	}
 }
