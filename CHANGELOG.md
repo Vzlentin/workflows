@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.0](https://github.com/Vzlentin/workflows/compare/v0.5.1...v0.6.0) (2026-10-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* `workflows attach <run-id> <step>` is removed. Use `workflows show <run-id> --pick`, then `workflows attach <run-id> --conversation <id>`. In Herdr, `attach` without `--side` opens a tab, not a pane beside HERDR_PANE_ID.
+* the positional argument of `workflows thermoloop` and `workflows judge` is the change, not the work item. Give the work item with `--item`.
+* a global install no longer runs a setup and no longer installs harness or the Pi packages. Install with `pi install npm:@vzlentin/pi-workflows`, or with `npm install -g @vzlentin/workflows` without Pi.
+
+### Features
+
+* drop the challenge and the evidence rule from the review ([#75](https://github.com/Vzlentin/workflows/issues/75)) ([6663967](https://github.com/Vzlentin/workflows/commit/6663967a80a16a7d1154077df7ff0a4c83ab5488))
+* drop the challenge turn from the planner ([#76](https://github.com/Vzlentin/workflows/issues/76)) ([780d073](https://github.com/Vzlentin/workflows/commit/780d0734e6dcc0389801d62d65eec88c41502e43))
+* install workflows through Pi, with pi-workflows bringing pi-agents ([#72](https://github.com/Vzlentin/workflows/issues/72)) ([b668552](https://github.com/Vzlentin/workflows/commit/b6685520a869057daadd4a56992e1505ebb052f0))
+* pick the agents of a run on its step tree, and open them beside it ([#74](https://github.com/Vzlentin/workflows/issues/74)) ([0cfdce9](https://github.com/Vzlentin/workflows/commit/0cfdce92a509de46d43669ba67e17c8d4741bba9))
+* **pi:** ship a workflows skill in pi-workflows ([#79](https://github.com/Vzlentin/workflows/issues/79)) ([c2c52bc](https://github.com/Vzlentin/workflows/commit/c2c52bca721da62473f77e35dd16926a33653eb9))
+* refresh the open pickers of show --pick and list --pick while they wait ([#80](https://github.com/Vzlentin/workflows/issues/80)) ([0ccf679](https://github.com/Vzlentin/workflows/commit/0ccf67970c784962ca4d4e11d55af83a6032e871))
+* run thermoloop and judge on a branch, PR, ref or range, with the work item optional ([#77](https://github.com/Vzlentin/workflows/issues/77)) ([e0b3973](https://github.com/Vzlentin/workflows/commit/e0b3973df2c17c438534d53d787349a7a87dcba0))
+
 ## [0.5.1](https://github.com/Vzlentin/workflows/compare/v0.5.0...v0.5.1) (2026-10-27)
 
 

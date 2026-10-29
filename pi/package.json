@@ -1,6 +1,6 @@
 {
 	"name": "@vzlentin/pi-workflows",
-	"version": "0.5.1",
+	"version": "0.6.0",
 	"description": "The workflow tool of workflows in Pi",
 	"keywords": [
 		"pi-package"
@@ -24,7 +24,7 @@
 	},
 	"dependencies": {
 		"@vzlentin/pi-agents": "^0.6.0",
-		"@vzlentin/workflows": "0.5.1"
+		"@vzlentin/workflows": "0.6.0"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",
