@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { actionOf } from "../src/keys.ts";
-import { matching, press, render, startPick } from "../src/pick.ts";
+import { keepPick, matching, press, render, startPick } from "../src/pick.ts";
 
 const UP = { type: "move", by: -1 } as const;
 const DOWN = { type: "move", by: 1 } as const;
@@ -41,6 +41,28 @@ describe("the pick of a run", () => {
 			pick: { query: "s", cursor: 1 },
 		});
 		expect(startPick(items([false, false, false]), "")).toEqual({ query: "", cursor: 0 });
+	});
+
+	it("keeps the filter and the item under the cursor across new items, else starts again", () => {
+		const after = [2, 3, 1, 0].map((value) => ({ text: TEXTS[value] ?? "· New  ship shipped", value }));
+		expect(keepPick(ITEMS, after, { query: "", cursor: 1 })).toEqual({ query: "", cursor: 2 });
+		expect(keepPick(ITEMS, after, { query: "ship", cursor: 0 })).toEqual({ query: "ship", cursor: 2 });
+		const gone = after.filter((item) => item.value !== 1);
+		expect(keepPick(ITEMS, gone, { query: "", cursor: 1 })).toEqual(startPick(gone, ""));
+		const some = items([false, true, true]);
+		expect(keepPick(some, after, { query: "", cursor: 0 })).toEqual(startPick(after, ""));
+	});
+
+	it("keeps the rank of the cursor among the items with its value, else takes the last of them", () => {
+		const lines = (values: readonly (number | undefined)[]) =>
+			values.map((value, index) => ({ text: `line ${index}`, value }));
+
+		const before = lines([undefined, 7, 7, 8]);
+		expect(keepPick(before, lines([undefined, 8, 7, 7, 7]), { query: "", cursor: 2 })).toEqual({
+			query: "",
+			cursor: 3,
+		});
+		expect(keepPick(before, lines([7, undefined, 8]), { query: "", cursor: 2 })).toEqual({ query: "", cursor: 0 });
 	});
 
 	it("scrolls the matches to keep the cursor in view", () => {

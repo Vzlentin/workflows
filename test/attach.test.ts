@@ -111,6 +111,26 @@ describe("list --pick", () => {
 		expect([cancelled.code, cancelled.stdout, cancelled.stderr]).toEqual([130, [], []]);
 		expect((await workflows(["list", "--pick"], { cwd: root })).code).toBe(2);
 	});
+
+	it("reads the runs again while the pick waits, with the run ID of each run as its value", async () => {
+		await writeFile(join(root, "y.js"), 'phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")');
+		const running = await workflows(["y.js"], { cwd: root, script: { interruptAt: { kind: "script", nth: 2 } } });
+		const id = running.id ?? "";
+		const seen: string[][] = [];
+
+		const choose: Choose = async (_question, items, refresh) => {
+			seen.push(items.map((item) => item.text));
+			expect((await workflows(["resume", id], { cwd: root })).code).toBe(0);
+			const after = (await refresh?.()) ?? [];
+			seen.push(after.map((item) => item.text));
+
+			return after[0]?.value;
+		};
+
+		const picked = await workflows(["list", "--pick"], { cwd: root, choose });
+		expect(seen).toEqual([["◉ y  y running: talk"], ["· y  y done"]]);
+		expect([picked.code, picked.stdout]).toEqual([0, [id]]);
+	});
 });
 
 describe("wait", () => {

@@ -541,6 +541,41 @@ describe("workflows show", () => {
 		]);
 	});
 
+	it("reads the run again while the pick waits, and shows its new steps and their end", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'phase("talk")\nawait agent("Script: one")\nphase("more")\nawait agent("Script: two")',
+		);
+		const running = await stopped(["x.js"], { nth: 1 });
+		const id = running.id ?? "";
+		const seen: string[][] = [];
+		const ends: string[] = [];
+
+		const choose: Choose = async (_question, items, refresh) => {
+			seen.push(items.map((item) => item.text));
+			const resumed = await workflows(["resume", id], { cwd: root });
+			expect(resumed.code).toBe(0);
+			ends.push(...resumed.stdout.slice(-1));
+			const after = (await refresh?.()) ?? [];
+			seen.push(after.map((item) => item.text));
+
+			return after.find((item) => item.text.startsWith("✓ more"))?.value;
+		};
+
+		const picked = await workflows(["show", id, "--pick"], { cwd: root, choose });
+		const two = String(await conversationOf(/Script: two/));
+		expect([picked.code, picked.stdout]).toEqual([0, [two]]);
+		expect(seen).toEqual([
+			[`run ${id} x running x`, "◉ talk"],
+			[
+				`run ${id} x done x`,
+				expect.stringMatching(/^✓ talk {2}\d+s$/),
+				expect.stringMatching(/^✓ more {2}\d+s$/),
+				...ends,
+			],
+		]);
+	});
+
 	it("waits with --pick while a running run has no agent, until Ctrl+C", async () => {
 		await writeFile(join(root, "x.js"), 'const s = session()\nphase("talk")\nawait s.ask("Script: one")');
 		const running = await stopped(["x.js"], { nth: 1 });
