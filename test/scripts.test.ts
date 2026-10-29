@@ -1134,6 +1134,28 @@ esac
 		expect(git(worktreeAt(repo, run.id), "branch", "--show-current")).toBe(`w/${run.id}`);
 	});
 
+	it("creates the worktree with Git when herdr fails after it registered the worktree", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "w.js"),
+			'export const meta = { worktree: true }\nreturn await sh(["git", "branch", "--show-current"])',
+		);
+		await writeFile(
+			join(root, "bin", "herdr"),
+			`#!/bin/sh\necho "$@" >> "${root}/herdr.log"\ngit -C "$4" worktree add -q -b "$8" "$6" "\${10}"\nrm -rf "$6"\nexit 1\n`,
+		);
+		await chmod(join(root, "bin", "herdr"), 0o755);
+		process.env.HERDR_ENV = "1";
+
+		const run = await workflows(["w"], { cwd: repo });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, `w/${run.id}`]);
+		expect(await readFile(join(root, "herdr.log"), "utf8")).not.toContain("pane run ");
+		expect(git(worktreeAt(repo, run.id), "branch", "--show-current")).toBe(`w/${run.id}`);
+	});
+
 	it("gives a child run without meta.worktree its repo, base and branch args", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
