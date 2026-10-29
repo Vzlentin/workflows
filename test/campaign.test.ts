@@ -70,7 +70,7 @@ const JUDGE_STEPS = ["✓ all 2 items", "  ✓ judge", "    judge 0.83"];
 const itemLine = (subject: string) => expect.stringMatching(new RegExp(`^ {2}[0-9a-f]+ ${subject}, judge 0\\.83$`));
 
 // Each test runs a whole campaign, and some resume it: on CI one takes about 5 s.
-describe("workflows campaign", { timeout: 30_000 }, () => {
+describe("workflows campaign", () => {
 	it("gives judgeError and no judge when the campaign judge fails", async () => {
 		const failing = "1 PASS\n2 PASS";
 
