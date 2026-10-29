@@ -670,8 +670,10 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
   With `meta.worktree`, a `start` that is not a string fails the call with `run <name>: start is not a string`.
 - Without `meta.worktree`, `args.checkout` names an existing branch of the repository of the caller's directory. It is
   not an arg: the child runs in a new worktree on that branch, next to the repository as for `meta.worktree`, and
-  `start` stays an ordinary arg. A branch that does not exist fails the call with `run <name>: no branch <branch>`,
-  and `checkout` fails the call for a script with `meta.worktree`. `checkout` is a reserved argument name.
+  `start` stays an ordinary arg. `checkout` needs `start`, the commit that the change on the branch starts from: a
+  `start` that is not a string fails the call with `run <name>: checkout needs start as a string`. A branch that does
+  not exist fails the call with `run <name>: no branch <branch>`, and `checkout` fails the call for a script with
+  `meta.worktree`. `checkout` is a reserved argument name.
 - `args.prompts` maps prompt names to template texts. Each text, without frontmatter and the last `$@`, replaces that
   prompt in the child run only. A name with no prompt fails the call.
 - The child run gets the caller's saved scripts, prompts and profiles.
@@ -700,7 +702,7 @@ except `phase`, `log`, `args`, `cwd` and `prompts`.
 | `input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`, or of the `workflow` tool with `resume` and `answer`. See [Input](#input) |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
-| `title(text)` | Name the run `text` in `list`, `show` and the end lines, in place of the subject of its first `text` argument; the last call wins. `thermoloop` and `judge` call it with the subject of the intent |
+| `title(text)` | Name the run `text` in `list`, `show` and the end lines, in place of the subject of its first `text` argument; the last call wins. `changeOf` calls it with the subject of the intent |
 
 A call with an argument of the wrong type, such as a prompt that is not a string, a `sh` command that is not a string
 or an array of strings, or a `prompts.<name>` input that is not a string, fails with
@@ -723,7 +725,7 @@ with. A script's own declaration of the same name takes their place.
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 | `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |
-| `changeOf(target, { base, item, wip })` | `{ start, intent, checkout, dirty }` of the change that `target` points at, with the rules of [Thermoloop](#thermoloop): `start` is the start commit, `intent` is `item` or the pull request or the commit messages, `checkout` is the branch of a change that must run in a worktree of its own, and `dirty` says that the checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip` |
+| `changeOf(args, { wip })` | `{ start, intent, checkout, dirty }` of the change of a script's `args`. With `args.start`, it is `args.start` and `args.item`, not dirty, with no Git step. Else it is the change that `args.change` points at from `args.base`, with the rules of [Thermoloop](#thermoloop), and it calls `title` with the subject of the intent: `start` is the start commit, `intent` is `args.item` or the pull request or the commit messages, `checkout` is the branch of a change that must run in a worktree of its own, and `dirty` says that the checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip` |
 | `inCheckout(name, change, args)` | Runs the script `name` again as a child run with `args`, the `item` and `start` of the change, and `checkout`, the branch of the change, and returns its result with the last report line `worktree <path>`, the worktree that has the branch |
 
 `workflows/script.d.ts` declares these globals for editors. A project gets the same completion when it copies

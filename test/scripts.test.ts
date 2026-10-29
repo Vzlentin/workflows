@@ -1019,7 +1019,10 @@ return args`,
 		git(repo, "branch", "feature");
 		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
-		await writeFile(join(scripts, "parent.js"), 'return await run("child", { start: "s", checkout: "feature" })');
+		await writeFile(
+			join(scripts, "parent.js"),
+			`return await run("child", { start: "${start}", checkout: "feature" })`,
+		);
 		await writeFile(
 			join(scripts, "child.js"),
 			'return { cwd, args, branch: await sh(["git", "branch", "--show-current"]), head: await sh("git rev-parse HEAD") }',
@@ -1029,10 +1032,17 @@ return args`,
 		expect(run.code).toBe(0);
 		const child = JSON.parse(run.stdout[1] ?? "");
 		const path = worktreeAt(repo, child.runId);
-		expect(child).toEqual({ cwd: path, args: { start: "s" }, branch: "feature", head: start, runId: child.runId });
+		expect(child).toEqual({ cwd: path, args: { start }, branch: "feature", head: start, runId: child.runId });
 		expect(git(repo, "branch", "--show-current")).toBe("main");
 
-		await writeFile(join(scripts, "parent.js"), 'return await run("child", { checkout: "none" })');
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { checkout: "feature" })');
+		const unstarted = await workflows(["parent"], { cwd: repo });
+		expect([unstarted.code, unstarted.stderr[0]]).toEqual([
+			1,
+			"failed parent: run child: checkout needs start as a string",
+		]);
+
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { start: "s", checkout: "none" })');
 		const missing = await workflows(["parent"], { cwd: repo });
 		expect([missing.code, missing.stderr[0]]).toEqual([1, "failed parent: run child: no branch none"]);
 

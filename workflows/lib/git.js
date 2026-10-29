@@ -84,16 +84,20 @@ async function targetOf(target, base) {
 }
 
 /**
- * The change that `target` points at, from the current directory: `{ start, intent, checkout, dirty }`. `target` is
- * nothing (the current branch from its merge base with `base`), a PR number, a range `A..B` or `A...B` (from the merge
- * base of `A` and `B` to `B`), or a ref (from its merge base with `HEAD` to `HEAD`). The intent is `item`, else the PR,
- * else the commit messages of the change. `checkout` is the branch of a change that ends on a branch that no worktree
- * has, for a run in a worktree of its own. `dirty` says that the checkout has changes that are not committed; with
- * `wip`, a change that ends here commits them first as `wip`. Throws when the change is empty, when its branch is
- * checked out in another worktree, and when it ends on a commit that is not a branch.
+ * The change of a script's `args`: `{ start, intent, checkout, dirty }`. A caller that gives `args.start` gives the
+ * change: `start`, and `args.item` as the intent, with no Git step. Else the change is the one that `args.change`
+ * points at, from the current directory, and the run gets the subject of its intent as its title. `args.change` is
+ * nothing (the current branch from its merge base with `args.base`, default `main`), a PR number, a range `A..B` or
+ * `A...B` (from the merge base of `A` and `B` to `B`), or a ref (from its merge base with `HEAD` to `HEAD`). The
+ * intent is `args.item`, else the PR, else the commit messages of the change. `checkout` is the branch of a change
+ * that ends on a branch that no worktree has, for a run in a worktree of its own. `dirty` says that the checkout has
+ * changes that are not committed; with `wip`, a change that ends here commits them first as `wip`. Throws when the
+ * change is empty, when its branch is checked out in another worktree, and when it ends on a commit that is not a
+ * branch.
  */
-async function changeOf(target, { base = "main", item, wip = false } = {}) {
-	const { from, end, start, intent } = await targetOf(target, base);
+async function changeOf(args, { wip = false } = {}) {
+	if (args.start !== undefined) return { start: args.start, intent: args.item, dirty: false };
+	const { from, end, start, intent } = await targetOf(args.change, args.base ?? "main");
 	const here = await sh(["git", "branch", "--show-current"]);
 	const branch = end === "HEAD" ? here : (await isBranch(end)) ? end : undefined;
 
@@ -113,7 +117,8 @@ async function changeOf(target, { base = "main", item, wip = false } = {}) {
 
 	if (await ok(["git", "diff", "--quiet", start, tip])) throw new Error(`no change from ${from}`);
 
-	const resolved = item ?? intent ?? (await intentOf(branch, `${start}..${tip}`));
+	const resolved = args.item ?? intent ?? (await intentOf(branch, `${start}..${tip}`));
+	title(subjectOf(resolved));
 
 	return local ? { start, intent: resolved, dirty } : { start, intent: resolved, checkout: branch, dirty };
 }

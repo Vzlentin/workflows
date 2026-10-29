@@ -718,16 +718,21 @@ export function report(input: ScriptInput, result: JsonValue, io: Io): number {
 
 /**
  * The worktree of the child run `run` of the script `name` on the existing branch `branch` of the repository of
- * `run.cwd`, at `.worktrees/<repository name>/<run-id>` next to the repository, as `prepareWorktree` places it.
+ * `run.cwd`, at `.worktrees/<repository name>/<run-id>` next to the repository, as `prepareWorktree` places it. Its
+ * `start` is the caller's `start`, the commit that the change on the branch starts from.
  */
-async function checkoutWorktree(name: string, branch: string, run: Run): Promise<NonNullable<ScriptInput["worktree"]>> {
+async function checkoutWorktree(
+	name: string,
+	branch: string,
+	start: string,
+	run: Run,
+): Promise<NonNullable<ScriptInput["worktree"]>> {
 	const repository = await git(run.cwd, "rev-parse", "--show-toplevel");
 
 	if (!(await gitSucceeds(repository, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`))) {
 		throw new Error(`run ${name}: no branch ${branch}`);
 	}
 
-	const start = await git(repository, "rev-parse", "--verify", `refs/heads/${branch}^{commit}`);
 	const path = join(dirname(repository), ".worktrees", basename(repository), run.id);
 
 	return { repository, start, branch, path };
@@ -738,7 +743,7 @@ async function checkoutWorktree(name: string, branch: string, run: Run): Promise
  * `meta` defaults and the given args. With `meta.worktree`, `repo`, `base` and `branch` are not args: with `repo`, the
  * child gets its own worktree from `repo` and `base`, and otherwise it runs in the caller's directory, as a script
  * without `meta.worktree` does. A script without `meta.worktree` gets with `checkout` a worktree on that existing branch
- * of the caller's repository. `prompts` maps prompt names to texts that replace them in this run only. The args are
+ * of the caller's repository, and then needs `start` as a string. `prompts` maps prompt names to texts that replace them in this run only. The args are
  * not checked against `meta`, but a `meta.worktree` script gets `start` as a string or not at all.
  */
 export async function childInput(
@@ -774,7 +779,11 @@ export async function childInput(
 	if (!meta.worktree) {
 		const input = { ...script, args: { ...Object.fromEntries(defaults), ...given }, ...here };
 
-		return checkout === undefined ? input : { ...input, worktree: await checkoutWorktree(name, checkout, run) };
+		if (checkout === undefined) return input;
+
+		if (!Value.Check(Type.String(), given.start)) throw new Error(`run ${name}: checkout needs start as a string`);
+
+		return { ...input, worktree: await checkoutWorktree(name, checkout, given.start, run) };
 	}
 
 	if (checkout !== undefined) throw new Error(`run ${name}: checkout is for a script without meta.worktree`);

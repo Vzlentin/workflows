@@ -18,14 +18,11 @@ export const meta = {
 }
 
 const { rounds, patches = runDir } = args
-const change = args.start === undefined ? await changeOf(args.change, { base: args.base, item: args.item, wip: true }) : undefined
+const change = await changeOf(args, { wip: true })
 
-if (change !== undefined) title(subjectOf(change.intent))
+if (change.checkout !== undefined) return await inCheckout("thermoloop", change, { rounds })
 
-if (change?.checkout !== undefined) return await inCheckout("thermoloop", change, { rounds })
-
-const item = change?.intent ?? args.item
-const start = change?.start ?? args.start
+const { start, intent: item } = change
 
 const subject = subjectOf(item)
 

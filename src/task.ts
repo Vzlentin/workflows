@@ -302,8 +302,7 @@ async function runPhase(
 			bundle: input.bundle,
 			session: input.parent,
 			answer: input.answer,
-			// A `checkout` worktree is on an existing branch, so its run keeps the `start` that its caller gives.
-			args: worktree === undefined || !input.meta.worktree ? input.args : { ...input.args, start: worktree.start },
+			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },
 			child: (key, name, args) => startChild(definition, runtime, context, { input, cwd }, key, name, args),
 			restart: (key, ended) => restartChild(definition, runtime, context, key, ended),
 		});

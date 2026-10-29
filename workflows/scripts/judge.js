@@ -19,15 +19,12 @@ const { commit = false } = args
 
 phase("judge")
 
-const change = args.start === undefined ? await changeOf(args.change, { base: args.base, item: args.item }) : undefined
+const change = await changeOf(args)
 
-if (change !== undefined) title(subjectOf(change.intent))
+if (change.checkout !== undefined) return await inCheckout("judge", change, {})
 
-if (change?.checkout !== undefined) return await inCheckout("judge", change, {})
-
-const item = change?.intent ?? args.item
-const start = change?.start ?? args.start
-const notes = change?.dirty ? ["uncommitted changes are not judged"] : []
+const { start, intent: item } = change
+const notes = change.dirty ? ["uncommitted changes are not judged"] : []
 
 for (const note of notes) log(note)
 
