@@ -924,21 +924,22 @@ type ShownRun = {
  */
 async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean, verb: string): Promise<ShownRun> {
 	const { id } = run;
-	const empty = { task: undefined, saved: new Map<string, SavedCall>(), progress: new Progress() };
+	const empty = { task: undefined, saved: new Map<string, SavedCall>(), progress: new Progress(), events: [] };
 
-	const { task, saved, progress } = await reading(run.store, empty, async (store) => {
+	const { task, saved, progress, events } = await reading(run.store, empty, async (store) => {
 		const read = new Progress();
+		const stored = await progressEvents(store, id);
 
-		for (const event of await progressEvents(store, id)) read.add(event);
+		for (const event of stored) read.add(event);
 		const calls = withCalls || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
 
-		return { task: taskOf((await runTasks(store)).get(id) ?? []), saved: calls, progress: read };
+		return { task: taskOf((await runTasks(store)).get(id) ?? []), saved: calls, progress: read, events: stored };
 	});
 
 	const checkedTask = checked(task, id, verb);
 	const { input, state } = checkedTask;
 	const outcome = state.status === "terminal" ? state.outcome : undefined;
-	const title = script.title(input);
+	const title = script.title(input, events);
 	const footer: string[] = [];
 	let end: { report: string[] } | { error: string } | undefined;
 
