@@ -39,6 +39,13 @@ const ENVIRONMENT = { ...process.env };
 /** The run directories of the sandbox `root`. */
 export const runsOf = (root: string) => join(root, "state", "workflows", "runs");
 
+/** Writes the executable `bin/<name>` of the sandbox `root`, a shell script with `body`. */
+export async function fake(root: string, name: string, body: string): Promise<void> {
+	const file = join(root, "bin", name);
+	await writeFile(file, `#!/bin/sh\n${body}`);
+	await chmod(file, 0o755);
+}
+
 /** The worktree of the run `id` on the repository `repository`: `.worktrees/<name>/<id>` next to it. */
 export const worktreeAt = (repository: string, id: string | undefined) =>
 	join(dirname(realpathSync(repository)), ".worktrees", basename(repository), id ?? "missing");

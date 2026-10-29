@@ -366,13 +366,16 @@ const GUIDELINES = [
 		"`waiting` result with the question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` " +
 		"then returns the answer. `parallel([() => ...])` and " +
 		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +
-		"and `log(text)` write progress lines. `args`, `runId`, `runDir` and `cwd`, the directory of `sh`, are values.",
+		"and `log(text)` write progress lines, and `title(text)` names the run. `args`, `runId`, `runDir` and `cwd`, the " +
+		"directory of `sh`, are values.",
 	"Script lib: `subjectOf(text)` gives the first non-empty line without leading `#`. `memory(path, item)` gives a promise of a run memory in an " +
 		"OptMem store, `<runDir>/memory` without `path`: `.path` and `.item` to pass to a child run, `.note(author, round, notes)`, " +
 		"`.text` (a promise of the notes), and `.session(profile)`, whose first `.ask` starts with the notes and whose " +
 		"`.noted(round, prompt, rule)` asks for `{ text, notes }` and keeps the notes. `commitAll(message)` stages and commits every change, " +
-		"`diffStat(from, to)` gives `+12 -3 in 2 files`, `assertClean()` throws on changes that are not committed, and " +
-		"`branchStart(base)` gives the merge base of `base` for a clean branch with changes.",
+		"`diffStat(from, to)` gives `+12 -3 in 2 files`, `assertClean()` throws on changes that are not committed, " +
+		"`changeOf(target, { base, item, wip })` gives `{ start, intent, checkout, dirty }` of the current branch, a PR " +
+		"number, a ref or a range, and `inCheckout(name, change, args)` runs the script again in a worktree on the " +
+		"branch of the change and adds the line `worktree <path>` to its report.",
 	"A script has no file system, network, modules or timers, so effects go through `sh`. `Date`, `Date.now()` and " +
 		"`Math.random()` throw. A resume runs the script again from the top: saved calls return their results, and a " +
 		"command that did not finish runs again, so keep `sh` and `ok` commands safe to repeat.",

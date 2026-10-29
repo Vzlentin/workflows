@@ -99,6 +99,9 @@ declare function phase(title: string): void;
 /** Writes the line `text` under the current step on stderr before the script's next call that runs. */
 declare function log(text: string): void;
 
+/** Gives the run the title `text`, in place of the subject of its first text argument, in `list`, `show` and the end lines. */
+declare function title(text: string): void;
+
 // The lib: helpers that every script gets. See "The script lib" in docs/spec.md.
 
 /** The subject of a text: its first non-empty line without leading `#`. */
@@ -144,10 +147,29 @@ declare function commitAll(message: string): Promise<void>;
 declare function diffStat(from: string, to?: string): Promise<string>;
 
 /**
- * The merge base of `base` and `HEAD`, where the change of the current branch starts. Throws when the checkout has
- * changes that are not committed, or when the branch has no change from `base`.
+ * The change that `target` points at, from the current directory. `target` is nothing (the current branch from its merge
+ * base with `base`, default `main`), a PR number (from the merge base with its base branch, fetched as `pull/<n>/head`
+ * when its branch is missing), a range `A..B` or `A...B` (from the merge base of `A` and `B` to `B`), or a ref (from its
+ * merge base with `HEAD` to `HEAD`). `start` is a commit, and `intent` is `item`, else `# <title>` and the body of the
+ * PR, else the commit messages of the change. `checkout` is the branch of a change on a branch that no worktree has.
+ * `dirty` says that the checkout has changes that are not committed; with `wip`, a change that ends here commits them
+ * first as `wip`. Throws `no change from <base>` on an empty change, and when the branch of the change is checked out
+ * in another worktree or the change does not end on a branch.
  */
-declare function branchStart(base: string): Promise<string>;
+declare function changeOf(
+	target: string | undefined,
+	options?: { base?: string; item?: string; wip?: boolean },
+): Promise<{ start: string; intent: string; checkout?: string; dirty: boolean }>;
+
+/**
+ * Runs the script `name` again as a child run on the branch `change.checkout`, with `args` and the `item` and `start` of
+ * the change, and returns its result with the last report line `worktree <path>`.
+ */
+declare function inCheckout(
+	name: string,
+	change: { start: string; intent: string; checkout?: string },
+	args: { [key: string]: Json | undefined },
+): Promise<any>;
 
 /** Throws when the checkout has changes that are not committed. */
 declare function assertClean(): Promise<void>;

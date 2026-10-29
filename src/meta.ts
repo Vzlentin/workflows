@@ -12,7 +12,8 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { gitSucceeds, selectRepository } from "./git.ts";
+import { git, gitSucceeds, selectRepository } from "./git.ts";
+import type { ProgressEvent } from "./progress.ts";
 import { instructions } from "./prompts.ts";
 import { type Io, type Run, UsageError, withUsage } from "./run.ts";
 import { type Bundle, loadBundle, META, type RunBundle } from "./script.ts";
@@ -26,15 +27,21 @@ function subject(item: string): string {
 
 /**
  * The text that `noun` names, such as `work item`: a `.md` file, inline text, or piped stdin. Throws when it has no
- * non-empty line. It is undefined without an argument and without stdin.
+ * non-empty line. It is undefined without an argument and without stdin, and also with blank stdin when it is
+ * `optional`, because the `workflow` tool pipes an empty stdin.
  */
-async function readItem(argument: string | undefined, io: Io, noun: string): Promise<string | undefined> {
+async function readItem(
+	argument: string | undefined,
+	io: Io,
+	noun: string,
+	optional: boolean,
+): Promise<string | undefined> {
 	let text: string | undefined;
 
 	if (argument === undefined) {
 		text = await io.stdin();
 
-		if (text === undefined) return undefined;
+		if (text === undefined || (optional && text.trim() === "")) return undefined;
 	} else if (argument.endsWith(".md")) {
 		const path = resolve(io.cwd, argument);
 		text = await readFile(path, "utf8").catch(() => {
@@ -146,7 +153,7 @@ function checkMeta(value: unknown, name: string): asserts value is Partial<Meta>
 	if (!Value.Check(WORKTREE, value)) throw fail("meta.worktree is not a boolean");
 
 	if (!Value.Check(EXIT, value)) throw fail("meta.exit does not map statuses to integer exit codes");
-	const reserved = new Set(["prompts", "help", "json", ...(value.worktree === true ? WORKTREE_ARGS : [])]);
+	const reserved = new Set(["prompts", "checkout", "help", "json", ...(value.worktree === true ? WORKTREE_ARGS : [])]);
 	let positionals = 0;
 
 	for (const [arg, spec] of Object.entries(value.args ?? {})) {
@@ -618,7 +625,10 @@ async function parseValues(meta: Meta, argv: readonly string[], io: Io, usage: s
 		if (spec.type !== "text") continue;
 		const raw = stringOption(values[arg]);
 		const label = labelOf(arg, spec);
-		const value = raw === undefined && spec.default !== undefined ? spec.default : await readItem(raw, io, label);
+		const optional = spec.required !== true;
+
+		const value =
+			raw === undefined && spec.default !== undefined ? spec.default : await readItem(raw, io, label, optional);
 
 		if (value !== undefined) args[arg] = value;
 		else if (spec.required) throw new UsageError(`missing ${label}`);
@@ -682,8 +692,14 @@ export async function prepare(
 	return { ...own, worktree: { ...prepared, path: worktree } };
 }
 
-/** A short name of the run's subject for output lines: the subject of its first text argument, or the script name. */
-export function title(input: ScriptInput): string {
+/**
+ * A short name of the run's subject for output lines: the last `title` of the run in its progress `events`, else the
+ * subject of its first text argument, or the script name.
+ */
+export function title(input: ScriptInput, events: readonly ProgressEvent[]): string {
+	const given = events.findLast((event) => event.kind === "title" && event.run === input.runId);
+
+	if (given?.kind === "title") return given.text;
 	const text = textArg(input);
 
 	return text === undefined ? input.name : subject(text);
@@ -701,10 +717,28 @@ export function report(input: ScriptInput, result: JsonValue, io: Io): number {
 }
 
 /**
+ * The worktree of the child run `run` of the script `name` on the existing branch `branch` of the repository of
+ * `run.cwd`, at `.worktrees/<repository name>/<run-id>` next to the repository, as `prepareWorktree` places it.
+ */
+async function checkoutWorktree(name: string, branch: string, run: Run): Promise<NonNullable<ScriptInput["worktree"]>> {
+	const repository = await git(run.cwd, "rev-parse", "--show-toplevel");
+
+	if (!(await gitSucceeds(repository, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`))) {
+		throw new Error(`run ${name}: no branch ${branch}`);
+	}
+
+	const start = await git(repository, "rev-parse", "--verify", `refs/heads/${branch}^{commit}`);
+	const path = join(dirname(repository), ".worktrees", basename(repository), run.id);
+
+	return { repository, start, branch, path };
+}
+
+/**
  * The input of the child run `run` of a `run(name, args)` call: the script `name` of the caller's `bundle`, with the
  * `meta` defaults and the given args. With `meta.worktree`, `repo`, `base` and `branch` are not args: with `repo`, the
  * child gets its own worktree from `repo` and `base`, and otherwise it runs in the caller's directory, as a script
- * without `meta.worktree` does. `prompts` maps prompt names to texts that replace them in this run only. The args are
+ * without `meta.worktree` does. A script without `meta.worktree` gets with `checkout` a worktree on that existing branch
+ * of the caller's repository. `prompts` maps prompt names to texts that replace them in this run only. The args are
  * not checked against `meta`, but a `meta.worktree` script gets `start` as a string or not at all.
  */
 export async function childInput(
@@ -716,7 +750,7 @@ export async function childInput(
 
 	if (source === undefined) throw new Error(`no workflow ${name}`);
 	const meta = await readMeta(source, name);
-	const { prompts = {}, ...given } = request.args;
+	const { prompts = {}, checkout, ...given } = request.args;
 
 	if (!Value.Check(OBJECT, prompts)) throw new Error(`run ${name}: prompts is not an object of prompt texts`);
 	const replaced = { ...bundle.prompts };
@@ -733,7 +767,17 @@ export async function childInput(
 	const script = { name, meta, bundle: { ...bundle, prompts: replaced, main: source } };
 	const here = { runId: run.id, root: run.root, runDir: run.directory, cwd: run.cwd };
 
-	if (!meta.worktree) return { ...script, args: { ...Object.fromEntries(defaults), ...given }, ...here };
+	if (checkout !== undefined && !Value.Check(Type.String(), checkout)) {
+		throw new Error(`run ${name}: checkout is not a branch name`);
+	}
+
+	if (!meta.worktree) {
+		const input = { ...script, args: { ...Object.fromEntries(defaults), ...given }, ...here };
+
+		return checkout === undefined ? input : { ...input, worktree: await checkoutWorktree(name, checkout, run) };
+	}
+
+	if (checkout !== undefined) throw new Error(`run ${name}: checkout is for a script without meta.worktree`);
 
 	// `repo`, `base` and `branch` place a `meta.worktree` run; any other script gets them as args.
 	const { repo, base = "main", branch, ...own } = given;

@@ -5,8 +5,8 @@
 - `workflows ship` ships one work item onto a new Git branch: research, plan, implement, review, judge.
 - `workflows campaign` splits a goal into work items and ships them one after another onto one branch, then judges
   the whole branch.
-- `workflows thermoloop` reviews the change of your current branch and fixes it in rounds; `workflows judge` judges
-  it.
+- `workflows thermoloop` reviews a change (your current branch, a PR, a ref or a range) and fixes it in rounds;
+  `workflows judge` judges it.
 - `workflows rpi` researches, plans and implements a work item in one commit, with no review.
 - `workflows implement` implements a plan in the current directory and commits it.
 - `workflows optimize ship` searches for better ship prompts over a set of work items.
@@ -62,7 +62,8 @@ harness host that runs keeps the old version until it stops. It stops by itself 
 workflows ship plan.md                     # ship the work item in plan.md
 workflows ship "Fix the README typo"
 workflows campaign goal.md
-workflows thermoloop "Fix the README typo" # review and fix the current branch against main
+workflows thermoloop                       # review and fix the current branch against main
+workflows thermoloop 74                    # review and fix PR 74 in a worktree of its own
 workflows list                             # the runs of this project
 workflows resume <run-id>
 workflows wait <run-id>                    # follow a run to its outcome

@@ -28,15 +28,110 @@ async function assertClean() {
 	}
 }
 
+/** The path of the worktree that has `branch` checked out, or undefined when no worktree has it. */
+async function checkedOutAt(branch) {
+	let path;
+
+	for (const line of (await sh(["git", "worktree", "list", "--porcelain"])).split("\n")) {
+		if (line.startsWith("worktree ")) path = line.slice("worktree ".length);
+		else if (line === `branch refs/heads/${branch}`) return path;
+	}
+
+	return undefined;
+}
+
+/** `# <title>` and the body of `pr`. */
+function prIntent(pr) {
+	return `# ${pr.title}\n\n${pr.body ?? ""}`.trim();
+}
+
+/** The PR of `ref` with the JSON `fields`, from `gh pr view`. Throws when `gh` fails. */
+async function prOf(ref, fields) {
+	return JSON.parse(await sh(["gh", "pr", "view", ref, "--json", fields]));
+}
+
+/** True when `name` is a local branch. */
+function isBranch(name) {
+	return ok(["git", "show-ref", "--verify", "--quiet", `refs/heads/${name}`]);
+}
+
 /**
- * The start of the change of the branch of the current directory: its merge base with `base`. It refuses a checkout
- * with changes that are not committed, and a branch with no change from `base`.
+ * Where `target` points, as `changeOf` reads it: `{ from, end, start, intent }`. `from` names the start in messages,
+ * `end` is the ref that the change ends on, `start` the commit that it starts from, and `intent` the PR of a PR number.
+ * Fetches the branch of a PR when it is missing.
  */
-async function branchStart(base) {
-	await assertClean();
-	const start = await sh(["git", "merge-base", base, "HEAD"]);
+async function targetOf(target, base) {
+	const mergeBase = (a, b) => sh(["git", "merge-base", a, b]);
 
-	if (await ok(["git", "diff", "--quiet", start, "HEAD"])) throw new Error(`no change from ${base}`);
+	if (target === undefined || target === "") return { from: base, end: "HEAD", start: await mergeBase(base, "HEAD") };
 
-	return start;
+	if (/^\d+$/.test(target)) {
+		const pr = await prOf(target, "number,title,body,headRefName,baseRefName,isCrossRepository");
+		const end = pr.isCrossRepository ? `pr/${pr.number}` : pr.headRefName;
+
+		if (!(await isBranch(end))) await sh(["git", "fetch", "origin", `pull/${pr.number}/head:refs/heads/${end}`]);
+		const from = pr.baseRefName;
+		const start = await mergeBase((await isBranch(from)) ? from : `origin/${from}`, end);
+
+		return { from, end, start, intent: prIntent(pr) };
+	}
+
+	const range = /^(.*?)\.\.\.?(.*)$/.exec(target);
+	const from = range === null ? target : range[1] || "HEAD";
+	const end = range === null ? "HEAD" : range[2] || "HEAD";
+
+	return { from, end, start: await mergeBase(from, end) };
+}
+
+/**
+ * The change that `target` points at, from the current directory: `{ start, intent, checkout, dirty }`. `target` is
+ * nothing (the current branch from its merge base with `base`), a PR number, a range `A..B` or `A...B` (from the merge
+ * base of `A` and `B` to `B`), or a ref (from its merge base with `HEAD` to `HEAD`). The intent is `item`, else the PR,
+ * else the commit messages of the change. `checkout` is the branch of a change that ends on a branch that no worktree
+ * has, for a run in a worktree of its own. `dirty` says that the checkout has changes that are not committed; with
+ * `wip`, a change that ends here commits them first as `wip`. Throws when the change is empty, when its branch is
+ * checked out in another worktree, and when it ends on a commit that is not a branch.
+ */
+async function changeOf(target, { base = "main", item, wip = false } = {}) {
+	const { from, end, start, intent } = await targetOf(target, base);
+	const here = await sh(["git", "branch", "--show-current"]);
+	const branch = end === "HEAD" ? here : (await isBranch(end)) ? end : undefined;
+
+	if (branch === undefined) throw new Error(`${end} is not a branch, and the fixes need one`);
+	const local = branch === here;
+
+	if (!local) {
+		const path = await checkedOutAt(branch);
+
+		if (path !== undefined) throw new Error(`${branch} is checked out at ${path}; run there`);
+	}
+
+	const dirty = local && (await sh(["git", "status", "--porcelain"])) !== "";
+
+	if (dirty && wip) await commitAll("wip");
+	const tip = local ? "HEAD" : branch;
+
+	if (await ok(["git", "diff", "--quiet", start, tip])) throw new Error(`no change from ${from}`);
+
+	const resolved = item ?? intent ?? (await intentOf(branch, `${start}..${tip}`));
+
+	return local ? { start, intent: resolved, dirty } : { start, intent: resolved, checkout: branch, dirty };
+}
+
+/** The intent of the PR of `branch`, else the commit messages of `range`. A detached `HEAD` (`branch` empty) has no PR. */
+async function intentOf(branch, range) {
+	// Without a PR, or without gh, the commit messages say what the change is for.
+	const pr = branch === "" ? undefined : await prOf(branch, "title,body").catch(() => undefined);
+
+	return pr === undefined ? await sh(["git", "log", "--reverse", "--format=%B", range]) : prIntent(pr);
+}
+
+/**
+ * Runs the script `name` again as a child run on the branch of `change`, with `args`, and returns its result with the
+ * last report line `worktree <path>`.
+ */
+async function inCheckout(name, change, args) {
+	const result = await run(name, { ...args, item: change.intent, start: change.start, checkout: change.checkout });
+
+	return { ...result, report: [...result.report, `worktree ${await checkedOutAt(change.checkout)}`] };
 }

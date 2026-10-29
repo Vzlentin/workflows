@@ -5,8 +5,8 @@ The behaviour of the `workflows` command, the workflow scripts, runs and the `wo
 
 `workflows ship` ships one work item onto a new branch through [Pi](https://github.com/earendil-works/pi) sessions.
 `workflows campaign` splits a goal into work items and ships them one after another onto one branch.
-`workflows rpi` researches, plans and implements one work item in one commit, `workflows thermoloop` reviews the change
-of the current branch and fixes it in rounds, and `workflows judge` judges it.
+`workflows rpi` researches, plans and implements one work item in one commit, `workflows thermoloop` reviews a change
+(the current branch, a PR, a ref or a range) and fixes it in rounds, and `workflows judge` judges it.
 `workflows optimize ship` searches for better ship prompts over a set of work items. The run is
 headless and resumable. It runs in the [harness](https://github.com/Vzlentin/harness) host of its project, whose
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) store keeps the sessions, model calls, tool
@@ -202,22 +202,46 @@ as `#<k> <note>` lines, and `head`, the short commit, when implemented.
 ## Thermoloop
 
 ```sh
-workflows thermoloop "Fix the README typo"
-workflows thermoloop --base develop --rounds 2 item.md
+workflows thermoloop
+workflows thermoloop 74
+workflows thermoloop HEAD~1 --item "Fix the README typo"
+workflows thermoloop main..feature --rounds 2
 ```
 
-`workflows thermoloop`, the review loop, reviews the change of the branch of the current directory, and fixes it in rounds until the
-reviewer answers SHIP. It runs in the current checkout, with no worktree of its own, and commits its fixes on the
-current branch. It does not push. The work item, which says what the change should do, comes as for `ship`.
-`--base` defaults to `main` and `--rounds` to 3. The change is the one from the merge base of `--base` and `HEAD` to
-`HEAD`. A checkout with changes that are not committed, untracked files included, fails with `the checkout has changes
-that are not committed; commit or stash them first`, and a branch with no change from the merge base fails with `no
-change from <base>`, before any session.
+`workflows thermoloop [<change>]`, the review loop, reviews a change and fixes it in rounds until the reviewer
+answers SHIP. It commits its fixes on the branch of the change and does not push. `--base` defaults to `main` and
+`--rounds` to 3. The one optional argument says what the change is:
+
+- Nothing: the current branch, from the merge base of `--base` and `HEAD` to `HEAD`.
+- A number: the pull request with that number. The run reads it with `gh pr view <n> --json
+  number,title,body,headRefName,baseRefName,isCrossRepository`, and fails when `gh` fails. Its branch is
+  `headRefName`, or `pr/<n>` for a pull request from a fork. When that branch is missing, the run fetches it with
+  `git fetch origin pull/<n>/head:refs/heads/<branch>`, and it uses an existing branch as it is. The change starts at
+  the merge base of the branch with `baseRefName`, or with `origin/<baseRefName>` when there is no local branch of
+  that name; `--base` is not used.
+- A range `A..B` or `A...B`: from the merge base of `A` and `B` to `B`.
+- Any other value is a ref: from the merge base of the ref and `HEAD` to `HEAD`, such as `HEAD~1` for the last commit.
+
+The work item, which says what the change should do, is the option `--item`, as a `.md` file, inline text, or stdin
+with the rules of `ship`. A blank stdin counts as no work item. Without it, the intent is `# <title>` and the body of
+the pull request: of the number, or else of the branch of the change through `gh pr view <branch> --json title,body`.
+When there is no pull request or `gh` fails, the intent is the commit messages of the change, oldest first.
+
+The run works in the current checkout when the change ends on its `HEAD` or on its current branch. There, it first
+commits the changes that are not committed, untracked files included, as one commit `wip`. When the change ends on
+a branch that no worktree has checked out, such as a pull request that is not checked out here, the run starts itself
+again as a child run with `checkout` in a worktree on that branch, next to the repository, as `meta.worktree` places
+it: see [Child runs](#child-runs). Its report gets the last line `worktree <path>`, and the current checkout stays as
+it is. The run worktree stays after the run. A branch that another worktree has checked out fails with `<branch> is
+checked out at <path>; run there`, and a change that does not end on a branch, such as `main..<commit>`, fails with
+`<end> is not a branch, and the fixes need one`. A change with no change from its start fails with `no change from
+<from>`, where `<from>` is `--base`, the base branch of the pull request, or `A` of the range or the ref, before any
+session.
 
 Each round reviews the change, and on FIX the reviewer's handoff is implemented as the next round. So each round
 has the step `round <n>/<rounds>: review`, after `round <n>/<rounds>: implement` from round 2.
-`ship` gives the script `start`, the commit that the change starts from, in place of the merge base, and `plan`,
-`reply` from `rpi`, which the first review gets, and `memory`, the `ref` of its run memory.
+`ship` gives the script `start`, the commit that the change starts from, and `item`, so the script does none of the
+steps above, and `plan`, `reply` from `rpi`, which the first review gets, and `memory`, the `ref` of its run memory.
 
 The step `round <n>/<rounds>: implement` runs [implement](#implement) as a child run, with the handoff as the plan,
 round `<n>`, the start commit, the message `round <n>` and the `ref` of the run memory:
@@ -245,14 +269,16 @@ that `ship` gives, or in its own store without a caller. The result has `status`
 ## Judge
 
 ```sh
-workflows judge "Fix the README typo"
-workflows judge --base develop item.md
+workflows judge
+workflows judge 74
+workflows judge main..feature --item item.md
 ```
 
-`workflows judge` judges the change of the branch of the current directory, from the merge base of `--base` (default
-`main`) and `HEAD`, against the work item, with the fixed rubric of `prompts/judge.md`. It changes nothing. A checkout
-with changes that are not committed, or a branch with no change, fails as in [Thermoloop](#thermoloop). `ship` and
-`campaign` give it `start`, the commit that the change starts from, in place of the merge base. Its step is `judge`.
+`workflows judge [<change>]` judges a change against its intent with the fixed rubric of `prompts/judge.md`. The
+change, `--base`, `--item`, the intent and the worktree of a change on another branch are as in
+[Thermoloop](#thermoloop). The judge changes nothing: it commits no `wip`, and when the checkout has changes that are
+not committed, it logs `uncommitted changes are not judged` and adds that line at the end of its report. `ship` and
+`campaign` give it `start`, the commit that the change starts from, and `item`. Its step is `judge`.
 
 The judge session answers through `respond`: eight PASS or FAIL answers, and one finding line for each failed
 question. If question 1 (complete) or 2 (correct) fails, the score is 0. Otherwise the score is the fraction of
@@ -501,7 +527,8 @@ export const meta = {
     `--<name> must be a positive integer`. `boolean` is a flag without a value, false when not given.
   - `text` is a `.md` file, inline text, or stdin when the argument is not given, with the rules of the work item of
     [Ship](#ship). Errors name the `label`, such as `missing work item` or `the work item is empty`. A `text`
-    argument that is not `required` and has no `default`, no value and no stdin is not in `args`.
+    argument that is not `required` and has no `default` and no value is not in `args` when stdin is missing or
+    blank, as the empty stdin that the `workflow` tool pipes.
   - At most one argument is `positional`. It also works as `--<name>`; giving it both ways is bad usage. Two
     positional values fail with `give the <label> as one argument`.
   - A `required` argument without a value fails with `missing <label>`. `label` defaults to the argument name.
@@ -633,7 +660,7 @@ continues it. It runs in the same host, and its `phase` and `log` lines go to th
 current step: see [Progress](#progress). It prints no `run` or report line. Its sessions belong to the child run, and
 its end ends them as the end of a run does: see [Runs in the harness host](#runs-in-the-harness-host).
 
-- The child's args are the defaults of its `meta.args`, then `args`, without `prompts`, and with `meta.worktree` also
+- The child's args are the defaults of its `meta.args`, then `args`, without `prompts` and `checkout`, and with `meta.worktree` also
   without `repo`, `base` and `branch`. They are not checked against `meta`, so an undeclared arg reaches the script.
 - With `meta.worktree` and `args.repo`, the child gets a new worktree on `<name>/<child-id>`, next to the repository as
   for `meta.worktree`, in
@@ -641,6 +668,10 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
   `args.branch` works as `--branch`. Without `args.repo`, or without `meta.worktree`, the child runs in the caller's
   directory, and `start` is an ordinary arg.
   With `meta.worktree`, a `start` that is not a string fails the call with `run <name>: start is not a string`.
+- Without `meta.worktree`, `args.checkout` names an existing branch of the repository of the caller's directory. It is
+  not an arg: the child runs in a new worktree on that branch, next to the repository as for `meta.worktree`, and
+  `start` stays an ordinary arg. A branch that does not exist fails the call with `run <name>: no branch <branch>`,
+  and `checkout` fails the call for a script with `meta.worktree`. `checkout` is a reserved argument name.
 - `args.prompts` maps prompt names to template texts. Each text, without frontmatter and the last `$@`, replaces that
   prompt in the child run only. A name with no prompt fails the call.
 - The child run gets the caller's saved scripts, prompts and profiles.
@@ -669,6 +700,7 @@ except `phase`, `log`, `args`, `cwd` and `prompts`.
 | `input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`, or of the `workflow` tool with `resume` and `answer`. See [Input](#input) |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
+| `title(text)` | Name the run `text` in `list`, `show` and the end lines, in place of the subject of its first `text` argument; the last call wins. `thermoloop` and `judge` call it with the subject of the intent |
 
 A call with an argument of the wrong type, such as a prompt that is not a string, a `sh` command that is not a string
 or an array of strings, or a `prompts.<name>` input that is not a string, fails with
@@ -691,7 +723,8 @@ with. A script's own declaration of the same name takes their place.
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 | `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |
-| `branchStart(base)` | The merge base of `base` and `HEAD`. Throws as `assertClean()` on a checkout with changes, and `no change from <base>` when the branch has no change from the merge base |
+| `changeOf(target, { base, item, wip })` | `{ start, intent, checkout, dirty }` of the change that `target` points at, with the rules of [Thermoloop](#thermoloop): `start` is the start commit, `intent` is `item` or the pull request or the commit messages, `checkout` is the branch of a change that must run in a worktree of its own, and `dirty` says that the checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip` |
+| `inCheckout(name, change, args)` | Runs the script `name` again as a child run with `args`, the `item` and `start` of the change, and `checkout`, the branch of the change, and returns its result with the last report line `worktree <path>`, the worktree that has the branch |
 
 `workflows/script.d.ts` declares these globals for editors. A project gets the same completion when it copies
 `script.d.ts` and `jsconfig.json` into `.workflows/`, and copies them again after an upgrade of the package.
@@ -942,8 +975,9 @@ workflows list --pick
 
 `workflows list` prints one line for each run of the harness project of the current directory, newest run ID first:
 `<run-id> <workflow> <status> <title>`. Runs of other projects are not listed. `<workflow>` is the script name. Child
-runs are not listed: they are tasks of their caller. The title is the subject of the first `text`
-argument, such as the work item for ship and the goal for campaign, or else the script name. A finished run has the
+runs are not listed: they are tasks of their caller. The title is the last `title(text)` of the run, such as the subject of the intent of
+`thermoloop`, else the subject of the first `text` argument, such as the work item for ship and the goal for campaign, or
+else the script name. A finished run has the
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
 `done` when the result has no `status`. A run that waits for an answer to `input()` is `waiting`. A run whose task has not ended is `running`, also when it waits for its host
 to start. A run whose task ended without a result is `stopped`, `failed`, `faulted` or `orphaned`. A pending run that

@@ -354,8 +354,8 @@ function keyOf(name: string, args: JsonObject, counters: Map<string, number>): s
 	return `${hash}.${n}`;
 }
 
-/** A `phase` or `log` line, with the time of its call in ms since the epoch. */
-type Line = { readonly text: string; readonly phase: boolean; readonly at: number };
+/** A `phase` or `log` line, or the `title` of the run, with the time of its call in ms since the epoch. */
+type Line = { readonly text: string; readonly phase: boolean; readonly at: number; readonly title?: true };
 
 /**
  * The lines of a script that wait for its next call that runs, in order. At most one is a phase line: a new phase line
@@ -389,6 +389,8 @@ function takeLines(calls: Calls): ProgressEvent[] {
 	const { progress } = calls;
 
 	return progress.lines.splice(0).map((line) => {
+		if (line.title) return { kind: "title", run, text: line.text };
+
 		if (!line.phase) return { kind: "log", run, parent, text: line.text, at: line.at };
 		const event: ProgressEvent = { kind: "phase", run, parent, text: line.text, at: line.at };
 
@@ -774,6 +776,9 @@ export async function runScript(
 			global("__input", INPUT_ARGS, ([question]) => inputCall(calls, question, stop)),
 			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
 			global("log", LINE_ARGS, ([line]) => progress.lines.push({ text: String(line), phase: false, at: Date.now() })),
+			global("title", LINE_ARGS, ([text]) =>
+				progress.lines.push({ text: String(text), phase: false, at: Date.now(), title: true }),
+			),
 			global("__prompt", PROMPT_ARGS, ([name, inputs]) => {
 				const body = bundle.prompts[name];
 
