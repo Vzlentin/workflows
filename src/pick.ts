@@ -33,6 +33,23 @@ export function startPick(items: readonly PickItem<unknown>[], query: string): P
 }
 
 /**
+ * The pick over `after`, the new items of a refresh, that keeps the filter of `pick` over `before` and its cursor on
+ * the same item: the match with the same value, at the same rank among the matches with that value, else the last of
+ * them. A cursor on an item without a value, or on a value that is gone, starts again as `startPick` does.
+ */
+export function keepPick<V>(before: readonly PickItem<V>[], after: readonly PickItem<V>[], pick: Pick): Pick {
+	const shown = matching(before, pick.query);
+	const value = before[shown[pick.cursor] ?? -1]?.value;
+
+	if (value === undefined) return startPick(after, pick.query);
+	const rank = shown.slice(0, pick.cursor).filter((index) => before[index]?.value === value).length;
+	const kept = matching(after, pick.query).flatMap((index, at) => (after[index]?.value === value ? [at] : []));
+	const cursor = kept[rank] ?? kept.at(-1);
+
+	return cursor === undefined ? startPick(after, pick.query) : { query: pick.query, cursor };
+}
+
+/**
  * What `action` does to `pick` over `items`. A new filter text starts the cursor on the first match that has a value,
  * and Enter on an item without a value keeps the pick open.
  */

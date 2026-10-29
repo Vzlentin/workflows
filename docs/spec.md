@@ -1006,8 +1006,10 @@ Only the runs that have a run directory with a `project` file are listed.
 With `--pick`, on a terminal, the command asks `Pick a run:` with the runs that run or wait first, each as `<mark>
 <title>  <workflow> <status>`, with `: <status of the run>` of [Progress](#progress) for a running run. The mark is `◉` running, `?` waiting,
 `✗` failed, else `·`. Typing filters by each word, in any case; the arrows move, Enter prints the run ID, and Esc or
-Ctrl+C exits 130. So commands compose: `workflows wait "$(workflows list --pick)"`. A project with no run exits 1, and
-`--pick` without a terminal exits 2.
+Ctrl+C exits 130. So commands compose: `workflows wait "$(workflows list --pick)"`. While the pick waits for a key, the
+command reads the runs again 1 s after each read ends and draws the new lines, with the typed filter kept and the cursor
+on the same run, else on the first match. A read that fails keeps the lines it has, and a read that finds no run shows
+`nothing matches`. A project with no run at the first read exits 1, and `--pick` without a terminal exits 2.
 
 `list` reads the project store file read-only and does not start the host, so no run continues. It takes no lock that
 the host waits for, and runs no checkpoint of the file. A store whose schema pi-durable must update first cannot open
@@ -1129,7 +1131,10 @@ With `--pick`, on a terminal, the command asks `Pick an agent:` with the lines t
 steps, or the calls of a run without steps, then the footer. It prints the conversation ID of the agent of the line
 that the pick takes, for [`attach --conversation`](#attach). Only a line with an agent can be taken; Enter on another
 line keeps the pick open. The cursor starts on the first line with an agent, also after each change of the typed
-filter.
+filter. While the pick waits for a key, the command reads the run again 1 s after each read ends and draws the new
+lines, such as new steps, new marks and elapsed times, with the typed filter kept. The cursor stays on a line with the
+same agent, at the same rank among the lines with that agent, else on the last of them; else it starts again on the
+first line with an agent. A read that fails keeps the lines it has.
 
 - A step line has the first session that opened a conversation under the step: a `session` call whose phase line is the
   step, in the run of the step, or a session of a child run that a `run` call under the step started, at any depth. When

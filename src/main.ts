@@ -68,9 +68,14 @@ const HOST_CLOSED = "The harness host closed the connection";
 
 /**
  * A question with `items` to pick one of, on a terminal: the value of the item, or undefined when cancelled. Only an
- * item with a value can be taken, and the cursor starts on the first one.
+ * item with a value can be taken, and the cursor starts on the first one. While it waits for a key, it calls `refresh`
+ * every second for new items, and keeps the cursor on the same item.
  */
-export type Choose = <V>(question: string, items: readonly PickItem<V>[]) => Promise<V | undefined>;
+export type Choose = <V>(
+	question: string,
+	items: readonly PickItem<V>[],
+	refresh?: () => Promise<readonly PickItem<V>[]>,
+) => Promise<V | undefined>;
 
 export type Terminal = Io & {
 	/** Aborted by the first Ctrl+C: the command detaches, and the run goes on in the host. */
@@ -88,7 +93,7 @@ export type Terminal = Io & {
 	 * terminals.
 	 */
 	readonly readLine?: (() => Promise<string | undefined>) | undefined;
-	/** Asks which of `items` to take, and gives its index, or undefined when cancelled. Given only on a terminal. */
+	/** Asks which of `items` to take, and gives its value, or undefined when cancelled. Given only on a terminal. */
 	readonly choose?: Choose | undefined;
 	/** Pi's model registry, for `check`. */
 	readonly models: () => Promise<Models>;
@@ -629,7 +634,7 @@ async function list(args: readonly string[], terminal: Terminal, json: boolean):
 		const run = await pickRun(terminal, terminal.choose);
 
 		if (run === undefined) return 130;
-		terminal.stdout(run.runId);
+		terminal.stdout(run);
 
 		return 0;
 	}
@@ -664,10 +669,20 @@ async function listedRuns(store: Store): Promise<Listed[]> {
 }
 
 /**
- * Asks on the terminal which run of the project of the current directory to take, and gives it, or undefined when the
- * person cancels. The runs that have not ended come first, each with the steps that run now.
+ * Asks on the terminal which run of the project of the current directory to take, and gives its run ID, or undefined
+ * when the person cancels. The runs that have not ended come first, each with the steps that run now. While it waits,
+ * it reads the runs again every second.
  */
-async function pickRun(terminal: Terminal, choose: Choose): Promise<Listed | undefined> {
+async function pickRun(terminal: Terminal, choose: Choose): Promise<string | undefined> {
+	const items = await runItems(terminal);
+
+	if (items.length === 0) throw new Error(`no runs in the project of ${terminal.cwd}`);
+
+	return choose("Pick a run:", items, () => runItems(terminal));
+}
+
+/** The items of the run picker, from the project store of the current directory, each with its run ID as its value. */
+async function runItems(terminal: Terminal): Promise<PickItem<string>[]> {
 	const empty = { runs: [], steps: new Map<string, string>() };
 
 	const { runs, steps } = await reading(await storeOf(await projectOf(terminal.cwd)), empty, async (store) => {
@@ -688,16 +703,12 @@ async function pickRun(terminal: Terminal, choose: Choose): Promise<Listed | und
 		return { runs: sorted, steps: found };
 	});
 
-	if (runs.length === 0) throw new Error(`no runs in the project of ${terminal.cwd}`);
-
-	const items = runs.map((run) => {
+	return runs.map((run) => {
 		const step = steps.get(run.runId);
 		const text = `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${step === undefined ? "" : `: ${step}`}`;
 
-		return { text, value: run };
+		return { text, value: run.runId };
 	});
-
-	return choose("Pick a run:", items);
 }
 
 /** The mark of a run in the picker by its status: `◉` running, `?` waiting for an answer, `✗` failed, else `·`. */
@@ -964,7 +975,8 @@ function shownEntries(read: ShownRun, now: number): TreeEntry[] {
  * Asks on the terminal for a line of `show` of `run`, and prints the conversation of its agent. Only a line that maps
  * to an agent can be taken: a step line, a log line or a line of a child run gets the first session of its step, and a
  * line of `--calls`, for a run without steps, the conversation of its session or its ask. While no line maps to an
- * agent and the run has not ended, it reads the store again every second.
+ * agent and the run has not ended, it reads the store again every second. While the pick waits for a key, it reads the
+ * run again every second.
  */
 async function pickAgent(run: SavedRun, terminal: Terminal, choose: Choose): Promise<number> {
 	for (;;) {
@@ -972,8 +984,8 @@ async function pickAgent(run: SavedRun, terminal: Terminal, choose: Choose): Pro
 		const entries = shownEntries(read, Date.now());
 
 		if (entries.some((entry) => entry.conversation !== undefined)) {
-			const items = entries.map(({ text, conversation }) => ({ text, value: conversation }));
-			const conversation = await choose("Pick an agent:", items);
+			const refresh = async () => agentItems(shownEntries(await readRun(run, terminal, true, "be shown"), Date.now()));
+			const conversation = await choose("Pick an agent:", agentItems(entries), refresh);
 
 			if (conversation === undefined) return 130;
 			terminal.stdout(String(conversation));
@@ -985,6 +997,11 @@ async function pickAgent(run: SavedRun, terminal: Terminal, choose: Choose): Pro
 
 		if (await abortedWithin(terminal.interrupt, PICK_POLL_MS)) return 130;
 	}
+}
+
+/** The items of the agent picker: the lines of `entries`, each with the conversation of its agent as its value. */
+function agentItems(entries: readonly TreeEntry[]): PickItem<number>[] {
+	return entries.map(({ text, conversation }) => ({ text, value: conversation }));
 }
 
 /**
