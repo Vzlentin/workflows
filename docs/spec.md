@@ -1211,7 +1211,7 @@ has no effect.
 `@vzlentin/harness` is a dependency of `@vzlentin/workflows`, at the caret range of its `package.json`. The Pi
 package `@vzlentin/pi-workflows` depends on `@vzlentin/workflows` and `@vzlentin/pi-agents`, which depends on
 `@vzlentin/harness`, so `pi install npm:@vzlentin/pi-workflows` puts them all in Pi's npm folder, with one copy of
-harness. Without Pi, `npm install -g @vzlentin/workflows` installs the command and its harness. No setup step, install
+harness, and brings the `workflows` skill (see [Pi](#pi)). Without Pi, `npm install -g @vzlentin/workflows` installs the command and its harness. No setup step, install
 script or install lock runs: npm is the only installer. The [README](../README.md) gives the install
 lines.
 
@@ -1297,6 +1297,14 @@ workflows. Both packages are released together, at one version: the publish job 
 `pi.extensions` names `./index.ts` and the extension of pi-agents at both places where npm can put it,
 `../pi-agents/index.ts` and `./node_modules/@vzlentin/pi-agents/index.ts`. Pi skips the one that does not exist, and
 loads a file with the same real path once, also when Pi's settings list pi-agents too.
+
+`pi.skills` names `./skills`, which holds the skill `workflows` (`skills/workflows/SKILL.md`), and the skills of
+pi-agents at the same two places, `../pi-agents/skills` and `./node_modules/@vzlentin/pi-agents/skills`. Pi reads only
+the resource types that a manifest names, and it loads pi-agents through the path of its extension, so the skills of
+pi-agents need these paths too. Pi skips the one that does not exist, and loads a skill file with the same real path
+once. The skill tells the model how to start and follow the runs of ship, campaign, rpi, thermoloop and judge with the
+`workflow` tool, and to start or resume a run only when the user asks for one in his message. `/skill:workflows
+<workflow> <input>` asks for a run: the first word is the workflow, and the rest is its input.
 
 When Pi loads the extension, it resolves `@vzlentin/workflows/package.json` from its own folder, and:
 

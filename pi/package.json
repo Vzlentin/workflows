@@ -15,6 +15,11 @@
 			"./index.ts",
 			"../pi-agents/index.ts",
 			"./node_modules/@vzlentin/pi-agents/index.ts"
+		],
+		"skills": [
+			"./skills",
+			"../pi-agents/skills",
+			"./node_modules/@vzlentin/pi-agents/skills"
 		]
 	},
 	"dependencies": {

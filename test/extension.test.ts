@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,6 +15,7 @@ import type {
 	Theme,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { DefaultPackageManager, loadSkills, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { entriesPath } from "@vzlentin/harness/entries";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import extension, { type workflowTool } from "../pi/index.ts";
@@ -1003,6 +1004,7 @@ describe("the Pi package", () => {
 			pi.private,
 			pi.dependencies,
 			pi.pi?.extensions,
+			pi.pi?.skills,
 			pi.keywords,
 			pi.version,
 			pi.repository?.url,
@@ -1012,6 +1014,7 @@ describe("the Pi package", () => {
 			undefined,
 			{ "@vzlentin/workflows": root.version, "@vzlentin/pi-agents": "^0.6.0" },
 			["./index.ts", "../pi-agents/index.ts", "./node_modules/@vzlentin/pi-agents/index.ts"],
+			["./skills", "../pi-agents/skills", "./node_modules/@vzlentin/pi-agents/skills"],
 			["pi-package"],
 			root.version,
 			root.repository.url,
@@ -1024,5 +1027,64 @@ describe("the Pi package", () => {
 			path: "pi/package.json",
 			jsonpath: "$.dependencies['@vzlentin/workflows']",
 		});
+	});
+});
+
+/** The skills that Pi loads from the Pi packages `packages`, with the diagnostics of their load. */
+async function skillsOf(root: string, packages: string[]) {
+	const agentDir = join(root, "agent");
+	const settingsManager = SettingsManager.inMemory({ packages });
+	const resolved = await new DefaultPackageManager({ cwd: root, agentDir, settingsManager }).resolve();
+	const skillPaths = resolved.skills.filter((skill) => skill.enabled).map((skill) => skill.path);
+	const { skills, diagnostics } = loadSkills({ cwd: root, agentDir, skillPaths, includeDefaults: false });
+
+	return { skillPaths, names: skills.map((skill) => skill.name), diagnostics };
+}
+
+describe("the skills of the Pi package", () => {
+	const repo = join(import.meta.dirname, "..");
+	let saved: NodeJS.ProcessEnv;
+	let home: string;
+
+	beforeEach(async () => {
+		saved = process.env;
+		// The sandbox's HOME keeps the user's own skills out of Pi's resolve.
+		home = realpathSync(await sandbox());
+	});
+
+	afterEach(async () => {
+		process.env = saved;
+		await rm(home, { recursive: true, force: true });
+	});
+
+	it("bring the workflows skill from a checkout", async () => {
+		const { skillPaths, names } = await skillsOf(home, [join(repo, "pi")]);
+
+		expect(skillPaths).toContain(join(repo, "pi", "skills", "workflows", "SKILL.md"));
+		expect(names).toEqual(["workflows"]);
+	});
+
+	it("bring the skills of pi-agents next to it once, also when Pi's settings list pi-agents too", async () => {
+		const scope = join(home, "npm", "node_modules", "@vzlentin");
+		const piWorkflows = join(scope, "pi-workflows");
+		const piAgents = join(scope, "pi-agents");
+		await mkdir(piWorkflows, { recursive: true });
+		await copyFile(join(repo, "pi", "package.json"), join(piWorkflows, "package.json"));
+		await cp(join(repo, "pi", "skills"), join(piWorkflows, "skills"), { recursive: true });
+		await mkdir(join(piAgents, "skills", "subagent"), { recursive: true });
+		await writeFile(
+			join(piAgents, "package.json"),
+			JSON.stringify({ name: "@vzlentin/pi-agents", keywords: ["pi-package"], pi: { skills: ["./skills"] } }),
+		);
+		await writeFile(
+			join(piAgents, "skills", "subagent", "SKILL.md"),
+			"---\nname: subagent\ndescription: Spawn subagents.\n---\nSpawn subagents.\n",
+		);
+
+		const alone = await skillsOf(home, [piWorkflows]);
+		const both = await skillsOf(home, [piWorkflows, piAgents]);
+
+		expect([alone.names.toSorted(), alone.diagnostics]).toEqual([["subagent", "workflows"], []]);
+		expect([both.names.toSorted(), both.diagnostics]).toEqual([["subagent", "workflows"], []]);
 	});
 });
