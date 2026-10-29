@@ -1495,8 +1495,8 @@ The engine files in `src/`:
 - `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show`, `attach`, `save` and `prune`, a client of the
   harness host, and the run directory.
 - `entry.ts`: the entry that the harness host loads, with the script task.
-- `calls.ts`: the call tree of a saved run, its lines and agent rows for `show` and `attach`, and the agent of each
-  step for `show --pick`.
+- `calls.ts`: the call tree of a saved run, its lines and agent rows for `show` and `attach`, and the lines of `show`
+  with the agent of each step, for `show --pick`.
 - `progress.ts`: the tree of steps of a run, and how the command draws it on stderr.
 - `store.ts`: the command's read-only reads of the project store: the tasks of the runs, their progress and calls.
 - `meta.ts`: the `meta` of a workflow script, its arguments, its usage, `check`, and the report lines and exit code of

@@ -135,11 +135,24 @@ export async function renameBranch(
 /**
  * A worktree at `path` on `branch`, created from `start` when the branch is new. Safe to repeat after an interruption
  * at any point: an existing worktree is kept, and a partial one is replaced. The repository's checkout stays untouched.
+ * `create` makes the worktree first when it is given, and gives an ID, such as a workspace; Git makes it when `create`
+ * left no repository at `path`. It gives the ID of `create` when its worktree is used, else undefined.
  */
-export async function ensureWorktree(repository: string, path: string, branch: string, start: string): Promise<void> {
-	if ((await repositoryAt(path)) !== undefined) return;
+export async function ensureWorktree(
+	repository: string,
+	path: string,
+	branch: string,
+	start: string,
+	create?: () => Promise<string | undefined>,
+): Promise<string | undefined> {
+	if ((await repositoryAt(path)) !== undefined) return undefined;
 	await rm(path, { recursive: true, force: true });
 	await git(repository, "worktree", "prune");
+	const created = await create?.();
+
+	if ((await repositoryAt(path)) !== undefined) return created;
 	const exists = await gitSucceeds(repository, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`);
 	await git(repository, "worktree", "add", ...(exists ? [path, branch] : ["-b", branch, path, start]));
+
+	return undefined;
 }

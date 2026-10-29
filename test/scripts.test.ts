@@ -13,6 +13,7 @@ import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AGENTS } from "../pi/run-view.ts";
 import { branchOf } from "../src/git.ts";
+import type { Choose } from "../src/main.ts";
 import { programStatus } from "../src/progress.ts";
 import { CallDoc } from "../src/script.ts";
 import {
@@ -481,13 +482,14 @@ describe("workflows show", () => {
 		const run = await workflows(["x.js"], { cwd: root });
 		const id = run.id ?? "";
 		const one = await conversationOf(/Script: one/);
-		const asked: (readonly [string, readonly string[], readonly boolean[] | undefined])[] = [];
+		const asked: (readonly [string, readonly string[], readonly boolean[]])[] = [];
 
 		const choose =
-			(index: number) => async (question: string, items: readonly string[], pickable?: readonly boolean[]) => {
-				asked.push([question, items, pickable]);
+			(index: number): Choose =>
+			async (question, items) => {
+				asked.push([question, items.map((item) => item.text), items.map((item) => item.value !== undefined)]);
 
-				return index;
+				return items[index]?.value;
 			};
 
 		const picked = await workflows(["show", id, "--pick"], { cwd: root, choose: choose(2) });
@@ -525,8 +527,7 @@ describe("workflows show", () => {
 		const pick = async (nth: number) => {
 			const picked = await workflows(["show", id, "--pick"], {
 				cwd: root,
-				choose: async (_question, items) =>
-					items.flatMap((item, index) => (item.startsWith("✓ split") ? [index] : []))[nth],
+				choose: async (_question, items) => items.filter((item) => item.text.startsWith("✓ split"))[nth]?.value,
 			});
 
 			return [picked.code, picked.stdout];
@@ -555,7 +556,7 @@ describe("workflows show", () => {
 			choose: async () => {
 				asked++;
 
-				return 0;
+				return undefined;
 			},
 		});
 

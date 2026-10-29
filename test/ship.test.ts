@@ -849,15 +849,15 @@ describe("workflows show --pick", () => {
 		const agents = (await workflows(["show", id, "--agents"], { cwd: root })).stdout;
 		const plan = agents.slice(agents.indexOf("    plan"), agents.indexOf("    implement"));
 		expect(plan).toContainEqual(expect.stringMatching(/^ +✓ Compress memories #0-1 /));
-		const asked: { items: readonly string[]; pickable: readonly boolean[] | undefined }[] = [];
+		const asked: (readonly { readonly text: string; readonly value?: unknown }[])[] = [];
 
 		const pick = async (line: string) => {
 			const picked = await workflows(["show", id, "--pick"], {
 				cwd: root,
-				choose: async (_question, items, pickable) => {
-					asked.push({ items, pickable });
+				choose: async (_question, items) => {
+					asked.push(items);
 
-					return items.findIndex((item) => untimed(item) === line);
+					return items.find((item) => untimed(item.text) === line)?.value;
 				},
 			});
 
@@ -869,8 +869,8 @@ describe("workflows show --pick", () => {
 		expect(await pick("✓ plan")).toBe(await conversationOf(/Plan this change\./));
 		expect(await pick("  +1 -1 in 1 file")).toBe(await conversationOf(/Implement this plan/));
 		expect(await pick("  SHIP")).toBe(await conversationOf(/Perform a deep code quality audit/));
-		const [{ items, pickable } = { items: [], pickable: [] }] = asked;
-		const closed = items.flatMap((item, index) => (pickable?.[index] === false ? [untimed(item)] : []));
+		const [items = []] = asked;
+		const closed = items.flatMap((item) => (item.value === undefined ? [untimed(item.text)] : []));
 
 		expect(closed).toEqual([
 			`run ${id} ship shipped Fix the README typo`,

@@ -77,10 +77,10 @@ function askedConversation(call: Shown): number | undefined {
 }
 
 /**
- * The lines of `show` with the agent of each: the step lines of `progress`, each with the agent of its step, or the
+ * The body lines of `show` with the agent of each: the step lines of `progress`, each with the agent of its step, or the
  * lines of `treeEntries` of `calls` when the run has no steps.
  */
-export function pickEntries(calls: readonly Shown[], progress: Progress, now: number): TreeEntry[] {
+export function showEntries(calls: readonly Shown[], progress: Progress, now: number): TreeEntry[] {
 	if (!progress.stepped) return treeEntries(calls, "", now);
 
 	const entries = progress.entries();

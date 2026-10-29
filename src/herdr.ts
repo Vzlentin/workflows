@@ -1,11 +1,10 @@
 /** The Herdr commands of workflows: the worktree of a run, the pick loop, and where `attach` opens Pi. */
 import { existsSync } from "node:fs";
-import { mkdir, realpath, rm } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import { herdr } from "@vzlentin/harness/herdr";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
-import { git, repositoryAt } from "./git.ts";
 import type { ScriptInput } from "./meta.ts";
 
 type Worktree = NonNullable<ScriptInput["worktree"]>;
@@ -47,24 +46,23 @@ async function herdrJson<T extends TSchema>(schema: T, argv: readonly string[]):
 }
 
 /**
- * Creates the worktree at `path` on `branch` from `start` with `herdr worktree create`, so it shows in Herdr, unless
- * a repository is at `path`. It gives the ID of the workspace that Herdr opened on it, and undefined when Herdr fails
- * or the worktree was there: then `ensureWorktree` makes it with Git, or keeps it.
+ * Creates the worktree at `path` on `branch` from `start` with `herdr worktree create`, so it shows in Herdr. It gives
+ * the ID of the workspace that Herdr opened on it, and undefined when Herdr fails.
  */
-export async function createWorktree(
+export async function herdrWorktree(
 	repository: string,
 	path: string,
 	branch: string,
 	start: string,
 ): Promise<string | undefined> {
-	if ((await repositoryAt(path)) !== undefined) return undefined;
-	await rm(path, { recursive: true, force: true });
-	await git(repository, "worktree", "prune");
-	await mkdir(dirname(path), { recursive: true });
-	const create = ["worktree", "create", "--cwd", repository, "--path", path, "--branch", branch, "--base", start];
-	const created = await herdrJson(WORKTREE_CREATED, [...create, "--no-focus"]).catch(() => undefined);
+	try {
+		await mkdir(dirname(path), { recursive: true });
+		const create = ["worktree", "create", "--cwd", repository, "--path", path, "--branch", branch, "--base", start];
 
-	return (await repositoryAt(path)) === undefined ? undefined : created?.result.workspace.workspace_id;
+		return (await herdrJson(WORKTREE_CREATED, [...create, "--no-focus"])).result.workspace.workspace_id;
+	} catch {
+		return undefined;
+	}
 }
 
 /**

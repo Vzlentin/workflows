@@ -717,7 +717,7 @@ export async function workflows(
 		readonly dropStart?: boolean;
 		/** The lines typed on the terminal, one for each read; with none left, the read gives the end of input. */
 		readonly lines?: readonly string[];
-		/** The terminal's pick: gets the question and the items, and gives the index of the taken item. */
+		/** The terminal's pick: gets the question and the items, and gives the value of the taken item. */
 		readonly choose?: Choose;
 	},
 ): Promise<Outcome> {

@@ -26,10 +26,11 @@ import { resolveProject } from "@vzlentin/harness/projects";
 import { cliPath, statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { agentLines, agentRows, callTree, pickEntries, type Shown, type TreeEntry, treeLines } from "./calls.ts";
+import { agentLines, agentRows, callTree, type Shown, showEntries, type TreeEntry, treeLines } from "./calls.ts";
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
 import { herdrPlace, removedByHerdr } from "./herdr.ts";
 import * as script from "./meta.ts";
+import type { PickItem } from "./pick.ts";
 import { display, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
 import type { SavedCall } from "./script.ts";
@@ -66,14 +67,10 @@ const STOP_WINDOW_MS = 2000;
 const HOST_CLOSED = "The harness host closed the connection";
 
 /**
- * A question with `items` to pick one of, on a terminal: the index of the item, or undefined when cancelled. Only an
- * item that `pickable` flags can be taken, and the cursor starts on the first one.
+ * A question with `items` to pick one of, on a terminal: the value of the item, or undefined when cancelled. Only an
+ * item with a value can be taken, and the cursor starts on the first one.
  */
-export type Choose = (
-	question: string,
-	items: readonly string[],
-	pickable: readonly boolean[],
-) => Promise<number | undefined>;
+export type Choose = <V>(question: string, items: readonly PickItem<V>[]) => Promise<V | undefined>;
 
 export type Terminal = Io & {
 	/** Aborted by the first Ctrl+C: the command detaches, and the run goes on in the host. */
@@ -695,17 +692,12 @@ async function pickRun(terminal: Terminal, choose: Choose): Promise<Listed | und
 
 	const items = runs.map((run) => {
 		const step = steps.get(run.runId);
+		const text = `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${step === undefined ? "" : `: ${step}`}`;
 
-		return `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${step === undefined ? "" : `: ${step}`}`;
+		return { text, value: run };
 	});
 
-	const index = await choose(
-		"Pick a run:",
-		items,
-		items.map(() => true),
-	);
-
-	return index === undefined ? undefined : runs[index];
+	return choose("Pick a run:", items);
 }
 
 /** The mark of a run in the picker by its status: `◉` running, `?` waiting for an answer, `✗` failed, else `·`. */
@@ -894,11 +886,10 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	} else if (json) {
 		const steps = progress.lines();
 		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, steps, calls }));
+	} else if (mode === "calls") {
+		for (const line of [head, ...treeLines(calls, "", now), ...footer]) terminal.stdout(line);
 	} else {
-		const body =
-			mode === "calls" ? treeLines(calls, "", now) : pickEntries(calls, progress, now).map((entry) => entry.text);
-
-		for (const line of [head, ...body, ...footer]) terminal.stdout(line);
+		for (const entry of shownEntries(shown, now)) terminal.stdout(entry.text);
 	}
 
 	return 0;
@@ -962,6 +953,13 @@ async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean, ve
 	return { input, title, status, head, ended: outcome !== undefined, calls, progress, footer, end };
 }
 
+/** The lines of `show` of `read`, each with its agent: the head line, the lines of `showEntries`, then the footer. */
+function shownEntries(read: ShownRun, now: number): TreeEntry[] {
+	const footer = read.footer.map((text) => ({ text }));
+
+	return [{ text: read.head }, ...showEntries(read.calls, read.progress, now), ...footer];
+}
+
 /**
  * Asks on the terminal for a line of `show` of `run`, and prints the conversation of its agent. Only a line that maps
  * to an agent can be taken: a step line, a log line or a line of a child run gets the first session of its step, and a
@@ -971,16 +969,14 @@ async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean, ve
 async function pickAgent(run: SavedRun, terminal: Terminal, choose: Choose): Promise<number> {
 	for (;;) {
 		const read = await readRun(run, terminal, true, "be shown");
-		const body = pickEntries(read.calls, read.progress, Date.now());
+		const entries = shownEntries(read, Date.now());
 
-		if (body.some((item) => item.conversation !== undefined)) {
-			const items: TreeEntry[] = [{ text: read.head }, ...body, ...read.footer.map((text) => ({ text }))];
-			const pickable = items.map((item) => item.conversation !== undefined);
-			const texts = items.map((item) => item.text);
-			const index = await choose("Pick an agent:", texts, pickable);
+		if (entries.some((entry) => entry.conversation !== undefined)) {
+			const items = entries.map(({ text, conversation }) => ({ text, value: conversation }));
+			const conversation = await choose("Pick an agent:", items);
 
-			if (index === undefined) return 130;
-			terminal.stdout(String(items[index]?.conversation));
+			if (conversation === undefined) return 130;
+			terminal.stdout(String(conversation));
 
 			return 0;
 		}
