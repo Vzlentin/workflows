@@ -27,7 +27,9 @@ With Pi:
 pi install npm:@vzlentin/pi-workflows
 ```
 
-This adds the `workflow` tool and the `/workflows` command to Pi. Pi installs `@vzlentin/workflows` and
+This adds the `workflow` tool, the `/workflows` command and the `workflows` skill to Pi. The skill tells the model how
+to start and follow the runs of ship, campaign, rpi, thermoloop and judge, and starts a run only when you ask for one;
+`/skill:workflows ship "Fix the README typo"` asks for one. Pi installs `@vzlentin/workflows` and
 [harness](https://github.com/Vzlentin/harness) with it, in its own npm folder, with harness's `subagent` tool. Pi's
 tools find the `workflows` and `harness` commands. There is only one copy of harness.
 
