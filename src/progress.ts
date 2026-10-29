@@ -16,7 +16,8 @@ export const PROGRESS_KIND = "workflows.progress";
  * execution of the run `run`: of a root run, from which a command that reaches the running task shows the lines, or of
  * a child run, with its caller `parent`. `at` is the time of the line or the end in ms since the epoch; events that an
  * earlier version saved have none. `continues` marks the first phase line of an execution of the run, which goes on
- * with the step of that text when it is the current one.
+ * with the step of that text when it is the current one. A `title` event gives the run the title `text`, which shows
+ * in place of the title of its input, and draws no line.
  */
 export const PROGRESS_EVENT = Type.Union([
 	Type.Object({
@@ -34,6 +35,7 @@ export const PROGRESS_EVENT = Type.Union([
 		at: Type.Optional(Type.Number()),
 	}),
 	Type.Object({ kind: Type.Literal("start"), run: Type.String(), parent: Type.Optional(Type.String()) }),
+	Type.Object({ kind: Type.Literal("title"), run: Type.String(), text: Type.String() }),
 ]);
 
 export type ProgressEvent = Readonly<Static<typeof PROGRESS_EVENT>>;
@@ -64,6 +66,8 @@ export class Progress {
 
 	/** Adds `event`, and returns the line that it adds, with its indent and without a mark. */
 	add(event: ProgressEvent): string | undefined {
+		if (event.kind === "title") return undefined;
+
 		if (event.kind === "start") {
 			if (event.parent !== undefined) this.#node(event.run, event.parent);
 

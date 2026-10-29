@@ -1,22 +1,34 @@
-// The judge of a change: the fixed rubric of `prompts/judge.md`. `workflows judge` judges the branch of the current
-// directory from its merge base with `--base`. A caller gives `start`, the commit that its change starts from, and with
-// `commit: true` also gets the commit message of the change, which the judge writes in the same session. `ship.js`
-// runs it on the change of its rounds, and `campaign.js` on the change of all its items.
+// The judge of a change: the fixed rubric of `prompts/judge.md`. `workflows judge [<change>]` judges the change that
+// `changeOf` finds, as `thermoloop.js` does, against the intent from `--item`, the PR or the commit messages. It
+// commits nothing: it says that it does not judge the changes of the checkout that are not committed. A change on a
+// branch that no worktree has runs again as a child run in a worktree on that branch. A caller gives `start`, the
+// commit that its change starts from, with `item`, and with `commit: true` also gets the commit message of the change,
+// which the judge writes in the same session. `ship.js` runs it on the change of its rounds, and `campaign.js` on the
+// change of all its items.
 export const meta = {
-	description: "Judge the change of the current branch against a work item with the fixed rubric.",
+	description: "Judge a change (the current branch, a PR, a ref or a range) against its intent with the fixed rubric.",
 	args: {
-		item: { type: "text", positional: true, label: "work item", required: true },
+		change: { type: "string", positional: true },
+		item: { type: "text", label: "work item" },
 		base: { type: "string", default: "main" },
 	},
 	exit: { unjudged: 1 },
 }
 
-const { item, commit = false } = args
+const { commit = false } = args
 
 phase("judge")
 
+const change = await changeOf(args)
+
+if (change.checkout !== undefined) return await inCheckout("judge", change, {})
+
+const { start, intent: item } = change
+const notes = change.dirty ? ["uncommitted changes are not judged"] : []
+
+for (const note of notes) log(note)
+
 const subject = subjectOf(item)
-const start = args.start ?? (await branchStart(args.base))
 const head = await sh(["git", "rev-parse", "HEAD"])
 
 const VERDICT = {
@@ -42,7 +54,9 @@ try {
 } catch (error) {
 	log(`judge failed on ${subject}: ${error.message}`)
 
-	return { status: "unjudged", judgeError: error.message, report: [`judge failed on ${subject}: ${error.message}`] }
+	const report = [`judge failed on ${subject}: ${error.message}`, ...notes]
+
+	return { status: "unjudged", judgeError: error.message, report }
 }
 
 const { answers, findings } = verdict
@@ -50,7 +64,7 @@ const score = scoreOf(answers)
 
 log(`judge ${score.toFixed(2)}`)
 
-const report = [`judge ${score.toFixed(2)}: ${subject}`, ...findings.map((finding) => `  ${finding}`)]
+const report = [`judge ${score.toFixed(2)}: ${subject}`, ...findings.map((finding) => `  ${finding}`), ...notes]
 const judged = { status: "judged", score, answers, findings, report }
 const message = commit ? await commitMessage() : undefined
 

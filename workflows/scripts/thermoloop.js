@@ -1,23 +1,30 @@
-// The thermoloop: the review loop of a change. `workflows thermoloop` reviews the branch of the current directory from
-// its merge base with `--base`, and fixes it in rounds until the reviewer answers SHIP. A caller gives `start`, the
-// commit that its change starts from, and may give `plan` and `reply`, the handoff and the report of the implement
-// before, `memory`, the `ref` of a run memory to go on with, and `patches`, the folder of the round patches.
-// `ship.js` runs it after `rpi.js`. Every Git step is safe to repeat: a resume runs a step again when its result was
-// not saved.
+// The thermoloop: the review loop of a change. `workflows thermoloop [<change>]` reviews the change that `changeOf`
+// finds: the current branch from its merge base with `--base`, a PR number, a ref or a range. It commits the changes
+// of the checkout first as `wip`, takes the intent from `--item`, the PR or the commit messages, and fixes the change
+// in rounds until the reviewer answers SHIP. A change on a branch that no worktree has runs again as a child run in a
+// worktree on that branch. A caller gives `start`, the commit that its change starts from, with `item`, and may give
+// `plan` and `reply`, the handoff and the report of the implement before, `memory`, the `ref` of a run memory to go on
+// with, and `patches`, the folder of the round patches. `ship.js` runs it after `rpi.js`. Every Git step is safe to
+// repeat: a resume runs a step again when its result was not saved.
 export const meta = {
-	description: "Review the change of the current branch, and fix it in rounds until the reviewer answers SHIP.",
+	description: "Review a change (the current branch, a PR, a ref or a range), and fix it in rounds until the reviewer answers SHIP.",
 	args: {
-		item: { type: "text", positional: true, label: "work item", required: true },
+		change: { type: "string", positional: true },
+		item: { type: "text", label: "work item" },
 		base: { type: "string", default: "main" },
 		rounds: { type: "number", default: 3 },
 	},
 	exit: { blocked: 1, stopped: 1 },
 }
 
-const { item, rounds, patches = runDir } = args
-const subject = subjectOf(item)
+const { rounds, patches = runDir } = args
+const change = await changeOf(args, { wip: true })
 
-const start = args.start ?? (await branchStart(args.base))
+if (change.checkout !== undefined) return await inCheckout("thermoloop", change, { rounds })
+
+const { start, intent: item } = change
+
+const subject = subjectOf(item)
 
 // In the script, and not in a template, so that a template edit cannot remove them.
 const SHIP_OR_FIX = { enum: ["SHIP", "FIX"] }

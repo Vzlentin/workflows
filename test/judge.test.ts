@@ -22,7 +22,7 @@ const ITEM = "Fix the README typo";
 
 describe("workflows judge", () => {
 	it("judges the branch from its merge base with the fixed rubric", async () => {
-		const run = await workflows(["judge", "--json", ITEM], { cwd: repo, script: { judge: PASSING_JUDGE } });
+		const run = await workflows(["judge", "--json", "--item", ITEM], { cwd: repo, script: { judge: PASSING_JUDGE } });
 
 		expect(run.code).toBe(0);
 		const { result, report } = JSON.parse(run.stdout[1] ?? "");
@@ -35,19 +35,25 @@ describe("workflows judge", () => {
 		expect(run.model.find("judge")?.prompt).toMatch(new RegExp(`## base\\n${start}\\n\\n## head\\n${head}$`));
 	});
 
-	it("refuses a checkout with changes", async () => {
+	it("says that it does not judge the changes that are not committed, and commits nothing", async () => {
 		await writeFile(join(repo, "README.md"), "local edit\n");
-		const run = await workflows(["judge", ITEM], { cwd: repo });
+		const head = git(repo, "rev-parse", "HEAD");
+		const run = await workflows(["judge", "--json"], { cwd: repo, script: { judge: PASSING_JUDGE } });
 
-		expect(run.code).toBe(1);
-		expect(run.stderr).toContain(
-			`failed ${ITEM}: the checkout has changes that are not committed; commit or stash them first`,
-		);
-		expect(run.model.calls).toEqual([]);
+		expect(run.code).toBe(0);
+		expect(JSON.parse(run.stdout[1] ?? "").report).toEqual([
+			"judge 0.83: fix the typo",
+			`  ${PASSING_JUDGE.findings[0]}`,
+			"uncommitted changes are not judged",
+		]);
+		expect(progressOf(run.stderr)).toEqual(["✓ judge", "  uncommitted changes are not judged", "  judge 0.83"]);
+		expect(run.model.find("judge")?.prompt).toMatch(new RegExp(`## base\\n${start}\\n\\n## head\\n${head}$`));
+		expect(git(repo, "rev-parse", "HEAD")).toBe(head);
+		expect(git(repo, "status", "--porcelain")).toBe(" M README.md");
 	});
 
 	it("exits 1 when the judge does not answer", async () => {
-		const run = await workflows(["judge", ITEM], { cwd: repo, script: { judge: "1 PASS" } });
+		const run = await workflows(["judge", "--item", ITEM], { cwd: repo, script: { judge: "1 PASS" } });
 
 		expect(run.code).toBe(1);
 		expect(run.stdout.slice(1)).toEqual([`judge failed on ${ITEM}: the answer did not call respond`]);

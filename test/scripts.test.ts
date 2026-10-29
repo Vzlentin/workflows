@@ -1013,6 +1013,47 @@ return args`,
 		expect(JSON.parse(run.stdout[1] ?? "")).toEqual({ repo: "r", base: "dev", branch: "b", runId: expect.any(String) });
 	});
 
+	it("runs a child run with checkout in a worktree on that existing branch, with the start of its caller", async () => {
+		const repo = join(root, "repo");
+		const start = await repository(repo);
+		git(repo, "branch", "feature");
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "parent.js"),
+			`return await run("child", { start: "${start}", checkout: "feature" })`,
+		);
+		await writeFile(
+			join(scripts, "child.js"),
+			'return { cwd, args, branch: await sh(["git", "branch", "--show-current"]), head: await sh("git rev-parse HEAD") }',
+		);
+
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(0);
+		const child = JSON.parse(run.stdout[1] ?? "");
+		const path = worktreeAt(repo, child.runId);
+		expect(child).toEqual({ cwd: path, args: { start }, branch: "feature", head: start, runId: child.runId });
+		expect(git(repo, "branch", "--show-current")).toBe("main");
+
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { checkout: "feature" })');
+		const unstarted = await workflows(["parent"], { cwd: repo });
+		expect([unstarted.code, unstarted.stderr[0]]).toEqual([
+			1,
+			"failed parent: run child: checkout needs start as a string",
+		]);
+
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { start: "s", checkout: "none" })');
+		const missing = await workflows(["parent"], { cwd: repo });
+		expect([missing.code, missing.stderr[0]]).toEqual([1, "failed parent: run child: no branch none"]);
+
+		await writeFile(join(scripts, "parent.js"), 'return await run("ship", { item: "x", checkout: "feature" })');
+		const refused = await workflows(["parent"], { cwd: repo });
+		expect([refused.code, refused.stderr[0]]).toEqual([
+			1,
+			"failed parent: run ship: checkout is for a script without meta.worktree",
+		]);
+	});
+
 	it("fails a run call that gives a worktree script a start that is not a string", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
@@ -1209,11 +1250,11 @@ return [one.reply, two.reply].join(", ")`,
 		expect(listed.stdout).toEqual([
 			"campaign: Split a goal into work items and ship each one as a commit on one branch.",
 			"implement: Implement a plan in the current directory, and commit the change.",
-			"judge: Judge the change of the current branch against a work item with the fixed rubric.",
+			"judge: Judge a change (the current branch, a PR, a ref or a range) against its intent with the fixed rubric.",
 			"optimize: Search for better ship prompts over a folder of work items.",
 			"rpi: Research, plan and implement one work item, and commit it on a new branch.",
 			"ship: Ship one work item onto a new branch: research, plan, implement, review rounds, judge, and one squashed commit.",
-			"thermoloop: Review the change of the current branch, and fix it in rounds until the reviewer answers SHIP.",
+			"thermoloop: Review a change (the current branch, a PR, a ref or a range), and fix it in rounds until the reviewer answers SHIP.",
 			"plain",
 		]);
 		const plain = await workflows(["plain", "--help"], { cwd: root });
@@ -1236,13 +1277,22 @@ return [one.reply, two.reply].join(", ")`,
 		expect(flag.stdout.at(-1)).toBe('{"path":"src","depth":2,"all":false}');
 	});
 
-	it("leaves out an optional text argument without a value and without stdin", async () => {
+	it("leaves out an optional text argument without a value and without stdin or with a blank stdin", async () => {
 		await writeFile(
 			join(root, "note.js"),
 			`export const meta = { args: { note: { type: "text" } } }\nreturn "note" in args`,
 		);
 		const run = await workflows(["note.js"], { cwd: root });
 		expect([run.code, run.stderr, run.stdout.at(-1)]).toEqual([0, [], "false"]);
+		const blank = await workflows(["note.js"], { cwd: root, stdin: " \n" });
+		expect([blank.code, blank.stderr, blank.stdout.at(-1)]).toEqual([0, [], "false"]);
+
+		await writeFile(
+			join(root, "need.js"),
+			`export const meta = { args: { note: { type: "text", required: true } } }\nreturn args.note`,
+		);
+		const required = await workflows(["need.js"], { cwd: root, stdin: "" });
+		expect([required.code, required.stderr]).toEqual([1, ["workflows: the note is empty"]]);
 	});
 
 	it("rejects bad arguments with the usage of the workflow", async () => {

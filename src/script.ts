@@ -354,8 +354,10 @@ function keyOf(name: string, args: JsonObject, counters: Map<string, number>): s
 	return `${hash}.${n}`;
 }
 
-/** A `phase` or `log` line, with the time of its call in ms since the epoch. */
-type Line = { readonly text: string; readonly phase: boolean; readonly at: number };
+/** A `phase` or `log` line, with the time of its call in ms since the epoch, or the `title` of the run. */
+type Line =
+	| { readonly kind: "phase" | "log"; readonly text: string; readonly at: number }
+	| { readonly kind: "title"; readonly text: string };
 
 /**
  * The lines of a script that wait for its next call that runs, in order. At most one is a phase line: a new phase line
@@ -366,7 +368,11 @@ type Progress = { readonly lines: Line[]; phase: string | null; continued?: bool
 function phaseLine(progress: Progress, text: string): void {
 	progress.phase = text;
 	const { lines } = progress;
-	lines.splice(0, lines.length, ...lines.filter((line) => !line.phase), { text, phase: true, at: Date.now() });
+	lines.splice(0, lines.length, ...lines.filter((line) => line.kind !== "phase"), {
+		kind: "phase",
+		text,
+		at: Date.now(),
+	});
 }
 
 /** What the calls of one script execution share. */
@@ -389,7 +395,9 @@ function takeLines(calls: Calls): ProgressEvent[] {
 	const { progress } = calls;
 
 	return progress.lines.splice(0).map((line) => {
-		if (!line.phase) return { kind: "log", run, parent, text: line.text, at: line.at };
+		if (line.kind === "title") return { kind: "title", run, text: line.text };
+
+		if (line.kind === "log") return { kind: "log", run, parent, text: line.text, at: line.at };
 		const event: ProgressEvent = { kind: "phase", run, parent, text: line.text, at: line.at };
 
 		if (progress.continued === true) return event;
@@ -424,7 +432,7 @@ async function memoized(
 	const { lines } = progress;
 
 	if (saved !== undefined) {
-		lines.splice(0, lines.length, ...lines.filter((line) => line.phase));
+		lines.splice(0, lines.length, ...lines.filter((line) => line.kind === "phase"));
 
 		return saved;
 	}
@@ -773,7 +781,8 @@ export async function runScript(
 			}),
 			global("__input", INPUT_ARGS, ([question]) => inputCall(calls, question, stop)),
 			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
-			global("log", LINE_ARGS, ([line]) => progress.lines.push({ text: String(line), phase: false, at: Date.now() })),
+			global("log", LINE_ARGS, ([line]) => progress.lines.push({ kind: "log", text: String(line), at: Date.now() })),
+			global("title", LINE_ARGS, ([text]) => progress.lines.push({ kind: "title", text: String(text) })),
 			global("__prompt", PROMPT_ARGS, ([name, inputs]) => {
 				const body = bundle.prompts[name];
 

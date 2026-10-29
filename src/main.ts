@@ -470,6 +470,7 @@ async function resume(
 			state.outcome,
 			{ ...terminal, stdout: keep(terminal.stdout), stderr: keep(terminal.stderr) },
 			json,
+			await progressOf(run),
 		);
 		terminal.status?.(programStatus("blocked", first ?? "", "question"));
 
@@ -479,7 +480,7 @@ async function resume(
 	if (state.status === "terminal" && answer === undefined && (wait || state.outcome.status === "completed")) {
 		terminal.stdout(`run ${run.id}`);
 
-		return outcomeOf(last, run.id, state.outcome, terminal, json);
+		return outcomeOf(last, run.id, state.outcome, terminal, json, await progressOf(run));
 	}
 
 	const input = answer === undefined ? last : { ...last, answer: { call: await openInput(run), text: answer } };
@@ -578,7 +579,8 @@ async function stop(args: readonly string[], terminal: Terminal, json: boolean):
 
 	if (json) terminal.stdout(JSON.stringify({ runId: run.id, status: "stopped" }));
 	else if (current(latest)) {
-		terminal.stdout(`stopped ${script.title(latest.input)}; continue with: workflows resume ${run.id}`);
+		const title = script.title(latest.input, await progressOf(run));
+		terminal.stdout(`stopped ${title}; continue with: workflows resume ${run.id}`);
 	} else {
 		const { name, later } = savedBy(latest);
 		terminal.stdout(`stopped ${name}, which ${later ? "a later" : "an earlier"} version saved; it cannot resume`);
@@ -647,9 +649,10 @@ async function listedRuns(store: Store): Promise<Listed[]> {
 		const status = runStatus(task);
 		const repository = inputWorktree(task.input)?.repository ?? null;
 
-		if (current(task))
-			listed.push({ runId: id, workflow: task.input.name, title: script.title(task.input), status, repository });
-		else listed.push({ runId: id, workflow: savedBy(task).name, title: savedBy(task).name, status, repository });
+		if (current(task)) {
+			const title = script.title(task.input, await progressEvents(store, id));
+			listed.push({ runId: id, workflow: task.input.name, title, status, repository });
+		} else listed.push({ runId: id, workflow: savedBy(task).name, title: savedBy(task).name, status, repository });
 	}
 
 	return listed;
@@ -898,24 +901,25 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	const mode = values.agents ? "agents" : values.calls ? "calls" : "steps";
 	const run = await savedRun(oneRunId(positionals, SHOW), SHOW);
 	const { id } = run;
-	const empty = { task: undefined, records: new Map<string, SavedCall>(), progress: new Progress() };
+	const empty = { task: undefined, records: new Map<string, SavedCall>(), progress: new Progress(), events: [] };
 
-	const { task, records, progress } = await reading(run.store, empty, async (store) => {
+	const { task, records, progress, events } = await reading(run.store, empty, async (store) => {
 		const read = new Progress();
+		const saved = await progressEvents(store, id);
 
-		for (const event of await progressEvents(store, id)) read.add(event);
+		for (const event of saved) read.add(event);
 
 		const calls =
 			mode !== "steps" || json || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
 
-		return { task: taskOf((await runTasks(store)).get(id) ?? []), records: calls, progress: read };
+		return { task: taskOf((await runTasks(store)).get(id) ?? []), records: calls, progress: read, events: saved };
 	});
 
 	const checkedTask = checked(task, id, "be shown");
 	const { input, state } = checkedTask;
 	const outcome = state.status === "terminal" ? state.outcome : undefined;
 	const calls = callTree(records, id, outcome !== undefined);
-	const title = script.title(input);
+	const title = script.title(input, events);
 	const footer: string[] = [];
 	let end: { report: string[] } | { error: string } | undefined;
 
@@ -1299,7 +1303,8 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 		};
 
 		const shownTo = { ...terminal, stdout: keep(terminal.stdout), stderr: keep(terminal.stderr) };
-		const code = outcomeOf(input, id, outcome, shownTo, json);
+		const events = store === undefined ? [] : await progressEvents(store, id).catch(() => []);
+		const code = outcomeOf(input, id, outcome, shownTo, json, events);
 
 		asking =
 			outcome.status === "completed" &&
@@ -1343,9 +1348,10 @@ function outcomeOf(
 	outcome: TaskOutcome<JsonValue>,
 	terminal: Terminal,
 	json: boolean,
+	events: readonly ProgressEvent[],
 ): number {
 	if (outcome.status === "completed") return finished(input, id, outcome.result, terminal, json);
-	const ended = endOf(outcome, script.title(input), id);
+	const ended = endOf(outcome, script.title(input, events), id);
 
 	const end = (status: "failed" | "stopped", rest: { error?: string }) => {
 		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
