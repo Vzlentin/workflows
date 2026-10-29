@@ -149,7 +149,7 @@ export default function ({ durable }) {
 const refused = (version: number) =>
 	`workflows: This host has version ${version} of workflows.run, not ${TASK.version}: stop the host so it starts again with the installed version (the harness host of project main has pid ${process.pid}: kill ${process.pid})`;
 
-describe("runs in the harness host", { timeout: 30_000 }, () => {
+describe("runs in the harness host", () => {
 	it("goes on in the host after Ctrl+C, and resume follows the same task from the start of its execution", async () => {
 		await writeFile(join(root, "phased.js"), 'phase("gate")\nlog("waits")\nawait sh("./gate.sh g")\nreturn "done"');
 		const interrupt = new AbortController();
@@ -721,7 +721,7 @@ async function until(check: () => Promise<boolean>): Promise<void> {
 	while (!(await check())) await new Promise((resolve) => setTimeout(resolve, 20));
 }
 
-describe("the workflow tool of the harness host", { timeout: 30_000 }, () => {
+describe("the workflow tool of the harness host", () => {
 	beforeEach(() => piSettings(root, [], { defaultProvider: "anthropic", defaultModel: "claude-haiku-5" }));
 
 	it("runs a script for the project agent, with its sessions under the agent and without the tool", async () => {

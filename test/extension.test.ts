@@ -500,7 +500,7 @@ describe("the workflow tool", () => {
 		await expect(call({ script: "return 1", save: { runId: "r2", name: "fix" } })).rejects.toThrow(both);
 	});
 
-	it("gives the question of a waiting run, and continues the run with the answer", { timeout: 30_000 }, async () => {
+	it("gives the question of a waiting run, and continues the run with the answer", async () => {
 		const saved = process.env;
 		const cwd = await sandbox();
 		// The command runs as a child process, which finds the host of this process through HARNESS_PROJECT.

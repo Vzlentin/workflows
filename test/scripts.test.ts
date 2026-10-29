@@ -496,7 +496,7 @@ describe("workflows show", () => {
 		expect(await exited).toBe(0);
 		expect(shown.code).toBe(0);
 		expect(shown.stdout[0]).toBe(`run ${id} x running x`);
-	}, 20_000);
+	});
 });
 
 describe("saved calls", () => {
