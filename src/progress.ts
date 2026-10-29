@@ -42,9 +42,14 @@ export type ProgressEvent = Readonly<Static<typeof PROGRESS_EVENT>>;
 
 export type Mark = "✓" | "◉" | "✗";
 
-/** A step, with the times of its start and its end when the events give them. */
+/**
+ * A step of the run `runId`, with the times of its start and its end when the events give them. `started` moves
+ * forward when the step goes on after a resume, and `firstStart` keeps the time of its first start.
+ */
 type Step = {
+	readonly runId: string;
 	readonly text: string;
+	readonly firstStart: number | undefined;
 	mark: Mark;
 	readonly items: Item[];
 	started?: number | undefined;
@@ -52,6 +57,12 @@ type Step = {
 };
 
 type Item = Step | { readonly log: string } | { readonly run: RunNode };
+
+/** A step as a reader of `Progress.entries` sees it: its run, its text and the time of its first start. */
+export type StepView = Readonly<Pick<Step, "runId" | "text" | "firstStart">>;
+
+/** A line of the tree, with the step that it belongs to, if any. The lines of one step share one `step` object. */
+export type Entry = { readonly text: string; readonly step?: StepView | undefined };
 
 /**
  * A run: its steps and log lines, its caller, and whether it is under a step of the caller. A child run whose caller
@@ -111,7 +122,14 @@ export class Progress {
 			current.ended = event.at;
 		}
 
-		const step: Step = { text: event.text, mark: "◉", items: [], started: event.at };
+		const step: Step = {
+			runId: event.run,
+			text: event.text,
+			firstStart: event.at,
+			mark: "◉",
+			items: [],
+			started: event.at,
+		};
 
 		if (current === undefined) {
 			const loose = run.items.filter((item) => "run" in item && !item.run.under);
@@ -161,24 +179,32 @@ export class Progress {
 	 * that ended adds `  <duration>`.
 	 */
 	lines(): string[] {
-		const lines: string[] = [];
+		return this.entries().map((entry) => entry.text);
+	}
 
-		const visit = (items: readonly Item[], indent: string) => {
+	/**
+	 * The lines of `lines()`, each with the step that it belongs to: a step line its own step, and a log line or a line
+	 * of a child run the step that encloses it. A line outside every step has none.
+	 */
+	entries(): Entry[] {
+		const entries: Entry[] = [];
+
+		const visit = (items: readonly Item[], indent: string, step: Entry["step"]) => {
 			for (const item of items) {
-				if ("run" in item) visit(item.run.items, indent);
-				else if ("log" in item) lines.push(`${indent}${item.log}`);
+				if ("run" in item) visit(item.run.items, indent, step);
+				else if ("log" in item) entries.push({ text: `${indent}${item.log}`, step });
 				else {
 					const { started, ended } = item;
 					const time = started === undefined || ended === undefined ? "" : `  ${duration(ended - started)}`;
-					lines.push(`${indent}${item.mark} ${item.text}${time}`);
-					visit(item.items, `${indent}  `);
+					entries.push({ text: `${indent}${item.mark} ${item.text}${time}`, step: item });
+					visit(item.items, `${indent}  `, item);
 				}
 			}
 		};
 
-		visit(this.#top, "");
+		visit(this.#top, "", undefined);
 
-		return lines;
+		return entries;
 	}
 
 	/** The node of `run`: a new one goes under the current step of the run `parent`, or at the top without one. */

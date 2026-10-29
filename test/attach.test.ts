@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Choose } from "../src/main.ts";
 import { conversationOf, repository, runsOf, sandbox, workflows, worktreeAt } from "./support.ts";
 
 let root: string;
@@ -34,14 +35,12 @@ beforeEach(async () => {
 afterEach(() => rm(root, { recursive: true, force: true }));
 
 describe("attach", () => {
-	it("opens the last session of a run, or the last session of a step, in Pi", async () => {
+	it("opens the last session of a run, or the session of a conversation, in Pi", async () => {
 		const id = await ran('phase("a")\nawait agent("Script: one")\nphase("b")\nawait agent("Script: two")');
 		const one = await conversationOf(/Script: one/);
 		const two = await conversationOf(/Script: two/);
 		const last = await workflows(["attach", id], { cwd: root });
 		expect([last.code, await piLog()]).toEqual([7, `--harness main --harness-conversation ${two}`]);
-		const first = await workflows(["attach", id, "a"], { cwd: root });
-		expect([first.code, await piLog()]).toEqual([7, `--harness main --harness-conversation ${one}`]);
 		const chosen = await workflows(["attach", id, "--conversation", String(one)], { cwd: root });
 		expect([chosen.code, await piLog()]).toEqual([7, `--harness main --harness-conversation ${one}`]);
 	});
@@ -59,18 +58,17 @@ describe("attach", () => {
 		expect([attached.code, await piLog()]).toEqual([7, `--harness main --harness-conversation ${s}`]);
 	});
 
-	it("fails for a run with no session, an unknown step, an unknown run, no run ID and both filters", async () => {
+	it("fails for a run with no session, a second argument, an unknown conversation, an unknown run and no run ID", async () => {
 		const bare = await ran('return "done"');
 		const id = await ran('phase("a")\nawait agent("Script: one")');
 		const runs = runsOf(root);
-		const usage = "workflows attach <run-id> [<step>] [--conversation <id>]";
+		const usage = "workflows attach <run-id> [--conversation <id>] [--side]";
 		const cases = [];
 
 		const argvs = [
 			["attach", bare],
-			["attach", id, "b c"],
+			["attach", id, "a"],
 			["attach", id, "--conversation", "999999"],
-			["attach", id, "a", "--conversation", "999999"],
 			["attach", "nothing"],
 			["attach"],
 			["attach", id, "--conversation", "x"],
@@ -83,9 +81,8 @@ describe("attach", () => {
 
 		expect(cases).toEqual([
 			[1, [`workflows: run ${bare} has no session`]],
-			[1, [`workflows: run ${id} has no session in b c`]],
+			[2, ["workflows: give one run ID", `usage: ${usage}`]],
 			[1, [`workflows: run ${id} has no session with conversation 999999`]],
-			[2, ["workflows: give a step or --conversation, not both", `usage: ${usage}`]],
 			[1, [`workflows: no run nothing in ${runs}`]],
 			[2, ["workflows: give one run ID", `usage: ${usage}`]],
 			[2, ["workflows: x is not a conversation ID", `usage: ${usage}`]],
@@ -101,10 +98,10 @@ describe("list --pick", () => {
 		const running = await workflows(["y.js"], { cwd: root, script: { interruptAt: { kind: "script", nth: 2 } } });
 		const asked: string[][] = [];
 
-		const choose = async (question: string, items: readonly string[]) => {
-			asked.push([question, ...items]);
+		const choose: Choose = async (question, items) => {
+			asked.push([question, ...items.map((item) => item.text)]);
 
-			return 0;
+			return items[0]?.value;
 		};
 
 		const picked = await workflows(["list", "--pick"], { cwd: root, choose });
@@ -140,6 +137,7 @@ case "$1 $2" in
 "worktree list") echo '${JSON.stringify({ result: { worktrees } })}' ;;
 "tab create") echo '{"result":{"root_pane":{"pane_id":"p9"}}}' ;;
 "pane split") echo '{"result":{"pane":{"pane_id":"p9"}}}' ;;
+"pane get") echo '{"result":{"pane":{"pane_id":"p1","workspace_id":"w5"}}}' ;;
 esac
 `,
 		);
@@ -172,12 +170,35 @@ esac
 		expect(await piLog()).toBeUndefined();
 	});
 
-	it("opens the session in a new pane to the right of this pane without a workspace", async () => {
+	it("opens the session in a new pane to the right of this pane with --side", async () => {
+		await herdr([{ path: await realpath(worktree), open_workspace_id: "w1" }]);
+		process.env.HERDR_PANE_ID = "p1";
+		const attached = await workflows(["attach", id, "--side"], { cwd: repo });
+		expect(attached.code).toBe(0);
+		const lines = await logged();
+		expect(lines).toContainEqual(expect.stringMatching(/^pane split p1 --direction right /));
+		expect(lines).not.toContainEqual(expect.stringMatching(/^tab create /));
+		expect(await piLog()).toBeUndefined();
+	});
+
+	it("opens the session in a new tab of the workspace of this pane without a worktree workspace", async () => {
 		await herdr([]);
 		process.env.HERDR_PANE_ID = "p1";
 		const attached = await workflows(["attach", id], { cwd: repo });
 		expect(attached.code).toBe(0);
-		expect(await logged()).toContainEqual(expect.stringMatching(/^pane split p1 --direction right /));
+		const lines = await logged();
+		const get = lines.findIndex((line) => line === "pane get p1");
+		const tab = lines.findIndex((line) => line.startsWith("tab create --workspace w5 "));
+		expect([get >= 0, tab > get]).toEqual([true, true]);
+		expect(lines).not.toContainEqual(expect.stringMatching(/^pane split /));
+		expect(await piLog()).toBeUndefined();
+	});
+
+	it("opens a tab with --side outside a Herdr pane", async () => {
+		await herdr([{ path: await realpath(worktree), open_workspace_id: "w1" }]);
+		const attached = await workflows(["attach", id, "--side"], { cwd: repo });
+		expect(attached.code).toBe(0);
+		expect(await logged()).toContainEqual(expect.stringMatching(/^tab create --workspace w1 /));
 		expect(await piLog()).toBeUndefined();
 	});
 

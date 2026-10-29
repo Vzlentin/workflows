@@ -5,11 +5,12 @@
 import type { JsonValue } from "@earendil-works/chord";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { duration, type Mark } from "./progress.ts";
+import { duration, type Mark, type Progress, type StepView } from "./progress.ts";
 import type { SavedCall } from "./script.ts";
 
-/** One call of `workflows show`, with the calls of its child run when it is a `run` call. */
-type Shown = Omit<SavedCall, "child"> & {
+/** One call of the run `runId` in `workflows show`, with the calls of its child run when it is a `run` call. */
+export type Shown = Omit<SavedCall, "child"> & {
+	readonly runId: string;
 	readonly label: string;
 	readonly mark: Mark;
 	readonly calls?: Shown[];
@@ -29,7 +30,7 @@ export function callTree(records: Map<string, SavedCall>, runId: string, ended: 
 			const mark = record.error !== undefined || cut ? "✗" : record.endedAt !== undefined ? "✓" : "◉";
 			// A `run` call that failed before its child run started has no `child`.
 			const child = started?.runId;
-			const shown = { ...record, label: labelOf(record, child, records), mark } as const;
+			const shown = { ...record, runId, label: labelOf(record, child, records), mark } as const;
 
 			return child === undefined ? shown : { ...shown, calls: callTree(records, child, ended) };
 		});
@@ -40,21 +41,95 @@ export function callTree(records: Map<string, SavedCall>, runId: string, ended: 
  * stopped or failed task cut has no duration. A working session prints `◉`.
  */
 export function treeLines(calls: readonly Shown[], indent: string, now: number): string[] {
-	const lines: string[] = [];
+	return treeEntries(calls, indent, now).map((entry) => entry.text);
+}
+
+/** A line of `treeLines`, with the conversation of its session or its ask. */
+export type TreeEntry = { readonly text: string; readonly conversation?: number | undefined };
+
+/** The lines of `treeLines`, each session with its conversation and each ask with the conversation that it asks. */
+export function treeEntries(calls: readonly Shown[], indent: string, now: number): TreeEntry[] {
+	const entries: TreeEntry[] = [];
 	let phase: string | null = null;
 
 	for (const call of calls) {
-		if (call.phase !== null && call.phase !== phase) lines.push(`${indent}${call.phase}`);
+		if (call.phase !== null && call.phase !== phase) entries.push({ text: `${indent}${call.phase}` });
 		phase = call.phase;
 		const mark = works(call, calls) ? "◉" : call.mark;
 		const end = mark === "◉" ? now : call.endedAt === undefined ? undefined : Date.parse(call.endedAt);
 		const time = end === undefined ? "" : `  ${duration(end - Date.parse(call.startedAt))}`;
-		lines.push(`${indent}  ${mark} ${call.kind} ${call.label}${time}`);
+		const text = `${indent}  ${mark} ${call.kind} ${call.label}${time}`;
+		const conversation = call.kind === "session" ? call.conversation : askedConversation(call);
 
-		if (call.calls !== undefined) lines.push(...treeLines(call.calls, `${indent}    `, now));
+		entries.push({ text, conversation });
+
+		if (call.calls !== undefined) entries.push(...treeEntries(call.calls, `${indent}    `, now));
 	}
 
-	return lines;
+	return entries;
+}
+
+/** The conversation that the ask `call` asks, or undefined for another call. */
+function askedConversation(call: Shown): number | undefined {
+	const asked = call.args.conversation;
+
+	return call.kind === "ask" && Value.Check(Type.Number(), asked) ? asked : undefined;
+}
+
+/**
+ * The body lines of `show` with the agent of each: the step lines of `progress`, each with the agent of its step, or the
+ * lines of `treeEntries` of `calls` when the run has no steps.
+ */
+export function showEntries(calls: readonly Shown[], progress: Progress, now: number): TreeEntry[] {
+	if (!progress.stepped) return treeEntries(calls, "", now);
+
+	const entries = progress.entries();
+
+	const agents = stepAgents(
+		calls,
+		entries.flatMap(({ step }) => (step === undefined ? [] : [step])),
+	);
+
+	return entries.map(({ text, step }) => ({ text, conversation: step === undefined ? undefined : agents.get(step) }));
+}
+
+/**
+ * The agent of each of `steps`: the first session of `calls` that opened a conversation in the step, or in a child run
+ * that a `run` call of the step started. A call is in the last step of its run with the text of its phase line that
+ * started at or before it, so a step whose text comes back gets the sessions of its own time; a step with no start
+ * time counts as started before every call. The summarizer of a step starts after the session whose note it
+ * compresses, so it is never the one.
+ */
+function stepAgents(calls: readonly Shown[], steps: readonly StepView[]): Map<StepView, number> {
+	const sessions: { readonly call: Shown; readonly at: readonly StepView[] }[] = [];
+
+	const visit = (shown: readonly Shown[], outer: readonly StepView[]) => {
+		for (const call of shown) {
+			const started = Date.parse(call.startedAt);
+
+			const step = steps.findLast(
+				(s) => s.runId === call.runId && s.text === call.phase && (s.firstStart ?? -Infinity) <= started,
+			);
+
+			const at = step === undefined ? outer : [...outer, step];
+
+			if (call.kind === "session") sessions.push({ call, at });
+			visit(call.calls ?? [], at);
+		}
+	};
+
+	visit(calls, []);
+	// Child runs can work at once, so the first session is the first to start in the whole tree.
+	sessions.sort((a, b) => a.call.startedAt.localeCompare(b.call.startedAt));
+	const agents = new Map<StepView, number>();
+
+	for (const { call, at } of sessions) {
+		if (call.conversation === undefined) continue;
+
+		for (const step of at) if (!agents.has(step)) agents.set(step, call.conversation);
+	}
+
+	return agents;
 }
 
 /**
@@ -97,11 +172,10 @@ export function agentRows(calls: readonly Shown[], depth: number, now: number): 
 	const prompts = new Map<number, string[]>();
 
 	for (const call of calls) {
-		const { conversation } = call.args;
+		const conversation = askedConversation(call);
 
-		if (call.kind === "ask" && Value.Check(Type.Number(), conversation) && !prompts.has(conversation)) {
+		if (conversation !== undefined && !prompts.has(conversation))
 			prompts.set(conversation, textLines(call.args.prompt));
-		}
 	}
 
 	const textOf = (lines: readonly string[]): string | undefined => {
@@ -128,7 +202,7 @@ export function agentRows(calls: readonly Shown[], depth: number, now: number): 
 		const { conversation } = call;
 
 		if (conversation === undefined) continue;
-		const asks = calls.filter((ask) => ask.kind === "ask" && ask.args.conversation === conversation);
+		const asks = calls.filter((ask) => askedConversation(ask) === conversation);
 		const working = works(call, calls);
 		const failed = call.mark === "✗" || asks.some((ask) => ask.mark === "✗");
 		const ends = [call, ...asks].flatMap(({ endedAt }) => (endedAt === undefined ? [] : [endedAt])).sort();
@@ -171,9 +245,12 @@ export function agentLines(rows: readonly AgentRow[]): string[] {
 
 /** Whether `call` is a session that one of its asks among `siblings` works in now. */
 function works(call: Shown, siblings: readonly Shown[]): boolean {
+	const { conversation } = call;
+
 	return (
 		call.kind === "session" &&
-		siblings.some((ask) => ask.kind === "ask" && ask.mark === "◉" && ask.args.conversation === call.conversation)
+		conversation !== undefined &&
+		siblings.some((ask) => ask.mark === "◉" && askedConversation(ask) === conversation)
 	);
 }
 

@@ -176,7 +176,7 @@ exec git clone -q "${root}/github/$source" "$4"
 /**
  * A fake `memo` of OptMem at `$HOME/.optmem/memo`. It adds each call as `{ dir, args }` to `$HOME/.optmem/calls.log`,
  * keeps the notes as OptMem's fixed-width `LOG.txt` records, and asks to compress #0-1 only when
- * `$HOME/.optmem/compress` exists.
+ * `$HOME/.optmem/compress` exists, from the number of notes that it holds (default 2).
  */
 const FAKE_MEMO = `#!${process.execPath}
 const fs = require("node:fs");
@@ -207,8 +207,10 @@ const check = (text) => {
 };
 const nap = () => {
 	const lines = notes();
-	if (!fs.existsSync(path.join(home, "compress")) || lines.length < 2 || fs.existsSync(summary)) return undefined;
-	return "Compress memories #0-1 into one line of at most 280 bytes.\\n\\n  " + lines[0] + "\\n  " + lines[1] +
+	const compress = path.join(home, "compress");
+	if (!fs.existsSync(compress) || fs.existsSync(summary)) return undefined;
+	if (lines.length < Number(fs.readFileSync(compress, "utf8").trim() || "2")) return undefined;
+	return "Compress memories #0-1 into one line of at most 280 bytes.\\n\\n  " + lines.slice(0, 2).join("\\n  ") +
 		'\\n\\nRun: ~/.optmem/memo nap 0-1 "<your line>"';
 };
 const next = () => console.log(nap() ?? "Nothing left to compress.");
@@ -715,7 +717,7 @@ export async function workflows(
 		readonly dropStart?: boolean;
 		/** The lines typed on the terminal, one for each read; with none left, the read gives the end of input. */
 		readonly lines?: readonly string[];
-		/** The terminal's pick: gets the question and the items, and gives the index of the taken item. */
+		/** The terminal's pick: gets the question and the items, and gives the value of the taken item. */
 		readonly choose?: Choose;
 	},
 ): Promise<Outcome> {

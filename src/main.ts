@@ -10,7 +10,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,9 +26,11 @@ import { resolveProject } from "@vzlentin/harness/projects";
 import { cliPath, statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { agentLines, agentRows, callTree, treeLines } from "./calls.ts";
+import { agentLines, agentRows, callTree, type Shown, showEntries, type TreeEntry, treeLines } from "./calls.ts";
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
+import { herdrPlace, removedByHerdr } from "./herdr.ts";
 import * as script from "./meta.ts";
+import type { PickItem } from "./pick.ts";
 import { display, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
 import type { SavedCall } from "./script.ts";
@@ -64,8 +66,11 @@ const STOP_WINDOW_MS = 2000;
 /** The error of harness's client when the host closes the connection, such as when it stops. */
 const HOST_CLOSED = "The harness host closed the connection";
 
-/** A question with `items` to pick one of, on a terminal: the index of the item, or undefined when cancelled. */
-export type Choose = (question: string, items: readonly string[]) => Promise<number | undefined>;
+/**
+ * A question with `items` to pick one of, on a terminal: the value of the item, or undefined when cancelled. Only an
+ * item with a value can be taken, and the cursor starts on the first one.
+ */
+export type Choose = <V>(question: string, items: readonly PickItem<V>[]) => Promise<V | undefined>;
 
 export type Terminal = Io & {
 	/** Aborted by the first Ctrl+C: the command detaches, and the run goes on in the host. */
@@ -98,8 +103,8 @@ const RESUME = "workflows resume <run-id> [--answer <text>] [--background] [--js
 const WAIT = "workflows wait <run-id> [--json]";
 const STOP = "workflows stop <run-id> [--json]";
 const LIST = "workflows list [--pick] [--json]";
-const SHOW = "workflows show <run-id> [--calls | --agents] [--json]";
-const ATTACH = "workflows attach <run-id> [<step>] [--conversation <id>]";
+const SHOW = "workflows show <run-id> [--pick | [--calls | --agents] [--json]]";
+const ATTACH = "workflows attach <run-id> [--conversation <id>] [--side]";
 const SAVE = "workflows save <run-id> <name> [--force]";
 const PRUNE = "workflows prune [--yes] [--install-hook] [--json]";
 
@@ -687,13 +692,12 @@ async function pickRun(terminal: Terminal, choose: Choose): Promise<Listed | und
 
 	const items = runs.map((run) => {
 		const step = steps.get(run.runId);
+		const text = `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${step === undefined ? "" : `: ${step}`}`;
 
-		return `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${step === undefined ? "" : `: ${step}`}`;
+		return { text, value: run };
 	});
 
-	const index = await choose("Pick a run:", items);
-
-	return index === undefined ? undefined : runs[index];
+	return choose("Pick a run:", items);
 }
 
 /** The mark of a run in the picker by its status: `◉` running, `?` waiting for an answer, `✗` failed, else `·`. */
@@ -707,15 +711,6 @@ function markOf(status: string): Mark | "?" | "·" {
 
 /** The line of the post-merge hook that `prune --install-hook` writes. */
 const HOOK_LINE = "workflows prune --yes >/dev/null 2>&1 &";
-
-/** The worktrees that `herdr worktree list` prints, with the workspace that has each one open. */
-const HERDR_WORKTREES = Type.Object({
-	result: Type.Object({
-		worktrees: Type.Array(
-			Type.Object({ path: Type.String(), open_workspace_id: Type.Optional(Type.Union([Type.String(), Type.Null()])) }),
-		),
-	}),
-});
 
 type Worktree = NonNullable<script.ScriptInput["worktree"]>;
 
@@ -811,43 +806,6 @@ async function removeWorktree({ branch, worktree }: Prunable): Promise<void> {
 	}
 }
 
-/** The ID of the herdr workspace that has `worktree` open, if any. It throws when herdr fails. */
-async function herdrWorkspace(worktree: Worktree): Promise<string | undefined> {
-	const argv = ["worktree", "list", "--cwd", worktree.path];
-	const listed = await runCommand("herdr", argv, worktree.path);
-
-	if (listed.code !== 0) throw new Error(failure(["herdr", ...argv], listed));
-	const parsed: unknown = JSON.parse(listed.stdout);
-
-	if (!Value.Check(HERDR_WORKTREES, parsed))
-		throw new Error(`herdr worktree list printed no worktrees: ${listed.stdout}`);
-	const path = await realpath(worktree.path);
-
-	for (const entry of parsed.result.worktrees) {
-		const workspace = entry.open_workspace_id;
-
-		if (workspace && (await realpath(entry.path).catch(() => undefined)) === path) return workspace;
-	}
-
-	return undefined;
-}
-
-/** Whether herdr removed `worktree` with the workspace that has it open. Any herdr failure is false. */
-async function removedByHerdr(worktree: Worktree): Promise<boolean> {
-	if (!process.env.HERDR_ENV) return false;
-
-	try {
-		const workspace = await herdrWorkspace(worktree);
-
-		if (workspace === undefined) return false;
-		const removed = await runCommand("herdr", ["worktree", "remove", "--workspace", workspace], worktree.repository);
-
-		return removed.code === 0;
-	} catch {
-		return false;
-	}
-}
-
 /** Writes the post-merge hook of the repository of the current directory, unless a hook or a hooks path is set. */
 async function installHook(terminal: Terminal): Promise<number> {
 	const hooks = resolve(terminal.cwd, await git(terminal.cwd, "rev-parse", "--git-path", "hooks"));
@@ -880,17 +838,21 @@ function endOf(outcome: TaskOutcome<JsonValue>, title: string, id: string) {
 	return { lines: [`stopped ${title}; ${resume}`] };
 }
 
+/** How often `show --pick` reads the store again while no line of the run can be picked. */
+const PICK_POLL_MS = 1000;
+
 /**
  * Prints the steps of a run as a tree, or with `--calls` its phases and calls, then its report lines, or how it ended.
- * A run without steps prints its calls. It reads the task records, the progress, and the call records when it prints
- * them, from the project store only.
+ * A run without steps prints its calls. With `--pick`, it asks on the terminal for a line, and prints the conversation
+ * of the agent of that line. It reads the task records, the progress, and the call records when it needs them, from
+ * the project store only.
  */
 async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const { values, positionals } = withUsage(
 		() =>
 			parseArgs({
 				args: [...args],
-				options: { calls: { type: "boolean" }, agents: { type: "boolean" } },
+				options: { calls: { type: "boolean" }, agents: { type: "boolean" }, pick: { type: "boolean" } },
 				allowPositionals: true,
 				strict: true,
 			}),
@@ -898,27 +860,76 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	);
 
 	if (values.calls && values.agents) throw new UsageError("give --calls or --agents, not both", SHOW);
+
+	if (values.pick && (values.calls || values.agents || json)) {
+		throw new UsageError("give --pick without --calls, --agents or --json", SHOW);
+	}
+
+	const id = oneRunId(positionals, SHOW);
+
+	if (values.pick) {
+		if (terminal.choose === undefined) throw new UsageError("--pick needs a terminal on stdin and stderr", SHOW);
+
+		return pickAgent(await savedRun(id, SHOW), terminal, terminal.choose);
+	}
+
 	const mode = values.agents ? "agents" : values.calls ? "calls" : "steps";
-	const run = await savedRun(oneRunId(positionals, SHOW), SHOW);
+	const shown = await readRun(await savedRun(id, SHOW), terminal, mode !== "steps" || json, "be shown");
+	const { input, title, status, head, calls, progress, footer, end } = shown;
+	const now = Date.now();
+
+	if (mode === "agents" && json) {
+		const agents = agentRows(calls, 0, now);
+		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, agents }));
+	} else if (mode === "agents") {
+		for (const line of [head, ...agentLines(agentRows(calls, 0, now)), ...footer]) terminal.stdout(line);
+	} else if (json) {
+		const steps = progress.lines();
+		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, steps, calls }));
+	} else if (mode === "calls") {
+		for (const line of [head, ...treeLines(calls, "", now), ...footer]) terminal.stdout(line);
+	} else {
+		for (const entry of shownEntries(shown, now)) terminal.stdout(entry.text);
+	}
+
+	return 0;
+}
+
+/** A saved run as `show` prints it. `end` has the report lines or the error of a run that ended. */
+type ShownRun = {
+	readonly input: script.ScriptInput;
+	readonly title: string;
+	readonly status: string;
+	readonly head: string;
+	readonly ended: boolean;
+	readonly calls: Shown[];
+	readonly progress: Progress;
+	readonly footer: readonly string[];
+	readonly end: { report: string[] } | { error: string } | undefined;
+};
+
+/**
+ * The saved run `run` as `show` prints it: its task, its head line, its steps, its calls, and its footer lines. It
+ * reads the call records `withCalls`, or when the run has no steps. `verb` completes the error for a run that cannot
+ * be read, as in `cannot <verb>`.
+ */
+async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean, verb: string): Promise<ShownRun> {
 	const { id } = run;
-	const empty = { task: undefined, records: new Map<string, SavedCall>(), progress: new Progress(), events: [] };
+	const empty = { task: undefined, saved: new Map<string, SavedCall>(), progress: new Progress(), events: [] };
 
-	const { task, records, progress, events } = await reading(run.store, empty, async (store) => {
+	const { task, saved, progress, events } = await reading(run.store, empty, async (store) => {
 		const read = new Progress();
-		const saved = await progressEvents(store, id);
+		const stored = await progressEvents(store, id);
 
-		for (const event of saved) read.add(event);
+		for (const event of stored) read.add(event);
+		const calls = withCalls || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
 
-		const calls =
-			mode !== "steps" || json || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
-
-		return { task: taskOf((await runTasks(store)).get(id) ?? []), records: calls, progress: read, events: saved };
+		return { task: taskOf((await runTasks(store)).get(id) ?? []), saved: calls, progress: read, events: stored };
 	});
 
-	const checkedTask = checked(task, id, "be shown");
+	const checkedTask = checked(task, id, verb);
 	const { input, state } = checkedTask;
 	const outcome = state.status === "terminal" ? state.outcome : undefined;
-	const calls = callTree(records, id, outcome !== undefined);
 	const title = script.title(input, events);
 	const footer: string[] = [];
 	let end: { report: string[] } | { error: string } | undefined;
@@ -936,83 +947,87 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 	const status = runStatus(checkedTask);
 
 	if (outcome !== undefined) progress.stop(outcome.status !== "completed");
-	const now = Date.now();
-	const steps = progress.lines();
-
 	const head = `run ${id} ${input.name} ${status} ${title}`;
+	const calls = callTree(saved, id, outcome !== undefined);
 
-	if (mode === "agents" && json) {
-		const agents = agentRows(calls, 0, now);
-		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, agents }));
-	} else if (mode === "agents") {
-		for (const line of [head, ...agentLines(agentRows(calls, 0, now)), ...footer]) terminal.stdout(line);
-	} else if (json) {
-		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, steps, calls }));
-	} else {
-		const body = mode === "calls" || !progress.stepped ? treeLines(calls, "", now) : steps;
+	return { input, title, status, head, ended: outcome !== undefined, calls, progress, footer, end };
+}
 
-		for (const line of [head, ...body, ...footer]) terminal.stdout(line);
-	}
+/** The lines of `show` of `read`, each with its agent: the head line, the lines of `showEntries`, then the footer. */
+function shownEntries(read: ShownRun, now: number): TreeEntry[] {
+	const footer = read.footer.map((text) => ({ text }));
 
-	return 0;
+	return [{ text: read.head }, ...showEntries(read.calls, read.progress, now), ...footer];
 }
 
 /**
- * Opens a session of a run in Pi: the session that works now, else the last session to start, among the sessions of
- * `step` or of `--conversation` when one is given. In a Herdr workspace that has the run's worktree open, or in a Herdr pane, it opens Pi in a
- * new tab or pane; else it runs Pi in this terminal and exits with its code.
+ * Asks on the terminal for a line of `show` of `run`, and prints the conversation of its agent. Only a line that maps
+ * to an agent can be taken: a step line, a log line or a line of a child run gets the first session of its step, and a
+ * line of `--calls`, for a run without steps, the conversation of its session or its ask. While no line maps to an
+ * agent and the run has not ended, it reads the store again every second.
+ */
+async function pickAgent(run: SavedRun, terminal: Terminal, choose: Choose): Promise<number> {
+	for (;;) {
+		const read = await readRun(run, terminal, true, "be shown");
+		const entries = shownEntries(read, Date.now());
+
+		if (entries.some((entry) => entry.conversation !== undefined)) {
+			const items = entries.map(({ text, conversation }) => ({ text, value: conversation }));
+			const conversation = await choose("Pick an agent:", items);
+
+			if (conversation === undefined) return 130;
+			terminal.stdout(String(conversation));
+
+			return 0;
+		}
+
+		if (read.ended) throw new Error(`run ${run.id} has no agent`);
+
+		if (await abortedWithin(terminal.interrupt, PICK_POLL_MS)) return 130;
+	}
+}
+
+/**
+ * Opens a session of a run in Pi: the session that works now, else the last session to start, or the session of
+ * `--conversation` when one is given. In Herdr, it opens Pi in a new tab of the workspace that has the run's worktree
+ * open, else of the workspace of this pane; with `--side`, in a new pane to the right of this pane. Else, it runs Pi in
+ * this terminal and exits with its code.
  */
 async function attach(args: readonly string[], terminal: Terminal): Promise<number> {
 	const { values, positionals } = withUsage(
 		() =>
 			parseArgs({
 				args: [...args],
-				options: { conversation: { type: "string" } },
+				options: { conversation: { type: "string" }, side: { type: "boolean" } },
 				allowPositionals: true,
 				strict: true,
 			}),
 		ATTACH,
 	);
 
-	const [id, ...words] = positionals;
-
-	if (id === undefined) throw new UsageError("give one run ID", ATTACH);
-	const step = words.join(" ") || undefined;
+	const id = oneRunId(positionals, ATTACH);
 	const wanted = values.conversation;
 
 	if (wanted !== undefined && !/^\d+$/.test(wanted)) {
 		throw new UsageError(`${wanted} is not a conversation ID`, ATTACH);
 	}
 
-	if (step !== undefined && wanted !== undefined) {
-		throw new UsageError("give a step or --conversation, not both", ATTACH);
-	}
-
 	const conversation = wanted === undefined ? undefined : Number(wanted);
 
 	const run = await savedRun(id, ATTACH);
+	const { input, calls } = await readRun(run, terminal, true, "be attached");
 
-	const { task, records } = await reading(run.store, { task: undefined, records: new Map() }, async (store) => ({
-		task: taskOf((await runTasks(store)).get(id) ?? []),
-		records: await callRecords(store, id),
-	}));
-
-	const { input, state } = checked(task, id, "be attached");
-
-	const list = agentRows(callTree(records, id, state.status === "terminal"), 0, Date.now())
+	const list = agentRows(calls, 0, Date.now())
 		.flatMap((row) => (row.kind === "agent" ? [row] : []))
-		.filter((row) =>
-			step !== undefined ? row.phase === step : conversation === undefined || row.conversation === conversation,
-		)
+		.filter((row) => conversation === undefined || row.conversation === conversation)
 		.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
 
 	const session = list.findLast((row) => row.mark === "◉") ?? list.at(-1);
 
 	if (session === undefined) {
-		const where =
-			step !== undefined ? ` in ${step}` : conversation !== undefined ? ` with conversation ${conversation}` : "";
-
-		throw new Error(`run ${id} has no session${where}`);
+		throw new Error(
+			`run ${id} has no session${conversation === undefined ? "" : ` with conversation ${conversation}`}`,
+		);
 	}
 
 	const client = await connectTo(terminal, run.project, true);
@@ -1023,13 +1038,7 @@ async function attach(args: readonly string[], terminal: Terminal): Promise<numb
 		const { child } = await client.request({ type: "watch", conversation: watched });
 
 		if (process.env.HERDR_ENV) {
-			const { worktree } = input;
-
-			const workspace =
-				worktree !== undefined && existsSync(worktree.path) ? await herdrWorkspace(worktree) : undefined;
-
-			const pane = process.env.HERDR_PANE_ID;
-			const place = workspace !== undefined ? { workspace } : pane ? { pane } : undefined;
+			const place = await herdrPlace(input.worktree, values.side === true, process.env.HERDR_PANE_ID || undefined);
 
 			if (place !== undefined) {
 				await openConversationPane(child, place, { ...process.env, HARNESS_PROJECT: run.project });

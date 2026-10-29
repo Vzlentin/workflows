@@ -5,8 +5,8 @@ import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { StdinBuffer } from "@earendil-works/pi-tui";
 import { actionOf } from "./keys.ts";
-import { type Choose, main } from "./main.ts";
-import { type Pick, press, render } from "./pick.ts";
+import { main } from "./main.ts";
+import { type Pick, type PickItem, press, render, startPick } from "./pick.ts";
 import { terminalRedraw } from "./progress.ts";
 import { CtrlC } from "./run.ts";
 
@@ -35,27 +35,27 @@ function readLine(): Promise<string | undefined> {
 }
 
 /**
- * Asks which of `items` to take, on stderr, with the keys of stdin in raw mode, and gives its index, or undefined when
- * cancelled. It clears its lines before it returns.
+ * Asks which of `items` to take, on stderr, with the keys of stdin in raw mode, and gives its value, or undefined when
+ * cancelled. Only an item with a value can be taken. It clears its lines before it returns.
  */
-const choose: Choose = (question, items) => {
+function choose<V>(question: string, items: readonly PickItem<V>[]): Promise<V | undefined> {
 	live?.forget();
 	const { stdin, stderr } = process;
 	const screen = terminalRedraw(stderr);
-	let pick: Pick = { query: "", cursor: 0 };
+	let pick: Pick = startPick(items, "");
 	const drawPick = () => screen.redraw(render(question, items, pick, Math.min(stderr.rows ?? 24, 20)));
 
 	return new Promise((resolve) => {
 		// Splits the chunks of stdin into whole keys, so a chunk with several keys or half a key reads right.
 		const keys = new StdinBuffer();
 
-		const done = (index: number | undefined) => {
+		const done = (value: V | undefined) => {
 			stdin.off("data", onData);
 			keys.destroy();
 			stdin.setRawMode(false);
 			stdin.pause();
 			screen.redraw([]);
-			resolve(index);
+			resolve(value);
 		};
 
 		const onData = (data: Buffer) => keys.process(data);
@@ -79,7 +79,7 @@ const choose: Choose = (question, items) => {
 		stdin.on("data", onData);
 		drawPick();
 	});
-};
+}
 
 process.exitCode = await main(process.argv.slice(2), {
 	cwd: process.cwd(),
