@@ -32,7 +32,7 @@ import type { Overlay } from "@vzlentin/harness/overlay";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { failure, git, run } from "./git.ts";
-import { PAST_OPTIONS, type PastOptions } from "./past.ts";
+import { PAST_OPTIONS, type PastOptions, profileTexts } from "./past.ts";
 import { PROGRESS_KIND, type ProgressEvent } from "./progress.ts";
 import { instructions, render } from "./prompts.ts";
 import type { Runtime } from "./task.ts";
@@ -204,6 +204,8 @@ const checkpointWhen: CommonDocDefinition<JsonObject>["checkpointWhen"] = (_valu
 
 /** The sandbox functions that are not host calls, and the script lib; `cwd` is the directory of the script calls. */
 function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun, cwd: string): string {
+	const agents = profileTexts(script.bundle.agents);
+
 	return `
 const args = ${JSON.stringify(args)};
 const runId = ${JSON.stringify(script.runId)};
@@ -220,6 +222,7 @@ const Math = Object.freeze({
 const prompts = Object.fromEntries(
 	${JSON.stringify(prompts)}.map((name) => [name, (inputs) => __prompt(name, inputs)]),
 );
+const agents = Object.freeze(${JSON.stringify(agents)});
 function session(options = "default") {
 	const { as = "default", provider, model, thinking } = typeof options === "string" ? { as: options } : (options ?? {});
 	const spec = { profile: as };

@@ -368,8 +368,8 @@ const GUIDELINES = [
 		"`input(question)` stops the run, and the tool gives a " +
 		"`waiting` result with the question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` " +
 		"then returns the answer. `parallel([() => ...])` and " +
-		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +
-		"and `log(text)` write progress lines, and `title(text)` names the run. `args`, `runId`, `runDir` and `cwd`, the " +
+		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template, and `agents.<name>` the text of an agent profile. " +
+		"`phase(title)` and `log(text)` write progress lines, and `title(text)` names the run. `args`, `runId`, `runDir` and `cwd`, the " +
 		"directory of `sh`, are values.",
 	"Script lib: `subjectOf(text)` gives the first non-empty line without leading `#`. `oneLine(text)` gives the text with each whitespace run made one space, trimmed. `memory(path, item)` gives a promise of a run memory in an " +
 		"OptMem store, `<runDir>/memory` without `path`: `.path` and `.item` to pass to a child run, `.note(author, round, notes)`, " +
@@ -403,8 +403,9 @@ export function workflowTool(command: readonly string[], watcher: Watcher) {
 			"`name` or `script`, each passed as `--<key>`; a script's `meta` declares them. For " +
 			"`ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and `prompts`. For `campaign`, which " +
 			"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
-			"`base`, `rounds` and `prompts`. For `optimize`, which searches for better ship prompts over a folder of work " +
-			"items: `workflow` (`ship`) and `items`, and optional `improve` and `trials`. Each `run()` call of a " +
+			"`base`, `rounds` and `prompts`. For `optimize`, which proposes edits to the ship prompts and profiles from " +
+			"past ship runs and keeps them when a blind judge prefers their diffs: `workflow` (`ship`), and optional " +
+			"`runs`, `limit` and `items`. Each `run()` call of a " +
 			"script starts a child run, which a resume of its caller continues. A run goes on in the harness host of the " +
 			"project: Esc detaches from it, and `resume` follows it again. A failed or stopped run stays resumable. With " +
 			"`background: true`, the call returns at once and the result of the run comes later as a message in this " +

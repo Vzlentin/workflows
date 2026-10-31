@@ -68,7 +68,7 @@ campaign)
 	echo '{"runId":"r6","status":"finished","result":{"status":"done","items":[]},"report":["done Fix the docs in 2 items, abc"]}' ;;
 optimize)
 	echo "run r7"
-	echo '{"runId":"r7","status":"finished","result":{"baseline":0.5,"best":0.75,"diff":"prompts.diff"},"report":["optimized ship: baseline 0.50, best 0.75, prompts.diff"]}' ;;
+	echo '{"runId":"r7","status":"finished","result":{"wins":3,"items":4,"promoted":true,"overlay":{},"diff":"overlay.diff"},"report":["optimized ship: 3/4 wins, promoted, overlay.diff"]}' ;;
 wait)
 	echo "run $2"
 	case "$2" in
@@ -359,18 +359,18 @@ describe("the workflow tool", () => {
 			result: { status: "done", items: [] },
 			report: ["done Fix the docs in 2 items, abc"],
 		});
-		const optimize = await call({ name: "optimize", args: { workflow: "ship", items: "items", trials: 4 } });
+		const optimize = await call({ name: "optimize", args: { workflow: "ship", limit: 4 } });
 		expect(optimize.result.structuredContent).toEqual({
 			runId: "r7",
 			status: "finished",
-			result: { baseline: 0.5, best: 0.75, diff: "prompts.diff" },
-			report: ["optimized ship: baseline 0.50, best 0.75, prompts.diff"],
+			result: { wins: 3, items: 4, promoted: true, overlay: {}, diff: "overlay.diff" },
+			report: ["optimized ship: 3/4 wins, promoted, overlay.diff"],
 		});
 		expect((await readFile(join(root, "args.log"), "utf8")).split("\n")).toEqual([
 			"- --word=a --all --json",
 			"ship --item=Fix the README typo --rounds=2 --json",
 			"campaign --base=develop --goal=goal.md --json",
-			"optimize --workflow=ship --items=items --trials=4 --json",
+			"optimize --workflow=ship --limit=4 --json",
 			"",
 		]);
 	});

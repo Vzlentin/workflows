@@ -271,7 +271,8 @@ export type Kind =
 	| "split"
 	| "rundown"
 	| "summarize"
-	| "reflect"
+	| "inv"
+	| "select"
 	| "harvest"
 	| "script"
 	| "result";
@@ -301,7 +302,8 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Split this goal into work items.", "split"],
 	["Give a rundown of the failed work item", "rundown"],
 	["Compress memories", "summarize"],
-	["Improve this prompt", "reflect"],
+	["Propose edits to the workflow prompts and agent profiles", "inv"],
+	["Compare two diffs of one work item", "select"],
 	["Distil the lessons", "harvest"],
 	["Script", "script"],
 	// The outcome that a background run posts to the conversation of its `workflow` call.
@@ -347,6 +349,13 @@ export type Script = {
 	readonly hang?: string;
 	/** How many answers of this model to `Script respond: <json>` prompts are text replies with no `respond` call. */
 	readonly skipRespond?: number;
+	/** The edits of the inv answer, `[]` by default. */
+	readonly inv?: readonly Edit[];
+	/**
+	 * One entry for each select call: the answer is the label whose `## A` or `## B` section contains the text, and
+	 * `tie` for `"tie"`, a text in no section, or no entry.
+	 */
+	readonly select?: readonly string[];
 	/** The lessons of each harvest answer, `[]` by default. */
 	readonly lessons?: readonly Lesson[];
 	/** The handoff and implement answers give no notes, so the run memory stays empty. */
@@ -354,6 +363,8 @@ export type Script = {
 	/** Ctrl+C: `abort` presses it, and `signal` aborts at the first press. */
 	readonly interrupt: { readonly signal: AbortSignal; abort(): void };
 };
+
+export type Edit = { readonly path: string; readonly text: string | null; readonly moment: string };
 
 export type Verdict = { readonly answers: readonly ("PASS" | "FAIL")[]; readonly findings: readonly string[] };
 
@@ -553,13 +564,10 @@ export class FakeModel {
 				return fauxAssistantMessage(`Summary ${nth}: README.md had wrold.`);
 			case "rundown":
 				return respond({ rundown: `Rundown ${nth}: the item failed.`, suggestions: ["Split the item."], items: [] });
-			case "reflect": {
-				// The reply keeps the current text first, so that the prompt keeps its kind.
-				const current = /\n## current\n([\s\S]*?)\n\n## records\n/.exec(prompt)?.[1] ?? "";
-
-				return fauxAssistantMessage(`${current}\nImproved prompt ${nth}.`);
-			}
-
+			case "inv":
+				return respond({ edits: [...(this.#script.inv ?? [])] });
+			case "select":
+				return respond(selected(prompt, this.#script.select?.[nth - 1]));
 			case "harvest":
 				return respond({ lessons: [...(this.#script.lessons ?? [])] });
 			case "result":
@@ -621,6 +629,18 @@ export class FakeModel {
 
 		return respond(Array.isArray(scripted) ? (scripted[this.count("commit") - 1] ?? COMMIT) : scripted);
 	}
+}
+
+/** The label of the `## A` or `## B` section of the select `prompt` that contains `text`, or `tie`. */
+function selected(prompt: string, text: string | undefined): string {
+	const b = prompt.indexOf("\n## B\n");
+	const a = prompt.slice(prompt.indexOf("\n## A\n"), b);
+
+	if (text === undefined || text === "tie") return "tie";
+
+	if (a.includes(text)) return "A";
+
+	return prompt.slice(b).includes(text) ? "B" : "tie";
 }
 
 /** The index of the last user message that is not a reminder to call `respond`. */

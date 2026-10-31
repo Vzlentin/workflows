@@ -15,7 +15,7 @@ import { AGENTS } from "../pi/run-view.ts";
 import { branchOf } from "../src/git.ts";
 import type { Choose } from "../src/main.ts";
 import { programStatus } from "../src/progress.ts";
-import { CallDoc } from "../src/script.ts";
+import { CallDoc, profileOf } from "../src/script.ts";
 import {
 	childTasks,
 	conversationOf,
@@ -1489,6 +1489,19 @@ return [one.reply, two.reply].join(", ")`,
 		expect(call?.sections.instructions).toContain("Project profile body.");
 	});
 
+	it("gives a script the text of each agent profile of its bundle", async () => {
+		const agents = join(root, ".workflows", "agents");
+		await mkdir(agents, { recursive: true });
+		const file = "---\ndescription: A probe.\nmodel: anthropic/claude-opus-5-5\nthinking: high\n---\nProbe body.\n";
+		await writeFile(join(agents, "probe.md"), file);
+		await writeFile(join(root, "x.js"), "return JSON.stringify([agents.probe, Object.isFrozen(agents)])");
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(0);
+		const [text, frozen] = JSON.parse(run.stdout.at(-1) ?? "[]");
+		expect([text, frozen]).toEqual(["---\nmodel: anthropic/claude-opus-5-5\nthinking: high\n---\nProbe body.", true]);
+		expect(profileOf("probe", text)).toEqual(profileOf("probe", file));
+	});
+
 	it("rejects bad scripts and arguments", async () => {
 		for (const [code, name] of [
 			["Date.now()", "Date.now"],
@@ -1576,7 +1589,7 @@ return [one.reply, two.reply].join(", ")`,
 			"campaign: Split a goal into work items and ship each one as a commit on one branch.",
 			"implement: Implement a plan in the current directory, and commit the change.",
 			"judge: Judge a change (the current branch, a PR, a ref or a range) against its intent with the fixed rubric.",
-			"optimize: Search for better ship prompts over a folder of work items.",
+			"optimize: Propose prompt and profile edits from ship runs, and keep them when a blind judge prefers their diffs.",
 			"rpi: Research, plan and implement one work item, and commit it on a new branch.",
 			"ship: Ship one work item onto a new branch: research, plan, implement, review rounds, judge, and one squashed commit.",
 			"thermoloop: Review a change (the current branch, a PR, a ref or a range), and fix it in rounds until the reviewer answers SHIP.",

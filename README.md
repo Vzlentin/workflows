@@ -9,7 +9,8 @@
   `workflows judge` judges it.
 - `workflows rpi` researches, plans and implements a work item in one commit, with no review.
 - `workflows implement` implements a plan in the current directory and commits it.
-- `workflows optimize ship` searches for better ship prompts over a set of work items.
+- `workflows optimize ship` proposes edits to the ship prompts and profiles from past ship runs, and keeps them when a
+  blind judge prefers the diffs they give.
 - `workflows <script>` runs your own workflow script.
 
 Runs execute in the [harness](https://github.com/Vzlentin/harness) host of the project. A run continues after a

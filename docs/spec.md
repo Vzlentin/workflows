@@ -7,7 +7,8 @@ The behaviour of the `workflows` command, the workflow scripts, runs and the `wo
 `workflows campaign` splits a goal into work items and ships them one after another onto one branch.
 `workflows rpi` researches, plans and implements one work item in one commit, `workflows thermoloop` reviews a change
 (the current branch, a PR, a ref or a range) and fixes it in rounds, and `workflows judge` judges it.
-`workflows optimize ship` searches for better ship prompts over a set of work items. The run is
+`workflows optimize ship` proposes edits to the ship prompts and profiles from past ship runs, and keeps them when a
+blind judge prefers the diffs they give. The run is
 headless and resumable. It runs in the [harness](https://github.com/Vzlentin/harness) host of its project, whose
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) store keeps the sessions, model calls, tool
 calls and the progress of the run. See [Runs in the harness host](#runs-in-the-harness-host).
@@ -19,7 +20,8 @@ the top of the script declares its arguments. See [Workflow scripts](#workflow-s
 `meta`, then runs in the worktree the child runs `workflows/scripts/rpi.js`, `workflows/scripts/thermoloop.js` and `workflows/scripts/judge.js`,
 and the squash. `campaign` does the same, runs
 `workflows/scripts/ship.js` once for each work item, and `workflows/scripts/judge.js` once on the change of all the items.
-`workflows/scripts/optimize.js` runs `workflows/scripts/ship.js` once for each candidate and work item.
+`workflows/scripts/optimize.js` runs `workflows/scripts/ship.js` once for the candidate on each work item, and again
+for a baseline that cannot be kept.
 
 ```text
 research session:   research (documents the code as it is)
@@ -58,7 +60,8 @@ defaults to 3. `--branch <name>` gives the name of the run's branch: see
 `--prompts <folder>`, relative to the current directory, gives prompts for this run: each `<name>.md` in the folder
 replaces the package prompt `prompts/<name>.md`, in the same template format. A missing folder, or a file with no
 package prompt of that name, fails before the run starts. The run saves the prompts that it used, as any run does.
-`campaign` and `optimize` take the same option. As a child run, it also takes `overlay`, and gives it to its child runs: see [Child runs](#child-runs).
+`campaign` and `optimize` take the same option; an `optimize` over past runs takes its baselines and the texts it
+edits from the saved runs instead. As a child run, it also takes `overlay`, and gives it to its child runs: see [Child runs](#child-runs).
 
 Without `--repo`, the run uses the Git repository that contains the current directory. With `--repo`, the value is
 first a path, relative to the current directory. If that path is the top level of a local Git repository, the run
@@ -407,17 +410,28 @@ branch that the worktree ends on.
 ## Optimize
 
 ```sh
-workflows optimize ship --items items/
-workflows optimize --workflow ship --items items/ --improve review,handoff --trials 5
+workflows optimize ship
+workflows optimize ship --limit 4
+workflows optimize ship --runs <run-id>,<run-id>
+workflows optimize --workflow ship --items items/
 ```
 
-`workflows optimize ship` searches for better texts of some ship prompts with a reflective loop. It never changes
-`prompts/`: the result is a diff to apply by hand. It is the package script `workflows/scripts/optimize.js`. The workflow to
-optimize, `ship`, is one argument or `--workflow`, and defaults to `ship`.
+`workflows optimize ship` proposes one overlay of edits to the ship prompts and agent profiles, ships each work item
+again with it, and keeps it when a blind judge prefers its diffs. It never changes `prompts/` or `agents/`: the result
+is a diff to apply by hand. It is the package script `workflows/scripts/optimize.js`. The workflow to optimize,
+`ship`, is one argument or `--workflow`, and defaults to `ship`.
 
-The items folder, relative to the current directory, holds at least 2 work items as `<name>.md` files. Each file has
-the frontmatter `repo`, the path of a local Git repository, relative to the items folder unless it is absolute, and
-`start`, the commit that ship starts from. Quotes around a value are removed. The body is the work item.
+The work items and their baselines come from one of two places:
+
+- By default, from past runs: `pastRuns("ship", ...)` gives the completed root ship runs of the project store, the
+  newest `--limit` (default 8), or with `--runs` the run IDs of that comma list, in that order. A saved run keeps its
+  result as its baseline when its status is `shipped` and its `head` is still a commit of its repository; its diff is
+  `git diff <start> <head>`. Any other saved run runs its baseline again once, as the child run
+  `run("ship", { item, repo: repository, base: start, from: runId })`, with its saved prompts and profiles.
+- With `--items <folder>`, relative to the current directory, from `<name>.md` files. Each file has the frontmatter
+  `repo`, the path of a local Git repository, relative to the items folder unless it is absolute, and `start`, the
+  commit that ship starts from. Quotes around a value are removed. The body is the work item. Each baseline is the
+  child run `run("ship", { item, repo, base: start })`.
 
 ```text
 ---
@@ -429,39 +443,46 @@ start: "4dfb5c8"
 The README says wrold.
 ```
 
-`--improve` lists the prompts to optimize, separated by commas: any of `research`, `plan`, `handoff`,
-`implement` and `review`. The default is `review,handoff`, the prompts of the review loop. `judge` gives the score, so
-it is never a candidate. `--trials` is the number of candidates that the run evaluates, the baseline included, and
-defaults to 3. A workflow other than `ship`, an unknown prompt name, fewer than 2 items, or an item without `repo` or
-`start` fails the run after `run <run-id>`, with `failed optimize: <error>`, and exits 1, because the script checks
-them when it runs.
+A workflow other than `ship`, `--items` together with `--runs`, no completed ship run, an empty folder, an item
+without `repo` or `start`, or a run of `--runs` that is not a completed ship run fails the run after `run <run-id>`,
+with `failed optimize: <error>`, and exits 1, because the script checks them when it runs.
 
-A candidate is one text for each listed prompt. The baseline is the texts of the run's prompts, so `--prompts
-<folder>` sets it. Each evaluation is the child run
-`run("ship", { item, repo, base: start, prompts: candidate })`, one at a time. The score of a shipped run is
-`passes/8 - 0.1*(rounds-1)`, where `passes` is the number of PASS answers of the judge, or 0 when the judge failed. A
-blocked or stopped run scores 0. After a ship run finishes, its worktree and its branch are removed: the `worktree` of
-its result, and the `branch` of its result, or `ship/<run-id>` when it did not ship. Its run directory stays. There is no evaluation cache: a reflect text
-equal to an earlier candidate's text ships again.
+The texts that the run can edit are the baseline texts by path: `prompts/<name>.md` and `agents/<name>.md` of the
+saved bundle of the first past run, or with `--items` the `prompts/<name>.md` templates and the `agents/<name>.md`
+profiles of the run's bundle (so `--prompts <folder>` sets the templates), from `prompts` and `agents`. `inv` and `select` are not
+among them. One turn of the `inv` prompt, in a new session with the `default` agent profile, gets the texts and the
+traces of the baselines as JSON: for each one its run ID, the work item, `status`, `rounds`, `findings`, `divergence`,
+`lessons`, and `notes`, the notes of its run memory from the `memory` field of its result. It answers
+`{ edits: [{ path, text, moment }] }`: `text` is the new text of `path`, or null to remove it, and `moment` names the
+run and the finding or note that the edit answers. No edit, a path that is not one of the texts (this includes a path
+outside `prompts/` and `agents/`), or a path twice fails the run. The edits are the candidate overlay.
 
-The run evaluates the baseline on every item first. Each later trial changes one prompt of the best candidate so far,
-the listed prompts in turn, and evaluates the new candidate on every item. So the run makes `trials × items` ship
-runs. A new candidate becomes the best one only when its mean score is higher, so the baseline stays on a tie.
+Each item then ships with the overlay: `run("ship", { item, repo, base: start, overlay, from: runId })`, where
+`runId` is the past run, also when its baseline ran again; an `--items` item has no `from`. So the overlay is the
+only difference with the baseline. The diff of each ship child run that optimize starts is
+`git diff <start> HEAD` in its worktree. Then its worktree and its branch are removed: the `worktree` of its result,
+and the `branch` of its result, or `ship/<run-id>` when it did not ship. Its run directory stays. The worktrees and
+branches of the past runs stay.
 
-A new text comes from a turn of the `reflect` prompt in a new session with the `default` agent profile, in the current
-directory. The turn gets the prompt name, its text in the best candidate, and for each item the work item, the score,
-the judge findings and the memory lines of the ship result of the best candidate. An empty reply, or a reply equal to
-the current text, stops the optimization with an error.
+For each item, one turn of the `select` prompt with the `judge` agent profile gets only the work item and the two
+diffs, as `A` and `B`; an empty diff is `(no change)`. It never gets the overlay, the notes or the traces. The
+candidate is `A` when the FNV-1a hash of `<name>\n<item>` is even, where `<name>` is the saved run ID, or the item
+file name without `.md` with `--items`. So two runs over the same saved runs or the same folder show the same order,
+also when a baseline runs again. The turn answers `A`, `B` or `tie`. A candidate win counts 1, a tie or a loss 0. The overlay is
+promoted when there are at least 4 items and `wins / items >= 0.75`.
 
-The command prints `run <run-id>`, then `optimized ship: baseline <mean>, best <mean>, <path>` and exits 0. The means
-are over the items, and `<path>` is `prompts.diff` in the run directory. That file starts with one line
-`<item>: baseline <score>, best <score>` for each item, then `git diff --no-index --no-prefix baseline best` of the
-run directory. When no candidate is better, the diff part is empty. The result is `{ baseline, best, diff }`: the two
-means and the path.
+The command prints `run <run-id>`, one line `<name>: win|loss|tie` for each item (`<name>` is the run ID of the past
+run, or the file name without `.md`), `fewer than 4 items: nothing promoted` with fewer than 4 items, then
+`optimized ship: <wins>/<items> wins, promoted|not promoted, <path>`, and exits 0. `<path>` is `overlay.diff` in the
+run directory. That file starts with the item lines and one line `edit <path>: <moment>` for each edit, then
+`git diff --no-index --no-prefix baseline best` of the run directory. `baseline/<path>` holds the baseline text of
+each edited path, and `best/<path>` the promoted text (none for a removed one), or the baseline text when the overlay
+is not promoted, so then the diff part is empty. The result is `{ wins, items, promoted, overlay, diff }`, where
+`overlay` is the candidate overlay, promoted or not.
 
 A ship child run that fails stops the optimization with `failed optimize: child run <id> failed: <error>`, as any
-failed `run()` call does. `workflows resume <run-id>` runs the script again: the finished ship runs and reflect turns
-return their saved results, and the failed ship run continues. `workflows list` shows only the optimize run.
+failed `run()` call does. `workflows resume <run-id>` runs the script again: `pastRuns`, the finished ship runs and the
+turns return their saved results, and the failed ship run continues. `workflows list` shows only the optimize run.
 
 ## Sessions
 
@@ -733,7 +754,7 @@ child run that ended without a result continues in a new task.
 ### The script API
 
 A script is the body of an async function: top-level `await` and `return` work. Each call below is a durable call,
-except `phase`, `log`, `args`, `cwd` and `prompts`.
+except `phase`, `log`, `args`, `cwd`, `prompts` and `agents`.
 
 | Global | Meaning |
 |---|---|
@@ -748,6 +769,7 @@ except `phase`, `log`, `args`, `cwd` and `prompts`.
 | `pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow` in the project store. See [Past runs](#past-runs) |
 | `input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`, or of the `workflow` tool with `resume` and `answer`. See [Input](#input) |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
+| `agents.<name>` | The text of `agents/<name>.md` that gives the profile of the run's bundle: its `model` and `thinking` frontmatter, then its body. Other frontmatter fields are not in it |
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
 | `title(text)` | Name the run `text` in `list`, `show` and the end lines, in place of the subject of its first `text` argument; the last call wins. `changeOf` calls it with the subject of the intent |
 
@@ -1544,8 +1566,8 @@ An `rpi`, `thermoloop` or `implement` run without a caller has `memory/`, the Op
 
 An optimize run has:
 
-- `baseline/<name>.md` and `best/<name>.md`: the baseline texts and the texts of the best candidate
-- `prompts.diff`: the score lines and the diff
+- `baseline/<path>` and `best/<path>`: the baseline texts of the edited paths and the promoted texts
+- `overlay.diff`: the item lines, the edit lines and the diff
 
 A child run that `run()` starts is a run directory of its own, next to the caller's, without a `project` file: it is a
 task of the caller's run. A child run without a worktree can have an empty run directory.
@@ -1553,7 +1575,7 @@ task of the caller's run. A child run without a worktree can have an empty run d
 ## Prompts
 
 `workflows/prompts/` holds the Pi prompt templates `research`, `plan`, `handoff`, `implement`, `review`, `judge` and
-`commit`, `split` and `rundown` for `campaign`, and `reflect` for `optimize`. Edit the wording there. Keep the
+`commit`, `split` and `rundown` for `campaign`, and `inv` and `select` for `optimize`. Edit the wording there. Keep the
 frontmatter and the last line `$@`: the run removes them, then adds its inputs as `## <name>` sections.
 `workflows/scripts/thermoloop.js` adds the rules of the [review loop](#thermoloop), so a template edit cannot
 remove them. `memory(...).session(...).noted` of the [script lib](#the-script-lib) adds the `respond` answer rule
@@ -1562,8 +1584,8 @@ of the handoff and implement turns. In the same way,
 answers, in question order, make the score. `judge`, `commit` and `rundown` hold their own `respond` answer rules. A run uses the
 templates as they were when it started.
 
-Workflow scripts get every template of `prompts/` as `prompts.<name>`, and the agent profiles of `agents/`, from the
-package and the project. A run
+Workflow scripts get every template of `prompts/` as `prompts.<name>`, and the agent profiles of `agents/` as
+`agents.<name>`, from the package and the project. A run
 uses the profiles as they were when it started.
 
 ## Source

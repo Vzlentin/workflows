@@ -103,6 +103,11 @@ function profileText({ model, thinking, instructions }: Static<typeof PROFILE>):
 	return fields.length === 0 ? instructions : `---\n${fields.join("\n")}\n---\n${instructions}`;
 }
 
+/** The text of `agents/<name>.md` for each profile of `agents`, by name. */
+export function profileTexts(agents: Saved["bundle"]["agents"]): { [name: string]: string } {
+	return Object.fromEntries(Object.entries(agents).map(([name, profile]) => [name, profileText(profile)]));
+}
+
 /**
  * The completed root runs of `workflow` in `roots` (the root tasks by run ID, as `rootRuns` gives them), newest first:
  * all of them, the first `limit`, or the runs `runs` in that order. Throws `no completed <workflow> run <id>` for an ID
@@ -127,7 +132,7 @@ export function pastRuns(
 			repository: worktree?.repository ?? null,
 			start: worktree?.start ?? null,
 			prompts: bundle.prompts,
-			agents: Object.fromEntries(Object.entries(bundle.agents).map(([name, profile]) => [name, profileText(profile)])),
+			agents: profileTexts(bundle.agents),
 			result: state.outcome.result ?? null,
 		});
 	}

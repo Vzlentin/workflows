@@ -41,6 +41,9 @@ declare const cwd: string;
 /** `prompts.<name>(inputs)`: the instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section. */
 declare const prompts: Record<string, (inputs?: Record<string, string>) => string>;
 
+/** `agents.<name>`: the text of `agents/<name>.md` that gives the profile of the run's bundle (its `model`, `thinking` and body). */
+declare const agents: { readonly [name: string]: string };
+
 /**
  * The model of a session. `as` names the agent profile `agents/<as>.md` (default `default`). `provider`, `model` and
  * `thinking` override the profile, and a field that neither gives comes from the project agent.
