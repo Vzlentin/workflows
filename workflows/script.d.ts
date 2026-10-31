@@ -141,8 +141,8 @@ declare function memory(ref?: MemoryRef): Promise<{
 	/**
 	 * `result` as it is when `ref.path` was given. Else `result` with `lessons` and a report line
 	 * `  lesson <cue>: <lesson> (<evidence>)` for each one. The lessons are `[]` with no turn when there are no notes,
-	 * else 0 to 3 lessons of one `summarizer` turn on the `harvest` prompt with `item`, `result` without `report` and
-	 * `memory`, the run ID and the notes, with the whitespace runs of each field made one space.
+	 * else 0 to 3 lessons of one `summarizer` turn on the `harvest` prompt with `item`, `result` without its `report` and
+	 * `memory` keys at any depth, the run ID and the notes, with the whitespace runs of each field made one space.
 	 */
 	finish<T extends { report: string[]; memory?: Json }>(item: string, result: T): Promise<T & { lessons?: Lesson[] }>;
 	/** Adds each note, and answers each compression that `memo` asks for with a `summarizer` turn. */

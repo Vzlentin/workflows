@@ -174,13 +174,22 @@ async function memory(ref = {}) {
 		return { ask, noted };
 	};
 
+	// The outcome has no `report` or `memory` key at any depth, also in the results of campaign items.
+	const withoutReport = (key, value) => (key === "report" || key === "memory" ? undefined : value);
+
 	// One `summarizer` turn on the notes, with no turn when there are none. The notes do not change.
 	const harvest = async (work, outcome) => {
 		const notes = (await store.text()).trim();
 
 		if (notes === "") return [];
 
-		const prompt = await prompts.harvest({ item: work, outcome: JSON.stringify(outcome), run: runId, notes });
+		const prompt = await prompts.harvest({
+			item: work,
+			outcome: JSON.stringify(outcome, withoutReport),
+			run: runId,
+			notes,
+		});
+
 		const { lessons } = await agent(prompt, { as: "summarizer", schema: LESSONS });
 
 		return lessons.map(({ cue, lesson, evidence }) => ({
@@ -194,11 +203,10 @@ async function memory(ref = {}) {
 	const finish = async (work, result) => {
 		if (!opened) return result;
 
-		const { report, memory: _, ...outcome } = result;
-		const lessons = await harvest(work, outcome);
+		const lessons = await harvest(work, result);
 		const lines = lessons.map(({ cue, lesson, evidence }) => `  lesson ${cue}: ${lesson} (${evidence})`);
 
-		return { ...result, lessons, report: [...report, ...lines] };
+		return { ...result, lessons, report: [...result.report, ...lines] };
 	};
 
 	return {

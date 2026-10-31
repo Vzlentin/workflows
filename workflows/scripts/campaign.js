@@ -108,7 +108,7 @@ for (let n = 1; queue.length > 0; n++) {
 	if (reply === "" || reply.toLowerCase() === "stop") {
 		const report = [`stopped ${name} at item ${n}: ${cwd}`, rundown]
 
-		return { status: "stopped", items: [...done, { item, result }], rundown, report }
+		return notes.finish(goal, { status: "stopped", items: [...done, { item, result }], rundown, report })
 	}
 
 	const next = await split({ shipped: shipped(), rundown: summary, answer: reply })
@@ -136,4 +136,4 @@ for (const finding of findings ?? []) report.push(`  finding ${finding}`)
 
 const judge = judgeError === undefined ? { score, findings } : undefined
 
-return { status: "done", subject, head, judge, judgeError, items: done, report }
+return notes.finish(goal, { status: "done", subject, head, judge, judgeError, items: done, report })

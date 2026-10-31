@@ -121,7 +121,7 @@ resume, so a resume gives the same prompts.
 
 A ship run that opened its own run memory, and not a campaign item, which gets the memory of its campaign, ends with
 the harvest of `.finish(item, result)`, at each end: shipped, blocked or stopped. When the memory has notes, one `summarizer` session gets the
-`harvest` prompt with the work item, the outcome (the result without `report` and `memory`, as JSON), the run ID and
+`harvest` prompt with the work item, the outcome (the result without its `report` and `memory` keys, also in its items, as JSON), the run ID and
 the notes, and answers through `respond` with `lessons`: 0 to 3 objects of `cue`, when the lesson applies, `lesson`,
 what to do instead of what, and `evidence`, `run:<run ID>` or a `#conv` ID with the note numbers. The default answer is
 `[]`. With no notes, no turn runs and the lessons are `[]`. The harvest does not change the notes. Each lesson adds the
@@ -334,6 +334,10 @@ sessions of the next items see them.
 
 The items of the split do not change while they ship. Only a failed item changes them: see below.
 
+The campaign ends with the harvest of `ship`, with the goal as the work item, at each end: done or stopped. It makes no
+harvest while it waits for an answer. Its result then has `lessons`, and its items make no harvest and have no
+`lessons`.
+
 The command prints `run <run-id>`, the step `split`, then the step `item <n>/<total>: <subject>` on stderr before the
 steps of each item, and the step `all <n> item(s)`, with the step `judge` of the campaign judge under it, when every
 item shipped.
@@ -367,7 +371,7 @@ terminal and in Pi they move under the item step when it comes.
   `done <subject> in <n> item(s), judge <score or failed>, <commit>` with the commit of the last item, then one line
   `  <commit> <commit subject>, judge <score or failed>` for each shipped item, in order, with
   `, divergence <divergence>` at the end when the item's divergence is there, not empty and not `none`, then one line
-  `  finding <finding>` for each finding of the campaign judge, then the line `branch <name>` of
+  `  finding <finding>` for each finding of the campaign judge, then the lesson lines, then the line `branch <name>` of
   [Branch name](#branch-name), with the `subject` of the last split, and exits 0. The score of the campaign judge does
   not change the outcome.
 
@@ -385,7 +389,7 @@ failed and was reset: its notes describe code that is gone` to the run memory. T
   the question and exits 3 with the status `waiting`. Continue with `workflows resume <run-id> --answer <text>`.
 - When the answer is `stop`, in any case, or empty, the command prints `stopped <subject> at item <n>: <worktree>`,
   with the path of the campaign's worktree,
-  then the rundown, and exits 1. The branch keeps its name `campaign/<run-id>`, or `--branch`.
+  then the rundown, then the lesson lines, and exits 1. The branch keeps its name `campaign/<run-id>`, or `--branch`.
 - Any other answer goes back to the step `split`: a new planner session with the `split` prompt and the inputs
   `goal`, `shipped`, `rundown` (the whole question summary) and `answer`. Its items replace the remaining items on the
   same branch, and the next item has the next item number. A later failure asks again. The campaign ends as a campaign
@@ -393,8 +397,8 @@ failed and was reset: its notes describe code that is gone` to the run memory. T
 
 `<subject>` is the first non-empty line of the goal without leading `#`. `<n>` in the `done` line counts the shipped
 items. The number of the item step counts every item that ran. The result is
-`{ "status": "done", "subject", "head", "judge": { "score", "findings" }, "branch", "items": [{ "item", "result" }] }`,
-with `judgeError` in place of `judge` when the campaign judge failed, or `{ "status": "stopped", "items", "rundown" }`. The `result` of
+`{ "status": "done", "subject", "head", "judge": { "score", "findings" }, "branch", "items": [{ "item", "result" }], "lessons" }`,
+with `judgeError` in place of `judge` when the campaign judge failed, or `{ "status": "stopped", "items", "rundown", "lessons" }`. The `result` of
 each shipped item, and of the failed item in a stopped result, is its `ship` result, with its `divergence` and its child run ID as
 `runId`. `head` is the commit of the last item, and `branch` is the
 branch that the worktree ends on.
@@ -743,7 +747,7 @@ with. A script's own declaration of the same name takes their place.
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
 | `subjectOf(text)` | The first non-empty line of `text`, without leading `#` |
 | `oneLine(text)` | `text` with each whitespace run made one space, trimmed |
-| `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without `report` and `memory`, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
+| `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without its `report` and `memory` keys at any depth, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 | `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |
