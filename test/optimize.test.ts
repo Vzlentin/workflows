@@ -3,7 +3,19 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type Call, type Edit, git, repository, runsOf, type Script, sandbox, workflows } from "./support.ts";
+import {
+	type Call,
+	childTasks,
+	type Edit,
+	git,
+	inputsOf,
+	overlayOf,
+	repository,
+	runsOf,
+	type Script,
+	sandbox,
+	workflows,
+} from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -20,6 +32,7 @@ afterEach(() => rm(root, { recursive: true, force: true }));
 const FIXED = "# Demo\n\nHello world\n";
 const CANDIDATE = "# Demo\n\nHello, world\n";
 const MARK = "INV: check every word.";
+const KEPT = "kept -> prompts/review.md -> run x: 4 FAIL README.md:3";
 
 // The faux model gives the review kind to a prompt that starts with the review template's first words.
 const INV: readonly Edit[] = [
@@ -73,12 +86,26 @@ describe("workflows optimize", () => {
 		const branches = git(repo, "branch", "--format=%(refname:short)");
 		const worktrees = git(repo, "worktree", "list", "--porcelain");
 		const before = await promptsHash();
+		const typos = ".agents/skills/typos/SKILL.md";
+		const revised = "---\nname: typos\ndescription: Fix typos word by word\n---\nRead every word twice.\n";
 
 		const first = await workflows(["optimize", "ship"], {
 			cwd: repo,
 			script: {
 				edits: Array(4).fill(CANDIDATE),
 				inv: INV,
+				dom: [
+					{ path: typos, text: "---\nname: typos\ndescription: Typos\n---\nRead.\n", moment: "run x: wrold" },
+					{ path: ".pi/skills/extra/SKILL.md", text: "---\nname: extra\n---\n", moment: "run z" },
+				],
+				compose: {
+					overlay: [...INV.map(({ path, text }) => ({ path, text })), { path: typos, text: revised }],
+					notes: [
+						{ verdict: "kept", edit: "prompts/review.md", moment: "run x: 4 FAIL README.md:3" },
+						{ verdict: "revised", edit: typos, moment: "run x: wrold" },
+						{ verdict: "dropped", edit: ".pi/skills/extra/SKILL.md", moment: "run z" },
+					],
+				},
 				select: ["Hello, world", "Hello, world", "Hello, world", "Hello world"],
 			},
 		});
@@ -87,6 +114,25 @@ describe("workflows optimize", () => {
 		const diff = join(directory, "overlay.diff");
 		expect(first.code).toBe(0);
 		expect(first.stdout.at(-1)).toBe(`optimized ship: 3/4 wins, promoted, ${diff}`);
+		const notes = [KEPT, `revised -> ${typos} -> run x: wrold`, "dropped -> .pi/skills/extra/SKILL.md -> run z"];
+		expect(first.stdout.slice(1, 4)).toEqual(notes);
+		expect(await readFile(join(directory, "notes.txt"), "utf8")).toBe(`${notes.join("\n")}\n`);
+
+		const overlays = (await inputsOf(first.id)).flatMap((input) =>
+			input.overlay === undefined ? [] : [input.overlay],
+		);
+
+		expect(overlays.length).toBeGreaterThan(0);
+
+		for (const overlay of overlays) expect(overlay).toEqual({ [typos]: revised });
+		// The compose prompt also holds the review text, as JSON, so the pattern needs its line breaks.
+		const files = await overlayOf(/this change\.\n\nINV: check every word/);
+		expect(files).toMatchObject({ files: {} });
+		// SAFETY: the match above checks that the harness.overlay doc has a `files` object of paths to texts.
+		const entries = Object.entries((files as { files: Record<string, string> }).files);
+		expect(entries.filter(([key]) => key.endsWith(`/${typos}`)).map(([, text]) => text)).toEqual([revised]);
+		expect(await readFile(join(directory, "best", typos), "utf8")).toBe(`${revised}\n`);
+		await expect(readFile(join(directory, "baseline", typos), "utf8")).rejects.toThrow();
 		expect(first.model.count("research")).toBe(4);
 		expect(reviews(first.model.calls, true)).toBe(4);
 		expect(reviews(first.model.calls, false)).toBe(0);
@@ -110,6 +156,7 @@ describe("workflows optimize", () => {
 		const text = await readFile(diff, "utf8");
 		expect(text).toContain(`\n+${MARK}\n`);
 		expect(text).toContain("edit prompts/review.md: run x: 4 FAIL README.md:3\n");
+		expect(text).toContain("\n+name: typos\n");
 		expect(await promptsHash()).toBe(before);
 		expect(git(repo, "branch", "--format=%(refname:short)")).toBe(branches);
 		expect(git(repo, "worktree", "list", "--porcelain")).toBe(worktrees);
@@ -132,6 +179,7 @@ describe("workflows optimize", () => {
 			.reverse();
 
 		expect(second.stdout.slice(1)).toEqual([
+			KEPT,
 			...order.map((runId, index) => `${runId}: ${["win", "tie", "win", "loss"][index]}`),
 			`optimized ship: 2/4 wins, not promoted, ${join(other, "overlay.diff")}`,
 		]);
@@ -165,6 +213,7 @@ describe("workflows optimize", () => {
 		expect(reviews(run.model.calls, false)).toBe(2);
 		expect(reviews(run.model.calls, true)).toBe(2);
 		expect(run.stdout.slice(1, -1)).toEqual([
+			KEPT,
 			`${gone.runId}: win`,
 			`${stopped.runId}: win`,
 			"fewer than 4 items: nothing promoted",
@@ -205,6 +254,8 @@ describe("workflows optimize", () => {
 		expect(research.toSorted()).toEqual([...Array(4).fill("high"), ...Array(4).fill("medium")]);
 		expect(reviews(run.model.calls, true)).toBe(4);
 		expect(run.stdout.slice(1)).toEqual([
+			KEPT,
+			"kept -> agents/researcher.md -> run y",
 			"first: win",
 			"fourth: win",
 			"second: win",
@@ -248,4 +299,78 @@ describe("workflows optimize", () => {
 			expect([failed.code, failed.stderr.at(-2)], argv.join(" ")).toEqual([1, error]);
 		}
 	}, 120_000);
+
+	it("validates the candidate against the skills and AGENTS.md of the start, and ships no invalid one", async () => {
+		const always = "Use the demo skill for each README change.";
+		const demo = ".agents/skills/demo/SKILL.md";
+		await writeFile(join(repo, "AGENTS.md"), `${always}\n`);
+		await mkdir(join(repo, ".agents", "skills", "demo"), { recursive: true });
+		await writeFile(join(repo, demo), "---\nname: demo\ndescription: The demo skill\n---\nDemo.\n");
+		git(repo, "add", "AGENTS.md", demo);
+		git(repo, "commit", "-q", "-m", "skills");
+		const saved = await ship("Fix the README typo");
+		expect(saved.code).toBe(0);
+		const longer = `${always} Read every word.`;
+
+		const cases: readonly (readonly [readonly string[], Edit, string])[] = [
+			[
+				[],
+				{ path: ".agents/skills/new/SKILL.md", text: "---\nname: new\n---\nNew.\n", moment: "run x" },
+				"invalid candidate: .agents/skills/new/SKILL.md has no description",
+			],
+			[
+				[],
+				{ path: demo, text: null, moment: "run x" },
+				`invalid candidate: ${demo} removes the skill demo that AGENTS.md names`,
+			],
+			[
+				[],
+				{ path: "AGENTS.md", text: `${longer}\n`, moment: "run x" },
+				`invalid candidate: AGENTS.md has ${longer.length} characters, over the ${always.length} cap`,
+			],
+			[
+				["--always-on-max", "10"],
+				{ path: "AGENTS.md", text: "Use demo.\nBe brief.\n", moment: "run x" },
+				"invalid candidate: AGENTS.md has 19 characters, over the 10 cap",
+			],
+		];
+
+		for (const [argv, edit, reason] of cases) {
+			const run = await workflows(["optimize", "ship", ...argv], { cwd: repo, script: { inv: INV, dom: [edit] } });
+			const diff = join(runsOf(root), run.id ?? "", "overlay.diff");
+			expect(run.code, reason).toBe(0);
+
+			expect(run.stdout.slice(1)).toEqual([
+				KEPT,
+				`kept -> ${edit.path} -> run x`,
+				reason,
+				"fewer than 4 items: nothing promoted",
+				`optimized ship: 0/1 wins, not promoted, ${diff}`,
+			]);
+			expect(run.model.count("research")).toBe(0);
+			expect(run.model.count("select")).toBe(0);
+			expect(await childTasks(run.id ?? "")).toEqual([]);
+			expect(await readFile(diff, "utf8")).toContain(`${reason}\n`);
+		}
+
+		const errors: readonly (readonly [Omit<Script, "interrupt">, string])[] = [
+			[
+				{ inv: INV, dom: [{ path: "prompts/review.md", text: "x", moment: "y" }] },
+				"failed optimize: dom edit prompts/review.md is not a skill or AGENTS.md path",
+			],
+			[
+				{ inv: INV, dom: [{ path: ".agents/skills/../SKILL.md", text: "x", moment: "y" }] },
+				"failed optimize: dom edit .agents/skills/../SKILL.md is not a skill or AGENTS.md path",
+			],
+			[
+				{ inv: INV, compose: { overlay: [{ path: "README.md", text: "x" }], notes: [] } },
+				"failed optimize: compose overlay README.md has no inv or dom edit",
+			],
+		];
+
+		for (const [script, error] of errors) {
+			const failed = await workflows(["optimize", "ship"], { cwd: repo, script });
+			expect([failed.code, failed.stderr.at(-2)], error).toEqual([1, error]);
+		}
+	}, 60_000);
 });

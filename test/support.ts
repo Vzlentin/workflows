@@ -272,6 +272,8 @@ export type Kind =
 	| "rundown"
 	| "summarize"
 	| "inv"
+	| "dom"
+	| "compose"
 	| "select"
 	| "harvest"
 	| "script"
@@ -303,6 +305,8 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Give a rundown of the failed work item", "rundown"],
 	["Compress memories", "summarize"],
 	["Propose edits to the workflow prompts and agent profiles", "inv"],
+	["Propose edits to the practitioner skills", "dom"],
+	["Compose one candidate overlay", "compose"],
 	["Compare two diffs of one work item", "select"],
 	["Distil the lessons", "harvest"],
 	["Script", "script"],
@@ -351,6 +355,10 @@ export type Script = {
 	readonly skipRespond?: number;
 	/** The edits of the inv answer, `[]` by default. */
 	readonly inv?: readonly Edit[];
+	/** The edits of the dom answer, `[]` by default. */
+	readonly dom?: readonly Edit[];
+	/** The compose answer; by default it keeps each inv and dom edit with a `kept` note. */
+	readonly compose?: Compose;
 	/**
 	 * One entry for each select call: the answer is the label whose `## A` or `## B` section contains the text, and
 	 * `tie` for `"tie"`, a text in no section, or no entry.
@@ -365,6 +373,15 @@ export type Script = {
 };
 
 export type Edit = { readonly path: string; readonly text: string | null; readonly moment: string };
+
+export type Compose = {
+	readonly overlay: readonly { readonly path: string; readonly text: string | null }[];
+	readonly notes: readonly {
+		readonly verdict: "kept" | "revised" | "dropped";
+		readonly edit: string;
+		readonly moment: string;
+	}[];
+};
 
 export type Verdict = { readonly answers: readonly ("PASS" | "FAIL")[]; readonly findings: readonly string[] };
 
@@ -566,6 +583,10 @@ export class FakeModel {
 				return respond({ rundown: `Rundown ${nth}: the item failed.`, suggestions: ["Split the item."], items: [] });
 			case "inv":
 				return respond({ edits: [...(this.#script.inv ?? [])] });
+			case "dom":
+				return respond({ edits: [...(this.#script.dom ?? [])] });
+			case "compose":
+				return respond(this.#script.compose ?? kept([...(this.#script.inv ?? []), ...(this.#script.dom ?? [])]));
 			case "select":
 				return respond(selected(prompt, this.#script.select?.[nth - 1]));
 			case "harvest":
@@ -629,6 +650,14 @@ export class FakeModel {
 
 		return respond(Array.isArray(scripted) ? (scripted[this.count("commit") - 1] ?? COMMIT) : scripted);
 	}
+}
+
+/** The compose answer that keeps each of `edits`. */
+function kept(edits: readonly Edit[]): Compose {
+	return {
+		overlay: edits.map(({ path, text }) => ({ path, text })),
+		notes: edits.map(({ path, moment }) => ({ verdict: "kept", edit: path, moment })),
+	};
 }
 
 /** The label of the `## A` or `## B` section of the select `prompt` that contains `text`, or `tie`. */

@@ -9,8 +9,8 @@
   `workflows judge` judges it.
 - `workflows rpi` researches, plans and implements a work item in one commit, with no review.
 - `workflows implement` implements a plan in the current directory and commits it.
-- `workflows optimize ship` proposes edits to the ship prompts and profiles from past ship runs, and keeps them when a
-  blind judge prefers the diffs they give.
+- `workflows optimize ship` proposes edits to the ship prompts, profiles, skills and `AGENTS.md` from past ship runs,
+  and keeps them when a blind judge prefers the diffs they give.
 - `workflows <script>` runs your own workflow script.
 
 Runs execute in the [harness](https://github.com/Vzlentin/harness) host of the project. A run continues after a
@@ -67,6 +67,7 @@ workflows ship "Fix the README typo"
 workflows campaign goal.md
 workflows thermoloop                       # review and fix the current branch against main
 workflows thermoloop 74                    # review and fix PR 74 in a worktree of its own
+workflows optimize ship --limit 4          # propose and test surface edits from past ship runs
 workflows list                             # the runs of this project
 workflows resume <run-id>
 workflows wait <run-id>                    # follow a run to its outcome
@@ -82,6 +83,13 @@ and does not open a pull request. Its result gives the divergence: one line that
 work item, or `none`. A ship that is not a campaign item, and a campaign, also give `lessons`: up to 3 lessons of its
 notes, each also a report line. [docs/spec.md](docs/spec.md) describes all the commands, workflow scripts, runs, and the
 `workflow` tool.
+
+Optimize uses past completed ship runs as baselines. An INV turn edits prompts and profiles, a DOM turn edits skills and
+`AGENTS.md`. A Compose turn merges the edits into one candidate overlay, with one `kept`, `revised` or `dropped` note
+per edit in the report and in `notes.txt`. An invalid candidate does not roll out; the run reports each reason: a skill
+without `name` or `description`, a removed skill that `AGENTS.md` names, or an `AGENTS.md` longer than `--always-on-max`
+(default: the length of the `AGENTS.md` at the start). A blind judge compares the diffs. The run writes `best/` and
+`overlay.diff`, and never changes prompts, skills or `AGENTS.md` on disk. See [docs/spec.md](docs/spec.md#optimize).
 
 ## Development
 

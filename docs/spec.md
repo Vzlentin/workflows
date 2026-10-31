@@ -7,8 +7,8 @@ The behaviour of the `workflows` command, the workflow scripts, runs and the `wo
 `workflows campaign` splits a goal into work items and ships them one after another onto one branch.
 `workflows rpi` researches, plans and implements one work item in one commit, `workflows thermoloop` reviews a change
 (the current branch, a PR, a ref or a range) and fixes it in rounds, and `workflows judge` judges it.
-`workflows optimize ship` proposes edits to the ship prompts and profiles from past ship runs, and keeps them when a
-blind judge prefers the diffs they give. The run is
+`workflows optimize ship` proposes edits to the ship prompts, profiles, skills and `AGENTS.md` from past ship runs,
+and keeps them when a blind judge prefers the diffs they give. The run is
 headless and resumable. It runs in the [harness](https://github.com/Vzlentin/harness) host of its project, whose
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) store keeps the sessions, model calls, tool
 calls and the progress of the run. See [Runs in the harness host](#runs-in-the-harness-host).
@@ -414,11 +414,12 @@ workflows optimize ship
 workflows optimize ship --limit 4
 workflows optimize ship --runs <run-id>,<run-id>
 workflows optimize --workflow ship --items items/
+workflows optimize ship --always-on-max 2000
 ```
 
-`workflows optimize ship` proposes one overlay of edits to the ship prompts and agent profiles, ships each work item
-again with it, and keeps it when a blind judge prefers its diffs. It never changes `prompts/` or `agents/`: the result
-is a diff to apply by hand. It is the package script `workflows/scripts/optimize.js`. The workflow to optimize,
+`workflows optimize ship` proposes one overlay of edits to the ship prompts, agent profiles, skills and `AGENTS.md`,
+ships each work item again with it, and keeps it when a blind judge prefers its diffs. It never changes `prompts/`,
+`agents/`, the skills or `AGENTS.md`: the result is a diff to apply by hand. It is the package script `workflows/scripts/optimize.js`. The workflow to optimize,
 `ship`, is one argument or `--workflow`, and defaults to `ship`.
 
 The work items and their baselines come from one of two places:
@@ -449,17 +450,46 @@ with `failed optimize: <error>`, and exits 1, because the script checks them whe
 
 The texts that the run can edit are the baseline texts by path: `prompts/<name>.md` and `agents/<name>.md` of the
 saved bundle of the first past run, or with `--items` the `prompts/<name>.md` templates and the `agents/<name>.md`
-profiles of the run's bundle (so `--prompts <folder>` sets the templates), from `prompts` and `agents`. `inv` and `select` are not
+profiles of the run's bundle (so `--prompts <folder>` sets the templates), from `prompts` and `agents`. `inv`, `dom`, `compose` and `select` are not
 among them. One turn of the `inv` prompt, in a new session with the `default` agent profile, gets the texts and the
 traces of the baselines as JSON: for each one its run ID, the work item, `status`, `rounds`, `findings`, `divergence`,
 `lessons`, and `notes`, the notes of its run memory from the `memory` field of its result. It answers
 `{ edits: [{ path, text, moment }] }`: `text` is the new text of `path`, or null to remove it, and `moment` names the
 run and the finding or note that the edit answers. No edit, a path that is not one of the texts (this includes a path
-outside `prompts/` and `agents/`), or a path twice fails the run. The edits are the candidate overlay.
+outside `prompts/` and `agents/`), or a path twice fails the run.
 
-Each item then ships with the overlay: `run("ship", { item, repo, base: start, overlay, from: runId })`, where
-`runId` is the past run, also when its baseline ran again; an `--items` item has no `from`. So the overlay is the
-only difference with the baseline. The diff of each ship child run that optimize starts is
+The surface texts come from the repository and the start commit of the first item: `AGENTS.md` at the start, when it
+exists, each `.agents/skills/<name>/SKILL.md` and `.pi/skills/<name>/SKILL.md` at the start, and each
+`<root>/<name>/SKILL.md` file of the user skill folders, the roots `${PI_CODING_AGENT_DIR:-~/.pi/agent}/skills` and
+`~/.agents/skills`. One turn of the `dom` prompt, in a new session with the `default` agent profile, gets the surface
+texts, the same traces and the roots as JSON, and answers edits in the same shape; no edit is allowed. A path that is
+not `AGENTS.md`, a project skill path or `<root>/<name>/SKILL.md` fails the run with
+`dom edit <path> is not a skill or AGENTS.md path`, and a path that is also an `inv` or `dom` edit path fails it with
+`dom edit <path> comes twice`.
+
+One turn of the `compose` prompt, in a new session with the `default` agent profile, gets the `inv` and `dom` edits,
+each with its `source`, and the baseline text of each edited path, or null for a new one, as JSON. It answers
+`{ overlay: [{ path, text }], notes: [{ verdict, edit, moment }] }`, where `verdict` is `kept`, `revised` or
+`dropped` and `edit` is the path of an edit. An overlay path that is not an edit path, or a path twice, fails the
+run. The overlay is the candidate overlay. Each note is the line `<verdict> -> <edit> -> <moment>`.
+
+The candidate is not valid, with one reason line for each problem, in overlay order:
+
+- `invalid candidate: the overlay has no entry`.
+- `invalid candidate: <path> has no name` or `... has no description`: a skill text whose frontmatter has no
+  non-empty `name:` or `description:`.
+- `invalid candidate: <path> removes the skill <name> that AGENTS.md names`: a skill path set to null, whose
+  directory name `<name>` occurs in the `AGENTS.md` of the overlay, or else of the start, between characters that
+  are not letters, digits, `_` or `-`.
+- `invalid candidate: AGENTS.md has <n> characters, over the <cap> cap`: an `AGENTS.md` text longer than
+  `--always-on-max`, or else the length of the `AGENTS.md` at the start, or else 0. A last newline does not count.
+
+A candidate that is not valid ships no item and has no `select` turn: it has 0 wins and is not promoted, and the run
+still exits 0.
+
+Each item of a valid candidate then ships with the overlay:
+`run("ship", { item, repo, base: start, overlay, from: runId })`, where `runId` is the past run, also when its
+baseline ran again; an `--items` item has no `from`. So the overlay is the only difference with the baseline. The diff of each ship child run that optimize starts is
 `git diff <start> HEAD` in its worktree. Then its worktree and its branch are removed: the `worktree` of its result,
 and the `branch` of its result, or `ship/<run-id>` when it did not ship. Its run directory stays. The worktrees and
 branches of the past runs stay.
@@ -471,14 +501,17 @@ file name without `.md` with `--items`. So two runs over the same saved runs or 
 also when a baseline runs again. The turn answers `A`, `B` or `tie`. A candidate win counts 1, a tie or a loss 0. The overlay is
 promoted when there are at least 4 items and `wins / items >= 0.75`.
 
-The command prints `run <run-id>`, one line `<name>: win|loss|tie` for each item (`<name>` is the run ID of the past
-run, or the file name without `.md`), `fewer than 4 items: nothing promoted` with fewer than 4 items, then
+The command prints `run <run-id>`, the note lines, then one line `<name>: win|loss|tie` for each item (`<name>` is
+the run ID of the past run, or the file name without `.md`) or the reason lines of a candidate that is not valid,
+`fewer than 4 items: nothing promoted` with fewer than 4 items, then
 `optimized ship: <wins>/<items> wins, promoted|not promoted, <path>`, and exits 0. `<path>` is `overlay.diff` in the
-run directory. That file starts with the item lines and one line `edit <path>: <moment>` for each edit, then
-`git diff --no-index --no-prefix baseline best` of the run directory. `baseline/<path>` holds the baseline text of
-each edited path, and `best/<path>` the promoted text (none for a removed one), or the baseline text when the overlay
-is not promoted, so then the diff part is empty. The result is `{ wins, items, promoted, overlay, diff }`, where
-`overlay` is the candidate overlay, promoted or not.
+run directory. That file starts with the item lines, the reason lines and one line `edit <path>: <moment>` for each
+`inv` and `dom` edit, then `git diff --no-index --no-prefix baseline best` of the run directory. `notes.txt` holds the
+note lines. `baseline/<path>` holds the baseline text of each overlay path that has one (none for a new skill), and
+`best/<path>` the promoted text (none for a removed one), or the baseline text when the overlay is not promoted, so
+then the diff part is empty. An absolute path goes there without its leading `/`. The result is
+`{ wins, items, promoted, overlay, notes, invalid, diff }`, where `overlay` is the candidate overlay, promoted or not,
+`notes` the note lines and `invalid` the reason lines.
 
 A ship child run that fails stops the optimization with `failed optimize: child run <id> failed: <error>`, as any
 failed `run()` call does. `workflows resume <run-id>` runs the script again: `pastRuns`, the finished ship runs and the
@@ -1567,7 +1600,8 @@ An `rpi`, `thermoloop` or `implement` run without a caller has `memory/`, the Op
 An optimize run has:
 
 - `baseline/<path>` and `best/<path>`: the baseline texts of the edited paths and the promoted texts
-- `overlay.diff`: the item lines, the edit lines and the diff
+- `notes.txt`: the note lines of the `compose` turn
+- `overlay.diff`: the item lines, the reason lines, the edit lines and the diff
 
 A child run that `run()` starts is a run directory of its own, next to the caller's, without a `project` file: it is a
 task of the caller's run. A child run without a worktree can have an empty run directory.
@@ -1575,7 +1609,7 @@ task of the caller's run. A child run without a worktree can have an empty run d
 ## Prompts
 
 `workflows/prompts/` holds the Pi prompt templates `research`, `plan`, `handoff`, `implement`, `review`, `judge` and
-`commit`, `split` and `rundown` for `campaign`, and `inv` and `select` for `optimize`. Edit the wording there. Keep the
+`commit`, `split` and `rundown` for `campaign`, and `inv`, `dom`, `compose` and `select` for `optimize`. Edit the wording there. Keep the
 frontmatter and the last line `$@`: the run removes them, then adds its inputs as `## <name>` sections.
 `workflows/scripts/thermoloop.js` adds the rules of the [review loop](#thermoloop), so a template edit cannot
 remove them. `memory(...).session(...).noted` of the [script lib](#the-script-lib) adds the `respond` answer rule
