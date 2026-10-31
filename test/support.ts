@@ -349,11 +349,12 @@ export const PASSING_JUDGE: Verdict = {
 	findings: ["4 FAIL README.md:3 adds a line the work item does not need"],
 };
 
-export type Commit = { readonly subject: string; readonly body: string };
+export type Commit = { readonly subject: string; readonly body: string; readonly divergence: string };
 
 export const COMMIT: Commit = {
 	subject: "fix: correct the README typo",
 	body: "The README said wrold. It now says world.",
+	divergence: "none",
 };
 
 /**

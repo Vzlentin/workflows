@@ -124,14 +124,17 @@ true`: see [Judge](#judge). If the judge fails or does not answer through `respo
 `judge failed on <subject>: <error>` on stderr.
 
 When the judge answered, the same judge session then gets the `commit` prompt, and answers through `respond` with
-`subject` and `body`: a commit message that follows the commit rules of the repository. The run squashes the work
-into one commit with the message `<subject>`, an empty line, then `<body>`:
+`subject`, `body` and `divergence`: a commit message that follows the commit rules of the repository, and one line
+that tells how the delivered commit differs from the work item, or exactly `none`. The run squashes the work into one
+commit with the message `<subject>`, an empty line, then `<body>`:
 
 ```text
 fix: correct the README typo
 
 The README said wrold. It now says world.
 ```
+
+The divergence is not in the commit message.
 
 If the judge failed, or the message turn fails or answers an empty `subject`, the message is the subject of the work
 item alone: its first non-empty line without leading `#`. A failed message turn prints nothing and does not change the
@@ -143,7 +146,8 @@ of [Branch name](#branch-name), and exits 0.
 The result of the run, which `--json` prints, has `status` and `rounds`; `head`, `subject`, the subject of the
 squashed commit, and `branch`, the branch that the worktree ends on, when shipped; `worktree`, the path of the
 directory that the run ran in, for every status; `score`, `answers`, the eight answers in question order, and `findings`, the finding
-lines of the judge, when the judge answered; `judgeError` when the judge failed; `reply` when blocked; `handoff`, the
+lines of the judge, when the judge answered; `judgeError` when the judge failed; `divergence`, the divergence line of
+the commit turn with its whitespace runs made one space, when shipped and that turn answered with a non-empty subject; `reply` when blocked; `handoff`, the
 handoff that the last round used, when blocked or stopped; and `memory`, the
 notes of the run memory in order as `#<k> <note>` lines, or `[]` when there are none, for every status.
 
@@ -285,7 +289,7 @@ question. If question 1 (complete) or 2 (correct) fails, the score is 0. Otherwi
 questions 3 to 8 that pass. The step logs `judge <score>`. The command prints `judge <score>: <subject>`, then one
 line `  <finding>` for each
 finding, and exits 0. The result is `{ "status": "judged", "score", "answers", "findings" }`. With `commit: true`,
-which `ship` gives, the same session then gets the `commit` prompt, and the result has `commit`, `{ subject, body }`,
+which `ship` gives, the same session then gets the `commit` prompt, and the result has `commit`, `{ subject, body, divergence }`,
 when that turn answered with a non-empty subject.
 
 If the judge fails or does not answer through `respond`, the run logs and prints `judge failed on <subject>: <error>`,
@@ -348,7 +352,8 @@ terminal and in Pi they move under the item step when it comes.
   from the start commit to the last item, against the goal: the judge of an item sees only its item, and not how the
   items fit together. The command prints
   `done <subject> in <n> item(s), judge <score or failed>, <commit>` with the commit of the last item, then one line
-  `  <commit> <commit subject>, judge <score or failed>` for each shipped item, in order, then one line
+  `  <commit> <commit subject>, judge <score or failed>` for each shipped item, in order, with
+  `, divergence <divergence>` at the end when the item's divergence is there, not empty and not `none`, then one line
   `  finding <finding>` for each finding of the campaign judge, then the line `branch <name>` of
   [Branch name](#branch-name), with the `subject` of the last split, and exits 0. The score of the campaign judge does
   not change the outcome.
@@ -357,7 +362,7 @@ terminal and in Pi they move under the item step when it comes.
   failed, is not a failure. The run resets the worktree with `git reset --hard` to the commit that the item started
   from: the last shipped commit, or the start commit when no item shipped, and adds the note `campaign: item <n>
 failed and was reset: its notes describe code that is gone` to the run memory. Then a new planner session gets the
-  `rundown` prompt with the inputs `goal`, `shipped` (the shipped items with their commits, as JSON), `item`, `status`
+  `rundown` prompt with the inputs `goal`, `shipped` (the shipped items, each one as `{ item, commit, divergence }`, as JSON), `item`, `status`
   (the ship status, or `shipped with judge score 0`), `reply`, `handoff`, `findings`, `memory` (the notes of the run memory of the campaign, as `#<k> <note>` lines), `remaining` (the
   remaining items, as JSON) and `patch` (the path of `item-<n>/round-<rounds of the item>.patch`, when that file
   exists). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and proposed items.
@@ -377,7 +382,7 @@ failed and was reset: its notes describe code that is gone` to the run memory. T
 items. The number of the item step counts every item that ran. The result is
 `{ "status": "done", "subject", "head", "judge": { "score", "findings" }, "branch", "items": [{ "item", "result" }] }`,
 with `judgeError` in place of `judge` when the campaign judge failed, or `{ "status": "stopped", "items", "rundown" }`. The `result` of
-each shipped item, and of the failed item in a stopped result, is its `ship` result, with its child run ID as
+each shipped item, and of the failed item in a stopped result, is its `ship` result, with its `divergence` and its child run ID as
 `runId`. `head` is the commit of the last item, and `branch` is the
 branch that the worktree ends on.
 

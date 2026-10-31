@@ -41,7 +41,9 @@ const answer =
 const count = (n) => `${n} item${n === 1 ? "" : "s"}`
 
 const done = []
-const shipped = () => JSON.stringify(done.map(({ item, result }) => ({ item, commit: result.head })))
+
+const shipped = () =>
+	JSON.stringify(done.map(({ item, result }) => ({ item, commit: result.head, divergence: result.divergence })))
 
 // The step `split`: the first split has only the goal, a split after a failed item also has `shipped`, `rundown` and
 // `answer`.
@@ -123,7 +125,12 @@ phase(`all ${count(done.length)}`)
 const { score, findings, judgeError } = await run("judge", { item: goal, start: first })
 const report = [`done ${name} in ${count(done.length)}, judge ${judgedOf(score)}, ${head}`]
 
-for (const { result } of done) report.push(`  ${result.head} ${result.subject}, judge ${judgedOf(result.score)}`)
+// A divergence of `none` or an empty one adds nothing to the item line.
+const divergedOf = (divergence) =>
+	divergence === undefined || divergence === "" || divergence === "none" ? "" : `, divergence ${divergence}`
+
+for (const { result } of done)
+	report.push(`  ${result.head} ${result.subject}, judge ${judgedOf(result.score)}${divergedOf(result.divergence)}`)
 
 for (const finding of findings ?? []) report.push(`  finding ${finding}`)
 

@@ -43,6 +43,7 @@ const SHIP = ["research", "plan", "handoff", "implement", "review", "judge", "co
 const THANKS: Commit = {
 	subject: "docs: thank the reader",
 	body: "The README ends with Thanks.",
+	divergence: "none",
 };
 
 /** The step lines of an item that ships in one round, under its item line: `stat` after implement, then the judge. */
@@ -276,7 +277,7 @@ describe("workflows campaign", () => {
 		const rundown = run.model.find("rundown")?.prompt;
 		expect(rundown).toContain("## handoff\nHandoff 2:");
 		expect(rundown).toContain(
-			`## shipped\n${JSON.stringify([{ item: FIRST, commit: git(worktree, "rev-parse", "--short", "HEAD") }])}`,
+			`## shipped\n${JSON.stringify([{ item: FIRST, commit: git(worktree, "rev-parse", "--short", "HEAD"), divergence: "none" }])}`,
 		);
 
 		const resumed = await workflows(["resume", run.id ?? "", "--answer", "Thank the reader in one line", "--json"], {
@@ -334,6 +335,28 @@ describe("workflows campaign", () => {
 		const reflog = git(worktree, "reflog", "--format=%gs").split("\n");
 		expect(reflog.filter((line) => line === `commit: ${COMMIT.subject}`)).toHaveLength(1);
 		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("2");
+	});
+
+	it("adds the divergence of an item to its item line, unless it is none", async () => {
+		const diverged = { ...THANKS, divergence: "The README also thanks the team." };
+
+		const run = await workflows(["campaign", "--json", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST, SECOND]], edits: [FIXED, THANKED], commit: [COMMIT, diverged] },
+		});
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(report.slice(1, 3)).toEqual([
+			itemLine(COMMIT.subject),
+			expect.stringMatching(
+				new RegExp(`^ {2}[0-9a-f]+ ${THANKS.subject}, judge 0\\.83, divergence The README also thanks the team\\.$`),
+			),
+		]);
+		expect(result.items.map(({ result }: { result: { divergence: string } }) => result.divergence)).toEqual([
+			"none",
+			diverged.divergence,
+		]);
 	});
 
 	it("renames the campaign branch with a suffix when the name of the split subject exists", async () => {

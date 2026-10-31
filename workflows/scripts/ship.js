@@ -62,6 +62,7 @@ return {
 	answers,
 	findings,
 	judgeError,
+	divergence: commit?.divergence,
 	memory: reviewed.memory,
 	worktree,
 	report: [`shipped ${subject} in ${reviewed.rounds} rounds, judge ${judged}, ${short}`],

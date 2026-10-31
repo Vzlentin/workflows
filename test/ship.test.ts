@@ -177,7 +177,7 @@ describe("workflows ship", () => {
 		expect(run.stdout[0]).toBe(`run ${run.id}`);
 		expect(report).toEqual([expect.stringMatching(SHIPPED), `branch ${BRANCH}`]);
 		expect(report[0]).toContain("in 2 rounds, judge 0.83,");
-		expect(result).toMatchObject({ ...PASSING_JUDGE, status: "shipped", memory: NOTES });
+		expect(result).toMatchObject({ ...PASSING_JUDGE, status: "shipped", memory: NOTES, divergence: "none" });
 		expect(result).not.toHaveProperty("extra");
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-parse", "HEAD^")).toBe(start);
@@ -265,7 +265,7 @@ describe("workflows ship", () => {
 		);
 		expect(run.model.find("judge")?.prompt).toMatch(new RegExp(`## base\\n${start}\\n\\n## head\\n[0-9a-f]{40}$`));
 		expect(run.model.find("commit")?.prompt).toMatch(
-			/^Write the commit message[\s\S]*Answer with respond: subject and body\.$/,
+			/^Write the commit message[\s\S]*Answer with respond: subject, body and divergence\.$/,
 		);
 	});
 
@@ -624,17 +624,33 @@ export default function ({ events }) {
 	it("names the commit and the branch from the work item when the commit answer has no subject", async () => {
 		const run = await workflows(["ship", "--json", "Fix the README typo"], {
 			cwd: repo,
-			script: { edits: [FIXED], commit: { subject: " ", body: "" } },
+			script: { edits: [FIXED], commit: { subject: " ", body: "", divergence: "none" } },
 		});
 
 		expect(run.code).toBe(0);
 		const { result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(result).toMatchObject({ status: "shipped", subject: "Fix the README typo", branch: "fix-the-readme-typo" });
+		expect(result).not.toHaveProperty("divergence");
 		expect(result.score).toBeCloseTo(5 / 6);
 		expect(report).toEqual([expect.stringMatching(SHIPPED), "branch fix-the-readme-typo"]);
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "log", "-1", "--format=%B")).toBe("Fix the README typo");
 		expect(git(worktree, "branch", "--show-current")).toBe("fix-the-readme-typo");
+	});
+
+	it("gives the divergence of the commit answer in the result, on one line, and not in the commit", async () => {
+		const divergence = "The commit also fixes\n  the README title.";
+
+		const run = await workflows(["ship", "--json", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED], commit: { ...COMMIT, divergence } },
+		});
+
+		expect(run.code).toBe(0);
+		const { result } = JSON.parse(run.stdout[1] ?? "");
+		expect(result).toMatchObject({ status: "shipped", divergence: "The commit also fixes the README title." });
+		const message = git(worktreeOf(run.id), "log", "-1", "--format=%B");
+		expect(message).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
 	});
 
 	it("replaces package prompts with the prompts of a --prompts folder", async () => {
