@@ -16,6 +16,9 @@ import {
 	detached,
 	FakeModel,
 	git,
+	LESSON,
+	LESSON_LINE,
+	LESSONED,
 	PASSING_JUDGE,
 	piSettings,
 	progressOf,
@@ -53,6 +56,7 @@ type Stored = {
 	readonly label: string;
 	readonly args: { readonly profile?: string; readonly cmd?: readonly string[] };
 	readonly calls?: readonly Stored[];
+	readonly result?: { readonly result?: object };
 };
 
 /**
@@ -109,21 +113,6 @@ const HARNESS_TOOLS = ["subagent", "codemode"];
 
 const answers = (kind: string) =>
 	["review", "judge", "commit", "implement", "handoff", "harvest"].includes(kind) ? ["respond"] : [];
-
-// A scripted lesson, with whitespace runs that the result makes one space.
-const LESSON = {
-	cue: "When a typo\n  fix",
-	lesson: "grep the  whole repository instead of one file.",
-	evidence: "run:x #1",
-};
-
-const LESSONED = {
-	cue: "When a typo fix",
-	lesson: "grep the whole repository instead of one file.",
-	evidence: "run:x #1",
-};
-
-const LESSON_LINE = "  lesson When a typo fix: grep the whole repository instead of one file. (run:x #1)";
 
 const NOTES = [
 	"#0 planner: Handoff 1: one word changes.",
@@ -927,6 +916,14 @@ describe("workflows show", () => {
 		const asked = calls.find((c: Stored) => c.kind === "ask" && c.label === "planner");
 		const added = calls.find((c: Stored) => c.kind === "sh" && c.label === "git add -A");
 		const rpi = calls.find((c: Stored) => c.kind === "run" && c.label.startsWith("rpi "));
+		const thermoloop = calls.find((c: Stored) => c.kind === "run" && c.label.startsWith("thermoloop "));
+
+		// The child runs of a ship get its memory, so only the ship distils lessons.
+		expect(rpi?.result).toMatchObject({ result: { status: "implemented" } });
+		expect(rpi?.result?.result).not.toHaveProperty("lessons");
+		expect(thermoloop?.result).toMatchObject({ result: { status: "approved" } });
+		expect(thermoloop?.result?.result).not.toHaveProperty("lessons");
+		expect(run.model.count("harvest")).toBe(1);
 
 		expect(planner).toEqual({
 			kind: "session",

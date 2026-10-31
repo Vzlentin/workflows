@@ -120,7 +120,7 @@ the session have no section. The judge's prompt has no memory. The saved results
 resume, so a resume gives the same prompts.
 
 A ship run that opened its own run memory, and not a campaign item, which gets the memory of its campaign, ends with
-the harvest, at each end: shipped, blocked or stopped. When the memory has notes, one `summarizer` session gets the
+the harvest of `.finish(item, result)`, at each end: shipped, blocked or stopped. When the memory has notes, one `summarizer` session gets the
 `harvest` prompt with the work item, the outcome (the result without `report` and `memory`, as JSON), the run ID and
 the notes, and answers through `respond` with `lessons`: 0 to 3 objects of `cue`, when the lesson applies, `lesson`,
 what to do instead of what, and `evidence`, `run:<run ID>` or a `#conv` ID with the note numbers. The default answer is
@@ -181,7 +181,8 @@ and the `ref` of the run memory. When the branch has no change from the start co
 `blocked <subject>` and the implementer's reply, and exits 1. Otherwise the implement step logs the size of the
 change, and the command prints `implemented <subject>, <commit>` and exits 0.
 
-Without a caller, the run opens its own store, as `ship` does.
+Without a caller, the run opens its own store, as `ship` does, and ends with the harvest of `ship` at each end:
+implemented or blocked. Its result then has `lessons`, and the report has a line for each lesson.
 
 The result has `status` (`implemented` or `blocked`), `memory`, the notes of the store as `#<k> <note>` lines, and
 `reply`, from the implement result. When implemented, it has `head` and `plan`, the planner's handoff; when blocked,
@@ -278,7 +279,9 @@ next round fixes all of them.
 On SHIP, the command prints `approved <subject> in <n> rounds, <commit>` and exits 0. A run that is not approved
 after `--rounds` rounds prints `stopped <subject> after <n> rounds` and exits 1. The memory works as in `ship`, in the store
 that `ship` gives, or in its own store without a caller. The result has `status` (`approved`, `blocked` or `stopped`),
-`rounds`, `handoff`, the handoff that the last round used, `memory`, and `reply` when blocked.
+`rounds`, `handoff`, the handoff that the last round used, `memory`, and `reply` when blocked. Without a caller, the run
+ends with the harvest of `ship` at each end: approved, stopped or blocked. Its result then has `lessons`, and the report
+has a line for each lesson. A run that runs again in a worktree gives the lessons of that child run.
 
 ## Judge
 
@@ -740,7 +743,7 @@ with. A script's own declaration of the same name takes their place.
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
 | `subjectOf(text)` | The first non-empty line of `text`, without leading `#` |
 | `oneLine(text)` | `text` with each whitespace run made one space, trimmed |
-| `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.opened` says that the store opened here, as `ref.path` was not given. `.harvest(item, outcome)` gives `[]` with no turn when there are no notes, else the `lessons` of one `summarizer` turn on the `harvest` prompt, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
+| `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without `report` and `memory`, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 | `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |

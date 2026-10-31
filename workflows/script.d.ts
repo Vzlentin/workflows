@@ -138,13 +138,13 @@ type Lesson = { cue: string; lesson: string; evidence: string };
  */
 declare function memory(ref?: MemoryRef): Promise<{
 	readonly ref: MemoryRef & { readonly path: string; readonly plain: boolean };
-	/** The store opened here, as `ref.path` was not given: the run owns the memory. */
-	readonly opened: boolean;
 	/**
-	 * Distils 0 to 3 lessons of the notes with one `summarizer` turn on the work item, the outcome and the run ID, with
-	 * the whitespace runs of each field made one space. Gives `[]` with no turn when there are no notes.
+	 * `result` as it is when `ref.path` was given. Else `result` with `lessons` and a report line
+	 * `  lesson <cue>: <lesson> (<evidence>)` for each one. The lessons are `[]` with no turn when there are no notes,
+	 * else 0 to 3 lessons of one `summarizer` turn on the `harvest` prompt with `item`, `result` without `report` and
+	 * `memory`, the run ID and the notes, with the whitespace runs of each field made one space.
 	 */
-	harvest(item: string, outcome: { [key: string]: Json | undefined }): Promise<Lesson[]>;
+	finish<T extends { report: string[]; memory?: Json }>(item: string, result: T): Promise<T & { lessons?: Lesson[] }>;
 	/** Adds each note, and answers each compression that `memo` asks for with a `summarizer` turn. */
 	note(author: string, round: number | undefined, notes: readonly string[]): Promise<void>;
 	/** A session whose first prompt starts with a `## memory` section of the notes. */

@@ -357,6 +357,21 @@ export const PASSING_JUDGE: Verdict = {
 
 export type Lesson = { readonly cue: string; readonly lesson: string; readonly evidence: string };
 
+// A scripted lesson, with whitespace runs that the result makes one space.
+export const LESSON: Lesson = {
+	cue: "When a typo\n  fix",
+	lesson: "grep the  whole repository instead of one file.",
+	evidence: "run:x #1",
+};
+
+export const LESSONED: Lesson = {
+	cue: "When a typo fix",
+	lesson: "grep the whole repository instead of one file.",
+	evidence: "run:x #1",
+};
+
+export const LESSON_LINE = "  lesson When a typo fix: grep the whole repository instead of one file. (run:x #1)";
+
 export type Commit = { readonly subject: string; readonly body: string; readonly divergence: string };
 
 export const COMMIT: Commit = {

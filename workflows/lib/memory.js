@@ -190,11 +190,21 @@ async function memory(ref = {}) {
 		}));
 	};
 
+	// A run that opened its own memory ends with the lessons of its notes, and a report line for each one.
+	const finish = async (work, result) => {
+		if (!opened) return result;
+
+		const { report, memory: _, ...outcome } = result;
+		const lessons = await harvest(work, outcome);
+		const lines = lessons.map(({ cue, lesson, evidence }) => `  lesson ${cue}: ${lesson} (${evidence})`);
+
+		return { ...result, lessons, report: [...report, ...lines] };
+	};
+
 	return {
 		ref: { path, plain, item },
-		opened,
 		note,
-		harvest,
+		finish,
 		session: remembering,
 		get text() {
 			return store.text();

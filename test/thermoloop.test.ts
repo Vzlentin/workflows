@@ -1,7 +1,20 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { fake, git, progressOf, repository, runsOf, sandbox, statusesOf, workflows, worktreeAt } from "./support.ts";
+import {
+	fake,
+	git,
+	LESSON,
+	LESSON_LINE,
+	LESSONED,
+	progressOf,
+	repository,
+	runsOf,
+	sandbox,
+	statusesOf,
+	workflows,
+	worktreeAt,
+} from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -27,12 +40,12 @@ describe("workflows thermoloop", () => {
 
 		const run = await workflows(["thermoloop", "--json", "--item", ITEM], {
 			cwd: repo,
-			script: { edits: [THANKED], verdicts: ["FIX", "SHIP"] },
+			script: { edits: [THANKED], verdicts: ["FIX", "SHIP"], lessons: [LESSON] },
 		});
 
 		expect(run.code).toBe(0);
 		const { result, report } = JSON.parse(run.stdout[1] ?? "");
-		expect(report).toEqual([`approved ${ITEM} in 2 rounds, ${git(repo, "rev-parse", "--short", "HEAD")}`]);
+		expect(report).toEqual([`approved ${ITEM} in 2 rounds, ${git(repo, "rev-parse", "--short", "HEAD")}`, LESSON_LINE]);
 		expect(result).toMatchObject({
 			status: "approved",
 			rounds: 2,
@@ -47,7 +60,15 @@ describe("workflows thermoloop", () => {
 			"  SHIP",
 		]);
 		expect(statusesOf(run.stderr)).toEqual(["round 1/3: review", "round 2/3: implement", "round 2/3: review", "-"]);
-		expect(run.model.calls.map((call) => call.kind)).toEqual(["review", "handoff", "implement", "review"]);
+		expect(run.model.calls.map((call) => call.kind)).toEqual(["review", "handoff", "implement", "review", "harvest"]);
+
+		// A root thermoloop owns its memory, so it ends with the lessons of its notes.
+		expect(result.lessons).toEqual([LESSONED]);
+		const outcome = /## outcome\n(.*)\n/.exec(run.model.find("harvest")?.prompt ?? "")?.[1] ?? "";
+		expect(run.model.find("harvest")?.prompt).toContain(`## item\n${ITEM}\n`);
+		expect(JSON.parse(outcome)).toMatchObject({ status: "approved", rounds: 2 });
+		expect(JSON.parse(outcome)).not.toHaveProperty("memory");
+		expect(JSON.parse(outcome)).not.toHaveProperty("report");
 
 		// The first round reviews the commits of the branch, with no plan and no reply.
 		const patch = join(root, "state", "workflows", "runs", run.id ?? "", "round-1.patch");
@@ -71,6 +92,19 @@ describe("workflows thermoloop", () => {
 		expect(git(repo, "log", "--format=%s", `${start}..HEAD`)).toBe("round 2\nfix the typo");
 		expect(git(repo, "rev-parse", "HEAD^")).toBe(head);
 		expect(await readFile(join(repo, "README.md"), "utf8")).toBe(THANKED);
+	});
+
+	it("makes no harvest turn and gives no lessons when a SHIP leaves the memory empty", async () => {
+		const run = await workflows(["thermoloop", "--json", "--item", ITEM], {
+			cwd: repo,
+			script: { verdicts: ["SHIP"], lessons: [LESSON] },
+		});
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(result.lessons).toEqual([]);
+		expect(report).toEqual([`approved ${ITEM} in 1 rounds, ${git(repo, "rev-parse", "--short", "HEAD")}`]);
+		expect(run.model.count("harvest")).toBe(0);
 	});
 
 	it("keeps plain notes without memo, and warns with the install command", async () => {

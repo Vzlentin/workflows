@@ -1,5 +1,5 @@
 ---
-description: Distil the lessons of one ship run from its notes
+description: Distil the lessons of one run from its notes
 argument-hint: "[the work item, the outcome, the run and the notes]"
 ---
 Distil the lessons of this run.
