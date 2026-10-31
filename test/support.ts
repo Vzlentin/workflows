@@ -265,6 +265,7 @@ export type Kind =
 	| "rundown"
 	| "summarize"
 	| "reflect"
+	| "harvest"
 	| "script"
 	| "result";
 
@@ -294,6 +295,7 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Give a rundown of the failed work item", "rundown"],
 	["Compress memories", "summarize"],
 	["Improve this prompt", "reflect"],
+	["Distil the lessons", "harvest"],
 	["Script", "script"],
 	// The outcome that a background run posts to the conversation of its `workflow` call.
 	["run ", "result"],
@@ -338,6 +340,10 @@ export type Script = {
 	readonly hang?: string;
 	/** How many answers of this model to `Script respond: <json>` prompts are text replies with no `respond` call. */
 	readonly skipRespond?: number;
+	/** The lessons of each harvest answer, `[]` by default. */
+	readonly lessons?: readonly Lesson[];
+	/** The handoff and implement answers give no notes, so the run memory stays empty. */
+	readonly silent?: boolean;
 	/** Ctrl+C: `abort` presses it, and `signal` aborts at the first press. */
 	readonly interrupt: { readonly signal: AbortSignal; abort(): void };
 };
@@ -348,6 +354,8 @@ export const PASSING_JUDGE: Verdict = {
 	answers: ["PASS", "PASS", "PASS", "FAIL", "PASS", "PASS", "PASS", "PASS"],
 	findings: ["4 FAIL README.md:3 adds a line the work item does not need"],
 };
+
+export type Lesson = { readonly cue: string; readonly lesson: string; readonly evidence: string };
 
 export type Commit = { readonly subject: string; readonly body: string; readonly divergence: string };
 
@@ -434,7 +442,7 @@ export class FakeModel {
 			if (kind === "review") return this.#review();
 
 			if (kind === "implement") {
-				return implemented(this.count(kind), "I fixed the typo in README.md.", this.#script.note);
+				return implemented(this.count(kind), "I fixed the typo in README.md.", this.#script);
 			}
 
 			return fauxAssistantMessage("I fixed the typo in README.md.");
@@ -492,12 +500,12 @@ export class FakeModel {
 			case "handoff":
 				return respond({
 					text: `Handoff ${nth}: replace wrold with world in README.md.`,
-					notes: [`Handoff ${nth}: one word\n changes.`, " "],
+					notes: this.#script.silent ? [] : [`Handoff ${nth}: one word\n changes.`, " "],
 				});
 			case "implement": {
 				const edit = this.#script.edits?.[nth - 1];
 
-				if (edit === undefined) return implemented(nth, "I found nothing to change.", this.#script.note);
+				if (edit === undefined) return implemented(nth, "I found nothing to change.", this.#script);
 
 				const call = this.#script.commits
 					? fauxToolCall("bash", {
@@ -530,6 +538,8 @@ export class FakeModel {
 				return fauxAssistantMessage(`${current}\nImproved prompt ${nth}.`);
 			}
 
+			case "harvest":
+				return respond({ lessons: [...(this.#script.lessons ?? [])] });
 			case "result":
 				return fauxAssistantMessage("Noted.");
 			case "script": {
@@ -617,12 +627,11 @@ function respond(answer: ToolCall["arguments"][string]): AssistantMessage {
 	return fauxAssistantMessage(fauxToolCall("respond", { answer }), { stopReason: "toolUse" });
 }
 
-/** The `respond` answer of the nth implement turn. */
-function implemented(nth: number, reply: string, note?: string): AssistantMessage {
-	return respond({
-		text: reply,
-		notes: [`Implement ${nth}: README.md had wrold.`, ...(note === undefined ? [] : [note])],
-	});
+/** The `respond` answer of the nth implement turn: no notes when the script is silent. */
+function implemented(nth: number, reply: string, { note, silent }: Pick<Script, "note" | "silent">): AssistantMessage {
+	const notes = silent ? [] : [`Implement ${nth}: README.md had wrold.`, ...(note === undefined ? [] : [note])];
+
+	return respond({ text: reply, notes });
 }
 
 export type Outcome = {

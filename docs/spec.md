@@ -119,6 +119,15 @@ The first prompt of each planner, implement and review session starts with a `##
 the session have no section. The judge's prompt has no memory. The saved results of the `memo` calls replay at
 resume, so a resume gives the same prompts.
 
+A ship run that opened its own run memory, and not a campaign item, which gets the memory of its campaign, ends with
+the harvest, at each end: shipped, blocked or stopped. When the memory has notes, one `summarizer` session gets the
+`harvest` prompt with the work item, the outcome (the result without `report` and `memory`, as JSON), the run ID and
+the notes, and answers through `respond` with `lessons`: 0 to 3 objects of `cue`, when the lesson applies, `lesson`,
+what to do instead of what, and `evidence`, `run:<run ID>` or a `#conv` ID with the note numbers. The default answer is
+`[]`. With no notes, no turn runs and the lessons are `[]`. The harvest does not change the notes. Each lesson adds the
+report line `  lesson <cue>: <lesson> (<evidence>)`, with the whitespace runs of each field made one space, after the
+other report lines of the script and before `branch <name>`.
+
 On SHIP, the run starts the child run `judge` in the worktree, with the work item, the start commit and `commit:
 true`: see [Judge](#judge). If the judge fails or does not answer through `respond`, the command prints
 `judge failed on <subject>: <error>` on stderr.
@@ -148,8 +157,9 @@ squashed commit, and `branch`, the branch that the worktree ends on, when shippe
 directory that the run ran in, for every status; `score`, `answers`, the eight answers in question order, and `findings`, the finding
 lines of the judge, when the judge answered; `judgeError` when the judge failed; `divergence`, the divergence line of
 the commit turn with its whitespace runs made one space, when shipped and that turn answered with a non-empty subject; `reply` when blocked; `handoff`, the
-handoff that the last round used, when blocked or stopped; and `memory`, the
-notes of the run memory in order as `#<k> <note>` lines, or `[]` when there are none, for every status.
+handoff that the last round used, when blocked or stopped; `memory`, the
+notes of the run memory in order as `#<k> <note>` lines, or `[]` when there are none, for every status; and `lessons`,
+the lessons of the harvest, for every status of a ship run that is not a campaign item.
 
 Blocked and stopped runs keep their branch, worktree and round commits. Delete them when you no longer need them.
 
@@ -729,7 +739,8 @@ with. A script's own declaration of the same name takes their place.
 | `parallel(thunks)` | Runs the functions at once and returns their results |
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
 | `subjectOf(text)` | The first non-empty line of `text`, without leading `#` |
-| `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
+| `oneLine(text)` | `text` with each whitespace run made one space, trimmed |
+| `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.opened` says that the store opened here, as `ref.path` was not given. `.harvest(item, outcome)` gives `[]` with no turn when there are no notes, else the `lessons` of one `summarizer` turn on the `harvest` prompt, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 | `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |

@@ -30,14 +30,26 @@ const unshipped = ({ status, rounds, reply, handoff, memory }) => {
 }
 
 const notes = await memory(args.memory)
+
+// A ship that opened its own memory ends with the lessons of its notes, and a report line for each one.
+const finish = async (result) => {
+	if (!notes.opened) return result
+
+	const { report, memory: _, ...outcome } = result
+	const lessons = await notes.harvest(item, outcome)
+	const lines = lessons.map(({ cue, lesson, evidence }) => `  lesson ${cue}: ${lesson} (${evidence})`)
+
+	return { ...result, lessons, report: [...report, ...lines] }
+}
+
 const built = await run("rpi", { item, start, memory: notes.ref })
 
-if (built.status === "blocked") return unshipped(built)
+if (built.status === "blocked") return finish(unshipped(built))
 
 const { plan, reply } = built
 const reviewed = await run("thermoloop", { item, rounds, start, patches, plan, reply, memory: notes.ref })
 
-if (reviewed.status !== "approved") return unshipped(reviewed)
+if (reviewed.status !== "approved") return finish(unshipped(reviewed))
 
 const { score, answers, findings, judgeError, commit } = await run("judge", { item, start, commit: true })
 const commitSubject = commit?.subject ?? subject
@@ -53,7 +65,7 @@ const judged = score === undefined ? "failed" : score.toFixed(2)
 
 log(`commit ${short} ${commitSubject}`)
 
-return {
+return finish({
 	status: "shipped",
 	rounds: reviewed.rounds,
 	head: short,
@@ -66,4 +78,4 @@ return {
 	memory: reviewed.memory,
 	worktree,
 	report: [`shipped ${subject} in ${reviewed.rounds} rounds, judge ${judged}, ${short}`],
-}
+})

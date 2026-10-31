@@ -108,7 +108,22 @@ const TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash"];
 const HARNESS_TOOLS = ["subagent", "codemode"];
 
 const answers = (kind: string) =>
-	["review", "judge", "commit", "implement", "handoff"].includes(kind) ? ["respond"] : [];
+	["review", "judge", "commit", "implement", "handoff", "harvest"].includes(kind) ? ["respond"] : [];
+
+// A scripted lesson, with whitespace runs that the result makes one space.
+const LESSON = {
+	cue: "When a typo\n  fix",
+	lesson: "grep the  whole repository instead of one file.",
+	evidence: "run:x #1",
+};
+
+const LESSONED = {
+	cue: "When a typo fix",
+	lesson: "grep the whole repository instead of one file.",
+	evidence: "run:x #1",
+};
+
+const LESSON_LINE = "  lesson When a typo fix: grep the whole repository instead of one file. (run:x #1)";
 
 const NOTES = [
 	"#0 planner: Handoff 1: one word changes.",
@@ -204,9 +219,10 @@ describe("workflows ship", () => {
 			"review",
 			"judge",
 			"commit",
+			"harvest",
 		]);
 
-		for (const call of calls) {
+		for (const call of calls.filter((call) => call.kind !== "harvest")) {
 			expect(call.thinking).toBe("medium");
 			expect(call.model).toBe("claude-opus-5-5");
 			expect(call.tools).toEqual([...TOOLS, ...HARNESS_TOOLS, ...answers(call.kind)]);
@@ -332,6 +348,7 @@ export default function ({ events }) {
 			"review",
 			"judge",
 			"commit",
+			"harvest",
 		]);
 
 		for (const call of run.model.calls)
@@ -353,7 +370,7 @@ export default function ({ events }) {
 			`blocked Fix the README typo after 1 rounds: ${worktreeOf(run.id)}`,
 			"I found nothing to change.",
 		]);
-		expect(run.model.calls.map((call) => call.kind)).toEqual(["research", "plan", "handoff", "implement"]);
+		expect(run.model.calls.map((call) => call.kind)).toEqual(["research", "plan", "handoff", "implement", "harvest"]);
 		expect(git(repo, "branch", "--list", `ship/${run.id}`)).toContain(`ship/${run.id}`);
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
 	});
@@ -383,11 +400,82 @@ export default function ({ events }) {
 		const report = [`blocked Fix the README typo after 1 rounds: ${worktreeOf(run.id)}`, result.reply];
 		expect(resumed.stdout).toEqual([
 			`run ${run.id}`,
-			JSON.stringify({ runId: run.id, status: "finished", result: { ...result, report }, report }),
+			JSON.stringify({ runId: run.id, status: "finished", result: { ...result, report, lessons: [] }, report }),
 		]);
 
 		const item = await workflows(["ship", "--", "--json"], { cwd: repo, script: { edits: [] } });
 		expect(item.stdout.slice(1, 2)).toEqual([expect.stringMatching(/^blocked --json after 1 rounds: /)]);
+	});
+
+	it("distils no lessons by default, with one low summarizer turn at the end", async () => {
+		const run = await workflows(["ship", "--json", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(result.lessons).toEqual([]);
+		expect(report).toEqual([expect.stringMatching(SHIPPED), `branch ${BRANCH}`]);
+		expect(run.model.calls.map((call) => call.kind).filter((kind) => kind === "harvest")).toEqual(["harvest"]);
+		expect(run.model.calls.at(-1)?.kind).toBe("harvest");
+		expect(run.model.find("harvest")?.thinking).toBe("low");
+	});
+
+	it("distils the lessons of the notes into the result and the report", async () => {
+		const run = await workflows(["ship", "--json", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED], lessons: [LESSON] },
+		});
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(result.lessons).toEqual([LESSONED]);
+		expect(report).toEqual([expect.stringMatching(SHIPPED), LESSON_LINE, `branch ${BRANCH}`]);
+		const prompt = run.model.find("harvest")?.prompt ?? "";
+		expect(prompt).toMatch(
+			/^Distil the lessons of this run\.\n[\s\S]*Answer with respond: lessons\.\n\n## item\nFix the README typo\n\n## outcome\n/,
+		);
+		expect(prompt).toContain(`\n\n## run\n${run.id}\n\n## notes\n${NOTES.slice(0, 2).join("\n")}`);
+		const outcome = JSON.parse(/\n## outcome\n(.*)\n\n## run\n/.exec(prompt)?.[1] ?? "");
+		expect(outcome).toMatchObject({ status: "shipped", subject: COMMIT.subject, divergence: "none" });
+		expect(outcome).not.toHaveProperty("report");
+		expect(outcome).not.toHaveProperty("memory");
+	});
+
+	it("makes no harvest turn when the run memory is empty", async () => {
+		const run = await workflows(["ship", "--json", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED], verdicts: ["SHIP"], silent: true, lessons: [LESSON] },
+		});
+
+		expect(run.code).toBe(0);
+		const { result } = JSON.parse(run.stdout[1] ?? "");
+		expect(result.memory).toEqual([]);
+		expect(result.lessons).toEqual([]);
+		expect(run.model.count("harvest")).toBe(0);
+	});
+
+	it("continues a harvest turn interrupted by Ctrl+C, and keeps its lessons at the next resume", async () => {
+		const run = await workflows(["ship", "--json", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED], interruptAt: { kind: "harvest", nth: 1 } },
+		});
+
+		expect(run.code).toBe(130);
+
+		const resumed = await workflows(["resume", run.id ?? "", "--json"], {
+			cwd: repo,
+			script: { edits: [FIXED], lessons: [LESSON] },
+		});
+
+		expect(resumed.code).toBe(0);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["harvest"]);
+		expect(resumed.model.find("harvest")?.prompt).toContain(`## notes\n${NOTES.slice(0, 2).join("\n")}`);
+		const { result, report } = JSON.parse(resumed.stdout[1] ?? "");
+		expect(result).toMatchObject({ divergence: "none", lessons: [LESSONED] });
+		expect(report).toContain(LESSON_LINE);
+
+		const again = await workflows(["resume", run.id ?? "", "--json"], { cwd: repo, script: { edits: [FIXED] } });
+		expect(again.stdout).toEqual(resumed.stdout);
+		expect(again.model.calls).toEqual([]);
 	});
 
 	it("stops at the round limit, keeps the implementer's own commits, and compresses the memory", async () => {
@@ -409,7 +497,7 @@ export default function ({ events }) {
 			[
 				["research", "plan", "handoff"],
 				["implement", "summarize", "review", "handoff"],
-				["implement", "review"],
+				["implement", "review", "harvest"],
 			].flat(),
 		);
 
@@ -462,7 +550,7 @@ export default function ({ events }) {
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: repo });
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout[1]).toMatch(SHIPPED);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "judge", "commit"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "judge", "commit", "harvest"]);
 	});
 
 	it("sends a failed turn again on resume, with Pi's retry settings", async () => {
@@ -480,7 +568,14 @@ export default function ({ events }) {
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
 		expect(resumed.code).toBe(0);
 		expect(resumed.stdout).toEqual([`run ${run.id}`, expect.stringMatching(SHIPPED), `branch ${BRANCH}`]);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["handoff", "implement", "review", "judge", "commit"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual([
+			"handoff",
+			"implement",
+			"review",
+			"judge",
+			"commit",
+			"harvest",
+		]);
 	});
 
 	it("uses the retry settings of Pi's settings, not those of the project", async () => {
@@ -805,7 +900,8 @@ describe("workflows show", () => {
 			...asks("judge", 2, child),
 			call(`sh sh -c git reset -q --soft "\\$1" && git commit -q -m "\\$2" squash ${start.slice(0, 17)}`),
 			call("sh git rev-parse --short HEAD"),
-			// The command is cut at 80 characters.
+			notes(),
+			...asks("summarizer", 1),
 			expect.stringMatching(SHIPPED),
 			`branch ${BRANCH}`,
 		]);
@@ -1024,7 +1120,7 @@ describe("workflows resume of ship runs", () => {
 			"  judge 0.83",
 			expect.stringMatching(/^commit [0-9a-f]+ fix: correct the README typo$/),
 		]);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "judge", "commit"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "judge", "commit", "harvest"]);
 		expect(resumed.model.find("implement")?.prompt).toContain("## plan\nHandoff 1: ");
 		expect(resumed.model.find("implement")?.prompt.startsWith(`${memory(1)}Implement this plan`)).toBe(true);
 		const worktree = worktreeOf(first.id);
@@ -1068,7 +1164,7 @@ describe("workflows resume of ship runs", () => {
 
 		const resumed = await workflows(["resume", stopped.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
 		expect(resumed.code).toBe(0);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "judge", "commit"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "review", "judge", "commit", "harvest"]);
 	});
 
 	it("prints the phase of a session that a later turn interrupted", async () => {
@@ -1155,7 +1251,7 @@ while [ ! -f "${gate}.open" ]; do sleep 0.02; done
 
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: repo });
 		expect(resumed.code).toBe(0);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "judge", "commit"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["review", "judge", "commit", "harvest"]);
 		expect(resumed.model.find("review")?.prompt).toContain("## reply\nI fixed the typo in README.md.");
 		expect(resumed.model.find("review")?.prompt.startsWith(`${memory(2)}Perform a deep code quality audit`)).toBe(true);
 		expect(git(worktreeOf(first.id), "log", "--format=%s")).toBe(`${COMMIT.subject}\ninitial`);

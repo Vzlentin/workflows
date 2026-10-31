@@ -893,6 +893,26 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 			expect(isError).toBe(false);
 			expect(text).toContain(`"status":"shipped"`);
 			expect(text).toContain(`"divergence":${JSON.stringify(divergence)}`);
+			expect(text).toContain(`"lessons":[]`);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("gives the lessons of a ship and their report lines in the text of the workflow tool", async () => {
+		await repository(join(root, "project"));
+		addProject("demo", join(root, "project"));
+		const lesson = { cue: "When a typo fix", lesson: "grep the repository, not one file.", evidence: "run:x #1" };
+		const model = hostModel({ edits: ["# Demo\n\nHello world\n"], lessons: [lesson] });
+		const host = await startHost("demo", model.models);
+
+		try {
+			const call = { name: "ship", args: { item: "Fix the README typo" } };
+			await tellAgent(`Script workflow: ${JSON.stringify(call)}`, "demo");
+			const { text, isError } = await nextResult(0, "demo");
+			expect(isError).toBe(false);
+			expect(text).toContain(`"lessons":[${JSON.stringify(lesson)}]`);
+			expect(text.split("\n")).toContain("  lesson When a typo fix: grep the repository, not one file. (run:x #1)");
 		} finally {
 			await host.close();
 		}

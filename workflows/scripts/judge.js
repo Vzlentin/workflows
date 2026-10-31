@@ -77,7 +77,7 @@ async function commitMessage() {
 
 		if (answer.subject.trim() === "") return undefined
 
-		const divergence = answer.divergence.trim().replace(/\s+/g, " ")
+		const divergence = oneLine(answer.divergence)
 
 		return { subject: answer.subject.trim(), body: answer.body.trim(), divergence }
 	} catch {

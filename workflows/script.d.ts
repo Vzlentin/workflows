@@ -107,6 +107,9 @@ declare function title(text: string): void;
 /** The subject of a text: its first non-empty line without leading `#`. */
 declare function subjectOf(text: string): string;
 
+/** The text on one line: each whitespace run made one space, trimmed. */
+declare function oneLine(text: string): string;
+
 /** A session whose first prompt starts with the notes of a memory. */
 type RememberingSession = {
 	ask(prompt: string | Promise<string>, options?: { schema?: object }): Promise<any>;
@@ -125,6 +128,9 @@ type MemoryRef = {
 	readonly item?: number;
 };
 
+/** A lesson of a run: when it applies, what to do instead of what, and the run and notes that it rests on. */
+type Lesson = { cue: string; lesson: string; evidence: string };
+
 /**
  * The run memory of `ref`: an OptMem store, through the user's `$HOME/.optmem/memo`, or a plain store of `#<k> <note>`
  * lines with no summaries. Without `ref.path`, opens the store `<runDir>/memory`, plain when `memo` is missing. A note
@@ -132,6 +138,13 @@ type MemoryRef = {
  */
 declare function memory(ref?: MemoryRef): Promise<{
 	readonly ref: MemoryRef & { readonly path: string; readonly plain: boolean };
+	/** The store opened here, as `ref.path` was not given: the run owns the memory. */
+	readonly opened: boolean;
+	/**
+	 * Distils 0 to 3 lessons of the notes with one `summarizer` turn on the work item, the outcome and the run ID, with
+	 * the whitespace runs of each field made one space. Gives `[]` with no turn when there are no notes.
+	 */
+	harvest(item: string, outcome: { [key: string]: Json | undefined }): Promise<Lesson[]>;
 	/** Adds each note, and answers each compression that `memo` asks for with a `summarizer` turn. */
 	note(author: string, round: number | undefined, notes: readonly string[]): Promise<void>;
 	/** A session whose first prompt starts with a `## memory` section of the notes. */

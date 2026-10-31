@@ -86,7 +86,7 @@ function optmemStore(path) {
 			const answer = "When you are done, answer with only the one line, with no other text.";
 			const summary = await agent(`${prompt}\n\n${answer}`, { as: "summarizer" });
 
-			const line = cutNote("", String(summary).replace(/\s+/g, " ").trim());
+			const line = cutNote("", oneLine(String(summary)));
 			output = await memo(path, "nap", `${lo}-${hi}`, line);
 		}
 	};
@@ -124,14 +124,15 @@ function plainStore(path) {
  * `<runDir>/memory`. `ref.item` is the number of the campaign item that the notes come from.
  */
 async function memory(ref = {}) {
-	const { path, plain } = ref.path === undefined ? await openStore() : ref;
+	const opened = ref.path === undefined;
+	const { path, plain } = opened ? await openStore() : ref;
 	const { item } = ref;
 	const store = plain ? plainStore(path) : optmemStore(path);
 	const prefix = item === undefined ? "" : `item ${item} `;
 
 	const note = async (author, round, texts) => {
 		for (const text of texts) {
-			const line = text.replace(/\s+/g, " ").trim();
+			const line = oneLine(text);
 
 			if (line === "") continue;
 
@@ -173,9 +174,27 @@ async function memory(ref = {}) {
 		return { ask, noted };
 	};
 
+	// One `summarizer` turn on the notes, with no turn when there are none. The notes do not change.
+	const harvest = async (work, outcome) => {
+		const notes = (await store.text()).trim();
+
+		if (notes === "") return [];
+
+		const prompt = await prompts.harvest({ item: work, outcome: JSON.stringify(outcome), run: runId, notes });
+		const { lessons } = await agent(prompt, { as: "summarizer", schema: LESSONS });
+
+		return lessons.map(({ cue, lesson, evidence }) => ({
+			cue: oneLine(cue),
+			lesson: oneLine(lesson),
+			evidence: oneLine(evidence),
+		}));
+	};
+
 	return {
 		ref: { path, plain, item },
+		opened,
 		note,
+		harvest,
 		session: remembering,
 		get text() {
 			return store.text();
@@ -187,4 +206,20 @@ const NOTED = {
 	type: "object",
 	required: ["text", "notes"],
 	properties: { text: { type: "string" }, notes: { type: "array", items: { type: "string" } } },
+};
+
+const LESSONS = {
+	type: "object",
+	required: ["lessons"],
+	properties: {
+		lessons: {
+			type: "array",
+			maxItems: 3,
+			items: {
+				type: "object",
+				required: ["cue", "lesson", "evidence"],
+				properties: { cue: { type: "string" }, lesson: { type: "string" }, evidence: { type: "string" } },
+			},
+		},
+	},
 };

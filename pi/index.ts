@@ -368,9 +368,10 @@ const GUIDELINES = [
 		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +
 		"and `log(text)` write progress lines, and `title(text)` names the run. `args`, `runId`, `runDir` and `cwd`, the " +
 		"directory of `sh`, are values.",
-	"Script lib: `subjectOf(text)` gives the first non-empty line without leading `#`. `memory(path, item)` gives a promise of a run memory in an " +
+	"Script lib: `subjectOf(text)` gives the first non-empty line without leading `#`. `oneLine(text)` gives the text with each whitespace run made one space, trimmed. `memory(path, item)` gives a promise of a run memory in an " +
 		"OptMem store, `<runDir>/memory` without `path`: `.path` and `.item` to pass to a child run, `.note(author, round, notes)`, " +
-		"`.text` (a promise of the notes), and `.session(profile)`, whose first `.ask` starts with the notes and whose " +
+		"`.text` (a promise of the notes), `.opened` (the store opened here), `.harvest(item, outcome)` (0 to 3 " +
+		"lessons `{ cue, lesson, evidence }` of the notes, `[]` with no turn when there are none), and `.session(profile)`, whose first `.ask` starts with the notes and whose " +
 		"`.noted(round, prompt, rule)` asks for `{ text, notes }` and keeps the notes. `commitAll(message)` stages and commits every change, " +
 		"`diffStat(from, to)` gives `+12 -3 in 2 files`, `assertClean()` throws on changes that are not committed, " +
 		"`changeOf(args, { wip })` gives `{ start, intent, checkout, dirty }` of `args.start` and `args.item`, or else of " +
