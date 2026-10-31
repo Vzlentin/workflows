@@ -1101,6 +1101,59 @@ return { runId, runDir, cwd, branch, start: args.start, plan: await prompts.plan
 		expect((await inputsOf(plain.id)).map((input) => Object.hasOwn(input, "overlay"))).toEqual([false, false, false]);
 	});
 
+	it("starts a child run with the prompts and profiles of a saved run, under the overlay of the call", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const folder = join(repo, ".workflows");
+		await mkdir(join(folder, "scripts"), { recursive: true });
+		await mkdir(join(folder, "prompts"));
+		await mkdir(join(folder, "agents"));
+		const template = (text: string) => `---\ndescription: x\n---\n${text}\n$@\n`;
+		await writeFile(join(folder, "prompts", "probe.md"), template("Script: saved probe"));
+		await writeFile(join(folder, "prompts", "other.md"), template("Script: saved other"));
+		await writeFile(join(folder, "agents", "default.md"), "---\nthinking: high\n---\nSaved profile.\n");
+		await writeFile(
+			join(folder, "scripts", "child.js"),
+			"return { args, replies: [await agent(await prompts.probe()), await agent(await prompts.other())] }",
+		);
+		const saved = await workflows(["child"], { cwd: repo });
+		expect(saved.code).toBe(0);
+
+		await writeFile(join(folder, "prompts", "other.md"), template("Script: new other"));
+		await writeFile(join(folder, "agents", "default.md"), "---\nthinking: low\n---\nNew profile.\n");
+
+		const call = (args: string) =>
+			writeFile(join(folder, "scripts", "parent.js"), `return await run("child", ${args})`);
+
+		await call(`{ from: ${JSON.stringify(saved.id)}, overlay: { "prompts/probe.md": "Script: X" } }`);
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(0);
+		expect(JSON.parse(run.stdout[1] ?? "")).toMatchObject({
+			args: {},
+			replies: ["Reply to X", "Reply to saved other"],
+		});
+		expect(run.model.calls.map(({ prompt, thinking }) => [prompt, thinking])).toEqual([
+			["Script: X", "high"],
+			["Script: saved other", "high"],
+		]);
+		expect(run.model.calls[0]?.sections.instructions).toContain("Saved profile.");
+
+		const failure = async (args: string) => {
+			await call(args);
+			const failed = await workflows(["parent"], { cwd: repo });
+
+			return [failed.code, failed.stderr[0]];
+		};
+
+		expect(await failure('{ from: "nope" }')).toEqual([1, "failed parent: run child: no run nope"]);
+		expect(await failure("{ from: 1 }")).toEqual([1, "failed parent: run child: from is not a run ID"]);
+		const child = JSON.parse(run.stdout[1] ?? "").runId;
+		expect(await failure(`{ from: ${JSON.stringify(child)} }`)).toEqual([
+			1,
+			`failed parent: run child: no run ${child}`,
+		]);
+	});
+
 	it("fails a run call whose overlay is not an object of path to text or null, or names no template", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);

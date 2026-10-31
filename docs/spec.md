@@ -686,7 +686,7 @@ continues it. It runs in the same host, and its `phase` and `log` lines go to th
 current step: see [Progress](#progress). It prints no `run` or report line. Its sessions belong to the child run, and
 its end ends them as the end of a run does: see [Runs in the harness host](#runs-in-the-harness-host).
 
-- The child's args are the defaults of its `meta.args`, then `args`, without `prompts`, `overlay` and `checkout`, and with `meta.worktree` also
+- The child's args are the defaults of its `meta.args`, then `args`, without `prompts`, `overlay`, `from` and `checkout`, and with `meta.worktree` also
   without `repo`, `base` and `branch`. They are not checked against `meta`, so an undeclared arg reaches the script.
 - With `meta.worktree` and `args.repo`, the child gets a new worktree on `<name>/<child-id>`, next to the repository as
   for `meta.worktree`, in
@@ -716,8 +716,13 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
     as `overlay` in its input, over the files of the caller run: the caller's keys are inherited, and the child's own
     keys win. Keys compare as written, so a relative key and the same file as an absolute key are two keys.
   - A run without files in its overlay saves no `overlay` field, and its sessions open with no overlay.
-- The child run gets the caller's saved scripts, prompts and profiles, with the replacements of `args.prompts` and
-  `args.overlay`, and the caller's file overlay. So every child run of a child run gets them too.
+- `args.from` names a saved root run of the project store, of any workflow and any status. The child run gets the
+  prompts and profiles of that run's saved bundle in place of the caller's; the scripts and the lib stay the
+  caller's. `args.prompts` and `args.overlay` apply on top of them. A run ID that is not a root run of the store, such
+  as a child run ID, fails the call with `run <name>: no run <id>`, and a `from` that is not a string fails it with
+  `run <name>: from is not a run ID`. `from` is a reserved argument name.
+- The child run gets the caller's saved scripts, prompts and profiles, or those of `args.from`, with the replacements
+  of `args.prompts` and `args.overlay`, and the caller's file overlay. So every child run of a child run gets them too.
 
 `run()` returns the child's result, with `runId`, the child run ID, added to an object result. A failed child run
 fails the call with `child run <id> failed: <error>`, where `<id>` is the deepest child run that failed, and the child's task ends as failed. A caller that fails aborts
@@ -740,6 +745,7 @@ except `phase`, `log`, `args`, `cwd` and `prompts`.
 | `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
 | `ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
+| `pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow` in the project store. See [Past runs](#past-runs) |
 | `input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`, or of the `workflow` tool with `resume` and `answer`. See [Input](#input) |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
@@ -747,8 +753,29 @@ except `phase`, `log`, `args`, `cwd` and `prompts`.
 
 A call with an argument of the wrong type, such as a prompt that is not a string, a `sh` command that is not a string
 or an array of strings, or a `prompts.<name>` input that is not a string, fails with
-`<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run`, `input` or `prompt`, and
+`<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run`, `pastRuns`, `input` or `prompt`, and
 `<path>` points to the deepest wrong value in the arguments, such as `/0/1` for `sh(["git", 1])`.
+
+#### Past runs
+
+`pastRuns(workflow, { runs, limit })` returns the root runs of the script `workflow` in the project store whose last
+task completed, newest first by run ID. Child runs and runs in progress are not in the list. It reads the tasks of
+`workflows.run` through the host, at the current task version and at earlier ones, and skips a task whose saved input
+does not have the fields below. Each run is an object:
+
+| Field | Value |
+|---|---|
+| `runId` | The run ID |
+| `item` | The `item` arg of the run, or `null` |
+| `repository`, `start` | The repository and the start commit of the run's worktree, or `null` |
+| `prompts` | The saved template texts, by prompt name |
+| `agents` | The text of `agents/<name>.md` that gives each saved profile: its `model` and `thinking` frontmatter, then its instructions |
+| `result` | The result of the run |
+
+`runs`, an array of run IDs, gives those runs in that order: an ID that is not a completed root run of `workflow` fails
+the call with `no completed <workflow> run <id>`. Without `runs`, `limit`, an integer of 0 or more, gives at most that
+many runs; without `limit`, it gives all of them. Another option fails with `pastRuns got bad arguments`. The call
+saves its result, so a resume returns the same list and does not read the store again.
 
 #### The script lib
 

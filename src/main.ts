@@ -30,6 +30,7 @@ import { agentLines, agentRows, callTree, type Shown, showEntries, type TreeEntr
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
 import { herdrPlace, removedByHerdr } from "./herdr.ts";
 import * as script from "./meta.ts";
+import type { RunTask } from "./past.ts";
 import type { PickItem } from "./pick.ts";
 import { display, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
 import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
@@ -41,7 +42,6 @@ import {
 	inputWorktree,
 	openStore,
 	progressEvents,
-	type RunTask,
 	reading,
 	runTasks,
 	type Store,

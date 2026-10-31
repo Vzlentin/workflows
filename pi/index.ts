@@ -362,7 +362,10 @@ const GUIDELINES = [
 		"`session({ as, provider, model, thinking })` gives a session that keeps its history, and its " +
 		"`.ask(prompt, { schema })` is one turn. `as` names an agent profile (default `default`), and `provider`, " +
 		"`model` and `thinking` override it. `sh(cmd)` returns stdout and throws on a nonzero exit, `ok(cmd)` returns true on exit 0. " +
-		"`run(name, args)` runs a named workflow as a child run. `input(question)` stops the run, and the tool gives a " +
+		"`run(name, args)` runs a named workflow as a child run, and `from: <run-id>` in `args` gives it the prompts and " +
+		"profiles of that saved run. `pastRuns(workflow, { runs, limit })` gives the completed root runs of a workflow, " +
+		"newest first, with their item, repository, start, prompts, agents and result. " +
+		"`input(question)` stops the run, and the tool gives a " +
 		"`waiting` result with the question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` " +
 		"then returns the answer. `parallel([() => ...])` and " +
 		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. `phase(title)` " +

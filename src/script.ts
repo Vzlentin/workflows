@@ -32,6 +32,7 @@ import type { Overlay } from "@vzlentin/harness/overlay";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { failure, git, run } from "./git.ts";
+import { PAST_OPTIONS, type PastOptions } from "./past.ts";
 import { PROGRESS_KIND, type ProgressEvent } from "./progress.ts";
 import { instructions, render } from "./prompts.ts";
 import type { Runtime } from "./task.ts";
@@ -90,6 +91,8 @@ export type ScriptRun = {
 	child(key: string, name: string, args: JsonObject): Promise<Child>;
 	/** Starts a new child task with the input of the ended child task `ended`, and saves it as the result of `key`. */
 	restart(key: string, ended: TaskId<JsonValue>): Promise<Child>;
+	/** The completed root runs of `workflow` in the store, as the `pastRuns` script call gives them. */
+	pastRuns(workflow: string, options: PastOptions): Promise<JsonValue>;
 };
 
 /** The extension of the `workflow` tool, which the entry gives every conversation of the host but the sessions. */
@@ -230,6 +233,7 @@ const agent = (prompt, { schema, ...options } = {}) => session(options).ask(prom
 const sh = async (cmd) => (await __sh(cmd)).stdout.replace(/\\n$/, "");
 const ok = async (cmd) => (await __ok(cmd)).code === 0;
 const input = (question) => __input(question);
+const pastRuns = (workflow, options) => __pastRuns(workflow, options ?? {});
 const run = async (name, args = {}) => {
 	const { runId: id, result } = await __run(name, args);
 	return result !== null && typeof result === "object" && !Array.isArray(result) ? { ...result, runId: id } : result;
@@ -259,6 +263,7 @@ const CALL_KINDS = Type.Union([
 	Type.Literal("ok"),
 	Type.Literal("run"),
 	Type.Literal("input"),
+	Type.Literal("pastRuns"),
 ]);
 
 /** The kinds of script calls. */
@@ -645,6 +650,7 @@ const ASK_ARGS = Type.Tuple([Type.Number(), Type.String(), Type.Union([JSON_OBJE
 const SH_ARGS = Type.Tuple([Type.Union([Type.String(), Type.Array(Type.String())])]);
 const RUN_ARGS = Type.Tuple([Type.String(), JSON_OBJECT]);
 const INPUT_ARGS = Type.Tuple([Type.String()]);
+const PAST_ARGS = Type.Tuple([Type.String(), PAST_OPTIONS]);
 const LINE_ARGS = Type.Array(JSON_VALUE);
 const PROMPT_ARGS = Type.Tuple([Type.String(), Type.Union([Type.Record(Type.String(), Type.String()), Type.Null()])]);
 
@@ -786,6 +792,14 @@ export async function runScript(
 				);
 			}),
 			global("__input", INPUT_ARGS, ([question]) => inputCall(calls, question, stop)),
+			// A resume replays the saved list, so runs that end later do not change it.
+			global("__pastRuns", PAST_ARGS, ([workflow, options]) => {
+				const args = { workflow, options };
+
+				return memoized(calls, callKey(calls, "pastRuns", args), { kind: "pastRuns", args }, () =>
+					script.pastRuns(workflow, options),
+				);
+			}),
 			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
 			global("log", LINE_ARGS, ([line]) => progress.lines.push({ kind: "log", text: String(line), at: Date.now() })),
 			global("title", LINE_ARGS, ([text]) => progress.lines.push({ kind: "title", text: String(text) })),
