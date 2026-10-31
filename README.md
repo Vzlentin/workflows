@@ -77,8 +77,10 @@ workflows ship --help
 ```
 
 A ship run works on the branch `ship/<run-id>` in its own worktree, and renames the branch at the end. It does not push
-and does not open a pull request. [docs/spec.md](docs/spec.md) describes all the commands, workflow scripts, runs, and
-the `workflow` tool.
+and does not open a pull request. Its result gives the divergence: one line that tells how the commit differs from the
+work item, or `none`. A ship that is not a campaign item, and a campaign, also give `lessons`: up to 3 lessons of its
+notes, each also a report line. [docs/spec.md](docs/spec.md) describes all the commands, workflow scripts, runs, and the
+`workflow` tool.
 
 ## Development
 

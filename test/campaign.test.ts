@@ -7,6 +7,9 @@ import {
 	type Commit,
 	conversationOf,
 	git,
+	LESSON,
+	LESSON_LINE,
+	LESSONED,
 	PASSING_JUDGE,
 	progressOf,
 	repository,
@@ -43,6 +46,7 @@ const SHIP = ["research", "plan", "handoff", "implement", "review", "judge", "co
 const THANKS: Commit = {
 	subject: "docs: thank the reader",
 	body: "The README ends with Thanks.",
+	divergence: "none",
 };
 
 /** The step lines of an item that ships in one round, under its item line: `stat` after implement, then the judge. */
@@ -149,8 +153,8 @@ describe("workflows campaign", () => {
 			"all 2 items",
 			"-",
 		]);
-		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, ...SHIP, "judge"]);
-		expect(run.model.calls.at(-1)?.prompt).toMatch(new RegExp(`## item\\n${GOAL.trim()}\\n\\n## base\\n${start}\\n`));
+		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, ...SHIP, "judge", "harvest"]);
+		expect(run.model.calls.at(-2)?.prompt).toMatch(new RegExp(`## item\\n${GOAL.trim()}\\n\\n## base\\n${start}\\n`));
 		const [split] = run.model.calls;
 		expect(split?.prompt).toMatch(/^Split this goal into work items\.\n[\s\S]*\n\n## goal\n# Fix the README\n/);
 		expect(split?.prompt).not.toContain("## answer");
@@ -253,13 +257,64 @@ describe("workflows campaign", () => {
 			`stopped Fix the README at item 1: ${worktree}`,
 			"Rundown 1: the item failed.",
 		]);
-		expect(stopped.model.calls).toEqual([]);
+		expect(stopped.model.calls.map((call) => call.kind)).toEqual(["harvest"]);
 		expect(git(worktree, "branch", "--show-current")).toBe(`campaign/${run.id}`);
 		const json = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
 		const result = JSON.parse(json.stdout[1] ?? "").result;
 		expect(result.rundown).toBe("Rundown 1: the item failed.");
 		git(worktree, "apply", "--index", patch);
 		expect(git(worktree, "write-tree")).toBe(git(worktree, "rev-parse", `${result.items[0].result.head}^{tree}`));
+	});
+
+	it("distils the lessons of the campaign once, at its end, and none in its items", async () => {
+		const run = await workflows(["campaign", "--json", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST, SECOND]], edits: [FIXED, THANKED], commit: [COMMIT, THANKS], lessons: [LESSON] },
+		});
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(run.model.count("harvest")).toBe(1);
+		expect(run.model.calls.at(-1)?.kind).toBe("harvest");
+		expect(result.lessons).toEqual([LESSONED]);
+		expect(report).toEqual([
+			expect.stringMatching(/^done Fix the README in 2 items, judge 0\.83, [0-9a-f]+$/),
+			itemLine(COMMIT.subject),
+			itemLine(THANKS.subject),
+			FINDING,
+			LESSON_LINE,
+			"branch docs/readme",
+		]);
+
+		for (const item of result.items) expect(item.result).not.toHaveProperty("lessons");
+		const prompt = run.model.find("harvest")?.prompt ?? "";
+		expect(prompt).toContain(`\n\n## item\n${GOAL.trim()}\n\n## outcome\n`);
+		const outcome = /\n## outcome\n(.*)\n\n## run\n/.exec(prompt)?.[1] ?? "";
+		expect(JSON.parse(outcome)).toMatchObject({ status: "done", items: [{ item: FIRST }, { item: SECOND }] });
+		expect(outcome).not.toContain('"report"');
+		expect(outcome).not.toContain('"memory"');
+	});
+
+	it("distils the lessons of a stopped campaign after its rundown", async () => {
+		const judge = { answers: ["FAIL", ...Array(7).fill("PASS")], findings: ["1 FAIL: the typo stays."] };
+
+		const run = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST, SECOND]], edits: [FIXED], judge },
+		});
+
+		expect(run.code).toBe(3);
+		expect(run.model.count("harvest")).toBe(0);
+
+		const stopped = await workflows(["resume", run.id ?? "", "--answer", "stop"], {
+			cwd: root,
+			script: { lessons: [LESSON] },
+		});
+
+		expect(stopped.code).toBe(1);
+		expect(stopped.stdout.slice(-2)).toEqual(["Rundown 1: the item failed.", LESSON_LINE]);
+		const json = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
+		expect(JSON.parse(json.stdout[1] ?? "").result).toMatchObject({ status: "stopped", lessons: [LESSONED] });
 	});
 
 	it("resets to the last shipped commit after a stopped item, and goes on with the answer", async () => {
@@ -276,7 +331,7 @@ describe("workflows campaign", () => {
 		const rundown = run.model.find("rundown")?.prompt;
 		expect(rundown).toContain("## handoff\nHandoff 2:");
 		expect(rundown).toContain(
-			`## shipped\n${JSON.stringify([{ item: FIRST, commit: git(worktree, "rev-parse", "--short", "HEAD") }])}`,
+			`## shipped\n${JSON.stringify([{ item: FIRST, commit: git(worktree, "rev-parse", "--short", "HEAD"), divergence: "none" }])}`,
 		);
 
 		const resumed = await workflows(["resume", run.id ?? "", "--answer", "Thank the reader in one line", "--json"], {
@@ -285,7 +340,7 @@ describe("workflows campaign", () => {
 		});
 
 		expect(resumed.code).toBe(0);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "judge"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "judge", "harvest"]);
 		const split = resumed.model.find("split")?.prompt;
 		expect(split).toContain("## rundown\nRundown 1");
 		expect(split).toContain("## answer\nThank the reader in one line");
@@ -329,11 +384,33 @@ describe("workflows campaign", () => {
 			...itemSteps("+1 -0 in 1 file", THANKS.subject),
 			...JUDGE_STEPS,
 		]);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual([...SHIP, "judge"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual([...SHIP, "judge", "harvest"]);
 		const worktree = worktreeOf(first.id);
 		const reflog = git(worktree, "reflog", "--format=%gs").split("\n");
 		expect(reflog.filter((line) => line === `commit: ${COMMIT.subject}`)).toHaveLength(1);
 		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("2");
+	});
+
+	it("adds the divergence of an item to its item line, unless it is none", async () => {
+		const diverged = { ...THANKS, divergence: "The README also thanks the team." };
+
+		const run = await workflows(["campaign", "--json", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST, SECOND]], edits: [FIXED, THANKED], commit: [COMMIT, diverged] },
+		});
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(report.slice(1, 3)).toEqual([
+			itemLine(COMMIT.subject),
+			expect.stringMatching(
+				new RegExp(`^ {2}[0-9a-f]+ ${THANKS.subject}, judge 0\\.83, divergence The README also thanks the team\\.$`),
+			),
+		]);
+		expect(result.items.map(({ result }: { result: { divergence: string } }) => result.divergence)).toEqual([
+			"none",
+			diverged.divergence,
+		]);
 	});
 
 	it("renames the campaign branch with a suffix when the name of the split subject exists", async () => {

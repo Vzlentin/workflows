@@ -42,8 +42,8 @@ const VERDICT = {
 
 const COMMIT = {
 	type: "object",
-	required: ["subject", "body"],
-	properties: { subject: { type: "string" }, body: { type: "string" } },
+	required: ["subject", "body", "divergence"],
+	properties: { subject: { type: "string" }, body: { type: "string" }, divergence: { type: "string" } },
 }
 
 const judge = session("judge")
@@ -75,7 +75,11 @@ async function commitMessage() {
 	try {
 		const answer = await judge.ask(prompts.commit(), { schema: COMMIT })
 
-		return answer.subject.trim() === "" ? undefined : { subject: answer.subject.trim(), body: answer.body.trim() }
+		if (answer.subject.trim() === "") return undefined
+
+		const divergence = oneLine(answer.divergence)
+
+		return { subject: answer.subject.trim(), body: answer.body.trim(), divergence }
 	} catch {
 		return undefined
 	}

@@ -4,8 +4,9 @@
 // in rounds until the reviewer answers SHIP. A change on a branch that no worktree has runs again as a child run in a
 // worktree on that branch. A caller gives `start`, the commit that its change starts from, with `item`, and may give
 // `plan` and `reply`, the handoff and the report of the implement before, `memory`, the `ref` of a run memory to go on
-// with, and `patches`, the folder of the round patches. `ship.js` runs it after `rpi.js`. Every Git step is safe to
-// repeat: a resume runs a step again when its result was not saved.
+// with, and `patches`, the folder of the round patches. Without `memory`, the run ends with the lessons of its own
+// memory. `ship.js` runs it after `rpi.js`. Every Git step is safe to repeat: a resume runs a step again when its result
+// was not saved.
 export const meta = {
 	description: "Review a change (the current branch, a PR, a ref or a range), and fix it in rounds until the reviewer answers SHIP.",
 	args: {
@@ -65,13 +66,15 @@ for (let round = 1; ; round++) {
 	if (verdict === "SHIP") {
 		const head = await sh(["git", "rev-parse", "--short", "HEAD"])
 
-		return { status: "approved", rounds: round, memory: await lines(), report: [`approved ${subject} in ${round} rounds, ${head}`] }
+		const report = [`approved ${subject} in ${round} rounds, ${head}`]
+
+		return notes.finish(item, { status: "approved", rounds: round, memory: await lines(), report })
 	}
 
 	if (round === rounds) {
 		const report = [`stopped ${subject} after ${round} rounds`]
 
-		return { status: "stopped", rounds: round, handoff: plan, memory: await lines(), report }
+		return notes.finish(item, { status: "stopped", rounds: round, handoff: plan, memory: await lines(), report })
 	}
 
 	plan = await reviewer.noted(round, `${await prompts.handoff()}\n\n${EVERY_FINDING}`, NOTES)
@@ -85,7 +88,7 @@ for (let round = 1; ; round++) {
 	if (fixed.status === "blocked") {
 		const report = [`blocked ${subject} after ${next} rounds`, reply]
 
-		return { status: "blocked", rounds: next, reply, handoff: plan, memory: await lines(), report }
+		return notes.finish(item, { status: "blocked", rounds: next, reply, handoff: plan, memory: await lines(), report })
 	}
 }
 
