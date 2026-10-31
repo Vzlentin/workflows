@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/Vzlentin/workflows/compare/v0.6.0...v0.6.1) (2026-10-31)
+
+
+### Features
+
+* give commit divergence and run lessons in run results ([#81](https://github.com/Vzlentin/workflows/issues/81)) ([c32cbe3](https://github.com/Vzlentin/workflows/commit/c32cbe35c6a7eb8ae64760a6b2d4e7471e1f42c1))
+
 ## [0.6.0](https://github.com/Vzlentin/workflows/compare/v0.5.1...v0.6.0) (2026-10-29)
 
 
