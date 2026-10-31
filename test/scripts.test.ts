@@ -21,6 +21,8 @@ import {
 	conversationOf,
 	detached,
 	git,
+	inputsOf,
+	overlayOf,
 	repository,
 	rootTasks,
 	runsOf,
@@ -1050,6 +1052,81 @@ return { runId, runDir, cwd, branch, start: args.start, plan: await prompts.plan
 		expect(existsSync(join(runs(), child.runId, "project"))).toBe(false);
 		const listed = await workflows(["list"], { cwd: repo });
 		expect(listed.stdout).toEqual([`${run.id} parent done parent`]);
+	});
+
+	it("gives a child run an overlay of its templates and of the files that its sessions and child runs see", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		await writeFile(join(repo, "NOTES.md"), "On disk.\n");
+
+		const folder = join(repo, ".workflows");
+		await mkdir(join(folder, "scripts"), { recursive: true });
+		await mkdir(join(folder, "prompts"), { recursive: true });
+		await writeFile(join(folder, "prompts", "probe.md"), "---\ndescription: x\n---\nScript: disk probe\n$@\n");
+
+		const overlay = JSON.stringify({
+			"prompts/probe.md": "Script: overlaid probe\n$@",
+			"agents/default.md": "---\nthinking: high\n---\nOverlaid profile.",
+			"NOTES.md": "Overlaid.",
+		});
+
+		await writeFile(join(folder, "scripts", "parent.js"), `return await run("child", { overlay: ${overlay} })`);
+		await writeFile(
+			join(folder, "scripts", "child.js"),
+			'const reply = await agent(await prompts.probe())\nreturn { args, cwd, reply, grandchild: await run("grandchild") }',
+		);
+		await writeFile(join(folder, "scripts", "grandchild.js"), 'return await agent("Script: grandchild")');
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(0);
+
+		const child = JSON.parse(run.stdout[1] ?? "");
+		expect(child).toMatchObject({ args: {}, reply: "Reply to overlaid probe", grandchild: "Reply to grandchild" });
+		expect(run.model.calls.map(({ prompt, thinking }) => [prompt, thinking])).toEqual([
+			["Script: overlaid probe", "high"],
+			["Script: grandchild", "high"],
+		]);
+		const files = { files: { [join(child.cwd, "NOTES.md")]: "Overlaid." } };
+		expect(await overlayOf(/^Script: overlaid probe/)).toEqual(files);
+		expect(await overlayOf(/^Script: grandchild/)).toEqual(files);
+		expect(await readFile(join(repo, "NOTES.md"), "utf8")).toBe("On disk.\n");
+
+		await writeFile(join(folder, "scripts", "parent.js"), 'return await run("child")');
+		const plain = await workflows(["parent"], { cwd: repo });
+		expect(plain.code).toBe(0);
+		expect(plain.model.calls.map(({ prompt, thinking }) => [prompt, thinking])).toEqual([
+			["Script: disk probe", "medium"],
+			["Script: grandchild", "medium"],
+		]);
+		expect(await overlayOf(/^Script: disk probe/)).toBeUndefined();
+		expect((await inputsOf(plain.id)).map((input) => Object.hasOwn(input, "overlay"))).toEqual([false, false, false]);
+	});
+
+	it("fails a run call whose overlay is not an object of path to text or null, or names no template", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "child.js"), "return await prompts.plan()");
+
+		const failure = async (given: string) => {
+			await writeFile(join(scripts, "parent.js"), `return await run("child", { overlay: ${given} })`);
+			const run = await workflows(["parent"], { cwd: repo });
+
+			return [run.code, run.stderr[0]];
+		};
+
+		const bad = "failed parent: run child: overlay is not an object of path to text or null";
+		expect(await failure('{ "NOTES.md": 1 }')).toEqual([1, bad]);
+		expect(await failure('["NOTES.md"]')).toEqual([1, bad]);
+		expect(await failure('{ "prompts/none.md": "x" }')).toEqual([1, "failed parent: run child: no prompt none"]);
+		expect(await failure('{ "agents/none.md": null }')).toEqual([1, "failed parent: run child: no agent profile none"]);
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { prompts: { "a/b": "x" } })');
+		const nested = await workflows(["parent"], { cwd: repo });
+		expect([nested.code, nested.stderr[0]]).toEqual([1, "failed parent: run child: no prompt a/b"]);
+		const removed = /^failed parent: child run \S+ failed: not a function$/;
+		expect(await failure('{ "prompts/plan.md": null }')).toEqual([1, expect.stringMatching(removed)]);
+		await writeFile(join(scripts, "child.js"), "return await prompts.none()");
+		expect(await failure("{}")).toEqual([1, expect.stringMatching(removed)]);
 	});
 
 	it("runs a child run without repo in the directory of the caller", async () => {

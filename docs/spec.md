@@ -58,7 +58,7 @@ defaults to 3. `--branch <name>` gives the name of the run's branch: see
 `--prompts <folder>`, relative to the current directory, gives prompts for this run: each `<name>.md` in the folder
 replaces the package prompt `prompts/<name>.md`, in the same template format. A missing folder, or a file with no
 package prompt of that name, fails before the run starts. The run saves the prompts that it used, as any run does.
-`campaign` and `optimize` take the same option.
+`campaign` and `optimize` take the same option. As a child run, it also takes `overlay`, and gives it to its child runs: see [Child runs](#child-runs).
 
 Without `--repo`, the run uses the Git repository that contains the current directory. With `--repo`, the value is
 first a path, relative to the current directory. If that path is the top level of a local Git repository, the run
@@ -173,7 +173,7 @@ workflows rpi --repo calibre --base develop item.md
 `workflows rpi` researches, plans and implements one work item, and commits it on its branch: the research, plan and
 first implement of `ship`, with no review, no judge and no squash. The work item, `--repo`, `--base`, `--branch` and
 `--prompts` work as for `ship`. The work goes in a worktree next to the repository on the branch `rpi/<run-id>`, or
-`--branch`, which keeps its name. The steps are `research`, `plan` and `implement`.
+`--branch`, which keeps its name. The steps are `research`, `plan` and `implement`. As a child run, it also takes `overlay`, and gives it to its child runs: see [Child runs](#child-runs).
 
 The research and plan sessions are those of `ship`. The step `implement` runs [implement](#implement) as a child
 run, with the planner's handoff as the plan, round 1, the start commit, the subject of the work item as the message,
@@ -202,7 +202,7 @@ message, by default the subject of the plan, and `--round`, default 1, is the ro
 caller also gives `start`, the commit that the change starts from, and `memory`, the `ref` of a run memory to go on
 with. Without `memory`, the run opens its own store, as `ship` does. Without `start`, a checkout with changes that
 are not committed fails with `the checkout has changes that are not committed; commit or stash them first` before any
-session, and `start` is `HEAD`.
+session, and `start` is `HEAD`. As a child run, it also takes `overlay`: see [Child runs](#child-runs).
 
 The `implementer` session gets the `implement` prompt with the plan, after the notes of the memory, and gives its
 report and notes. The run stages all changes and commits them as the message, when something is staged. Commits that
@@ -225,7 +225,7 @@ workflows thermoloop main..feature --rounds 2
 
 `workflows thermoloop [<change>]`, the review loop, reviews a change and fixes it in rounds until the reviewer
 answers SHIP. It commits its fixes on the branch of the change and does not push. `--base` defaults to `main` and
-`--rounds` to 3. The one optional argument says what the change is:
+`--rounds` to 3. As a child run, it also takes `overlay`, and gives it to its child runs: see [Child runs](#child-runs). The one optional argument says what the change is:
 
 - Nothing: the current branch, from the merge base of `--base` and `HEAD` to `HEAD`.
 - A number: the pull request with that number. The run reads it with `gh pr view <n> --json
@@ -295,7 +295,8 @@ workflows judge main..feature --item item.md
 change, `--base`, `--item`, the intent and the worktree of a change on another branch are as in
 [Thermoloop](#thermoloop). The judge changes nothing: it commits no `wip`, and when the checkout has changes that are
 not committed, it logs `uncommitted changes are not judged` and adds that line at the end of its report. `ship` and
-`campaign` give it `start`, the commit that the change starts from, and `item`. Its step is `judge`.
+`campaign` give it `start`, the commit that the change starts from, and `item`. Its step is `judge`. As a child
+run, it also takes `overlay`: see [Child runs](#child-runs).
 
 The judge session answers through `respond`: eight PASS or FAIL answers, and one finding line for each failed
 question. If question 1 (complete) or 2 (correct) fails, the score is 0. Otherwise the score is the fraction of
@@ -685,7 +686,7 @@ continues it. It runs in the same host, and its `phase` and `log` lines go to th
 current step: see [Progress](#progress). It prints no `run` or report line. Its sessions belong to the child run, and
 its end ends them as the end of a run does: see [Runs in the harness host](#runs-in-the-harness-host).
 
-- The child's args are the defaults of its `meta.args`, then `args`, without `prompts` and `checkout`, and with `meta.worktree` also
+- The child's args are the defaults of its `meta.args`, then `args`, without `prompts`, `overlay` and `checkout`, and with `meta.worktree` also
   without `repo`, `base` and `branch`. They are not checked against `meta`, so an undeclared arg reaches the script.
 - With `meta.worktree` and `args.repo`, the child gets a new worktree on `<name>/<child-id>`, next to the repository as
   for `meta.worktree`, in
@@ -701,7 +702,22 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
   `meta.worktree`. `checkout` is a reserved argument name.
 - `args.prompts` maps prompt names to template texts. Each text, without frontmatter and the last `$@`, replaces that
   prompt in the child run only. A name with no prompt fails the call.
-- The child run gets the caller's saved scripts, prompts and profiles.
+- `args.overlay` maps paths to texts or `null`. A value of another shape fails the call with
+  `run <name>: overlay is not an object of path to text or null`. `overlay` is a reserved argument name.
+  - A key `prompts/<prompt>.md` replaces that prompt, as `args.prompts` does, or removes it with `null`. A key
+    `agents/<profile>.md` replaces that agent profile, parsed as a file of `agents/`, or removes it with `null`. A key
+    for a name that the caller's bundle does not have fails the call with `run <name>: no prompt <prompt>` or
+    `run <name>: no agent profile <profile>`. A call of a removed prompt or profile fails as a call of an unknown name
+    does. When `args.prompts` and `args.overlay` replace the same prompt, the text of `overlay` wins.
+  - Every other key is a file that the sessions of the child run see in place of the disk: the run opens each session
+    with these files as `overlay` in its spec of the children library, so the subagents of the session see them too.
+    A string replaces the file, and `null` removes it. A relative key is relative to the session's directory, the
+    run's worktree; an absolute key stays as it is. The files on disk do not change. The child run saves the files
+    as `overlay` in its input, over the files of the caller run: the caller's keys are inherited, and the child's own
+    keys win. Keys compare as written, so a relative key and the same file as an absolute key are two keys.
+  - A run without files in its overlay saves no `overlay` field, and its sessions open with no overlay.
+- The child run gets the caller's saved scripts, prompts and profiles, with the replacements of `args.prompts` and
+  `args.overlay`, and the caller's file overlay. So every child run of a child run gets them too.
 
 `run()` returns the child's result, with `runId`, the child run ID, added to an object result. A failed child run
 fails the call with `child run <id> failed: <error>`, where `<id>` is the deepest child run that failed, and the child's task ends as failed. A caller that fails aborts

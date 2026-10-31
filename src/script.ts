@@ -28,6 +28,7 @@ import {
 	type Tx,
 } from "@earendil-works/pi-durable";
 import type { Children, Failure, Owner, Place, Spec } from "@vzlentin/harness/children";
+import type { Overlay } from "@vzlentin/harness/overlay";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { failure, git, run } from "./git.ts";
@@ -79,6 +80,8 @@ export type ScriptRun = {
 	readonly runDir: string;
 	readonly bundle: RunBundle;
 	readonly args: JsonObject;
+	/** The files that the sessions of the run see in place of the disk, from the saved input. */
+	readonly overlay: Overlay | undefined;
 	/** The conversation whose `workflow` tool started the run, from `PI_SESSION_ID`. */
 	readonly session: string | undefined;
 	/** The answer to the `input` call with the document key `call`, from `resume --answer`. */
@@ -134,7 +137,8 @@ async function overrides(folder: string, templates: Record<string, string>): Pro
 	return own;
 }
 
-function profileOf(name: string, text: string): Profile {
+/** The profile of the text of `agents/<name>.md`. */
+export function profileOf(name: string, text: string): Profile {
 	const { frontmatter, body } = parseFrontmatter<{ model?: string; thinking?: string }>(text);
 	const { model, thinking } = frontmatter;
 	const profile: Writable<Profile> = { instructions: instructions(body) };
@@ -525,6 +529,8 @@ async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionAr
 	if (thinking !== undefined) spec.thinking = thinking;
 
 	if (profile.instructions !== "") spec.instructions = profile.instructions;
+
+	if (script.overlay !== undefined) spec.overlay = script.overlay;
 
 	const child = await host.children.open(
 		host.place,
