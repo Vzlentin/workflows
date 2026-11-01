@@ -15,12 +15,14 @@ import { AGENTS } from "../pi/run-view.ts";
 import { branchOf } from "../src/git.ts";
 import type { Choose } from "../src/main.ts";
 import { programStatus } from "../src/progress.ts";
-import { CallDoc } from "../src/script.ts";
+import { CallDoc, profileOf } from "../src/script.ts";
 import {
 	childTasks,
 	conversationOf,
 	detached,
 	git,
+	inputsOf,
+	overlayOf,
 	repository,
 	rootTasks,
 	runsOf,
@@ -1052,6 +1054,134 @@ return { runId, runDir, cwd, branch, start: args.start, plan: await prompts.plan
 		expect(listed.stdout).toEqual([`${run.id} parent done parent`]);
 	});
 
+	it("gives a child run an overlay of its templates and of the files that its sessions and child runs see", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		await writeFile(join(repo, "NOTES.md"), "On disk.\n");
+
+		const folder = join(repo, ".workflows");
+		await mkdir(join(folder, "scripts"), { recursive: true });
+		await mkdir(join(folder, "prompts"), { recursive: true });
+		await writeFile(join(folder, "prompts", "probe.md"), "---\ndescription: x\n---\nScript: disk probe\n$@\n");
+
+		const overlay = JSON.stringify({
+			"prompts/probe.md": "Script: overlaid probe\n$@",
+			"agents/default.md": "---\nthinking: high\n---\nOverlaid profile.",
+			"NOTES.md": "Overlaid.",
+		});
+
+		await writeFile(join(folder, "scripts", "parent.js"), `return await run("child", { overlay: ${overlay} })`);
+		await writeFile(
+			join(folder, "scripts", "child.js"),
+			'const reply = await agent(await prompts.probe())\nreturn { args, cwd, reply, grandchild: await run("grandchild") }',
+		);
+		await writeFile(join(folder, "scripts", "grandchild.js"), 'return await agent("Script: grandchild")');
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(0);
+
+		const child = JSON.parse(run.stdout[1] ?? "");
+		expect(child).toMatchObject({ args: {}, reply: "Reply to overlaid probe", grandchild: "Reply to grandchild" });
+		expect(run.model.calls.map(({ prompt, thinking }) => [prompt, thinking])).toEqual([
+			["Script: overlaid probe", "high"],
+			["Script: grandchild", "high"],
+		]);
+		const files = { files: { [join(child.cwd, "NOTES.md")]: "Overlaid." } };
+		expect(await overlayOf(/^Script: overlaid probe/)).toEqual(files);
+		expect(await overlayOf(/^Script: grandchild/)).toEqual(files);
+		expect(await readFile(join(repo, "NOTES.md"), "utf8")).toBe("On disk.\n");
+
+		await writeFile(join(folder, "scripts", "parent.js"), 'return await run("child")');
+		const plain = await workflows(["parent"], { cwd: repo });
+		expect(plain.code).toBe(0);
+		expect(plain.model.calls.map(({ prompt, thinking }) => [prompt, thinking])).toEqual([
+			["Script: disk probe", "medium"],
+			["Script: grandchild", "medium"],
+		]);
+		expect(await overlayOf(/^Script: disk probe/)).toBeUndefined();
+		expect((await inputsOf(plain.id)).map((input) => Object.hasOwn(input, "overlay"))).toEqual([false, false, false]);
+	});
+
+	it("starts a child run with the prompts and profiles of a saved run, under the overlay of the call", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const folder = join(repo, ".workflows");
+		await mkdir(join(folder, "scripts"), { recursive: true });
+		await mkdir(join(folder, "prompts"));
+		await mkdir(join(folder, "agents"));
+		const template = (text: string) => `---\ndescription: x\n---\n${text}\n$@\n`;
+		await writeFile(join(folder, "prompts", "probe.md"), template("Script: saved probe"));
+		await writeFile(join(folder, "prompts", "other.md"), template("Script: saved other"));
+		await writeFile(join(folder, "agents", "default.md"), "---\nthinking: high\n---\nSaved profile.\n");
+		await writeFile(
+			join(folder, "scripts", "child.js"),
+			"return { args, replies: [await agent(await prompts.probe()), await agent(await prompts.other())] }",
+		);
+		const saved = await workflows(["child"], { cwd: repo });
+		expect(saved.code).toBe(0);
+
+		await writeFile(join(folder, "prompts", "other.md"), template("Script: new other"));
+		await writeFile(join(folder, "agents", "default.md"), "---\nthinking: low\n---\nNew profile.\n");
+
+		const call = (args: string) =>
+			writeFile(join(folder, "scripts", "parent.js"), `return await run("child", ${args})`);
+
+		await call(`{ from: ${JSON.stringify(saved.id)}, overlay: { "prompts/probe.md": "Script: X" } }`);
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(0);
+		expect(JSON.parse(run.stdout[1] ?? "")).toMatchObject({
+			args: {},
+			replies: ["Reply to X", "Reply to saved other"],
+		});
+		expect(run.model.calls.map(({ prompt, thinking }) => [prompt, thinking])).toEqual([
+			["Script: X", "high"],
+			["Script: saved other", "high"],
+		]);
+		expect(run.model.calls[0]?.sections.instructions).toContain("Saved profile.");
+
+		const failure = async (args: string) => {
+			await call(args);
+			const failed = await workflows(["parent"], { cwd: repo });
+
+			return [failed.code, failed.stderr[0]];
+		};
+
+		expect(await failure('{ from: "nope" }')).toEqual([1, "failed parent: run child: no run nope"]);
+		expect(await failure("{ from: 1 }")).toEqual([1, "failed parent: run child: from is not a run ID"]);
+		const child = JSON.parse(run.stdout[1] ?? "").runId;
+		expect(await failure(`{ from: ${JSON.stringify(child)} }`)).toEqual([
+			1,
+			`failed parent: run child: no run ${child}`,
+		]);
+	});
+
+	it("fails a run call whose overlay is not an object of path to text or null, or names no template", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "child.js"), "return await prompts.plan()");
+
+		const failure = async (given: string) => {
+			await writeFile(join(scripts, "parent.js"), `return await run("child", { overlay: ${given} })`);
+			const run = await workflows(["parent"], { cwd: repo });
+
+			return [run.code, run.stderr[0]];
+		};
+
+		const bad = "failed parent: run child: overlay is not an object of path to text or null";
+		expect(await failure('{ "NOTES.md": 1 }')).toEqual([1, bad]);
+		expect(await failure('["NOTES.md"]')).toEqual([1, bad]);
+		expect(await failure('{ "prompts/none.md": "x" }')).toEqual([1, "failed parent: run child: no prompt none"]);
+		expect(await failure('{ "agents/none.md": null }')).toEqual([1, "failed parent: run child: no agent profile none"]);
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { prompts: { "a/b": "x" } })');
+		const nested = await workflows(["parent"], { cwd: repo });
+		expect([nested.code, nested.stderr[0]]).toEqual([1, "failed parent: run child: no prompt a/b"]);
+		const removed = /^failed parent: child run \S+ failed: not a function$/;
+		expect(await failure('{ "prompts/plan.md": null }')).toEqual([1, expect.stringMatching(removed)]);
+		await writeFile(join(scripts, "child.js"), "return await prompts.none()");
+		expect(await failure("{}")).toEqual([1, expect.stringMatching(removed)]);
+	});
+
 	it("runs a child run without repo in the directory of the caller", async () => {
 		const repo = join(root, "repo");
 		const start = await repository(repo);
@@ -1359,6 +1489,19 @@ return [one.reply, two.reply].join(", ")`,
 		expect(call?.sections.instructions).toContain("Project profile body.");
 	});
 
+	it("gives a script the text of each agent profile of its bundle", async () => {
+		const agents = join(root, ".workflows", "agents");
+		await mkdir(agents, { recursive: true });
+		const file = "---\ndescription: A probe.\nmodel: anthropic/claude-opus-5-5\nthinking: high\n---\nProbe body.\n";
+		await writeFile(join(agents, "probe.md"), file);
+		await writeFile(join(root, "x.js"), "return JSON.stringify([agents.probe, Object.isFrozen(agents)])");
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(0);
+		const [text, frozen] = JSON.parse(run.stdout.at(-1) ?? "[]");
+		expect([text, frozen]).toEqual(["---\nmodel: anthropic/claude-opus-5-5\nthinking: high\n---\nProbe body.", true]);
+		expect(profileOf("probe", text)).toEqual(profileOf("probe", file));
+	});
+
 	it("rejects bad scripts and arguments", async () => {
 		for (const [code, name] of [
 			["Date.now()", "Date.now"],
@@ -1446,7 +1589,7 @@ return [one.reply, two.reply].join(", ")`,
 			"campaign: Split a goal into work items and ship each one as a commit on one branch.",
 			"implement: Implement a plan in the current directory, and commit the change.",
 			"judge: Judge a change (the current branch, a PR, a ref or a range) against its intent with the fixed rubric.",
-			"optimize: Search for better ship prompts over a folder of work items.",
+			"optimize: Propose prompt, profile, skill and AGENTS.md edits from ship runs, and keep them when a blind judge prefers their diffs.",
 			"rpi: Research, plan and implement one work item, and commit it on a new branch.",
 			"ship: Ship one work item onto a new branch: research, plan, implement, review rounds, judge, and one squashed commit.",
 			"thermoloop: Review a change (the current branch, a PR, a ref or a range), and fix it in rounds until the reviewer answers SHIP.",

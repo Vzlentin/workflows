@@ -20,6 +20,7 @@ import { Value } from "typebox/value";
 import { branchOf, ensureWorktree, renameBranch } from "./git.ts";
 import { herdrWorktree, typePickLoop } from "./herdr.ts";
 import { childInput, report, type ScriptInput, statusOf } from "./meta.ts";
+import { allPages, pastRuns, type RunTask, rootRuns, savedBundle } from "./past.ts";
 import { newRunId } from "./run.ts";
 import { addProgress, CallDoc, type Child, type Host, JSON_VALUE, ownerOf, runScript, SessionsDoc } from "./script.ts";
 
@@ -43,8 +44,43 @@ async function savedChild(runtime: Runtime, key: string, context: Context): Prom
 }
 
 /**
+ * The root tasks of the kind `workflows.run` in the store, of every version, by run ID, oldest first. The commit only
+ * reads, so it keeps the task state and takes no lock but the host's own.
+ */
+async function scanRuns(runtime: Runtime, context: Context): Promise<Map<string, RunTask[]>> {
+	let tasks: RunTask[] = [];
+
+	await runtime.commit(async (tx) => {
+		tasks = await allPages((cursor) => tx.scanTasks({ kind: TASK.name }, 256, cursor));
+
+		return undefined;
+	}, context);
+
+	return rootRuns(tasks);
+}
+
+/** `bundle` with the prompts and profiles of the saved root run `from`, the arg of the `run` call of `name`. */
+async function bundleFrom(
+	runtime: Runtime,
+	context: Context,
+	name: string,
+	bundle: ScriptInput["bundle"],
+	from: JsonValue | undefined,
+): Promise<ScriptInput["bundle"]> {
+	if (from === undefined) return bundle;
+
+	if (!Value.Check(Type.String(), from)) throw new Error(`run ${name}: from is not a run ID`);
+	const saved = savedBundle(await scanRuns(runtime, context), from);
+
+	if (saved === undefined) throw new Error(`run ${name}: no run ${from}`);
+
+	return { ...bundle, prompts: saved.prompts, agents: saved.agents };
+}
+
+/**
  * A new child task of the `run` call `key` of the task of `runtime`, in a new run directory next to `input.runDir`. The
- * commit that creates it also saves it in the record of the call.
+ * commit that creates it also saves it in the record of the call. With `from`, the child gets the prompts and profiles
+ * of that saved root run in place of the caller's.
  */
 async function startChild(
 	definition: ScriptTask,
@@ -53,15 +89,16 @@ async function startChild(
 	caller: { readonly input: ScriptInput; readonly cwd: string },
 	key: string,
 	name: string,
-	args: JsonObject,
+	{ from, ...args }: JsonObject,
 ): Promise<Child> {
+	const bundle = await bundleFrom(runtime, context, name, caller.input.bundle, from);
 	const id = newRunId();
 	const directory = join(dirname(caller.input.runDir), id);
 	await mkdir(directory, { recursive: true });
 
 	try {
 		const run = { id, directory, cwd: caller.cwd, root: caller.input.root };
-		const own = await childInput({ name, args, bundle: caller.input.bundle }, run);
+		const own = await childInput({ name, args, bundle, overlay: caller.input.overlay }, run);
 		const { parent, herdr } = caller.input;
 		const parented = parent === undefined ? own : { ...own, parent };
 		const input = herdr === undefined ? parented : { ...parented, herdr };
@@ -308,11 +345,13 @@ async function runPhase(
 			root,
 			runDir: input.runDir,
 			bundle: input.bundle,
+			overlay: input.overlay,
 			session: input.parent,
 			answer: input.answer,
 			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },
 			child: (key, name, args) => startChild(definition, runtime, context, { input, cwd }, key, name, args),
 			restart: (key, ended) => restartChild(definition, runtime, context, key, ended),
+			pastRuns: async (workflow, options) => pastRuns(await scanRuns(runtime, context), workflow, options),
 		});
 
 		const result = await named(input, ran, runtime.signal);
@@ -341,7 +380,7 @@ async function runPhase(
 }
 
 /** The kind and version of the task of every script run. A run saved by another version cannot resume. */
-export const TASK = { name: "workflows.run", version: 17 } as const;
+export const TASK = { name: "workflows.run", version: 18 } as const;
 
 /** Whether the script task can continue the task `latest`. */
 export function current<R>(

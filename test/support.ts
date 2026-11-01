@@ -14,7 +14,7 @@ import {
 	fauxText,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { EntryRecord } from "@earendil-works/pi-durable";
+import type { ConversationId, EntryRecord, JsonObject } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { REMINDER } from "@vzlentin/harness/answer";
 import { connect } from "@vzlentin/harness/client";
@@ -89,6 +89,13 @@ export async function childTasks(id: string) {
 		task.owner !== undefined && Value.Check(CHILD_INPUT, task.input) && task.input.root === id
 			? [{ runId: task.input.runId, ...stateOf(task) }]
 			: [],
+	);
+}
+
+/** The saved input of each task of the run `id` of the `main` project and of its child runs. */
+export async function inputsOf(id: string | undefined): Promise<JsonObject[]> {
+	return (await runTasks("main")).flatMap((task) =>
+		Value.Check(CHILD_INPUT, task.input) && task.input.root === id ? [task.input] : [],
 	);
 }
 
@@ -264,7 +271,10 @@ export type Kind =
 	| "split"
 	| "rundown"
 	| "summarize"
-	| "reflect"
+	| "inv"
+	| "dom"
+	| "compose"
+	| "select"
 	| "harvest"
 	| "script"
 	| "result";
@@ -294,7 +304,10 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Split this goal into work items.", "split"],
 	["Give a rundown of the failed work item", "rundown"],
 	["Compress memories", "summarize"],
-	["Improve this prompt", "reflect"],
+	["Propose edits to the workflow prompts and agent profiles", "inv"],
+	["Propose edits to the practitioner skills", "dom"],
+	["Compose one candidate overlay", "compose"],
+	["Compare two diffs of one work item", "select"],
 	["Distil the lessons", "harvest"],
 	["Script", "script"],
 	// The outcome that a background run posts to the conversation of its `workflow` call.
@@ -340,12 +353,34 @@ export type Script = {
 	readonly hang?: string;
 	/** How many answers of this model to `Script respond: <json>` prompts are text replies with no `respond` call. */
 	readonly skipRespond?: number;
+	/** The edits of the inv answer, `[]` by default. */
+	readonly inv?: readonly Edit[];
+	/** The edits of the dom answer, `[]` by default. */
+	readonly dom?: readonly Edit[];
+	/** The compose answer; by default it keeps each inv and dom edit with a `kept` note. */
+	readonly compose?: Compose;
+	/**
+	 * One entry for each select call: the answer is the label whose `## A` or `## B` section contains the text, and
+	 * `tie` for `"tie"`, a text in no section, or no entry.
+	 */
+	readonly select?: readonly string[];
 	/** The lessons of each harvest answer, `[]` by default. */
 	readonly lessons?: readonly Lesson[];
 	/** The handoff and implement answers give no notes, so the run memory stays empty. */
 	readonly silent?: boolean;
 	/** Ctrl+C: `abort` presses it, and `signal` aborts at the first press. */
 	readonly interrupt: { readonly signal: AbortSignal; abort(): void };
+};
+
+export type Edit = { readonly path: string; readonly text: string | null; readonly moment: string };
+
+export type Compose = {
+	readonly overlay: readonly { readonly path: string; readonly text: string | null }[];
+	readonly notes: readonly {
+		readonly verdict: "kept" | "revised" | "dropped";
+		readonly edit: string;
+		readonly moment: string;
+	}[];
 };
 
 export type Verdict = { readonly answers: readonly ("PASS" | "FAIL")[]; readonly findings: readonly string[] };
@@ -546,13 +581,14 @@ export class FakeModel {
 				return fauxAssistantMessage(`Summary ${nth}: README.md had wrold.`);
 			case "rundown":
 				return respond({ rundown: `Rundown ${nth}: the item failed.`, suggestions: ["Split the item."], items: [] });
-			case "reflect": {
-				// The reply keeps the current text first, so that the prompt keeps its kind.
-				const current = /\n## current\n([\s\S]*?)\n\n## records\n/.exec(prompt)?.[1] ?? "";
-
-				return fauxAssistantMessage(`${current}\nImproved prompt ${nth}.`);
-			}
-
+			case "inv":
+				return respond({ edits: [...(this.#script.inv ?? [])] });
+			case "dom":
+				return respond({ edits: [...(this.#script.dom ?? [])] });
+			case "compose":
+				return respond(this.#script.compose ?? kept([...(this.#script.inv ?? []), ...(this.#script.dom ?? [])]));
+			case "select":
+				return respond(selected(prompt, this.#script.select?.[nth - 1]));
 			case "harvest":
 				return respond({ lessons: [...(this.#script.lessons ?? [])] });
 			case "result":
@@ -614,6 +650,26 @@ export class FakeModel {
 
 		return respond(Array.isArray(scripted) ? (scripted[this.count("commit") - 1] ?? COMMIT) : scripted);
 	}
+}
+
+/** The compose answer that keeps each of `edits`. */
+function kept(edits: readonly Edit[]): Compose {
+	return {
+		overlay: edits.map(({ path, text }) => ({ path, text })),
+		notes: edits.map(({ path, moment }) => ({ verdict: "kept", edit: path, moment })),
+	};
+}
+
+/** The label of the `## A` or `## B` section of the select `prompt` that contains `text`, or `tie`. */
+function selected(prompt: string, text: string | undefined): string {
+	const b = prompt.indexOf("\n## B\n");
+	const a = prompt.slice(prompt.indexOf("\n## A\n"), b);
+
+	if (text === undefined || text === "tie") return "tie";
+
+	if (a.includes(text)) return "A";
+
+	return prompt.slice(b).includes(text) ? "B" : "tie";
 }
 
 /** The index of the last user message that is not a reminder to call `respond`. */
@@ -878,12 +934,29 @@ export async function workflowResults(project = "main"): Promise<WorkflowResult[
 }
 
 /** The conversation ID of the first transcript in the store of `project` with a user message that matches `prompt`. */
-export async function conversationOf(prompt: RegExp, project = "main"): Promise<number | undefined> {
+export async function conversationOf(prompt: RegExp, project = "main"): Promise<ConversationId | undefined> {
 	const found = (await entriesOf(project)).find((entry) =>
 		(entry.model ?? []).some((message) => message.role === "user" && prompt.test(textOf(message))),
 	);
 
 	return found?.conversationId;
+}
+
+/** The `harness.overlay` state of the first conversation of the `main` store with a user message that matches `prompt`. */
+export async function overlayOf(prompt: RegExp): Promise<JsonValue | undefined> {
+	const conversationId = await conversationOf(prompt);
+
+	if (conversationId === undefined) throw new Error(`no conversation with a prompt that matches ${prompt}`);
+	const storage = await openNodeSqliteStorage(storeOf());
+
+	try {
+		const scope = { kind: "conversation" as const, conversationId };
+		const record = await storage.findDocument({ kind: "harness.overlay", scope }, "current", BACKGROUND_CONTEXT);
+
+		return record && (await storage.document(record.id, "current", BACKGROUND_CONTEXT))?.value;
+	} finally {
+		await storage.close(BACKGROUND_CONTEXT);
+	}
 }
 
 /** A run outcome that a background run posted as a message: its text, its data, and the conversation it went to. */

@@ -823,6 +823,87 @@ export default function ({ events }) {
 	});
 });
 
+describe("pastRuns", () => {
+	it("gives the completed ship runs of the store, newest first, and a resume replays them", async () => {
+		const project = join(repo, ".workflows");
+		await mkdir(join(project, "prompts"), { recursive: true });
+		await mkdir(join(project, "agents"));
+		await mkdir(join(project, "scripts"));
+		await writeFile(join(project, "prompts", "probe.md"), "---\ndescription: x\n---\nProbe template.\n$@\n");
+		await writeFile(
+			join(project, "agents", "probe.md"),
+			"---\nmodel: anthropic/m-1\nthinking: high\n---\nProbe profile.\n",
+		);
+		await writeFile(
+			join(project, "scripts", "past.js"),
+			'export const meta = { args: { options: { type: "string", positional: true } } }\nreturn await pastRuns("ship", JSON.parse(args.options ?? "{}"))\n',
+		);
+		await writeFile(
+			join(project, "scripts", "asking.js"),
+			'const runs = await pastRuns("ship")\nawait input("Go?")\nreturn runs.map((run) => run.runId)\n',
+		);
+		git(repo, "add", ".workflows");
+		git(repo, "commit", "-q", "-m", "project");
+		const head = git(repo, "rev-parse", "HEAD");
+
+		const ship = async (item: string) => {
+			const run = await workflows(["ship", "--json", item], { cwd: repo, script: { edits: [FIXED] } });
+			expect(run.code).toBe(0);
+
+			return { runId: run.id ?? "", result: JSON.parse(run.stdout[1] ?? "").result };
+		};
+
+		const first = await ship("Fix the README typo");
+		const second = await ship("Fix the README typo again");
+
+		const failed = await workflows(["ship", "Fix it"], {
+			cwd: repo,
+			script: { edits: [FIXED], failAt: { kind: "handoff", nth: 1 } },
+		});
+
+		expect(failed.code).toBe(1);
+
+		const past = async (options?: {
+			readonly runs?: readonly (string | undefined)[];
+			readonly limit?: number;
+			/** Not an option of pastRuns. */
+			readonly last?: number;
+		}) => {
+			const run = await workflows(["past", ...(options === undefined ? [] : [JSON.stringify(options)])], { cwd: repo });
+
+			return [run.code, run.code === 0 ? JSON.parse(run.stdout.at(-1) ?? "") : run.stderr[0]];
+		};
+
+		const all = await past();
+		expect(all[0]).toBe(0);
+		const runs = all[1];
+		expect(runs.map((run: { runId: string }) => run.runId)).toEqual([second.runId, first.runId]);
+		expect(runs[1]).toMatchObject({
+			runId: first.runId,
+			item: "Fix the README typo",
+			repository: git(repo, "rev-parse", "--show-toplevel"),
+			start: head,
+			result: first.result,
+		});
+		expect(runs[0].result).toEqual(second.result);
+		expect(runs[1].prompts.probe).toBe("Probe template.");
+		expect(runs[1].prompts.plan).toMatch(/^Plan this change\./);
+		expect(runs[1].agents.probe).toBe("---\nmodel: anthropic/m-1\nthinking: high\n---\nProbe profile.");
+		expect(await past({ limit: 1 })).toEqual([0, [runs[0]]]);
+		expect(await past({ runs: [first.runId] })).toEqual([0, [runs[1]]]);
+		expect(await past({ runs: [failed.id] })).toEqual([1, `failed past: no completed ship run ${failed.id}`]);
+		expect(await past({ runs: ["nope"] })).toEqual([1, "failed past: no completed ship run nope"]);
+		expect(await past({ last: 1 })).toEqual([1, expect.stringMatching(/^failed past: pastRuns got bad arguments: /)]);
+
+		const waiting = await workflows(["asking"], { cwd: repo });
+		expect(waiting.code).toBe(3);
+		const third = await ship("Fix the README typo once more");
+		const resumed = await workflows(["resume", waiting.id ?? "", "--answer", "yes"], { cwd: repo });
+		expect([resumed.code, JSON.parse(resumed.stdout.at(-1) ?? "")]).toEqual([0, [second.runId, first.runId]]);
+		expect((await past({ limit: 1 }))[1][0].runId).toBe(third.runId);
+	});
+});
+
 describe("workflows show", () => {
 	it("prints the calls of a finished ship run with --calls, and the same tree as JSON", async () => {
 		const run = await workflows(["ship", "--repo", ".", "Fix the README typo"], {

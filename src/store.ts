@@ -7,7 +7,7 @@ import { basename, dirname } from "node:path";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Cursor, DocumentId, TaskRecord } from "@earendil-works/pi-durable";
+import type { Cursor, DocumentId } from "@earendil-works/pi-durable";
 import {
 	type SqliteDatabase,
 	type SqliteExecutor,
@@ -16,6 +16,7 @@ import {
 } from "@earendil-works/pi-durable/storage/sqlite";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { allPages, type RunTask, rootRuns, savedInput } from "./past.ts";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "./progress.ts";
 import { CALL_KIND, CALL_RECORD, type SavedCall } from "./script.ts";
 import { TASK } from "./task.ts";
@@ -33,8 +34,6 @@ process.emitWarning = emitWarning;
 
 /** How long a read waits for the lock of the host's commit. */
 const BUSY_TIMEOUT_MS = 60_000;
-
-export type RunTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 
 /**
  * pi-durable's SQLite facade on a read-only connection. Opening the storage inserts its schema row when it is missing,
@@ -141,17 +140,12 @@ export async function reading<T>(path: string, fallback: T, read: (store: Store)
 	}
 }
 
-const WRAPPED = Type.Object({ input: Type.Object({}) });
-
 /**
  * The string `field` of the input of a workflow task, also of an earlier version, which some versions wrapped as
  * `{ input }`.
  */
 export function inputString(input: JsonValue, field: "runId" | "name"): string | undefined {
-	const saved = Value.Check(WRAPPED, input) ? input.input : input;
-	const schema = Type.Object({ [field]: Type.String() });
-
-	return Value.Check(schema, saved) ? saved[field] : undefined;
+	return savedInput(Type.Object({ [field]: Type.String() }), input)?.[field];
 }
 
 const WORKTREE = Type.Object({
@@ -165,9 +159,7 @@ const WORKTREE = Type.Object({
 
 /** The worktree of the input of a workflow task, also of an earlier version, which some versions wrapped as `{ input }`. */
 export function inputWorktree(input: JsonValue) {
-	const saved = Value.Check(WRAPPED, input) ? input.input : input;
-
-	return Value.Check(WORKTREE, saved) ? saved.worktree : undefined;
+	return savedInput(WORKTREE, input)?.worktree;
 }
 
 /**
@@ -175,23 +167,7 @@ export function inputWorktree(input: JsonValue) {
  * also of another version.
  */
 export async function runTasks(store: Store): Promise<Map<string, RunTask[]>> {
-	const runs = new Map<string, RunTask[]>();
-	let cursor: Cursor | undefined;
-
-	do {
-		const page = await store.scanTasks({ kind: TASK.name }, 256, cursor, BACKGROUND_CONTEXT);
-
-		for (const task of page.items) {
-			const id = inputString(task.input, "runId");
-
-			if (task.owner !== undefined || id === undefined) continue;
-			runs.set(id, [...(runs.get(id) ?? []), task]);
-		}
-
-		cursor = page.next;
-	} while (cursor !== undefined);
-
-	return runs;
+	return rootRuns(await allPages((cursor) => store.scanTasks({ kind: TASK.name }, 256, cursor, BACKGROUND_CONTEXT)));
 }
 
 const PROGRESS = Type.Object({ events: Type.Array(Type.Unknown()) });

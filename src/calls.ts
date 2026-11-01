@@ -273,6 +273,8 @@ function labelOf(
 
 	if (kind === "input") return String(args.question).replace(/\s+/g, " ").trim().slice(0, 80);
 
+	if (kind === "pastRuns") return String(args.workflow);
+
 	if (kind === "session") {
 		return conversation === undefined ? String(args.profile) : `${args.profile} conversation ${conversation}`;
 	}

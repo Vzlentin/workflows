@@ -28,9 +28,11 @@ import {
 	type Tx,
 } from "@earendil-works/pi-durable";
 import type { Children, Failure, Owner, Place, Spec } from "@vzlentin/harness/children";
+import type { Overlay } from "@vzlentin/harness/overlay";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { failure, git, run } from "./git.ts";
+import { PAST_OPTIONS, type PastOptions, profileTexts } from "./past.ts";
 import { PROGRESS_KIND, type ProgressEvent } from "./progress.ts";
 import { instructions, render } from "./prompts.ts";
 import type { Runtime } from "./task.ts";
@@ -79,6 +81,8 @@ export type ScriptRun = {
 	readonly runDir: string;
 	readonly bundle: RunBundle;
 	readonly args: JsonObject;
+	/** The files that the sessions of the run see in place of the disk, from the saved input. */
+	readonly overlay: Overlay | undefined;
 	/** The conversation whose `workflow` tool started the run, from `PI_SESSION_ID`. */
 	readonly session: string | undefined;
 	/** The answer to the `input` call with the document key `call`, from `resume --answer`. */
@@ -87,6 +91,8 @@ export type ScriptRun = {
 	child(key: string, name: string, args: JsonObject): Promise<Child>;
 	/** Starts a new child task with the input of the ended child task `ended`, and saves it as the result of `key`. */
 	restart(key: string, ended: TaskId<JsonValue>): Promise<Child>;
+	/** The completed root runs of `workflow` in the store, as the `pastRuns` script call gives them. */
+	pastRuns(workflow: string, options: PastOptions): Promise<JsonValue>;
 };
 
 /** The extension of the `workflow` tool, which the entry gives every conversation of the host but the sessions. */
@@ -134,7 +140,8 @@ async function overrides(folder: string, templates: Record<string, string>): Pro
 	return own;
 }
 
-function profileOf(name: string, text: string): Profile {
+/** The profile of the text of `agents/<name>.md`. */
+export function profileOf(name: string, text: string): Profile {
 	const { frontmatter, body } = parseFrontmatter<{ model?: string; thinking?: string }>(text);
 	const { model, thinking } = frontmatter;
 	const profile: Writable<Profile> = { instructions: instructions(body) };
@@ -197,6 +204,8 @@ const checkpointWhen: CommonDocDefinition<JsonObject>["checkpointWhen"] = (_valu
 
 /** The sandbox functions that are not host calls, and the script lib; `cwd` is the directory of the script calls. */
 function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun, cwd: string): string {
+	const agents = profileTexts(script.bundle.agents);
+
 	return `
 const args = ${JSON.stringify(args)};
 const runId = ${JSON.stringify(script.runId)};
@@ -213,6 +222,7 @@ const Math = Object.freeze({
 const prompts = Object.fromEntries(
 	${JSON.stringify(prompts)}.map((name) => [name, (inputs) => __prompt(name, inputs)]),
 );
+const agents = Object.freeze(${JSON.stringify(agents)});
 function session(options = "default") {
 	const { as = "default", provider, model, thinking } = typeof options === "string" ? { as: options } : (options ?? {});
 	const spec = { profile: as };
@@ -226,6 +236,7 @@ const agent = (prompt, { schema, ...options } = {}) => session(options).ask(prom
 const sh = async (cmd) => (await __sh(cmd)).stdout.replace(/\\n$/, "");
 const ok = async (cmd) => (await __ok(cmd)).code === 0;
 const input = (question) => __input(question);
+const pastRuns = (workflow, options) => __pastRuns(workflow, options ?? {});
 const run = async (name, args = {}) => {
 	const { runId: id, result } = await __run(name, args);
 	return result !== null && typeof result === "object" && !Array.isArray(result) ? { ...result, runId: id } : result;
@@ -255,6 +266,7 @@ const CALL_KINDS = Type.Union([
 	Type.Literal("ok"),
 	Type.Literal("run"),
 	Type.Literal("input"),
+	Type.Literal("pastRuns"),
 ]);
 
 /** The kinds of script calls. */
@@ -526,6 +538,8 @@ async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionAr
 
 	if (profile.instructions !== "") spec.instructions = profile.instructions;
 
+	if (script.overlay !== undefined) spec.overlay = script.overlay;
+
 	const child = await host.children.open(
 		host.place,
 		calls.owner,
@@ -639,6 +653,7 @@ const ASK_ARGS = Type.Tuple([Type.Number(), Type.String(), Type.Union([JSON_OBJE
 const SH_ARGS = Type.Tuple([Type.Union([Type.String(), Type.Array(Type.String())])]);
 const RUN_ARGS = Type.Tuple([Type.String(), JSON_OBJECT]);
 const INPUT_ARGS = Type.Tuple([Type.String()]);
+const PAST_ARGS = Type.Tuple([Type.String(), PAST_OPTIONS]);
 const LINE_ARGS = Type.Array(JSON_VALUE);
 const PROMPT_ARGS = Type.Tuple([Type.String(), Type.Union([Type.Record(Type.String(), Type.String()), Type.Null()])]);
 
@@ -780,6 +795,14 @@ export async function runScript(
 				);
 			}),
 			global("__input", INPUT_ARGS, ([question]) => inputCall(calls, question, stop)),
+			// A resume replays the saved list, so runs that end later do not change it.
+			global("__pastRuns", PAST_ARGS, ([workflow, options]) => {
+				const args = { workflow, options };
+
+				return memoized(calls, callKey(calls, "pastRuns", args), { kind: "pastRuns", args }, () =>
+					script.pastRuns(workflow, options),
+				);
+			}),
 			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
 			global("log", LINE_ARGS, ([line]) => progress.lines.push({ kind: "log", text: String(line), at: Date.now() })),
 			global("title", LINE_ARGS, ([text]) => progress.lines.push({ kind: "title", text: String(text) })),

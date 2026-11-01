@@ -41,6 +41,9 @@ declare const cwd: string;
 /** `prompts.<name>(inputs)`: the instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section. */
 declare const prompts: Record<string, (inputs?: Record<string, string>) => string>;
 
+/** `agents.<name>`: the text of `agents/<name>.md` that gives the profile of the run's bundle (its `model`, `thinking` and body). */
+declare const agents: { readonly [name: string]: string };
+
 /**
  * The model of a session. `as` names the agent profile `agents/<as>.md` (default `default`). `provider`, `model` and
  * `thinking` override the profile, and a field that neither gives comes from the project agent.
@@ -75,6 +78,28 @@ type Json = null | boolean | number | string | Json[] | { [key: string]: Json | 
 
 /** Runs the script `name` of `workflows/` as a child run and returns its result, with `runId` when it is an object. */
 declare function run(name: string, args?: { [key: string]: Json | undefined }): Promise<any>;
+
+/** A completed root run of the project store, as `pastRuns` gives it. */
+type PastRun = {
+	readonly runId: string;
+	/** The `item` arg of the run, or null. */
+	readonly item: string | null;
+	/** The repository and the start commit of the run's worktree, or null. */
+	readonly repository: string | null;
+	readonly start: string | null;
+	/** The saved template texts, by prompt name. */
+	readonly prompts: { readonly [name: string]: string };
+	/** The text of each `agents/<name>.md` that gives the saved profile, by profile name. */
+	readonly agents: { readonly [name: string]: string };
+	/** The result of the run. */
+	readonly result: any;
+};
+
+/**
+ * The completed root runs of the workflow `workflow` in the project store, newest first: up to `limit`, or the runs
+ * `runs` in that order. A run of `runs` that is not a completed root run of `workflow` throws.
+ */
+declare function pastRuns(workflow: string, options?: { runs?: readonly string[]; limit?: number }): Promise<PastRun[]>;
 
 /** Runs the functions at once and returns their results. */
 declare function parallel<const T extends readonly unknown[]>(thunks: { [K in keyof T]: () => T[K] }): Promise<{ -readonly [K in keyof T]: Awaited<T[K]> }>;

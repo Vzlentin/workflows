@@ -10,13 +10,14 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import type { JsonObject } from "@earendil-works/pi-durable";
+import type { Overlay } from "@vzlentin/harness/overlay";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { git, gitSucceeds, selectRepository } from "./git.ts";
 import type { ProgressEvent } from "./progress.ts";
 import { instructions } from "./prompts.ts";
 import { type Io, type Run, UsageError, withUsage } from "./run.ts";
-import { type Bundle, loadBundle, META, type RunBundle } from "./script.ts";
+import { type Bundle, loadBundle, META, profileOf, type RunBundle } from "./script.ts";
 
 /** The first non-empty line of `item`, without leading #, as `subjectOf` of `workflows/lib/text.js`, which the engine cannot import. */
 function subject(item: string): string {
@@ -119,6 +120,17 @@ const WORKTREE = Type.Object({ worktree: Type.Optional(Type.Boolean()) });
 const EXIT = Type.Object({ exit: Type.Optional(Type.Record(Type.String(), Type.Integer())) });
 const SPEC_TYPE = Type.Object({ type: ARG_TYPE });
 const START = Type.Object({ start: Type.Optional(Type.String()) });
+const OVERLAY = Type.Record(Type.String(), Type.Union([Type.String(), Type.Null()]));
+
+/** The shape of the overlay key of a bundle item, `<kind>/<name>.md`, as `prompts/<name>.md` or `agents/<name>.md`. */
+const BUNDLE_KEY = /^[^/]+\/[^/]+\.md$/;
+
+/** A kind of bundle item that a `run()` call can replace or remove: its name in errors, the bundle's items, the setter. */
+interface BundleKind {
+	readonly label: string;
+	readonly source: RunBundle["prompts"] | RunBundle["agents"];
+	readonly set: (item: string, text: string | null) => void;
+}
 
 /** The arguments that `meta.worktree` gives a script. */
 const WORKTREE_ARGS = ["repo", "base", "branch", "start"];
@@ -153,7 +165,8 @@ function checkMeta(value: unknown, name: string): asserts value is Partial<Meta>
 	if (!Value.Check(WORKTREE, value)) throw fail("meta.worktree is not a boolean");
 
 	if (!Value.Check(EXIT, value)) throw fail("meta.exit does not map statuses to integer exit codes");
-	const reserved = new Set(["prompts", "checkout", "help", "json", ...(value.worktree === true ? WORKTREE_ARGS : [])]);
+	const worktreeArgs = value.worktree === true ? WORKTREE_ARGS : [];
+	const reserved = new Set(["prompts", "overlay", "checkout", "from", "help", "json", ...worktreeArgs]);
 	let positionals = 0;
 
 	for (const [arg, spec] of Object.entries(value.args ?? {})) {
@@ -536,6 +549,8 @@ type Args = {
 	readonly args: JsonObject;
 	readonly meta: Meta;
 	readonly bundle: RunBundle;
+	/** The files that the run's sessions see in place of the disk, by path: see `Spec.overlay` of the children library. */
+	readonly overlay?: Overlay;
 	readonly repo: string | undefined;
 	readonly base: string;
 	readonly branch: string | undefined;
@@ -743,11 +758,19 @@ async function checkoutWorktree(
  * `meta` defaults and the given args. With `meta.worktree`, `repo`, `base` and `branch` are not args: with `repo`, the
  * child gets its own worktree from `repo` and `base`, and otherwise it runs in the caller's directory, as a script
  * without `meta.worktree` does. A script without `meta.worktree` gets with `checkout` a worktree on that existing branch
- * of the caller's repository, and then needs `start` as a string. `prompts` maps prompt names to texts that replace them in this run only. The args are
- * not checked against `meta`, but a `meta.worktree` script gets `start` as a string or not at all.
+ * of the caller's repository, and then needs `start` as a string. The args are not checked against `meta`, but a
+ * `meta.worktree` script gets `start` as a string or not at all. `prompts` replaces the texts of prompts of the bundle
+ * by name. `overlay` replaces or removes the templates (`prompts/<name>.md`) and profiles (`agents/<name>.md`) of the
+ * bundle, and wins over `prompts` for the same template; its other keys are files that the run's sessions see, merged
+ * over the caller's `overlay`.
  */
 export async function childInput(
-	request: { readonly name: string; readonly args: JsonObject; readonly bundle: RunBundle },
+	request: {
+		readonly name: string;
+		readonly args: JsonObject;
+		readonly bundle: RunBundle;
+		readonly overlay?: Overlay | undefined;
+	},
 	run: Run & { readonly root: string },
 ): Promise<ScriptInput> {
 	const { name, bundle } = request;
@@ -755,21 +778,67 @@ export async function childInput(
 
 	if (source === undefined) throw new Error(`no workflow ${name}`);
 	const meta = await readMeta(source, name);
-	const { prompts = {}, checkout, ...given } = request.args;
+	const { prompts = {}, overlay = {}, checkout, ...given } = request.args;
 
 	if (!Value.Check(OBJECT, prompts)) throw new Error(`run ${name}: prompts is not an object of prompt texts`);
-	const replaced = { ...bundle.prompts };
 
-	for (const [prompt, value] of Object.entries(prompts)) {
-		if (!Object.hasOwn(bundle.prompts, prompt)) throw new Error(`run ${name}: no prompt ${prompt}`);
-		replaced[prompt] = instructions(String(value));
+	if (!Value.Check(OVERLAY, overlay)) {
+		throw new Error(`run ${name}: overlay is not an object of path to text or null`);
+	}
+
+	const replaced = { ...bundle.prompts };
+	const agents = { ...bundle.agents };
+	const files = { ...request.overlay };
+
+	const prompt: BundleKind = {
+		label: "prompt",
+		source: bundle.prompts,
+		set: (key: string, text: string | null) => {
+			if (text === null) delete replaced[key];
+			else replaced[key] = instructions(text);
+		},
+	};
+
+	const kinds = new Map<string, BundleKind>([
+		["prompts", prompt],
+		[
+			"agents",
+			{
+				label: "agent profile",
+				source: bundle.agents,
+				set: (key: string, text: string | null) => {
+					if (text === null) delete agents[key];
+					else agents[key] = profileOf(key, text);
+				},
+			},
+		],
+	]);
+
+	// The `prompts` edits come first, so the overlay wins for the same template.
+	const edits: { kind: BundleKind; item: string; value: string | null }[] = Object.entries(prompts).map(
+		([item, text]) => ({ kind: prompt, item, value: String(text) }),
+	);
+
+	for (const [key, value] of Object.entries(overlay)) {
+		const slash = key.indexOf("/");
+		const kind = BUNDLE_KEY.test(key) ? kinds.get(key.slice(0, slash)) : undefined;
+
+		if (kind === undefined) files[key] = value;
+		else edits.push({ kind, item: key.slice(slash + 1, -".md".length), value });
+	}
+
+	for (const { kind, item, value } of edits) {
+		if (!Object.hasOwn(kind.source, item)) throw new Error(`run ${name}: no ${kind.label} ${item}`);
+		kind.set(item, value);
 	}
 
 	const defaults = Object.entries(meta.args).flatMap(([arg, spec]) =>
 		spec.default === undefined ? [] : [[arg, spec.default] as const],
 	);
 
-	const script = { name, meta, bundle: { ...bundle, prompts: replaced, main: source } };
+	const bundled = { name, meta, bundle: { ...bundle, prompts: replaced, agents, main: source } };
+	const script = Object.keys(files).length === 0 ? bundled : { ...bundled, overlay: files };
+
 	const here = { runId: run.id, root: run.root, runDir: run.directory, cwd: run.cwd };
 
 	if (checkout !== undefined && !Value.Check(Type.String(), checkout)) {
