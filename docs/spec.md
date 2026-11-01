@@ -399,9 +399,8 @@ the split after it. The steps and log lines of the item's ship run are under the
 See [Progress](#progress). At resume, the first steps of the item it continues can come before the item step. On a
 terminal and in Pi they move under the item step when it comes.
 
-- At the start of each item, before the reset of a failed item, and before the run ends, the run checks that the
-  worktree is on the branch that it had at the start of the campaign. When `HEAD` is detached or on another branch,
-  and `HEAD` contains the last shipped commit, or the start commit when no item shipped, the run moves the campaign
+- At the start of each item and before the run ends, the run checks that the worktree is on the branch that it had
+  at the start of the campaign. When `HEAD` is detached or on another branch, and `HEAD` contains the last shipped commit, or the start commit when no item shipped, the run moves the campaign
   branch to `HEAD` and checks it out with `git checkout -B <branch>`. Otherwise the run fails with `the campaign
   worktree is not on <branch> (HEAD <commit>), and HEAD does not contain the last shipped commit: check out the
   campaign branch and resume`. So the result always has a `branch`.
