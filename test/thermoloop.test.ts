@@ -1,5 +1,6 @@
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	fake,
@@ -12,6 +13,7 @@ import {
 	runsOf,
 	sandbox,
 	statusesOf,
+	storeOf,
 	workflows,
 	worktreeAt,
 } from "./support.ts";
@@ -32,6 +34,14 @@ beforeEach(async () => {
 afterEach(() => rm(root, { recursive: true, force: true }));
 
 const ITEM = "Fix the README typo";
+
+/** Replaces the fake `memo` with a shell script whose body is `body`. */
+async function writeMemo(body: string): Promise<void> {
+	const memo = join(root, "home", ".optmem", "memo");
+	await writeFile(memo, `#!/bin/sh\n${body}\n`);
+	await chmod(memo, 0o755);
+}
+
 const THANKED = "# Demo\n\nHello world\nThanks.\n";
 
 describe("workflows thermoloop", () => {
@@ -132,6 +142,67 @@ describe("workflows thermoloop", () => {
 		expect(run.model.find("review", 1)?.prompt).toMatch(new RegExp(`^## memory\\n${notes.join("\\n")}\\n\\nPerform`));
 	});
 
+	it("adds a plain note once when its add runs again at resume", async () => {
+		await rm(join(root, "home", ".optmem", "memo"));
+
+		const first = await workflows(["thermoloop", "--item", ITEM], {
+			cwd: repo,
+			script: { edits: [THANKED], verdicts: ["FIX", "SHIP"], interruptAt: { kind: "implement", nth: 1 } },
+		});
+
+		expect(first.code).toBe(130);
+		const notes = join(runsOf(root), first.id ?? "", "memory", "notes.txt");
+		expect(await readFile(notes, "utf8")).toBe("#0 reviewer r1: Handoff 1: one word changes.\n");
+
+		// The add ran, but its result is not saved, as after a stop between the two.
+		const database = new DatabaseSync(storeOf());
+
+		const forgotten = database
+			.prepare(
+				`DELETE FROM document_revisions WHERE kind = 'delta' AND content LIKE '%"result"%' AND document_id IN
+				(SELECT document_id FROM document_revisions WHERE content LIKE '{"kind":"sh"%reviewer r1: Handoff 1%')`,
+			)
+			.run();
+
+		database.close();
+
+		expect(forgotten.changes).toBe(1);
+
+		const resumed = await workflows(["resume", first.id ?? ""], {
+			cwd: repo,
+			script: { edits: [THANKED], verdicts: ["SHIP"] },
+		});
+
+		expect(resumed.code).toBe(0);
+		expect(await readFile(notes, "utf8")).toBe(
+			"#0 reviewer r1: Handoff 1: one word changes.\n#1 implementer r2: Implement 1: README.md had wrold.\n",
+		);
+	});
+
+	it("fails with a clear error when memo asks for a compression without a nap block", async () => {
+		await writeMemo(
+			`case "$1" in note) printf 'Saved.\\n\\nCompress memories now.\\n\\nRun: ~/.optmem/memo nap x\\n' ;; esac`,
+		);
+
+		const run = await workflows(["thermoloop", "--item", ITEM], { cwd: repo, script: { verdicts: ["FIX"] } });
+
+		expect(run.code).toBe(1);
+		expect(run.stderr).toContain(
+			`failed ${ITEM}: memo asked for a compression without "nap <a>-<b>": Compress memories now.`,
+		);
+	});
+
+	it("fails with a clear error when memo never stops asking for compressions", async () => {
+		const ask = "printf 'Compress memories #0-1.\\n\\nRun: ~/.optmem/memo nap 0-1\\n'";
+		await writeMemo(`case "$1" in note|nap) ${ask} ;; esac`);
+
+		const run = await workflows(["thermoloop", "--item", ITEM], { cwd: repo, script: { verdicts: ["FIX"] } });
+
+		expect(run.code).toBe(1);
+		expect(run.stderr).toContain(`failed ${ITEM}: memo still asks for compressions after 64 summaries`);
+		expect(run.model.count("summarize")).toBe(64);
+	});
+
 	it("stops after --rounds rounds with exit 1, and refuses a branch with no change", async () => {
 		const stopped = await workflows(["thermoloop", "--rounds", "1", "--item", ITEM], {
 			cwd: repo,
@@ -145,6 +216,26 @@ describe("workflows thermoloop", () => {
 		expect(empty.code).toBe(1);
 		expect(empty.stderr).toContain(`failed ${ITEM}: no change from main`);
 		expect(empty.model.calls).toEqual([]);
+	});
+
+	it("is blocked when a fix round changes nothing, and reviews no empty fix", async () => {
+		const run = await workflows(["thermoloop", "--item", ITEM], {
+			cwd: repo,
+			script: { edits: [undefined], verdicts: ["FIX", "SHIP"] },
+		});
+
+		expect(run.code).toBe(1);
+		expect(run.stdout.slice(1)).toEqual([`blocked ${ITEM} after 2 rounds`, "I found nothing to change."]);
+		expect(run.model.count("review")).toBe(1);
+	});
+
+	it("refuses rounds that are not a positive integer", async () => {
+		for (const rounds of ["0", "1.5"]) {
+			const run = await workflows(["thermoloop", "--rounds", rounds, "--item", ITEM], { cwd: repo });
+
+			expect([run.code, run.stderr[0]]).toEqual([2, "workflows: --rounds must be a positive integer"]);
+			expect(run.model.calls).toEqual([]);
+		}
 	});
 
 	it("takes the pull request of the branch as the intent, from an empty stdin", async () => {

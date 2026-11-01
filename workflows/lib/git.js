@@ -25,6 +25,13 @@ async function squash(start, message, subject) {
 	return short;
 }
 
+/** Writes the binary diff from `from` to `HEAD` to the file `path`, and returns `path`. */
+async function writePatch(path, from) {
+	await sh(["git", "diff", "--binary", `--output=${path}`, from, "HEAD"]);
+
+	return path;
+}
+
 /** `+12 -3 in 2 files` for the change from `from` to `to`, or `no new changes`. */
 async function diffStat(from, to = "HEAD") {
 	const shortstat = await sh(["git", "diff", "--shortstat", from, to]);

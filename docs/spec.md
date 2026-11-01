@@ -101,7 +101,9 @@ directory, through the user's `$HOME/.optmem/memo` with `MEMORY_DIR` set to the 
 `memo init` and `memo config PART_CHARS=100000`, so that `memo wake` gives all its lines in one part, and gives its
 `ref` (its path, whether it is plain, and the campaign item) to `rpi` and `thermoloop`; a child run that gets a `ref`
 opens nothing. Without `memo` when the store opens, the store is the plain file `memory/notes.txt`, with one `#<k>
-<note>` line for each note and no summaries, and the run logs `memo of OptMem is missing, so the run memory keeps
+<note>` line for each note and no summaries. Each note has the key `<run-id>/<n>`, the `<n>`th note that the run added,
+as one line of `memory/notes.keys`, and `<k>` is the line of its key, from 0. So an add that runs again at resume adds
+no line, and adds that run at the same time get different numbers. The run logs `memo of OptMem is missing, so the run memory keeps
 plain notes without summaries. Install it with: curl -fsSL
 https://raw.githubusercontent.com/VictorTaelin/OptMem/main/install.sh | sh`. The runs that get the `ref` of a plain
 store keep it plain. A `memo` call on an OptMem store whose `memo` is gone fails with `workflows: memo of OptMem is
@@ -239,7 +241,8 @@ result is `{ "status": "blocked", "reply" }` and the command prints `blocked <su
 gives no score, the result is `{ "status": "unjudged", "judgeError", "reply" }` and the command prints `judge failed
 on <subject>: <error>`. When a child run fails, the run does not fail: the result is `{ "status": "failed", "error" }`,
 with `reply` when the implement ended, and the command prints `fix failed on <subject>: <error>`. So a caller saves the
-result, and a resume does not run the fix round again. These three exit 1.
+result, and a resume does not run the fix round again. These three exit 1. A child run that was stopped, whose error
+is `child run <id> stopped: <reason>`, fails the run with that error, so that a resume of the caller runs it again.
 
 ## Thermoloop
 
@@ -286,9 +289,9 @@ has the step `round <n>/<rounds>: review`, after `round <n>/<rounds>: implement`
 steps above, and `plan`, `reply` from `rpi`, which the first review gets, and `memory`, the `ref` of its run memory.
 
 The step `round <n>/<rounds>: implement` runs [implement](#implement) as a child run, with the handoff as the plan,
-round `<n>`, the start commit, the message `round <n>` and the `ref` of the run memory:
+round `<n>`, the commit of `HEAD` before the round as the start commit, the message `round <n>` and the `ref` of the run memory:
 
-- If the implement run is blocked, the thermoloop is blocked. It prints `blocked <subject> after <n> rounds` and
+- If the implement run is blocked, as a round that changes nothing is, the thermoloop is blocked. It prints `blocked <subject> after <n> rounds` and
   the implementer's reply, and exits 1.
 - Otherwise new staged changes are the commit `round <n>`. Commits that the implementer made are kept. A round
   without new changes still goes to review when earlier changes remain.
@@ -393,6 +396,12 @@ the split after it. The steps and log lines of the item's ship run are under the
 See [Progress](#progress). At resume, the first steps of the item it continues can come before the item step. On a
 terminal and in Pi they move under the item step when it comes.
 
+- At the start of each item, before the reset of a failed item, and before the run ends, the run checks that the
+  worktree is on the branch that it had at the start of the campaign. When `HEAD` is detached or on another branch,
+  and `HEAD` contains the last shipped commit, or the start commit when no item shipped, the run moves the campaign
+  branch to `HEAD` and checks it out with `git checkout -B <branch>`. Otherwise the run fails with `the campaign
+  worktree is not on <branch> (HEAD <commit>), and HEAD does not contain the last shipped commit: check out the
+  campaign branch and resume`. So the result always has a `branch`.
 - When every item shipped, the step `all <n> item(s)` runs the child run `judge` on the change of the whole campaign,
   from the start commit to the last item, against the goal: the judge of an item sees only its item, and not how the
   items fit together. The command prints
@@ -425,18 +434,21 @@ terminal and in Pi they move under the item step when it comes.
   ```
 
   Otherwise the fix round fails with an outcome: `the fix round failed: <error>` when `fix` is `failed`, `the fix
-  round changed nothing` when it is `blocked`, `no judge score after one fix round` when it is `unjudged`, and `still 0
-  after one fix round` when the score is 0 again. Then the item fails as below.
-- When an item is blocked or stopped, or ships with a judge score of 0 and no fix round ships it, the item fails. A missing score, when the judge
-  failed, is not a failure. The run resets the worktree with `git reset --hard` to the commit that the item started
-  from: the last shipped commit, or the start commit when no item shipped, and adds the note `campaign: item <n>
+  round changed nothing` when it is `blocked`, `no judge score after one fix round` when it is `unjudged`, `still 0
+  after one fix round` when the score is 0 again, and `the fix round ended with the unknown status <status>` for any
+  other status. Then the item fails as below.
+- When an item is blocked or stopped, ships with a judge score of 0 and no fix round ships it, or ships with a judge
+  that failed, the item fails, with no fix round when the judge failed. The run writes the change of the item, from
+  the commit that the item started from to `HEAD`, as `item-<n>/item.patch` in the run directory. It checks that the
+  commit that the item started from is the last shipped commit, or the start commit when no item shipped, and that
+  `HEAD` contains it; else the run fails with `HEAD <commit> does not contain the last shipped commit <commit>: the
+  campaign does not reset it`. Then it resets the worktree with `git reset --hard` to that commit, and adds the note `campaign: item <n>
 failed and was reset: its notes describe code that is gone` to the run memory. Then a new planner session gets the
   `rundown` prompt with the inputs `goal`, `shipped` (the shipped items, each one as `{ item, commit, divergence }`, as JSON), `item`, `status`
-  (the ship status, or `shipped with judge score 0`, with `, <outcome>` of the fix round after it when the item had
-  one), `reply` (the reply of the fix round's implementer after a fix round that has one), `handoff`, `findings` (the findings of the
+  (the ship status, `shipped with a failed judge: <judge error>`, or `shipped with judge score 0`, with `, <outcome>`
+  of the fix round after it when the item had one), `reply` (the reply of the fix round's implementer after a fix round that has one), `handoff`, `findings` (the findings of the
   fix round's judge when it gave some), `memory` (the notes of the run memory of the campaign, as `#<k> <note>` lines), `remaining` (the
-  remaining items, as JSON) and `patch` (the path of `item-<n>/round-<rounds of the item>.patch`, when that file
-  exists). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and proposed items.
+  remaining items, as JSON) and `patch` (the path of `item-<n>/item.patch`, when the item changed something). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and proposed items.
   The run asks the question of [Input](#input): the question summary, which is the rundown, after a fix round
   `Fix round: <outcome>` with one `- <finding>` line for each finding of the fix round's judge, `Suggestions:` with one
   `- <suggestion>` line each, `Proposed items:` with the numbered items, and `Patch of the failed item: <path>` when
@@ -843,7 +855,7 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
   of `args.prompts` and `args.overlay`, and the caller's file overlay. So every child run of a child run gets them too.
 
 `run()` returns the child's result, with `runId`, the child run ID, added to an object result. A failed child run
-fails the call with `child run <id> failed: <error>`, where `<id>` is the deepest child run that failed, and the child's task ends as failed. A caller that fails aborts
+fails the call with `child run <id> failed: <error>`, where `<id>` is the deepest child run that failed, and the child's task ends as failed. A child run that was stopped (aborted or orphaned) fails the call with `child run <id> stopped: <reason>`. A caller that fails aborts
 its child runs that are still running. A resume of the caller continues the same child run, with the same run ID and
 run directory, also after a failed call, an abort or an interruption, and repeats no call that the child run saved. A
 child run that ended without a result continues in a new task.
@@ -909,9 +921,10 @@ with. A script's own declaration of the same name takes their place.
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
 | `subjectOf(text)` | The first non-empty line of `text`, without leading `#` |
 | `oneLine(text)` | `text` with each whitespace run made one space, trimmed |
-| `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without its `report` and `memory` keys at any depth, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
+| `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries, and `<path>/notes.keys`, the key `<run-id>/<n>` of each note, whose line is `<k>`. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. A compression request without `nap <a>-<b>` fails with `memo asked for a compression without "nap <a>-<b>": <first line>`, and the 65th request in a row fails with `memo still asks for compressions after 64 summaries`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without its `report` and `memory` keys at any depth, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
 | `await noteLines(notes)` | The `#<k> <note>` lines of `notes.text`, without empty lines |
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
+| `writePatch(path, from)` | Writes `git diff --binary` from `from` to `HEAD` to the file `path`, and returns `path` |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 | `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |
 | `changeOf(args, { wip })` | `{ start, intent, checkout, dirty }` of the change of a script's `args`. With `args.start`, it is `args.start` and `args.item`, not dirty, with no Git step. Else it is the change that `args.change` points at from `args.base`, with the rules of [Thermoloop](#thermoloop), and it calls `title` with the subject of the intent: `start` is the start commit, `intent` is `args.item` or the pull request or the commit messages, `checkout` is the branch of a change that must run in a worktree of its own, and `dirty` says that the checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip` |

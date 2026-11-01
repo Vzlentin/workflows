@@ -193,6 +193,9 @@ declare function commitAll(message: string): Promise<void>;
  */
 declare function squash(start: string, message: string, subject: string): Promise<string>;
 
+/** Writes the binary diff from `from` to `HEAD` to the file `path`, and returns `path`. */
+declare function writePatch(path: string, from: string): Promise<string>;
+
 /** `+12 -3 in 2 files` for the change from `from` to `to` (default `HEAD`), or `no new changes`. */
 declare function diffStat(from: string, to?: string): Promise<string>;
 

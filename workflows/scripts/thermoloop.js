@@ -54,9 +54,9 @@ let before = start
 // Each round reviews the change, and on FIX the reviewer's handoff is implemented as the next round.
 for (let round = 1; ; round++) {
 	phase(`round ${round}/${rounds}: review`)
-	const change = [await patch(`round-${round}.patch`, start)]
+	const change = [await writePatch(`${patches}/round-${round}.patch`, start)]
 
-	if (round > 1) change.push(await patch(`round-${round}-fix.patch`, before))
+	if (round > 1) change.push(await writePatch(`${patches}/round-${round}-fix.patch`, before))
 	const reviewer = notes.session("reviewer")
 	const review = await prompts.review({ item, plan, change: change.join("\n"), scope: scope(round), reply })
 	const verdict = await reviewer.ask(`${review}\n\n${VERDICT}`, { schema: SHIP_OR_FIX })
@@ -81,7 +81,7 @@ for (let round = 1; ; round++) {
 	const next = round + 1
 
 	phase(`round ${next}/${rounds}: implement`)
-	const fixed = await run("implement", { plan, round: next, start, message: `round ${next}`, memory: notes.ref })
+	const fixed = await run("implement", { plan, round: next, start: before, message: `round ${next}`, memory: notes.ref })
 	reply = fixed.reply
 
 	if (fixed.status === "blocked") {
@@ -89,11 +89,4 @@ for (let round = 1; ; round++) {
 
 		return notes.finish(item, { status: "blocked", rounds: next, reply, handoff: plan, memory: await noteLines(notes), report })
 	}
-}
-
-async function patch(name, from) {
-	const path = `${patches}/${name}`
-	await sh(["git", "diff", "--binary", `--output=${path}`, from, "HEAD"])
-
-	return path
 }

@@ -106,7 +106,8 @@ async function restartChild(
 /**
  * The result of the child run of the `run` call `key`, whose calls run in `cwd`: the `child` of its record, or a new
  * child task, run to its end. A saved child task that ended without completing gets a new child task with the same
- * input and run ID. Throws `child run <id> failed: <error>` when the child run fails.
+ * input and run ID. Throws `child run <id> failed: <error>` when the child run fails, and
+ * `child run <id> stopped: <reason>` when it was aborted or orphaned.
  */
 export async function childResult(
 	calls: Calls,
@@ -125,9 +126,10 @@ export async function childResult(
 
 	if (outcome.status !== "completed") {
 		const cause = outcome.error?.message ?? outcome.reason ?? outcome.status;
+		const verb = outcome.status === "aborted" || outcome.status === "orphaned" ? "stopped" : "failed";
 
-		// The error of a nested child run already names the deepest run that failed.
-		throw new Error(cause.startsWith("child run ") ? cause : `child run ${runId} failed: ${cause}`);
+		// The error of a nested child run already names the deepest run and whether it failed or stopped.
+		throw new Error(cause.startsWith("child run ") ? cause : `child run ${runId} ${verb}: ${cause}`);
 	}
 
 	return { runId, result: outcome.result };

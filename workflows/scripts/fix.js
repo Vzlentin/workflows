@@ -2,8 +2,9 @@
 // the item from `start`. `campaign.js` runs it in its worktree. A caller gives `start`, the commit that the item started
 // from, `findings`, the judge's findings as an array of lines, `message`, the commit message of the fix, `round`, the
 // round of the implementer's notes, and may give `memory`, the `ref` of a run memory to go on with. A failed child run
-// is a result of this run, `failed`, so that the caller saves it and a resume does not run the fix round again. Every
-// Git step is safe to repeat: a resume runs a step again when its result was not saved.
+// is a result of this run, `failed`, so that the caller saves it and a resume does not run the fix round again. A
+// stopped child run fails this run, so that a resume runs it again. Every Git step is safe to repeat: a resume runs a
+// step again when its result was not saved.
 export const meta = {
 	description: "Fix a work item on the judge's findings in one implement turn, and judge it again.",
 	args: {
@@ -48,6 +49,10 @@ try {
 	return { status: "judged", score, answers, findings: judged.findings, reply, report }
 } catch (error) {
 	const message = error?.message ?? String(error)
+
+	// A stopped child run is not a failure: the caller fails, and its resume runs the fix round again.
+	if (/^child run \S+ stopped/.test(message)) throw error
+
 	const failed = { status: "failed", error: message, report: [`fix failed on ${subject}: ${message}`] }
 
 	if (reply !== undefined) failed.reply = reply

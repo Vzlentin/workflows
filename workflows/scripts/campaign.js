@@ -17,6 +17,9 @@ export const meta = {
 const { goal, rounds, start: first } = args
 const name = subjectOf(goal)
 
+// The branch of the campaign worktree. Each item and each end checks that the worktree is still on it.
+const branch = await sh(["git", "branch", "--show-current"])
+
 const SPLIT = {
 	type: "object",
 	required: ["subject", "items"],
@@ -64,18 +67,62 @@ const FIX_FAILED = {
 	judged: () => "still 0 after one fix round",
 }
 
-// The outcome of an item's ship: `shipped`, the result of an item that shipped, or `failure`, the rundown inputs of
-// an item that failed: `status`, `reply`, `findings` and an optional `summary` block of the question. An item that
-// shipped with a judge score of 0 and findings gets one fix round, the child run fix.js. With a score above 0 it
-// squashes the item again with its commit message.
-async function settle(n, item, start, result) {
-	if (result.status === "shipped" && result.score !== 0) return { shipped: result }
+// The last shipped commit: the head of the last shipped item, or the start commit when no item shipped.
+const lastShipped = () => (done.length === 0 ? first : done.at(-1).result.head)
 
-	if (result.status !== "shipped" || result.findings.length === 0) {
-		const status = result.status === "shipped" ? "shipped with judge score 0" : result.status
+// Whether HEAD contains `commit`.
+const headContains = (commit) => ok(["git", "merge-base", "--is-ancestor", commit, "HEAD"])
 
-		return { failure: { status, reply: result.reply ?? "", findings: result.findings ?? [] } }
+// The short name of HEAD, for the error texts.
+const shortHead = () => sh(["git", "rev-parse", "--short", "HEAD"])
+
+// Puts the worktree back on the campaign branch when HEAD is detached or on another branch, and HEAD contains the last
+// shipped commit: the campaign branch moves to HEAD. Else throws. Safe to repeat.
+async function ensureBranch() {
+	if ((await sh(["git", "branch", "--show-current"])) === branch) return
+
+	if (branch !== "" && (await headContains(lastShipped()))) {
+		await sh(["git", "checkout", "-q", "-B", branch])
+
+		return
 	}
+
+	const head = await shortHead()
+
+	throw new Error(
+		`the campaign worktree is not on ${branch || "a branch"} (HEAD ${head}), and HEAD does not contain the last ` +
+			`shipped commit: check out the campaign branch and resume`,
+	)
+}
+
+// Throws unless `start` is the last shipped commit and HEAD contains it, so that the reset after a failed item drops
+// only the commits of that item.
+async function assertResettable(start) {
+	const shippedAt = await sh(["git", "rev-parse", `${lastShipped()}^{commit}`])
+
+	if (shippedAt === start && (await headContains(start))) return
+
+	const head = await shortHead()
+
+	throw new Error(
+		`HEAD ${head} does not contain the last shipped commit ${shippedAt.slice(0, 7)}: the campaign does not reset it`,
+	)
+}
+
+// The outcome of an item's ship: `shipped`, the result of an item that shipped, or `failure`, the rundown inputs of
+// an item that failed: `status`, `reply`, `findings` and an optional `summary` block of the question. An item whose
+// judge failed is a failed item. An item that shipped with a judge score of 0 and findings gets one fix round, the
+// child run fix.js. With a score above 0 it squashes the item again with its commit message.
+async function settle(n, item, start, result) {
+	const failed = (status) => ({ failure: { status, reply: result.reply ?? "", findings: result.findings ?? [] } })
+
+	if (result.status !== "shipped") return failed(result.status)
+
+	if (result.score === undefined) return failed(`shipped with a failed judge: ${result.judgeError}`)
+
+	if (result.score !== 0) return { shipped: result }
+
+	if (result.findings.length === 0) return failed("shipped with judge score 0")
 
 	const message = await sh(["git", "log", "-1", "--format=%B"])
 
@@ -95,7 +142,10 @@ async function settle(n, item, start, result) {
 		return { shipped: { ...result, head: short, score, answers, findings } }
 	}
 
-	const outcome = FIX_FAILED[fixed.status](fixed)
+	const outcome = Object.hasOwn(FIX_FAILED, fixed.status)
+		? FIX_FAILED[fixed.status](fixed)
+		: `the fix round ended with the unknown status ${fixed.status}`
+
 	const findings = fixed.status === "judged" ? fixed.findings : []
 
 	return {
@@ -111,9 +161,13 @@ async function settle(n, item, start, result) {
 let { subject, items: queue } = await split({})
 const notes = await memory()
 
+// The result of a campaign that the user stopped after a failed item.
+let stopped
+
 for (let n = 1; queue.length > 0; n++) {
 	const [item, ...rest] = queue
 	phase(`item ${n}/${n + rest.length}: ${subjectOf(item)}`)
+	await ensureBranch()
 	const patches = `${runDir}/item-${n}`
 	await sh(["mkdir", "-p", patches])
 	const start = await sh(["git", "rev-parse", "HEAD"])
@@ -129,11 +183,12 @@ for (let n = 1; queue.length > 0; n++) {
 
 	const { failure } = outcome
 
-	// `start` is the last shipped commit: every earlier item shipped or was reset to its own start.
+	await assertResettable(start)
+	// The whole change of the item, also its fix commit, before the reset drops it.
+	const file = await writePatch(`${patches}/item.patch`, start)
+	const patch = (await ok(["test", "-s", file])) ? file : ""
 	await sh(["git", "reset", "--hard", start])
 	await notes.note("campaign", undefined, [`item ${n} failed and was reset: its notes describe code that is gone`])
-	const file = `${patches}/round-${result.rounds}.patch`
-	const patch = (await ok(["test", "-f", file])) ? file : ""
 
 	const proposed = await agent(
 		await prompts.rundown({
@@ -165,14 +220,18 @@ for (let n = 1; queue.length > 0; n++) {
 
 	if (reply === "" || reply.toLowerCase() === "stop") {
 		const report = [`stopped ${name} at item ${n}: ${cwd}`, rundown]
-
-		return notes.finish(goal, { status: "stopped", items: [...done, { item, result }], rundown, report })
+		stopped = { status: "stopped", items: [...done, { item, result }], rundown, report }
+		break
 	}
 
 	const next = await split({ shipped: shipped(), rundown: summary, answer: reply })
 	subject = next.subject
 	queue = next.items
 }
+
+await ensureBranch()
+
+if (stopped !== undefined) return notes.finish(goal, stopped)
 
 const head = done.at(-1).result.head
 const judgedOf = (score) => (score === undefined ? "failed" : score.toFixed(2))
