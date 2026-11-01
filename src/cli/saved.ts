@@ -74,7 +74,7 @@ export function runStatus(task: RunTask): string {
 
 	if (outcome.status === "completed") return statusOf(outcome.result) ?? "done";
 
-	return outcome.status === "aborted" ? "stopped" : outcome.status;
+	return outcome.status;
 }
 
 /** The progress events of the root run `run`. */

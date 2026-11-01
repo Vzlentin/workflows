@@ -373,15 +373,35 @@ describe("runs in the harness host", () => {
 
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
 		const listed = await workflows(["list"], { cwd: root });
-		expect(listed.stdout).toEqual([`${id} gated stopped gated`]);
+		expect(listed.stdout).toEqual([`${id} gated aborted gated`]);
+		const listedJson = await workflows(["list", "--json"], { cwd: root });
+		expect(JSON.parse(listedJson.stdout[0] ?? "")).toEqual([
+			{ runId: id, workflow: "gated", title: "gated", status: "aborted", repository: null },
+		]);
+		const shownJson = await workflows(["show", id, "--json"], { cwd: root });
+		expect(JSON.parse(shownJson.stdout[0] ?? "").status).toBe("aborted");
 		const shown = await workflows(["show", id], { cwd: root });
 		expect(shown.stdout).toEqual([
-			`run ${id} gated stopped gated`,
+			`run ${id} gated aborted gated`,
 			"  ✗ sh ./gate.sh g",
 			`stopped gated; continue with: workflows resume ${id}`,
 		]);
 		const usage = await workflows(["stop"], { cwd: root });
 		expect([usage.code, usage.stderr.at(-1)]).toEqual([2, "usage: workflows stop <run-id> [--json]"]);
+	});
+
+	it("lists a run whose script result is stopped as stopped", async () => {
+		await writeFile(join(root, "x.js"), 'return { status: "stopped", report: ["r"] }');
+		const run = await workflows(["x.js"], { cwd: root });
+		const id = run.id ?? "";
+		const listed = await workflows(["list"], { cwd: root });
+		expect(listed.stdout).toEqual([`${id} x stopped x`]);
+		const listedJson = await workflows(["list", "--json"], { cwd: root });
+		expect(JSON.parse(listedJson.stdout[0] ?? "")).toEqual([
+			{ runId: id, workflow: "x", title: "x", status: "stopped", repository: null },
+		]);
+		const shown = await workflows(["show", id], { cwd: root });
+		expect(shown.stdout[0]).toBe(`run ${id} x stopped x`);
 	});
 
 	it("kills a running sh and closes the subagents of the sessions when a run stops", async () => {

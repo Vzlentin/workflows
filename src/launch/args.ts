@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { JsonObject } from "@earendil-works/pi-durable";
+import { Value } from "typebox/value";
 import { type Io, labelOf, UsageError, withUsage } from "../workflow/find.ts";
-import type { Meta } from "../workflow/meta.ts";
+import { ARG_VALUES, type ArgSpec, type Meta } from "../workflow/meta.ts";
 
 /**
  * The text that `noun` names, such as `work item`: a `.md` file, inline text, or piped stdin. Throws when it has no
@@ -35,6 +36,62 @@ async function readItem(
 	if (text.trim() === "") throw new Error(`the ${noun} is empty`);
 
 	return text;
+}
+
+/** A required argument `arg`, which `spec` declares, without a value. */
+type ArgMissing = { readonly arg: string; readonly spec: ArgSpec; readonly missing: true };
+
+/** A value of `arg` that is not `expected`, as `ARG_VALUES` names its type. */
+type ArgWrong = { readonly arg: string; readonly spec: ArgSpec; readonly expected: string };
+
+type ArgProblem = ArgMissing | ArgWrong;
+
+/**
+ * The first problem of `args` against `specs`, in declaration order: a required argument without a value, or a value
+ * that is not of its type (`null` included). Arguments that `specs` does not declare are not checked.
+ */
+function argProblem(specs: readonly (readonly [string, ArgSpec])[], args: JsonObject): ArgProblem | undefined {
+	for (const [arg, spec] of specs) {
+		const value = args[arg];
+		const { schema, expected } = ARG_VALUES[spec.type];
+
+		if (value === undefined) {
+			if (spec.required) return { arg, spec, missing: true };
+		} else if (!Value.Check(schema, value)) {
+			return { arg, spec, expected };
+		}
+	}
+
+	return undefined;
+}
+
+/**
+ * Throws the first problem of `args` against `specs` as `run <name>: <arg> is missing` or
+ * `run <name>: <arg> must be <expected>`. Arguments that `specs` does not declare pass.
+ */
+export function checkArgs(name: string, specs: Meta["args"], args: JsonObject): void {
+	const found = argProblem(Object.entries(specs), args);
+
+	if (found === undefined) return;
+
+	const problem = "missing" in found ? "is missing" : `must be ${found.expected}`;
+
+	throw new Error(`run ${name}: ${found.arg} ${problem}`);
+}
+
+/**
+ * The args of the child run of `run(name, given)`: the `meta` defaults and `given`, checked by `checkArgs` against
+ * `meta.args`.
+ */
+export function runArgs(name: string, meta: Meta, given: JsonObject): JsonObject {
+	const defaults = Object.entries(meta.args).flatMap(([arg, spec]) =>
+		spec.default === undefined ? [] : [[arg, spec.default] as const],
+	);
+
+	const args = { ...Object.fromEntries(defaults), ...given };
+	checkArgs(name, meta.args, args);
+
+	return args;
 }
 
 /** The checked `meta.args` values of `argv`; texts are read after every other value is checked. */
@@ -83,16 +140,21 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 		if (raw === undefined) {
 			if (spec.default !== undefined) args[arg] = spec.default;
 			else if (spec.type === "boolean") args[arg] = false;
-			else if (spec.required) throw new UsageError(`missing ${labelOf(arg, spec)}`, usage);
-		} else if (spec.type === "number") {
-			const n = Number(raw);
-
-			if (!Number.isInteger(n) || n < 1) throw new UsageError(`--${arg} must be a positive integer`, usage);
-			args[arg] = n;
 		} else {
-			args[arg] = raw;
+			args[arg] = spec.type === "number" ? Number(raw) : raw;
 		}
 	}
+
+	const found = argProblem(
+		entries.filter(([, spec]) => spec.type !== "text"),
+		args,
+	);
+
+	if (found !== undefined && "missing" in found) {
+		throw new UsageError(`missing ${labelOf(found.arg, found.spec)}`, usage);
+	}
+
+	if (found !== undefined) throw new UsageError(`--${found.arg} must be ${found.expected}`, usage);
 
 	for (const [arg, spec] of entries) {
 		if (spec.type !== "text") continue;
@@ -104,8 +166,12 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 			raw === undefined && spec.default !== undefined ? spec.default : await readItem(raw, io, label, optional);
 
 		if (value !== undefined) args[arg] = value;
-		else if (spec.required) throw new UsageError(`missing ${label}`);
 	}
+
+	// A text value is always a string, from `readItem` or a string default, so a text can only be missing.
+	const missing = entries.find(([arg, spec]) => spec.type === "text" && spec.required && args[arg] === undefined);
+
+	if (missing !== undefined) throw new UsageError(`missing ${labelOf(...missing)}`);
 
 	return {
 		args,

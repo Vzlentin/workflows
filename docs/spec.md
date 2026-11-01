@@ -800,13 +800,18 @@ current step: see [Progress](#progress). It prints no `run` or report line. Its 
 its end ends them as the end of a run does: see [Runs in the harness host](#runs-in-the-harness-host).
 
 - The child's args are the defaults of its `meta.args`, then `args`, without `prompts`, `overlay`, `from` and `checkout`, and with `meta.worktree` also
-  without `repo`, `base` and `branch`. They are not checked against `meta`, so an undeclared arg reaches the script.
+  without `repo`, `base` and `branch`. Before any worktree or child task exists, the declared args are checked against
+  `meta.args` in declaration order, and the first problem fails the call with `run <name>: <arg> <problem>`: a
+  `required` arg without a value `is missing`, and a value of the wrong type (`null` included) `must be a positive
+  integer`, `must be a string` or `must be a boolean`. A `boolean` that is not given gets no `false`. An undeclared
+  arg is not checked and reaches the script.
 - With `meta.worktree` and `args.repo`, the child gets a new worktree on `<name>/<child-id>`, next to the repository as
   for `meta.worktree`, in
   the repository of `args.repo` from the caller's directory, at `args.base` (default `main`), and `args.start`.
   `args.branch` works as `--branch`. Without `args.repo`, or without `meta.worktree`, the child runs in the caller's
   directory, and `start` is an ordinary arg.
-  With `meta.worktree`, a `start` that is not a string fails the call with `run <name>: start is not a string`.
+  With `meta.worktree`, a `repo`, `base`, `branch` or `start` that is not a string fails the call with
+  `run <name>: <key> must be a string`.
 - Without `meta.worktree`, `args.checkout` names an existing branch of the repository of the caller's directory. It is
   not an arg: the child runs in a new worktree on that branch, next to the repository as for `meta.worktree`, and
   `start` stays an ordinary arg. `checkout` needs `start`, the commit that the change on the branch starts from: a
@@ -1177,7 +1182,7 @@ runs are not listed: they are tasks of their caller. The title is the last `titl
 else the script name. A finished run has the
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
 `done` when the result has no `status`. A run that waits for an answer to `input()` is `waiting`. A run whose task has not ended is `running`, also when it waits for its host
-to start. A run whose task ended without a result is `stopped`, `failed`, `faulted` or `orphaned`. A pending run that
+to start. A run whose task ended without a result is `aborted` (a second Ctrl+C or `workflows stop` stopped it), `failed`, `faulted` or `orphaned`. A pending run that
 another version of workflows saved is `earlier-version` or `later-version`, with its workflow name as its title: it
 cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status", "repository" }`.
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
@@ -1268,7 +1273,7 @@ run <run-id> <workflow> <status> <title>
 - The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, also for a working session, it is
   the time since the call started.
 - A finished run ends with its report lines. A failed run ends with `failed <title>: <error>` and `continue with:
-  workflows resume <run-id>`, a stopped run with `stopped <title>; continue with: workflows resume <run-id>`, and an
+  workflows resume <run-id>`, an aborted run with `stopped <title>; continue with: workflows resume <run-id>`, and an
   orphaned run with `orphaned <title>: <reason>` and the `continue with` line. Any other run ends after its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
@@ -1435,7 +1440,9 @@ directory, starts the host when none runs, asks it to start the run's task, and 
 ### The `workflow` tool of the host
 
 The entry also gives the conversations of the host the `workflow` tool: the project agent, its subagents, and the
-subagents of sessions. The sessions of a run do not get it. It takes the parameters of
+subagents of sessions. The sessions of a run do not get it. `src/tool.ts` defines it once for the host and for Pi:
+its description, its parameters, its output schema, the command arguments of a call, and the text and the outcome of a
+result. The host tool has no prompt guidelines. It takes the parameters of
 [The `workflow` tool](#the-workflow-tool) of Pi, and runs the `workflows` command of the same install as a child
 process with the Node of the host, in the conversation's directory, with `--json`. It sets `HARNESS_PROJECT` to the
 project of the host and `PI_SESSION_ID` to the conversation ID.
@@ -1502,6 +1509,8 @@ When Pi loads the extension, it resolves `@vzlentin/workflows/package.json` from
    other dependencies, such as an older `pi`. It removes the folder first, so each load leaves it on `PATH` once.
 2. It sets the entry `workflows` in harness's `entries.json` to `dist/entry.js` of that package, with the harness that
    the package imports, so a host that the tool starts loads the entry of the same install.
+3. It loads `dist/tool.js` of that package, the definition of the `workflow` tool in `src/tool.ts`, and registers the
+   tool with it.
 
 When `@vzlentin/workflows` does not resolve, the load fails and Pi reports the error. In a checkout, `pi/` resolves the
 checkout through the link `pi/node_modules/@vzlentin/workflows`, see the README.
@@ -1548,9 +1557,11 @@ See [Progress](#progress). So a campaign shows its item steps with the ship step
 does not make the steps itself. A finished run ends with its `report` lines,
 such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8 on fix/readme-typo`. A failed, detached or stopped run ends with
 the error or the state, and the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the
-same after a reload. The model gets the same result text as before.
+same after a reload. The model gets the result text of the host tool: the summary, then the `report` lines of a
+finished run that does not wait for an answer.
 
-The tool declares an `outputSchema`. Its `structuredContent` is `{ runId, status, result?, report?, error? }`:
+The tool declares an `outputSchema`, the union of the outcomes below, one object for each status. Its
+`structuredContent` is `{ runId, status, result?, report?, error?, workflow? }`:
 
 - `finished`: the run finished, `result` is its result, such as a `blocked` ship result, and `report` is its report
   lines. For a run that waits for an answer, `result` is `{"status":"waiting","question":"<question>",...}`, and the
@@ -1571,8 +1582,8 @@ These are the fields of the JSON outcome line of the command.
 After a `started` result, the extension appends the session entry `workflow-background` with the data
 `{ runId, cwd, workflow }`, with the `workflow` of the outcome, and follows the run with `workflows wait <run-id> --json` in `cwd`. When the wait prints a
 `finished`, `failed` or `stopped` outcome, the extension sends the message `workflow-result`, with the text of a
-call without `background` for that outcome (the summary, with no report lines; for a waiting run, the question and
-how to answer it), the `details` `{ steps, outcome }`,
+call without `background` for that outcome (the summary, then the report lines of a finished run; for a waiting run,
+the question and how to answer it), the `details` `{ steps, outcome }`,
 `display: true`, `triggerTurn: true` and `deliverAs: "followUp"`. It then appends the session entry
 `workflow-background-end` with the data `{ runId }`. The renderer of `workflow-result` draws the steps and the outcome
 as the tool result draws them, or the text of the message when its `details` are not valid.
@@ -1707,7 +1718,8 @@ The engine files in `src/`:
 - `cli/terminal/redraw.ts`: how the command draws the tree of steps of a run on stderr.
 - `launch/input.ts`: the generic entry point `workflows <wf>`: the checked arguments of a run, its run ID, its saved
   input, and the input of a child run.
-- `launch/args.ts`: the `meta.args` values of the command line, and the texts that they name.
+- `launch/args.ts`: the `meta.args` values of the command line, and the texts that they name, and the args of a
+  `run()` call, with one check of both against `meta.args`.
 - `launch/worktree.ts`: repository selection, the worktree of a run, made by Herdr or Git, and the name of its branch.
 - `run/result.ts`: the title of a run, and the status, report lines and exit code of its result.
 - `workflow/meta.ts`: read and check the `meta` of a workflow script.

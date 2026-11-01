@@ -4,68 +4,17 @@
  */
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
-import { type Static, Type } from "typebox";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { herdrWorktree, typePickLoop } from "../herdr.ts";
 import type { ScriptInput } from "../launch/input.ts";
 import { branchOf, ensureWorktree, renameBranch } from "../launch/worktree.ts";
-import { JSON_VALUE } from "./calls.ts";
+import { outcomeText, type WorkflowOutcome } from "../tool.ts";
 import { addProgress } from "./progress.ts";
 import { reportOf, statusOf } from "./result.ts";
 import { runScript } from "./sandbox.ts";
 import { endSessions } from "./sessions.ts";
 import { type Checkpoint, current, type Host, type Runtime, type ScriptTask, TASK } from "./version.ts";
-
-/** The stdout line of `workflows --json` after `run <run-id>`, and the outcome that a background run posts. */
-export const OUTCOME = Type.Union([
-	Type.Object({
-		runId: Type.String(),
-		status: Type.Literal("finished"),
-		result: JSON_VALUE,
-		/** The lines that the workflow's report prints without `--json`. */
-		report: Type.Array(Type.String()),
-	}),
-	Type.Object({ runId: Type.String(), status: Type.Literal("failed"), error: Type.String() }),
-	/** `workflow` is the name of the run's workflow, which a background run shows while it runs. */
-	Type.Object({ runId: Type.String(), status: Type.Literal("started"), workflow: Type.String() }),
-	Type.Object({
-		runId: Type.String(),
-		status: Type.Union([Type.Literal("detached"), Type.Literal("stopped"), Type.Literal("host-stopped")]),
-	}),
-]);
-
-export type WorkflowOutcome = Static<typeof OUTCOME>;
-
-/** The result of a run that waits on `input(question)`. */
-const WAITING = Type.Object({ status: Type.Literal("waiting"), question: Type.String() });
-
-function summary(outcome: WorkflowOutcome): string {
-	switch (outcome.status) {
-		case "finished":
-			if (Value.Check(WAITING, outcome.result)) {
-				return `run ${outcome.runId} waits for an answer: ${outcome.result.question}; answer it with resume: "${outcome.runId}" and answer: "<your answer>"`;
-			}
-
-			return `run ${outcome.runId} finished: ${JSON.stringify(outcome.result)}`;
-		case "failed":
-			return `run ${outcome.runId} failed: ${outcome.error}; continue it with resume: "${outcome.runId}"`;
-		case "started":
-			return `run ${outcome.runId} started in the background; its result comes as a message in this conversation when it ends; follow it with resume: "${outcome.runId}", or stop it with the command workflows stop ${outcome.runId}`;
-		case "detached":
-			return `run ${outcome.runId} detached and goes on in the harness host; follow it with resume: "${outcome.runId}", or stop it with the command workflows stop ${outcome.runId}`;
-		case "stopped":
-			return `run ${outcome.runId} stopped; continue it with resume: "${outcome.runId}"`;
-		case "host-stopped":
-			return `the harness host of run ${outcome.runId} stopped; the run continues when the host starts again, so follow it with resume: "${outcome.runId}"`;
-	}
-}
-
-/** The text of `outcome` for the model: its summary, then the report lines of a finished run that does not wait. */
-export function outcomeText(outcome: WorkflowOutcome): string {
-	if (outcome.status !== "finished" || Value.Check(WAITING, outcome.result)) return summary(outcome);
-
-	return [summary(outcome), ...outcome.report].join("\n");
-}
 
 /** The outcome of the finished run `input` with `result`, with the report lines that the command prints. */
 function finishedOutcome(input: ScriptInput, result: JsonValue): WorkflowOutcome {

@@ -20,6 +20,9 @@ import { entriesPath } from "@vzlentin/harness/entries";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import extension, { type workflowTool } from "../pi/index.ts";
 import { RunView } from "../pi/run-view.ts";
+import workflowsEntry from "../src/entry.ts";
+import type { Host } from "../src/run/version.ts";
+import * as toolModule from "../src/tool.ts";
 import { hostModel, sandbox, startHost } from "./support.ts";
 
 const run = promisify(execFile);
@@ -212,7 +215,7 @@ function fakePi(entries: CustomEntry[] = [], command = ["/bin/sh", join(root, "w
 		},
 	};
 
-	extension(pi, command);
+	extension(pi, { command, tool: toolModule });
 
 	/** Fires `event` with a context in `root` whose session has `entries`, with `ui` when given. */
 	const fire = async (event: string, ui?: ExtensionUIContext, hasUI = ui !== undefined) => {
@@ -529,7 +532,7 @@ describe("the workflow tool", () => {
 				contextOf(cwd),
 			);
 
-			expect(answered.content).toEqual([{ type: "text", text: `run ${id} finished: "yes"` }]);
+			expect(answered.content).toEqual([{ type: "text", text: `run ${id} finished: "yes"\nyes` }]);
 			expect(answered.structuredContent).toEqual({ runId: id, status: "finished", result: "yes", report: ["yes"] });
 		} finally {
 			await host.close();
@@ -565,6 +568,14 @@ describe("the workflow tool", () => {
 
 		for (const name of globals) expect(guidelines, name).toContain(`\`${name}`);
 	});
+
+	it("has the description, parameters and output schema of the tool of the harness host", () => {
+		// SAFETY: the entry reads the host only when a tool call or a task runs, and this test runs neither.
+		const [hostTool] = workflowsEntry({} as Host).extensions[0]?.tools ?? [];
+		expect(hostTool?.description).toBe(tool.description);
+		expect(hostTool?.parameters).toEqual(tool.parameters);
+		expect(hostTool?.structuredOutputSchema).toEqual(tool.outputSchema);
+	});
 });
 
 describe("a background run of the workflow tool", () => {
@@ -595,7 +606,7 @@ describe("a background run of the workflow tool", () => {
 			{
 				message: {
 					customType: "workflow-result",
-					content: [{ type: "text", text: "run rb finished: 1" }],
+					content: [{ type: "text", text: "run rb finished: 1\none" }],
 					display: true,
 					details: {
 						steps: ["✓ plan"],
@@ -635,7 +646,7 @@ describe("a background run of the workflow tool", () => {
 		await pi.fire("session_start");
 		await vi.waitFor(() => expect(pi.messages).toHaveLength(1));
 		expect(await waits()).toEqual(["wait rb --json"]);
-		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: "run rb finished: 1" }]);
+		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: "run rb finished: 1\none" }]);
 	});
 
 	it("posts nothing when the wait prints no outcome", async () => {
@@ -680,7 +691,7 @@ describe("a background run of the workflow tool", () => {
 		await writeFile(join(root, `end-${id}`), "");
 		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
 		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", undefined]));
-		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: `run ${id} finished: 1` }]);
+		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: `run ${id} finished: 1\none` }]);
 		expect(pi.entries[1]?.data).toEqual({ runId: id });
 	});
 
@@ -974,6 +985,12 @@ describe("the installed extension", () => {
 
 		// Only the CLI, after it read the scripts of the install, knows that no workflow has that name.
 		await expect(called).rejects.toThrow("workflows: unknown command nope");
+	});
+
+	it("gives the tool of dist/tool.js of its workflows dependency", async () => {
+		const registered = await load();
+		expect(registered.description).toBe(toolModule.DESCRIPTION);
+		expect(registered.parameters).toEqual(toolModule.PARAMETERS);
 	});
 
 	it("puts the .bin folder next to its workflows last on PATH, once for each load", async () => {

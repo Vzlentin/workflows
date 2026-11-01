@@ -11,7 +11,7 @@ import { Value } from "typebox/value";
 import { editBundle, loadBundle, type RunBundle } from "../workflow/bundle.ts";
 import { findScript, type Io, problem, usageOf } from "../workflow/find.ts";
 import { type Meta, OBJECT, readMeta } from "../workflow/meta.ts";
-import { parseValues } from "./args.ts";
+import { checkArgs, parseValues, runArgs } from "./args.ts";
 import { checkoutWorktree, prepareWorktree, type Worktree } from "./worktree.ts";
 
 /** A run ID, `<UTC timestamp>-<8 hex>`, so a sort by name is a sort by start time. */
@@ -31,7 +31,22 @@ export function subject(item: string): string {
 	return line.replace(/^#+/, "").trim();
 }
 
-const START = Type.Object({ start: Type.Optional(Type.String()) });
+/** The args that place a `meta.worktree` child run, and its `start`. */
+const PLACEMENT: Meta["args"] = {
+	repo: { type: "string" },
+	base: { type: "string" },
+	branch: { type: "string" },
+	start: { type: "string" },
+};
+
+/** The values that `PLACEMENT` lets through. */
+type Placement = { readonly repo?: string; readonly base?: string; readonly branch?: string; readonly start?: string };
+
+/** Throws as `checkArgs` when a key of `PLACEMENT` in `given` is not a string. */
+function checkPlacement(name: string, given: JsonObject): asserts given is JsonObject & Placement {
+	checkArgs(name, PLACEMENT, given);
+}
+
 const OVERLAY = Type.Record(Type.String(), Type.Union([Type.String(), Type.Null()]));
 
 type Args = {
@@ -97,9 +112,9 @@ export async function prepare(
  * `meta` defaults and the given args. With `meta.worktree`, `repo`, `base` and `branch` are not args: with `repo`, the
  * child gets its own worktree from `repo` and `base`, and otherwise it runs in the caller's directory, as a script
  * without `meta.worktree` does. A script without `meta.worktree` gets with `checkout` a worktree on that existing branch
- * of the caller's repository, and then needs `start` as a string. The args are not checked against `meta`, but a
- * `meta.worktree` script gets `start` as a string or not at all. `prompts` and `overlay` edit the bundle as
- * `editBundle` says.
+ * of the caller's repository, and then needs `start` as a string. `runArgs` checks the declared args against `meta`
+ * before any worktree exists. With `meta.worktree`, `checkArgs` first checks `repo`, `base`, `branch` and `start` as
+ * optional strings, with the same wording. `prompts` and `overlay` edit the bundle as `editBundle` says.
  */
 export async function childInput(
 	request: {
@@ -126,10 +141,6 @@ export async function childInput(
 	const texts = Object.fromEntries(Object.entries(prompts).map(([item, text]) => [item, String(text)]));
 	const edited = editBundle(name, bundle, texts, overlay, request.overlay);
 
-	const defaults = Object.entries(meta.args).flatMap(([arg, spec]) =>
-		spec.default === undefined ? [] : [[arg, spec.default] as const],
-	);
-
 	const bundled = {
 		name,
 		meta,
@@ -145,7 +156,7 @@ export async function childInput(
 	}
 
 	if (!meta.worktree) {
-		const input = { ...script, args: { ...Object.fromEntries(defaults), ...given }, ...here };
+		const input = { ...script, args: runArgs(name, meta, given), ...here };
 
 		if (checkout === undefined) return input;
 
@@ -157,15 +168,11 @@ export async function childInput(
 	if (checkout !== undefined) throw new Error(`run ${name}: checkout is for a script without meta.worktree`);
 
 	// `repo`, `base` and `branch` place a `meta.worktree` run; any other script gets them as args.
+	checkPlacement(name, given);
 	const { repo, base = "main", branch, ...own } = given;
-
-	if (!Value.Check(START, own)) throw new Error(`run ${name}: start is not a string`);
-	const input = { ...script, args: { ...Object.fromEntries(defaults), ...own } };
+	const input = { ...script, args: runArgs(name, meta, own) };
 
 	if (repo === undefined) return { ...input, ...here };
 
-	return prepare(
-		{ ...input, repo: String(repo), base: String(base), branch: branch === undefined ? branch : String(branch) },
-		run,
-	);
+	return prepare({ ...input, repo, base, branch }, run);
 }
