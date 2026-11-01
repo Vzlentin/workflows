@@ -1435,7 +1435,9 @@ directory, starts the host when none runs, asks it to start the run's task, and 
 ### The `workflow` tool of the host
 
 The entry also gives the conversations of the host the `workflow` tool: the project agent, its subagents, and the
-subagents of sessions. The sessions of a run do not get it. It takes the parameters of
+subagents of sessions. The sessions of a run do not get it. `src/tool.ts` defines it once for the host and for Pi:
+its description, its parameters, its output schema, the command arguments of a call, and the text and the outcome of a
+result. The host tool has no prompt guidelines. It takes the parameters of
 [The `workflow` tool](#the-workflow-tool) of Pi, and runs the `workflows` command of the same install as a child
 process with the Node of the host, in the conversation's directory, with `--json`. It sets `HARNESS_PROJECT` to the
 project of the host and `PI_SESSION_ID` to the conversation ID.
@@ -1502,6 +1504,8 @@ When Pi loads the extension, it resolves `@vzlentin/workflows/package.json` from
    other dependencies, such as an older `pi`. It removes the folder first, so each load leaves it on `PATH` once.
 2. It sets the entry `workflows` in harness's `entries.json` to `dist/entry.js` of that package, with the harness that
    the package imports, so a host that the tool starts loads the entry of the same install.
+3. It loads `dist/tool.js` of that package, the definition of the `workflow` tool in `src/tool.ts`, and registers the
+   tool with it.
 
 When `@vzlentin/workflows` does not resolve, the load fails and Pi reports the error. In a checkout, `pi/` resolves the
 checkout through the link `pi/node_modules/@vzlentin/workflows`, see the README.
@@ -1548,9 +1552,11 @@ See [Progress](#progress). So a campaign shows its item steps with the ship step
 does not make the steps itself. A finished run ends with its `report` lines,
 such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8 on fix/readme-typo`. A failed, detached or stopped run ends with
 the error or the state, and the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the
-same after a reload. The model gets the same result text as before.
+same after a reload. The model gets the result text of the host tool: the summary, then the `report` lines of a
+finished run that does not wait for an answer.
 
-The tool declares an `outputSchema`. Its `structuredContent` is `{ runId, status, result?, report?, error? }`:
+The tool declares an `outputSchema`, the union of the outcomes below, one object for each status. Its
+`structuredContent` is `{ runId, status, result?, report?, error?, workflow? }`:
 
 - `finished`: the run finished, `result` is its result, such as a `blocked` ship result, and `report` is its report
   lines. For a run that waits for an answer, `result` is `{"status":"waiting","question":"<question>",...}`, and the
@@ -1571,8 +1577,8 @@ These are the fields of the JSON outcome line of the command.
 After a `started` result, the extension appends the session entry `workflow-background` with the data
 `{ runId, cwd, workflow }`, with the `workflow` of the outcome, and follows the run with `workflows wait <run-id> --json` in `cwd`. When the wait prints a
 `finished`, `failed` or `stopped` outcome, the extension sends the message `workflow-result`, with the text of a
-call without `background` for that outcome (the summary, with no report lines; for a waiting run, the question and
-how to answer it), the `details` `{ steps, outcome }`,
+call without `background` for that outcome (the summary, then the report lines of a finished run; for a waiting run,
+the question and how to answer it), the `details` `{ steps, outcome }`,
 `display: true`, `triggerTurn: true` and `deliverAs: "followUp"`. It then appends the session entry
 `workflow-background-end` with the data `{ runId }`. The renderer of `workflow-result` draws the steps and the outcome
 as the tool result draws them, or the text of the message when its `details` are not valid.

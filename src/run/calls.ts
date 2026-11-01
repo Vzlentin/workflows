@@ -10,6 +10,7 @@ import type { Owner } from "@vzlentin/harness/children";
 import type { Overlay } from "@vzlentin/harness/overlay";
 import { type Static, Type } from "typebox";
 import { failure, run } from "../git.ts";
+import { JSON_VALUE } from "../tool.ts";
 import type { RunBundle } from "../workflow/bundle.ts";
 import { type PastOptions, pastRuns, scanRuns } from "./past.ts";
 import { addProgress, checkpointWhen, type PhaseLines, takeLines } from "./progress.ts";
@@ -39,21 +40,6 @@ export type ScriptRun = {
 	/** The task of every script run, which the child runs of the `run` calls are tasks of. */
 	readonly definition: ScriptTask;
 };
-
-/** A JSON value. */
-export const JSON_VALUE = Type.Cyclic(
-	{
-		Json: Type.Union([
-			Type.Null(),
-			Type.Boolean(),
-			Type.Number(),
-			Type.String(),
-			Type.Array(Type.Ref("Json")),
-			Type.Record(Type.String(), Type.Ref("Json")),
-		]),
-	},
-	"Json",
-);
 
 const CALL_KINDS = Type.Union([
 	Type.Literal("session"),

@@ -105,7 +105,7 @@ runs, hosts and harness entry do not mix with those of the installed `workflows`
 source. To release, merge the release PR `release: <version>` that CI keeps open: CI then publishes both packages at that version.
 
 The Pi extension in `pi/` is the package `@vzlentin/pi-workflows`. It runs `dist/cli.js` of its dependency
-`@vzlentin/workflows`. To try the checkout's extension in Pi, link the checkout as that dependency, then install `pi/`:
+`@vzlentin/workflows`, and loads its `dist/tool.js`, the definition of the `workflow` tool. To try the checkout's extension in Pi, link the checkout as that dependency, then install `pi/`:
 
 ```sh
 npm run build

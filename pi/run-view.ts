@@ -6,7 +6,7 @@ import { type Static, Type } from "@earendil-works/pi-ai";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import { Value } from "typebox/value";
-import type { Output } from "./index.ts";
+import type { Output } from "../src/tool.ts";
 
 /** How often the run view reads the run again. */
 const REFRESH_MS = 2000;

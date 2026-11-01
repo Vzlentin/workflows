@@ -10,37 +10,22 @@ import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { type Static, Type } from "typebox";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { TOOL_EXTENSION } from "./run/sessions.ts";
-import { OUTCOME, outcomeText, scriptTask, type WorkflowOutcome } from "./run/task.ts";
+import { scriptTask } from "./run/task.ts";
 import type { Host } from "./run/version.ts";
-
-const SAVE = Type.Object(
-	{
-		runId: Type.String(),
-		name: Type.String({ description: "Lowercase letters, digits and -" }),
-		force: Type.Optional(Type.Boolean({ description: "Replace a workflow of that name" })),
-	},
-	{ description: "Writes the script of the run to .workflows/scripts/<name>.js of the project" },
-);
-
-const PARAMETERS = Type.Object({
-	name: Type.Optional(Type.String({ description: "`ship`, `campaign`, `optimize`, or the name of a workflow script" })),
-	script: Type.Optional(Type.String({ description: "An inline workflow script" })),
-	resume: Type.Optional(Type.String({ description: "The ID of a run to continue" })),
-	answer: Type.Optional(Type.String({ description: "With `resume`: the answer to the question of a waiting run" })),
-	save: Type.Optional(SAVE),
-	args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-	background: Type.Optional(
-		Type.Boolean({
-			description:
-				"With `name`, `script` or `resume`: start the run and return at once; its result comes as a message in this conversation",
-		}),
-	),
-});
-
-type WorkflowCall = Static<typeof PARAMETERS>;
+import {
+	cliArgs,
+	DESCRIPTION,
+	OUTCOME,
+	type Output,
+	outcomeOf,
+	outcomeText,
+	PARAMETERS,
+	savedOutcome,
+	type WorkflowCall,
+} from "./tool.ts";
 
 /** The `details` of a call: the progress lines that the command drew last, then any other stderr line. */
 type WorkflowDetails = { steps: string[] };
@@ -65,37 +50,6 @@ const CLI = [
 	process.execPath,
 	fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./cli.ts" : "./cli.js", import.meta.url)),
 ];
-
-/**
- * The `workflows` arguments of a tool call, with each arg as a flag, and `--json` for a run. The command rejects a flag
- * it does not know, so a mistyped arg fails before a run exists.
- */
-function cliArgs({ name, script, resume, answer, save, args = {}, background }: WorkflowCall): string[] {
-	const given = [name, script, resume, save].filter((value) => value !== undefined).length;
-
-	if (given !== 1) throw new Error("give exactly one of name, script, resume or save");
-
-	if (answer !== undefined && resume === undefined) throw new Error("answer works only with resume");
-
-	if (background && save !== undefined) throw new Error("background works only with name, script or resume");
-	const json = background ? ["--background", "--json"] : ["--json"];
-
-	if (resume !== undefined) return ["resume", resume, ...(answer === undefined ? [] : [`--answer=${answer}`]), ...json];
-
-	if (save !== undefined) return ["save", save.runId, save.name, ...(save.force ? ["--force"] : [])];
-
-	const flags = Object.entries(args).flatMap(([key, flag]) => {
-		if (flag === false) return [];
-
-		if (flag === true) return [`--${key}`];
-
-		return [`--${key}=${Value.Check(Type.String(), flag) ? flag : JSON.stringify(flag)}`];
-	});
-
-	return [name ?? "-", ...flags, ...json];
-}
-
-type Output = { readonly code: number | null; readonly stdout: readonly string[]; readonly stderr: readonly string[] };
 
 /**
  * Runs the command with `args` in `cwd` and `env`; each stdout line goes to `stdout` and each stderr line to `stderr`,
@@ -138,18 +92,6 @@ async function runCli(
 	} finally {
 		options.signal?.removeEventListener("abort", interrupt);
 	}
-}
-
-/** The outcome line after `run <run-id>`; throws the stderr text when the command stopped without one. */
-function outcomeOf(output: Output): WorkflowOutcome {
-	const [, line] = output.stdout;
-
-	if (line === undefined) throw new Error(output.stderr.join("\n") || `workflows exited with ${output.code}`);
-	const outcome = JSON.parse(line);
-
-	if (!Value.Check(OUTCOME, outcome)) throw new Error(`workflows printed an outcome that is not valid: ${line}`);
-
-	return outcome;
 }
 
 /** The project of the host, which the host gives only to the shell of each conversation. */
@@ -233,19 +175,9 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 	await details;
 
 	if (params.save !== undefined) {
-		const file = output.stdout.at(-1);
+		const { text, outcome } = savedOutcome(output, params.save.runId);
 
-		if (output.code !== 0 || file === undefined) {
-			throw new Error(output.stderr.join("\n") || `workflows exited with ${output.code}`);
-		}
-
-		const { runId } = params.save;
-		const text = `saved the script of run ${runId} as ${file}`;
-
-		return {
-			output: [{ type: "text" as const, text }],
-			structuredOutput: { runId, status: "finished", result: { file }, report: [file] },
-		};
+		return { output: [{ type: "text" as const, text }], structuredOutput: outcome };
 	}
 
 	const outcome = outcomeOf(output);
@@ -259,39 +191,9 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 function workflowExtension(host: Host) {
 	const tool = defineTool<typeof PARAMETERS, WorkflowDetails>({
 		name: "workflow",
-		description:
-			"Run a durable workflow and wait for its result. Give exactly one of: `name` (a workflow script such as " +
-			"`ship`, `campaign` or `optimize`), `script` (the body of an inline workflow script), `resume` (a run " +
-			"ID), or `save` (keeps the script of a run as a named workflow of the project). `args` are the arguments of " +
-			"`name` or `script`, each passed as `--<key>`; a script's `meta` declares them. For " +
-			"`ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and `prompts`. For `campaign`, which " +
-			"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
-			"`base`, `rounds` and `prompts`. For `optimize`, which proposes edits to the ship prompts, profiles, skills " +
-			"and `AGENTS.md` from past ship runs and keeps them when a blind judge prefers their diffs: `workflow` " +
-			"(`ship`), and optional `runs`, `limit`, `items` and `always-on-max` (the most characters of `AGENTS.md`). " +
-			"Each `run()` call of a " +
-			"script starts a child run, which a resume of its caller continues. A run goes on in the harness host of the " +
-			"project: Esc detaches from it, and `resume` follows it again. A failed or stopped run stays resumable. With " +
-			"`background: true`, the call returns at once and the result of the run comes later as a message in this " +
-			"conversation: use it for long runs such as `campaign` or `optimize`, or for work that can go on while the " +
-			"conversation continues. `input(question)` stops the run, and the tool gives a `waiting` result with the " +
-			"question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` then returns the answer.",
+		description: DESCRIPTION,
 		parameters: PARAMETERS,
-		structuredOutputSchema: Type.Object({
-			runId: Type.String(),
-			status: Type.Union([
-				Type.Literal("finished"),
-				Type.Literal("started"),
-				Type.Literal("failed"),
-				Type.Literal("detached"),
-				Type.Literal("stopped"),
-				Type.Literal("host-stopped"),
-			]),
-			result: Type.Optional(Type.Unknown()),
-			report: Type.Optional(Type.Array(Type.String())),
-			error: Type.Optional(Type.String()),
-			workflow: Type.Optional(Type.String()),
-		}),
+		structuredOutputSchema: OUTCOME,
 		// A call that a restart interrupted does not run again, so it cannot start a second run.
 		replay: "unsafe",
 		execute: (params, api, context) => runTool(host, params, api, context),
