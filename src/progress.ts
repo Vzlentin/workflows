@@ -6,7 +6,7 @@
  */
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
-import type { Io } from "./run.ts";
+import type { Io } from "./workflow/find.ts";
 
 /** The document kind of the progress of a run in the project store. */
 export const PROGRESS_KIND = "workflows.progress";

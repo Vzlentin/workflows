@@ -15,7 +15,8 @@ import { AGENTS } from "../pi/run-view.ts";
 import { branchOf } from "../src/git.ts";
 import type { Choose } from "../src/main.ts";
 import { programStatus } from "../src/progress.ts";
-import { CallDoc, profileOf } from "../src/script.ts";
+import { CallDoc } from "../src/script.ts";
+import { profileOf } from "../src/workflow/bundle.ts";
 import {
 	childTasks,
 	conversationOf,

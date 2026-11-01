@@ -27,15 +27,15 @@ import { cliPath, statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { agentLines, agentRows, callTree, type Shown, showEntries, type TreeEntry, treeLines } from "./calls.ts";
+import { CHECK, check } from "./cli/commands/check.ts";
 import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
 import { herdrPlace, removedByHerdr } from "./herdr.ts";
 import * as script from "./meta.ts";
 import type { RunTask } from "./past.ts";
 import type { PickItem } from "./pick.ts";
 import { display, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
-import { type Io, newRunId, parseArgsMessage, UsageError, withUsage } from "./run.ts";
+import { newRunId } from "./run.ts";
 import type { SavedCall } from "./script.ts";
-import { loadScripts, projectFolder } from "./script.ts";
 import {
 	callRecords,
 	inputString,
@@ -47,6 +47,8 @@ import {
 	type Store,
 } from "./store.ts";
 import { current, TASK } from "./task.ts";
+import { loadScripts, projectFolder } from "./workflow/bundle.ts";
+import { help, type Io, listScripts, parseArgsMessage, UsageError, withUsage } from "./workflow/find.ts";
 
 /**
  * The entry of workflows that the harness host loads: `dist/entry.js`, or `src/entry.ts` in a checkout. The command sets
@@ -125,7 +127,7 @@ const COMMANDS = new Map<string, Command>([
 	["attach", attach],
 	["save", save],
 	["prune", prune],
-	["check", script.check],
+	["check", check],
 ]);
 
 /**
@@ -144,7 +146,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		ATTACH,
 		SAVE,
 		PRUNE,
-		script.CHECK,
+		CHECK,
 		"workflows --version",
 		"workflows",
 	]
@@ -162,7 +164,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		);
 
 		if (command === undefined) {
-			for (const line of await script.listScripts(terminal)) terminal.stdout(line);
+			for (const line of await listScripts(terminal)) terminal.stdout(line);
 
 			return 0;
 		}
@@ -180,7 +182,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		const flags = args.indexOf("--");
 
 		if (args.slice(0, flags === -1 ? args.length : flags).includes("--help")) {
-			for (const line of await script.help(command, terminal)) terminal.stdout(line);
+			for (const line of await help(command, terminal)) terminal.stdout(line);
 
 			return 0;
 		}
