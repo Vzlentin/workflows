@@ -1,6 +1,9 @@
-/** `workflows prune`: removes the worktrees of the ended runs whose branch GitHub merged. */
+/**
+ * `workflows prune`: removes the worktrees of the ended runs whose branch GitHub merged, and the old run directories
+ * that have no task.
+ */
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { resolveProject } from "@vzlentin/harness/projects";
@@ -15,19 +18,24 @@ import { hasEnded, type RunTask, runStatus, taskOf } from "../../run/past.ts";
 import { withUsage } from "../../workflow/find.ts";
 import { runsDirectory, STORE_FILE } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { savedBy } from "../saved.ts";
+import { savedBy, unstartedRuns } from "../saved.ts";
 
 export const PRUNE = "workflows prune [--yes] [--install-hook] [--json]";
 
 /** The line of the post-merge hook that `prune --install-hook` writes. */
 const HOOK_LINE = "workflows prune --yes >/dev/null 2>&1 &";
 
+/** How old the `project` file of a run directory with no task must be before `prune` removes the directory. */
+const UNSTARTED_GRACE_MS = 60 * 60 * 1000;
+
 type Prunable = { readonly runId: string; readonly branch: string; readonly worktree: Worktree };
 
 /**
  * Prints the ended runs of the project of the current directory whose worktree is on a branch that GitHub merged. With
- * `--yes`, it removes their worktrees and branches. With `--install-hook`, it writes a post-merge hook that runs
- * `prune --yes`. It reads the project store only, and runs every `gh` call before it removes anything.
+ * `--yes`, it removes their worktrees and branches. It also prints the run directories of the project whose run has no
+ * task and whose `project` file is more than an hour old, and `--yes` removes them. With `--install-hook`, it writes a
+ * post-merge hook that runs `prune --yes`. It reads the project store only, and runs every `gh` call before it removes
+ * anything.
  */
 export async function prune(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const { values } = withUsage(
@@ -41,7 +49,8 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 	);
 
 	if (values["install-hook"]) return installHook(terminal);
-	const store = join(statePaths(await resolveProject(process.env, terminal.cwd)).dir, STORE_FILE);
+	const project = await resolveProject(process.env, terminal.cwd);
+	const store = join(statePaths(project).dir, STORE_FILE);
 	const runs = await reading(store, new Map<string, RunTask[]>(), runTasks);
 	const merged: Prunable[] = [];
 
@@ -51,6 +60,8 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 		if (found !== undefined && (await isMerged(found))) merged.push(found);
 	}
 
+	// A run directory gets its task within moments of its `project` file, so a younger one may be a run that starts.
+	const stale = (await unstartedRuns(project, runs)).filter(({ since }) => Date.now() - since > UNSTARTED_GRACE_MS);
 	const line = ({ runId, branch, worktree }: Prunable) => `${runId} ${branch} ${worktree.path}`;
 
 	for (const found of merged) {
@@ -59,10 +70,16 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 		if (!json) terminal.stdout(line(found));
 	}
 
-	if (json)
-		terminal.stdout(
-			JSON.stringify(merged.map(({ runId, branch, worktree }) => ({ runId, branch, worktree: worktree.path }))),
-		);
+	for (const { runId, directory } of stale) {
+		if (values.yes) await rm(directory, { recursive: true, force: true });
+
+		if (!json) terminal.stdout(`${runId} unstarted ${directory}`);
+	}
+
+	if (json) {
+		const worktrees = merged.map(({ runId, branch, worktree }) => ({ runId, branch, worktree: worktree.path }));
+		terminal.stdout(JSON.stringify([...worktrees, ...stale.map(({ runId, directory }) => ({ runId, directory }))]));
+	}
 
 	return 0;
 }

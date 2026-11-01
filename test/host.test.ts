@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -38,6 +38,7 @@ import {
 	startHost,
 	storeOf,
 	tellAgent,
+	untimed,
 	workflows,
 } from "./support.ts";
 
@@ -384,7 +385,7 @@ describe("runs in the harness host", () => {
 		const shown = await workflows(["show", id], { cwd: root });
 		expect(shown.stdout).toEqual([
 			`run ${id} gated aborted gated`,
-			"  ✗ sh ./gate.sh g",
+			"  ✗ sh ./gate.sh g  cut",
 			`stopped gated; continue with: workflows resume ${id}`,
 		]);
 		const usage = await workflows(["stop"], { cwd: root });
@@ -444,7 +445,7 @@ describe("runs in the harness host", () => {
 		const shown = await workflows(["show", run.id ?? ""], { cwd: root });
 		expect(shown.stdout.slice(0, 3)).toEqual([
 			`run ${run.id} x failed x`,
-			"  ✗ sh ./gate.sh g; touch late",
+			"  ✗ sh ./gate.sh g; touch late  cancelled",
 			expect.stringMatching(/^ {2}✗ sh sleep 0\.2; exit 3 {2}\d+s$/),
 		]);
 	});
@@ -502,6 +503,109 @@ describe("runs in the harness host", () => {
 			{ status: "terminal", outcome: "failed" },
 			{ status: "terminal", outcome: "completed" },
 		]);
+	});
+
+	it("sends the start again when its connection closed before the host got it, and follows the run", async () => {
+		await writeFile(join(root, "x.js"), 'phase("one")\nreturn "done"');
+		const run = await workflows(["x.js"], { cwd: root, lateStart: true });
+		const id = run.id ?? "";
+		expect([run.code, run.stdout, run.stderr]).toEqual([0, [`run ${id}`, "done"], ["one"]]);
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
+		expect(existsSync(join(runsOf(root), id, "project"))).toBe(true);
+	});
+
+	it("lists a run directory that has no task as unstarted, and prunes it once it is an hour old", async () => {
+		const id = newRunId();
+		const directory = join(runsOf(root), id);
+		await mkdir(directory, { recursive: true });
+		await writeFile(join(directory, "project"), "main\n");
+		const listed = await workflows(["list"], { cwd: root });
+		expect(listed.stdout).toEqual([`${id} - unstarted -`]);
+		const listedJson = await workflows(["list", "--json"], { cwd: root });
+		expect(JSON.parse(listedJson.stdout[0] ?? "")).toEqual([
+			{ runId: id, workflow: "-", title: "-", status: "unstarted", repository: null },
+		]);
+
+		const young = await workflows(["prune", "--yes"], { cwd: root });
+		expect([young.code, young.stdout, existsSync(directory)]).toEqual([0, [], true]);
+		const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+		await utimes(join(directory, "project"), old, old);
+		const shown = await workflows(["prune", "--json"], { cwd: root });
+		expect(JSON.parse(shown.stdout[0] ?? "")).toEqual([{ runId: id, directory }]);
+		const pruned = await workflows(["prune", "--yes"], { cwd: root });
+		expect([pruned.code, pruned.stdout, existsSync(directory)]).toEqual([0, [`${id} unstarted ${directory}`], false]);
+	});
+
+	it("reports a run as stopped when the host closes the connection after it took the stop", async () => {
+		await writeFile(join(root, "x.js"), 'phase("gate")\nawait sh("./gate.sh g")\nreturn "done"');
+		const ctrlC = new CtrlC(() => {});
+		const pending = workflows(["x.js"], { cwd: root, ctrlC, dropAfterAbort: true });
+		await reached("g");
+		ctrlC.press();
+		ctrlC.press();
+		const run = await pending;
+		const id = run.id ?? "";
+		expect([run.code, run.stderr.at(-1)]).toEqual([130, `stopped x; continue with: workflows resume ${id}`]);
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
+		const shown = await workflows(["show", id], { cwd: root });
+		expect(shown.stdout.slice(0, 2).map(untimed)).toEqual([`run ${id} x aborted x`, "· gate"]);
+	});
+
+	it("reports a stop as done when the host closes the connection after it took the stop", async () => {
+		const { id, host } = await detachedRun();
+
+		try {
+			const stopped = await workflows(["stop", id], { cwd: root, host, dropAfterAbort: true });
+			expect([stopped.code, stopped.stdout]).toEqual([0, [`stopped gated; continue with: workflows resume ${id}`]]);
+		} finally {
+			await host.close();
+		}
+
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
+	});
+
+	it("shows a call of a task that runs as running, and one of a task that does not as cut", async () => {
+		const { id, host } = await detachedRun();
+
+		try {
+			const running = await workflows(["show", id, "--json"], { cwd: root, host });
+			expect(JSON.parse(running.stdout[0] ?? "").calls).toMatchObject([{ kind: "sh", state: "running", mark: "◉" }]);
+		} finally {
+			await host.close();
+		}
+
+		const database = new DatabaseSync(storeOf());
+		database
+			.prepare(
+				`UPDATE document_revisions SET content = json_set(content, '$.task', 999999) WHERE kind = 'base' AND content LIKE '{"kind":"sh"%gate.sh g%'`,
+			)
+			.run();
+		database.close();
+		const shown = await workflows(["show", id], { cwd: root });
+		expect(shown.stdout.slice(0, 2)).toEqual([`run ${id} gated running gated`, "  ✗ sh ./gate.sh g  cut"]);
+	});
+
+	it("gives the script's result when the end of its sessions fails, and reports the failure", async () => {
+		await setEntries({ workflows: fileURLToPath(new URL("sessions-entry.ts", import.meta.url)) });
+		await writeFile(join(root, "x.js"), 'await session().ask("Script: one")\nreturn "done"');
+		const host = await startHost("main", hostModel().models);
+		const write = process.stderr.write.bind(process.stderr);
+		const warnings: string[] = [];
+
+		process.stderr.write = (chunk: string | Uint8Array, ...rest: never[]) => {
+			warnings.push(String(chunk));
+
+			return write(chunk, ...rest);
+		};
+
+		try {
+			const run = await workflows(["x.js"], { cwd: root, host });
+			expect([run.code, run.stdout]).toEqual([0, [`run ${run.id}`, "done"]]);
+			expect(warnings).toContain("warning: the library failed to find the session\n");
+		} finally {
+			process.stderr.write = write;
+			await host.close();
+		}
 	});
 
 	it("follows a run whose start request failed after the host created its task", async () => {

@@ -2,7 +2,7 @@
  * The saved runs of the command line: their run directory, their root tasks with their keys, their status and their
  * progress, read from the project store.
  */
-import { readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -44,6 +44,37 @@ export async function savedRun(id: string, usage: string): Promise<SavedRun> {
 	).trim();
 
 	return { id, project, store: join(statePaths(project).dir, STORE_FILE) };
+}
+
+/**
+ * A run directory whose run has no task: its run ID, its path, and the time of its `project` file in ms since the epoch.
+ * `start` writes that file before the host creates the task, so it is a run that has not started yet, or whose
+ * command stopped before the host created its task.
+ */
+export type Unstarted = { readonly runId: string; readonly directory: string; readonly since: number };
+
+/**
+ * The run directories whose `project` file names `project` and whose run ID has no entry in `runs`, the root runs of
+ * the project store, newest run ID first. A child run directory has no `project` file.
+ */
+export async function unstartedRuns(project: string, runs: ReadonlyMap<string, unknown>): Promise<Unstarted[]> {
+	const root = runsDirectory();
+	const found: Unstarted[] = [];
+
+	for (const id of (await readdir(root).catch(() => [])).sort().reverse()) {
+		if (runs.has(id)) continue;
+		const file = join(root, id, "project");
+		const named = await readFile(file, "utf8").catch(() => undefined);
+
+		const since = await stat(file).then(
+			(info) => info.mtimeMs,
+			() => undefined,
+		);
+
+		if (named?.trim() === project && since !== undefined) found.push({ runId: id, directory: join(root, id), since });
+	}
+
+	return found;
 }
 
 /** The root tasks of `run`, oldest first. */

@@ -18,6 +18,7 @@ export const MARKS = new Map<string, ThemeColor>([
 	["✓", "success"],
 	["◉", "accent"],
 	["✗", "error"],
+	["·", "dim"],
 ]);
 
 const MARK = Type.Union([Type.Literal("✓"), Type.Literal("✗"), Type.Literal("◉")]);

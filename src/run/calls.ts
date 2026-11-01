@@ -56,8 +56,10 @@ export type CallKind = Static<typeof CALL_KINDS>;
 
 /**
  * One script call: its kind, its args, the phase line that was current when it started, its start and end times as ISO
- * strings, and its result or its error. A call that started and did not end has no `endedAt`. The `conversation` of a
- * `session` call is its session, and the `child` of a `run` call is its child run, so a stopped call reuses them.
+ * strings, and its result or its error. A call that started and did not end has no `endedAt`. `task` is the task that
+ * started it last, and `cancelledAt` the time when the end of its script cancelled it. The `conversation` of a
+ * `session` call is its session, and the `child` of a `run` call is its child run, so a stopped call reuses them. The
+ * `childRun` of a `run` call is the run ID of its child run, saved before the child run directory exists.
  */
 export const CALL_RECORD = Type.Object({
 	kind: CALL_KINDS,
@@ -67,8 +69,11 @@ export const CALL_RECORD = Type.Object({
 	endedAt: Type.Optional(Type.String()),
 	result: Type.Optional(JSON_VALUE),
 	error: Type.Optional(Type.String()),
+	task: Type.Optional(Type.Number()),
+	cancelledAt: Type.Optional(Type.String()),
 	conversation: Type.Optional(Type.Number()),
 	child: Type.Optional(Type.Object({ task: Type.Number(), runId: Type.String() })),
+	childRun: Type.Optional(Type.String()),
 });
 
 /** A call record as the command reads it from the store file, where its IDs are plain numbers. */
@@ -117,7 +122,10 @@ function keyOf(name: string, args: JsonObject, counters: Map<string, number>): s
 export type Calls = {
 	readonly script: ScriptRun;
 	readonly runtime: Runtime;
+	/** The context of the calls, which the end of the script cancels. */
 	readonly context: Context;
+	/** The context of the phase, which the end of the script does not cancel. */
+	readonly phase: Context;
 	readonly counters: Map<string, number>;
 	readonly progress: PhaseLines;
 	readonly host: Host;
@@ -125,6 +133,8 @@ export type Calls = {
 	readonly owner: Owner;
 	/** The question of the `input` call that the run waits for an answer to. */
 	waiting?: string;
+	/** True once the `input` call of `script.answer` got the answer. */
+	answered?: boolean;
 };
 
 /** The document key of the call `name` with `args` in this execution: `<run ID>/<call key>`. */
@@ -161,9 +171,10 @@ export async function memoized(
 	await runtime.commit(async (tx) => {
 		await addProgress(tx, calls.script.root, events);
 		const doc = await tx.doc(CallDoc, key, null);
-		Object.assign(doc, { ...start, phase: progress.phase, startedAt: new Date().toISOString() });
+		Object.assign(doc, { ...start, phase: progress.phase, startedAt: new Date().toISOString(), task: runtime.taskId });
 		delete doc.endedAt;
 		delete doc.error;
+		delete doc.cancelledAt;
 
 		return undefined;
 	}, context);
@@ -174,8 +185,10 @@ export async function memoized(
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 
-		// A call that the end of its script or task cancelled did not fail, and runs again.
+		// A call that the end of its script or task cancelled did not fail, and runs again. The waiting `input` call
+		// ends by that cancel too, and stays open.
 		if (!context.abortSignal?.aborted) await endCall(calls, key, { error: message });
+		else if (start.kind !== "input" && !runtime.signal.aborted) await cancelCall(calls, key);
 		throw error;
 	}
 
@@ -193,6 +206,16 @@ async function endCall(calls: Calls, key: string, end: { result: JsonValue } | {
 
 		return undefined;
 	}, calls.context);
+}
+
+/** Records that the end of the script cancelled the call `key`, in the context of the phase, which still commits. */
+async function cancelCall(calls: Calls, key: string): Promise<void> {
+	await calls.runtime.commit(async (tx) => {
+		const doc = await tx.doc(CallDoc, key, null);
+		doc.cancelledAt = new Date().toISOString();
+
+		return undefined;
+	}, calls.phase);
 }
 
 /** The result of a shell command in `cwd`. With `check`, a non-zero exit throws. */
@@ -230,7 +253,12 @@ export async function inputCall(calls: Calls, question: string, stop: AbortContr
 	const start = { kind: "input", args } as const;
 	const { answer } = calls.script;
 
-	if (answer?.call === key) return memoized(calls, key, start, async () => answer.text);
+	if (answer?.call === key) {
+		calls.answered = true;
+
+		return memoized(calls, key, start, async () => answer.text);
+	}
+
 	const saved = await savedCall(calls.runtime, key, calls.context);
 
 	if (saved !== undefined) return memoized(calls, key, start, async () => saved);

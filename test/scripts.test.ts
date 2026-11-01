@@ -15,6 +15,7 @@ import { AGENTS } from "../pi/run-view.ts";
 import type { Choose } from "../src/cli/main.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { branchOf } from "../src/launch/worktree.ts";
+import { callRecords, reading } from "../src/records/store.ts";
 import { CallDoc } from "../src/run/calls.ts";
 import { profileOf } from "../src/workflow/bundle.ts";
 import {
@@ -270,7 +271,7 @@ describe("input", () => {
 			{ runId: id, workflow: "x", title: "x", status: "waiting", repository: null },
 		]);
 		const shown = await workflows(["show", id], { cwd: root });
-		expect(shown.stdout).toEqual([`run ${id} x waiting x`, "  ✗ input A?", "A?"]);
+		expect(shown.stdout).toEqual([`run ${id} x waiting x`, "  ✗ input A?  waiting", "A?"]);
 
 		const second = await workflows(["resume", id, "--answer", "x"], { cwd: root });
 		expect([second.code, second.stdout]).toEqual([3, [`run ${id}`, "B?"]]);
@@ -283,6 +284,28 @@ describe("input", () => {
 			{ status: "terminal", outcome: "completed" },
 			{ status: "terminal", outcome: "completed" },
 		]);
+	});
+
+	it("fails a run whose --answer answers a question that it did not ask, and a resume asks again", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'try { await sh("test -f f") } catch { return await input("A?") }\nreturn await input("B?")',
+		);
+		const first = await workflows(["x.js"], { cwd: root });
+		const id = first.id ?? "";
+		expect([first.code, first.stdout]).toEqual([3, [`run ${id}`, "A?"]]);
+		await writeFile(join(root, "f"), "");
+
+		const answered = await workflows(["resume", id, "--answer", "a"], { cwd: root });
+		expect([answered.code, answered.stderr]).toEqual([
+			1,
+			['failed x: resume --answer answered "A?", which the run did not ask', `continue with: workflows resume ${id}`],
+		]);
+
+		const again = await workflows(["resume", id], { cwd: root });
+		expect([again.code, again.stdout]).toEqual([3, [`run ${id}`, "B?"]]);
+		const last = await workflows(["resume", id, "--answer", "b"], { cwd: root });
+		expect([last.code, last.stdout]).toEqual([0, [`run ${id}`, "b"]]);
 	});
 
 	it("asks each question on a terminal, and goes on with the typed answer", async () => {
@@ -1429,6 +1452,28 @@ return [args.n, args.t, args.other].join(" ")`,
 		await writeFile(join(scripts, "parent.js"), 'return await run("child", { n: 2, t: "x", other: "y" })');
 		const valid = await workflows(["parent"], { cwd: root });
 		expect([valid.code, valid.stdout.at(-1)]).toEqual([0, "2 x y"]);
+	});
+
+	it("starts a child run again in the run directory of its saved run ID, which a crash left", async () => {
+		const scripts = join(root, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { repo: "repo" })');
+		await writeFile(join(scripts, "child.js"), 'export const meta = { worktree: true }\nreturn "done"');
+		const first = await workflows(["parent"], { cwd: root });
+		const id = first.id ?? "";
+		expect(first.code).toBe(1);
+		const records = await reading(storeOf(), new Map(), (store) => callRecords(store, id));
+		const child = [...records.values()].find((record) => record.kind === "run")?.childRun ?? "";
+		expect(child).not.toBe("");
+		// A crash after the directory existed and before the child task, such as with part of a clone in it.
+		await mkdir(join(runs(), child));
+		await writeFile(join(runs(), child, "partial"), "");
+
+		await repository(join(root, "repo"));
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "done"]);
+		expect((await readdir(runs())).sort()).toEqual([id, child].sort());
+		expect(existsSync(join(runs(), child, "partial"))).toBe(false);
 	});
 
 	it("resumes an interrupted child run and repeats no call of a finished one", async () => {

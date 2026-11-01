@@ -758,7 +758,7 @@ it has no line of its own. When the caller has no step then, the child run moves
 command draws the tree on stderr in one of three ways:
 
 - On a terminal, the command draws the tree again in place at each change. A step is `◉` while it runs, `✓` when it
-  is done, and `✗` when its run failed or was stopped. A step that ended ends with two spaces and its duration, such
+  is done, `✗` when its run failed, and `·` when its run was stopped. A step that ended ends with two spaces and its duration, such
   as `12s`, `3m05s` or `1h02m`, from its `phase` line to the next `phase` line of its run or the end of its run. Each
   line is cut to the columns of the terminal. When another
   line, such as a warning, comes between two draws, the lines above it stay, and the changed lines print again below
@@ -779,8 +779,9 @@ The status of the run is the text of each step that runs, outermost first, joine
 `item 2/5: Add a thanks line › round 1/3: review`; child runs that run at once join with `, `. Only the `--json` line,
 the [Pi widget](#background-runs-in-pi) and `list --pick` show it.
 
-When the run ends, the steps that still run become `✓` when the run finished, and `✗` when it failed or was
-stopped. A command that Ctrl+C detaches leaves them as they are. On a terminal and with `--json`, the tree draws once
+When the run ends, the steps that still run become `✓` when the run finished or waits for an answer, `·` when it was
+stopped, and `✗` when it failed in another way. The end of a stopped run is saved with `stopped`, so `show` and a later
+command show its steps as `·` too. A command that Ctrl+C detaches leaves them as they are. On a terminal and with `--json`, the tree draws once
 more then. A command that follows a run shows only the lines that come after it starts or reaches the run. `<title>`
 is the subject of the first `text` argument, or else the file name without `.js`, the workflow name, or `stdin`. The
 run's task ends as failed, and its saved calls stay in the project store for the resume. `workflows show <run-id> --calls` shows the failed call. See [Show](#show).
@@ -972,7 +973,9 @@ Resume runs the script again from the top. A call that succeeded before returns 
 again. A call is known by its name, its arguments and its position among identical calls. A turn that was in progress
 continues in its session. A command that was in progress runs again, so commands must be safe to repeat. Each call
 records its kind, arguments, phase and start time when it starts, and its end time with its result or its error when
-it ends. A call that fails saves no result, so every call that failed runs again, also one that the script caught. The
+it ends. It also records the task that started it, and for a `run` call the run ID of its child run before the
+child's run directory exists, so a rerun after a crash uses the same run ID and directory. A call that fails saves no
+result, so every call that failed runs again, also one that the script caught. The
 saved results stay in the project store also after the run fails. `phase` and `log` lines are progress, not saved
 results. A resume prints the phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
 lines before it, and keeps the last `phase` line waiting for the next call that runs.
@@ -982,7 +985,8 @@ An `input` call with an answer saves the answer as its result, so a later resume
 When the script ends, by its result or by an error, the calls that it did not wait for are cancelled: a `sh` or `ok`
 command is killed, a `run()` call stops waiting for its child run, and an ask stops waiting for its turn. The script's
 task ends only once they stopped, so no call goes on after the run ended. A cancelled call records no end, and runs
-again on resume.
+again on resume. It records the time of the cancel, so `show` shows it as `cancelled`; a call that a stop or a host
+stop cut records nothing more.
 
 ### Input
 
@@ -995,13 +999,17 @@ echo on stderr, and continues as `workflows resume <run-id> --answer <line>` doe
 follows the new task. A later `input` call asks again in the same way. Ctrl+C or the end of input while the command
 reads prints `run <run-id> waits for an answer; continue with: workflows resume <run-id> --answer <text>` on stderr
 and exits 130, and the run still waits. `list` and `show` give the status `waiting`, and `show` lists the `input` call as `✗`, with the question
-as its label. A waiting run keeps its sessions, as a failed run does.
+as its label and the word `waiting`. A waiting run keeps its sessions, as a failed run does.
 
 `workflows resume <run-id> --answer <text>` starts a new task of the run with the answer to the open `input` call: the
 last one that started and did not end. The script runs again from the top, and that call returns `<text>`. A later
 `input` call waits again in the same way. While one `input` call waits, a second one that would wait fails with `the
 run waits for an answer to: <question>`. A run without an open `input` call fails with `workflows: run <run-id> has no
-open input call` and exits 1. A script that returns `{ "status": "waiting" }` itself also exits 3.
+open input call` and exits 1. When the script returns or waits again without the `input` call of the answer, such as
+after a call that failed before now succeeds, the run fails with `resume --answer answered "<question>", which the run
+did not ask`. A resume without `--answer` drops the answer of the last task: a call that used it returns it from its
+record, and the run asks again a question that it did not reach. A script that returns `{ "status": "waiting" }`
+itself also exits 3.
 
 `input()` in a child run has no special handling: the caller of `run()` gets the waiting result as the result of the
 child run.
@@ -1070,10 +1078,11 @@ it starts again with the installed version (the harness host of project <project
 exits 1. A new run then has no run directory; a resumed run keeps its tasks as they were. When a command follows a task
 that it did not start, it checks the version of that task in the same way.
 
-When the `start` request fails in another way, such as a connection that closes, the command asks the host for the
-task. When the host has it, the run started, and the command checks its version and follows it. When the command
-cannot tell, it keeps the run directory and prints the error with `run <run-id> may have started: workflows resume
-<run-id>`.
+When the `start` request fails in another way, such as a connection that closes, the command sends the same `start`
+again, with the same key and input, on a new connection, and starts the host when none runs. The host creates the task
+of a key once, so this gives the task that the first request created, or creates it, and the command follows the run.
+When the second request fails too, the command keeps the run directory and prints the first error with `run <run-id>
+may have started: workflows resume <run-id>`.
 
 ### Ctrl+C and stop
 
@@ -1086,7 +1095,9 @@ the first, stops the run in the same way. A second Ctrl+C while the command foll
 A Ctrl+C before the run starts, such as while the command clones the repository, starts no run: the command removes
 the run directory, prints `workflows: interrupted before the run started` and exits 130.
 
-When the host stops while the command follows the run, the run stays pending: the command prints `the host stopped;
+When the host closes the connection after it replied to the stop of a second Ctrl+C, it has saved the stop, so the
+command prints the `stopped` line, or `{"runId","status":"stopped"}` with `--json`, and exits 130. Otherwise, when the
+host stops while the command follows the run, the run stays pending: the command prints `the host stopped;
 the run continues when it starts again: workflows resume <run-id>`, leaves the steps as they are and exits 1. The next
 host continues the run when it starts, and `resume` starts it.
 
@@ -1095,7 +1106,8 @@ workflows stop <run-id>
 ```
 
 `workflows stop` stops a run that runs, from any directory: it aborts the run's task with its child runs, sessions and
-Git steps, prints `stopped <title>; continue with: workflows resume <run-id>` and exits 0. When no host runs, `stop`
+Git steps, prints `stopped <title>; continue with: workflows resume <run-id>` and exits 0. It does so also when the host
+closes the connection after it replied to the abort, which it saved then. When no host runs, `stop`
 starts the run's host, and the host resumes the run before the abort reaches it: a `sh` or `ok` command that a host
 stop cut runs again from its start, and an ask that was in progress continues its turn, until the abort stops them. With `--json`, it prints `{ "runId",
 "status": "stopped" }`. A run whose last task has ended prints `workflows: run <run-id> is not running` and exits 1.
@@ -1204,7 +1216,10 @@ another version of workflows saved is `earlier-version` or `later-version`, with
 cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status", "repository" }`.
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
 without a worktree.
-Only the runs that have a run directory with a `project` file are listed.
+Only the runs that have a run directory with a `project` file are listed. The command writes that file before it
+prepares the run, so a run directory of the project whose run has no task is listed as `<run-id> - unstarted -`, and
+with `--json` as `{ "runId", "workflow": "-", "title": "-", "status": "unstarted", "repository": null }`: its run is
+about to start, or its command stopped before the host created the task. `--pick` leaves these out.
 
 With `--pick`, on a terminal, the command asks `Pick a run:` with the runs that run or wait first, each as `<mark>
 <title>  <workflow> <status>`, with `: <status of the run>` of [Progress](#progress) for a running run. The mark is `◉` running, `?` waiting,
@@ -1246,6 +1261,11 @@ repository, without `--force`. Then it deletes the branch with `git branch -D <b
 removal that fails, such as of a worktree with changes, prints the error and exits 1; the next `prune` tries again. The
 run directory and the run's records stay, so `list` and `show` still show the run.
 
+`prune` also prints one line `<run-id> unstarted <run directory>` for each run directory of the project whose run has
+no task (the `unstarted` runs of `list`) and whose `project` file is more than 1 hour old, after the merged runs. With
+`--json`, each is an object `{ "runId", "directory" }` in the same array. With `--yes`, after every `gh` call, `prune`
+removes these run directories.
+
 `--install-hook` writes the executable `post-merge` hook of the Git repository of the current directory, with the line
 `workflows prune --yes >/dev/null 2>&1 &`, and prints the hook's path. When `core.hooksPath` is set or a `post-merge`
 hook exists, it writes nothing, prints an error with the line to add, and exits 1. `--install-hook` ignores `--yes` and
@@ -1264,7 +1284,7 @@ workflows show <run-id> --pick
 `workflows show` prints one run from the store of its project: the line `run <run-id> <workflow> <status> <title>`,
 with the fields of `workflows list`, then the steps of [Progress](#progress) from the first line of the run, then the
 report lines, or the `failed` and `continue with` lines. Once the run's task ended, the steps that still ran are `✓`
-when it completed and `✗` otherwise. A run without steps prints its calls, as `--calls` does.
+when it completed, `·` when it was stopped, and `✗` otherwise. A run without steps prints its calls, as `--calls` does.
 
 With `--calls`, `show` prints the tree of its phases and calls:
 
@@ -1278,10 +1298,13 @@ run <run-id> <workflow> <status> <title>
 - The calls are in the order they started. Each call is under the phase line that was current when it started, and is
   indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `sh`, `ok`,
   `run` or `input`. An `agent` call is a `session` call and an `ask` call.
-- The mark is `✓` for a finished call and `✗` for a failed call. A call that started and did not end is `◉` while the
-  run's task has not ended: it runs now, or the host stopped. Once the task ended, such a call is `✗`, without a
-  duration: the end of the task cut it. A session is `◉` while one of its asks is `◉`; once the task ended, it keeps
-  its `✓` or `✗`.
+- Each call has a state. It is `done` or `failed` once it ended. A call that did not end is `cancelled` when the end of
+  its script cancelled it, `waiting` when it is the open `input` call of a waiting run, `running` while the task that
+  started it has not ended (it runs now, or the host stopped), and `cut` once that task ended. A call that an earlier
+  version saved has no task: it is `running` until the run's task ended, and `cut` after.
+- The mark is `◉` for `running`, `✓` for `done`, and `✗` for every other state. A `cancelled`, `cut` or `waiting` call
+  shows its state in place of its duration. A session is `◉` while one of its asks is `◉`; once the task ended, it
+  keeps its `✓` or `✗`.
 - The label is `<profile> conversation <id>` for a `session` that opened, with the profile and the conversation ID of
   the session, and the profile only for a `session` that did not open. For `ask`, it is the profile of its session. For
   `sh` and `ok`, it is the command on one line, cut at 80 characters. For `run`, it is the workflow name and the child
@@ -1296,7 +1319,7 @@ run <run-id> <workflow> <status> <title>
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
 object with both trees: `{ "runId", "workflow", "title", "status", "report"?, "error"?, "steps", "calls" }`, where
 `steps` has the step lines of the text, without the first line and the footer. Each call is
-`{ "kind", "runId", "label", "phase", "args", "mark", "startedAt", "endedAt"?, "conversation"?, "result"?, "error"?, "calls"? }`,
+`{ "kind", "runId", "label", "phase", "args", "state", "mark", "startedAt", "endedAt"?, "conversation"?, "result"?, "error"?, "calls"? }`,
 with ISO times. `runId` is the ID of the run that made the call. `conversation` is the conversation ID of a `session` that opened. The JSON `mark` of a working session
 is `✓`: only the text shows it as `◉`. `phase` is `null` before the first phase line. The `result` of a `run` call is
 `{ "runId", "result" }`, with the result of its child run, and its `calls` are the calls of the child run.

@@ -1049,6 +1049,7 @@ describe("workflows show", () => {
 			label: `planner conversation ${conversation}`,
 			phase: "plan",
 			args: { profile: "planner" },
+			state: "done",
 			mark: "✓",
 			startedAt: time,
 			endedAt: time,

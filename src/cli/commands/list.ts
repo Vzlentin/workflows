@@ -5,13 +5,13 @@ import { resolveProject } from "@vzlentin/harness/projects";
 import { statePaths } from "@vzlentin/harness/protocol";
 import { type Mark, Progress } from "../../records/steps.ts";
 import { inputWorktree, progressEvents, reading, runTasks, type Store } from "../../records/store.ts";
-import { type RunStatus, runStatus, taskOf } from "../../run/past.ts";
+import { type RunStatus, type RunTask, runStatus, taskOf } from "../../run/past.ts";
 import { title as titleOf } from "../../run/result.ts";
 import { current } from "../../run/version.ts";
 import { UsageError } from "../../workflow/find.ts";
 import { runsDirectory, STORE_FILE } from "../host.ts";
 import type { Choose, Terminal } from "../main.ts";
-import { savedBy, shownStatus } from "../saved.ts";
+import { savedBy, shownStatus, unstartedRuns } from "../saved.ts";
 import type { PickItem } from "../terminal/pick.ts";
 
 export const LIST = "workflows list [--pick] [--json]";
@@ -28,8 +28,8 @@ type Listed = {
 type Row = Listed & { readonly run: RunStatus };
 
 /**
- * Prints the runs of the project of the current directory that have a run directory, newest run ID first. It reads the
- * project store only.
+ * Prints the runs of the project of the current directory that have a run directory, newest run ID first, also the run
+ * directories whose run has no task, as `unstarted`. It reads the project store only. The picker leaves out these.
  */
 export async function list(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const pick = args[0] === "--pick";
@@ -46,13 +46,27 @@ export async function list(args: readonly string[], terminal: Terminal, json: bo
 		return 0;
 	}
 
-	const rows = await reading(
-		join(statePaths(await resolveProject(process.env, terminal.cwd)).dir, STORE_FILE),
-		[],
-		listedRuns,
+	const project = await resolveProject(process.env, terminal.cwd);
+
+	const { rows, runs } = await reading(
+		join(statePaths(project).dir, STORE_FILE),
+		{ rows: [], runs: new Map<string, RunTask[]>() },
+		async (store) => {
+			const tasks = await runTasks(store);
+
+			return { rows: await listedRuns(store, tasks), runs: tasks };
+		},
 	);
 
-	const listed = rows.map(({ runId, workflow, title, status, repository }) => ({
+	const unstarted = (await unstartedRuns(project, runs)).map(({ runId }) => ({
+		runId,
+		workflow: "-",
+		title: "-",
+		status: "unstarted",
+		repository: null,
+	}));
+
+	const started = rows.map(({ runId, workflow, title, status, repository }) => ({
 		runId,
 		workflow,
 		title,
@@ -60,15 +74,16 @@ export async function list(args: readonly string[], terminal: Terminal, json: bo
 		repository,
 	}));
 
+	const listed: Listed[] = [...started, ...unstarted].sort((a, b) => b.runId.localeCompare(a.runId));
+
 	if (json) terminal.stdout(JSON.stringify(listed));
 	else for (const run of listed) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
 
 	return 0;
 }
 
-/** The runs of the open project store `store` that have a run directory, newest run ID first. */
-async function listedRuns(store: Store): Promise<Row[]> {
-	const runs = await runTasks(store);
+/** The runs `runs` of the open project store `store` that have a run directory, newest run ID first. */
+async function listedRuns(store: Store, runs: ReadonlyMap<string, readonly RunTask[]>): Promise<Row[]> {
 	const listed: Row[] = [];
 
 	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
@@ -114,7 +129,8 @@ async function runItems(terminal: Terminal): Promise<PickItem<string>[]> {
 		async (store) => {
 			const live = ({ run }: Row) => run === "running" || run === "waiting";
 			// A stable sort keeps the newest first within each group.
-			const sorted = (await listedRuns(store)).toSorted((a, b) => Number(live(b)) - Number(live(a)));
+			const tasks = await runTasks(store);
+			const sorted = (await listedRuns(store, tasks)).toSorted((a, b) => Number(live(b)) - Number(live(a)));
 			const found = new Map<string, string>();
 
 			for (const { runId } of sorted.filter((each) => each.run === "running")) {
@@ -139,7 +155,7 @@ async function runItems(terminal: Terminal): Promise<PickItem<string>[]> {
 }
 
 /** The mark of a run in the picker by its status: `◉` running, `?` waiting for an answer, `✗` failed, else `·`. */
-function markOf(status: RunStatus): Mark | "?" | "·" {
+function markOf(status: RunStatus): Mark | "?" {
 	switch (status) {
 		case "running":
 			return "◉";

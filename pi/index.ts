@@ -198,7 +198,7 @@ function detailLines(
 	theme: Theme,
 ): string[] {
 	const lines = steps.map((step) => {
-		const [, indent = "", mark, text = step] = /^(\s*)(?:([✓◉✗]) )?(.*)$/.exec(step) ?? [];
+		const [, indent = "", mark, text = step] = /^(\s*)(?:([✓◉✗·]) )?(.*)$/.exec(step) ?? [];
 		const color = MARKS.get(mark ?? "");
 		const shown = mark === undefined || color === undefined ? "" : `${theme.fg(color, mark)} `;
 

@@ -1,8 +1,8 @@
 /** `workflows show <run-id>`: the steps, the calls or the agents of a run. */
 import { parseArgs } from "node:util";
 import type { ScriptInput } from "../../launch/input.ts";
-import { Progress } from "../../records/steps.ts";
-import { callRecords, progressEvents, reading, runTasks } from "../../records/store.ts";
+import { endMark, Progress } from "../../records/steps.ts";
+import { callRecords, progressEvents, reading, runTasksAndLive } from "../../records/store.ts";
 import {
 	agentLines,
 	agentRows,
@@ -100,16 +100,24 @@ type ShownRun = {
  */
 export async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean, verb: string): Promise<ShownRun> {
 	const { id } = run;
-	const empty = { task: undefined, saved: new Map<string, SavedCall>(), progress: new Progress(), events: [] };
 
-	const { task, saved, progress, events } = await reading(run.store, empty, async (store) => {
+	const empty = {
+		task: undefined,
+		saved: new Map<string, SavedCall>(),
+		progress: new Progress(),
+		events: [],
+		live: new Set<number>(),
+	};
+
+	const { task, saved, progress, events, live } = await reading(run.store, empty, async (store) => {
 		const read = new Progress();
 		const stored = await progressEvents(store, id);
 
 		for (const event of stored) read.add(event);
 		const calls = withCalls || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
+		const { runs, live } = await runTasksAndLive(store);
 
-		return { task: taskOf((await runTasks(store)).get(id) ?? []), saved: calls, progress: read, events: stored };
+		return { task: taskOf(runs.get(id) ?? []), saved: calls, progress: read, events: stored, live };
 	});
 
 	const checkedTask = checked(task, id, verb);
@@ -133,9 +141,9 @@ export async function readRun(run: SavedRun, terminal: Terminal, withCalls: bool
 
 	const status = shownStatus(checkedTask, known);
 
-	if (ended) progress.stop(!completed);
+	if (ended) progress.stop(endMark(known));
 	const head = `run ${id} ${input.name} ${status} ${title}`;
-	const calls = callTree(saved, id, ended);
+	const calls = callTree(saved, id, { ended, waiting: known === "waiting", live });
 
 	return { input, title, status, head, ended, calls, progress, footer, end };
 }

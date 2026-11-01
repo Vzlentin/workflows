@@ -21,11 +21,12 @@ import { connect } from "@vzlentin/harness/client";
 import { entriesPath } from "@vzlentin/harness/entries";
 import { type Host, runHost } from "@vzlentin/harness/host";
 import { projectDir } from "@vzlentin/harness/projects";
-import { AGENT_HANDLE, type Replies, type Request, statePaths } from "@vzlentin/harness/protocol";
+import { AGENT_HANDLE, type Request, statePaths } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { CtrlC } from "../src/cli/follow.ts";
 import { type Choose, main } from "../src/cli/main.ts";
+import { addFaults, type Faults, faultState } from "./faults.ts";
 
 /** The entry of the workflows checkout, which the hosts of the tests load. */
 export const ENTRY = fileURLToPath(new URL("../src/entry.ts", import.meta.url));
@@ -794,13 +795,11 @@ export async function workflows(
 		readonly stopWindowMs?: number;
 		readonly host?: Host;
 		readonly keepHost?: boolean;
-		/** The first `start` request fails after the host created its task, as when the connection closes before the reply. */
-		readonly dropStart?: boolean;
 		/** The lines typed on the terminal, one for each read; with none left, the read gives the end of input. */
 		readonly lines?: readonly string[];
 		/** The terminal's pick: gets the question and the items, and gives the value of the taken item. */
 		readonly choose?: Choose;
-	},
+	} & Faults,
 ): Promise<Outcome> {
 	let exits = 0;
 
@@ -825,7 +824,7 @@ export async function workflows(
 	const status: string[] = [];
 	let host = options.host;
 	let started: Host | undefined;
-	let drop = options.dropStart === true;
+	const faults = faultState(options);
 	const queue = [...(options.lines ?? [])];
 
 	const code = await main(argv, {
@@ -849,16 +848,7 @@ export async function workflows(
 			}
 
 			const client = await connectTo(project);
-			const request = client.request.bind(client);
-			client.request = async <T extends Request["type"]>(sent: Extract<Request, { type: T }>): Promise<Replies[T]> => {
-				const reply = await request(sent);
-
-				if (sent.type !== "start" || !drop) return reply;
-				drop = false;
-				const closed = new Error("The harness host closed the connection");
-				client.abort(closed);
-				throw closed;
-			};
+			addFaults(client, options, faults);
 
 			return client;
 		},

@@ -6,6 +6,7 @@ import { type Client, connect } from "@vzlentin/harness/client";
 import { setEntry } from "@vzlentin/harness/entries";
 import type { TaskInfo } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
+import type { TaskEnd } from "../run/past.ts";
 import { TASK } from "../run/version.ts";
 import type { Terminal } from "./main.ts";
 
@@ -109,30 +110,29 @@ export function checkVersion(client: Client, project: string, info: TaskInfo): v
 	);
 }
 
-/** The info of the task of `key` in the host of `project`, undefined when the host has no such task. */
-export async function findTask(terminal: Terminal, project: string, key: string): Promise<TaskInfo | undefined> {
-	const client = await connectTo(terminal, project, false);
+/** The error of harness's client when the host closes the connection, such as when it stops. */
+const HOST_CLOSED = "The harness host closed the connection";
 
-	if (client === undefined) throw new Error(`no harness host for ${project}`);
+/** True for the error of a request whose host stopped: its connection closed. */
+export const hostStopped = (cause: unknown) => cause instanceof Error && cause.message === HOST_CLOSED;
 
-	try {
-		return await client.request({ type: "task", key });
-	} catch (error) {
-		if (error instanceof Error && error.message.startsWith("Unknown task:")) return undefined;
-		throw error;
-	} finally {
-		client.close();
-	}
-}
-
-/** Aborts the task of `key` in the host of `project`, and gives its info once it ended. */
-export async function abortRun(terminal: Terminal, project: string, key: string): Promise<TaskInfo> {
+/**
+ * Aborts the task of `key` in the host of `project`, and gives its end once it ended. The host commits the abort before
+ * it replies, so a host that stops after the reply gives an aborted end: the task ends so when the host starts again.
+ */
+export async function abortRun(terminal: Terminal, project: string, key: string): Promise<TaskInfo | TaskEnd> {
 	const client = await connectTo(terminal, project, true);
 
 	try {
 		await client.request({ type: "abort-task", key });
 
-		return await client.request({ type: "wait-task", key });
+		try {
+			return await client.request({ type: "wait-task", key });
+		} catch (error) {
+			if (!hostStopped(error)) throw error;
+
+			return { kind: TASK.name, version: TASK.version, outcome: { status: "aborted" } } satisfies TaskEnd;
+		}
 	} finally {
 		client.close();
 	}

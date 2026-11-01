@@ -52,6 +52,25 @@ async function notify(runtime: Runtime, input: ScriptInput, outcome: WorkflowOut
 	}
 }
 
+/**
+ * Ends the sessions of the run `input` as `endSessions` does. A failure to end them does not change the outcome of the
+ * run: the host reports it. A closing host rethrows it, so the phase runs again after the restart.
+ */
+async function closeSessions(
+	host: Host,
+	runtime: Runtime,
+	input: ScriptInput,
+	completed: boolean,
+	context: Context,
+): Promise<void> {
+	try {
+		await endSessions(host, runtime, input, completed, context);
+	} catch (error) {
+		if (runtime.signal.aborted) throw error;
+		runtime.report(error);
+	}
+}
+
 const NAMED = Type.Object({ subject: Type.String(), report: Type.Optional(Type.Array(Type.String())) });
 
 /**
@@ -132,7 +151,7 @@ async function runPhase(
 		const result = await named(input, ran, runtime.signal);
 
 		// A waiting run keeps its sessions for the task that gets the answer.
-		await endSessions(host, runtime, input, statusOf(result) !== "waiting", context);
+		await closeSessions(host, runtime, input, statusOf(result) !== "waiting", context);
 		await notify(runtime, input, finishedOutcome(input, result), context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: false, at: Date.now() }]);
@@ -144,7 +163,7 @@ async function runPhase(
 		if (runtime.signal.aborted) throw error;
 		// A thrown phase would end the task as faulted, so the phase commits the failure itself.
 		const message = error instanceof Error ? error.message : String(error);
-		await endSessions(host, runtime, input, false, context);
+		await closeSessions(host, runtime, input, false, context);
 		await notify(runtime, input, { runId, status: "failed", error: message }, context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: true, at: Date.now() }]);
@@ -163,10 +182,10 @@ export function scriptTask(host: Host): ScriptTask {
 		phases: { run: (task, runtime, context) => runPhase(definition, task, runtime, context, host) },
 		abort: async (task, runtime, context) => {
 			const { runId, root } = task.input;
-			await endSessions(host, runtime, task.input, false, context);
+			await closeSessions(host, runtime, task.input, false, context);
 			await notify(runtime, task.input, { runId, status: "stopped" }, context);
 			await runtime.commit(async (tx) => {
-				await addProgress(tx, root, [{ kind: "end", run: runId, failed: true, at: Date.now() }]);
+				await addProgress(tx, root, [{ kind: "end", run: runId, failed: false, stopped: true, at: Date.now() }]);
 
 				return { status: "terminal", outcome: { status: "aborted" } };
 			}, context);

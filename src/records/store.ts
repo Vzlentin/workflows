@@ -18,7 +18,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { ScriptInput } from "../launch/input.ts";
 import { CALL_KIND, CALL_RECORD, type SavedCall } from "../run/calls.ts";
-import { allPages, type RunTask, rootRuns, savedInput } from "../run/past.ts";
+import { allPages, type RunTask, rootRuns, runStatus, savedInput } from "../run/past.ts";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "../run/progress.ts";
 import { TASK } from "../run/version.ts";
 
@@ -172,12 +172,30 @@ export function inputWorktree(input: JsonValue): SavedWorktree | undefined {
 	return savedInput(WORKTREE, input)?.worktree;
 }
 
+/** The tasks of the kind `workflows.run`, root or child, also of another version. */
+function scanRuns(store: Store): Promise<RunTask[]> {
+	return allPages((cursor) => store.scanTasks({ kind: TASK.name }, 256, cursor, BACKGROUND_CONTEXT));
+}
+
 /**
  * The tasks of the kind `workflows.run` that no task owns, so not the tasks of child runs, by run ID, oldest first,
  * also of another version.
  */
 export async function runTasks(store: Store): Promise<Map<string, RunTask[]>> {
-	return rootRuns(await allPages((cursor) => store.scanTasks({ kind: TASK.name }, 256, cursor, BACKGROUND_CONTEXT)));
+	return rootRuns(await scanRuns(store));
+}
+
+/**
+ * From one scan: the root tasks as `runTasks` gives them, and the IDs of the tasks, root or child, whose status is
+ * `running`.
+ */
+export async function runTasksAndLive(
+	store: Store,
+): Promise<{ readonly runs: Map<string, RunTask[]>; readonly live: Set<number> }> {
+	const tasks = await scanRuns(store);
+	const live = new Set(tasks.flatMap((task) => (runStatus(task) === "running" ? [task.id] : [])));
+
+	return { runs: rootRuns(tasks), live };
 }
 
 /** The document of harness that maps each `start` key to the ID of the task that it created. */

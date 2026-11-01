@@ -6,12 +6,13 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Client } from "@vzlentin/harness/client";
 import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
+import { endMark } from "../records/steps.ts";
 import { openStore, progressEvents } from "../records/store.ts";
 import { hasEnded, hasResult, type RunTask, runStatus, type TaskEnd, taskOutcome } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
 import { reportOf, title as titleOf } from "../run/result.ts";
 import type { OutcomeStatus } from "../tool.ts";
-import { abortRun, STORE_FILE } from "./host.ts";
+import { abortRun, hostStopped, STORE_FILE } from "./host.ts";
 import type { Terminal } from "./main.ts";
 import { display, programStatus } from "./terminal/redraw.ts";
 
@@ -20,9 +21,6 @@ const POLL_MS = 500;
 
 /** How long a command that Ctrl+C detached waits for a second Ctrl+C, which stops the run. */
 const STOP_WINDOW_MS = 2000;
-
-/** The error of harness's client when the host closes the connection, such as when it stops. */
-const HOST_CLOSED = "The harness host closed the connection";
 
 /**
  * The Ctrl+C presses of a command. The first detaches the command from its run. A second one stops the run while the
@@ -155,9 +153,6 @@ export type Following = {
 /** How a followed run ended: the exit code, and whether the run waits for an answer that this terminal reads. */
 export type Followed = { readonly code: number; readonly asking: boolean };
 
-/** True for the error of a wait whose host stopped: its connection closed. */
-const hostStopped = (cause: unknown) => cause instanceof Error && cause.message === HOST_CLOSED;
-
 /**
  * Shows the progress of the run until its task ends, and reports its outcome. Ctrl+C detaches and leaves the run to
  * the host; a second Ctrl+C, also one that came before the window, stops it. A host that stops leaves the run pending.
@@ -270,9 +265,7 @@ export async function follow(
 				return 130;
 			}
 
-			await abortRun(terminal, run.project, run.key);
-
-			return await report(await waited);
+			return await report(await abortRun(terminal, run.project, run.key));
 		} catch (error) {
 			await stopPolling();
 
@@ -283,7 +276,7 @@ export async function follow(
 				return 1;
 			}
 
-			shown.stop(true);
+			shown.stop("✗");
 			end("failed", { error: error instanceof Error ? error.message : String(error) });
 			throw error;
 		} finally {
@@ -294,14 +287,13 @@ export async function follow(
 		}
 	}
 
-	async function report(info: TaskInfo): Promise<number> {
+	async function report(info: TaskInfo | TaskEnd): Promise<number> {
 		await stopPolling();
 		const status = runStatus(info);
-		const completed = hasResult(status);
 
-		shown.stop(!completed);
+		shown.stop(endMark(status));
 
-		if (info.outcome === undefined) throw new Error(`run ended ${info.status}`);
+		if (info.outcome === undefined) throw new Error(`run ended ${status}`);
 
 		const events = store === undefined ? [] : await progressEvents(store, id).catch(() => []);
 		asking = status === "waiting" && terminal.readLine !== undefined && !json && !terminal.interrupt.aborted;

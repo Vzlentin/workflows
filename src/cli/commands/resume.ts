@@ -52,7 +52,9 @@ export async function resume(
 		return outcomeOf(last, run.id, task, terminal, json, await progressOf(run));
 	}
 
-	const input = answer === undefined ? last : { ...last, answer: { call: await openInput(run), text: answer } };
+	// An answer that a call used replays from its record, so a resume without `--answer` drops the earlier answer.
+	const { answer: _earlier, ...unanswered } = last;
+	const input = answer === undefined ? unanswered : { ...last, answer: { call: await openInput(run), text: answer } };
 	const keys = await keysOf(run);
 	const key = ended ? keys.next : keys.keyOf(task);
 

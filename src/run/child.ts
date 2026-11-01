@@ -39,8 +39,9 @@ async function bundleFrom(
 
 /**
  * A new child task of the `run` call `key` of the task of `runtime`, in a new run directory next to `script.runDir`,
- * whose calls run in `cwd`. The commit that creates it also saves it in the record of the call. With `from`, the child
- * gets the prompts and profiles of that saved root run in place of the caller's.
+ * whose calls run in `cwd`. The record of the call saves the child's run ID before its run directory exists, so a
+ * rerun after a crash reuses the ID and its directory. The commit that creates the task also saves it in the record
+ * of the call. With `from`, the child gets the prompts and profiles of that saved root run in place of the caller's.
  */
 async function startChild(
 	runtime: Runtime,
@@ -52,8 +53,10 @@ async function startChild(
 	{ from, ...args }: JsonObject,
 ): Promise<Child> {
 	const bundle = await bundleFrom(runtime, context, name, script.bundle, from);
-	const id = newRunId();
+	const id = await childRunId(runtime, context, key);
 	const directory = join(dirname(script.runDir), id);
+	// A crash can leave the directory of an earlier try, with part of its clone.
+	await rm(directory, { recursive: true, force: true });
 	await mkdir(directory, { recursive: true });
 
 	try {
@@ -70,11 +73,27 @@ async function startChild(
 			return undefined;
 		}, context);
 	} catch (error) {
-		await rm(directory, { recursive: true, force: true });
+		// An aborted call runs again with the same run ID, which cleans the directory.
+		if (!context.abortSignal?.aborted) await rm(directory, { recursive: true, force: true });
 		throw error;
 	}
 
 	return savedChild(runtime, key, context);
+}
+
+/** The run ID of the child run of the `run` call `key`: the `childRun` of its record, or a new one that it saves. */
+async function childRunId(runtime: Runtime, context: Context, key: string): Promise<string> {
+	const saved = (await runtime.snapshot(CallDoc, key, context))?.childRun;
+
+	if (saved !== undefined) return saved;
+	const id = newRunId();
+	await runtime.commit(async (tx) => {
+		(await tx.doc(CallDoc, key, null)).childRun = id;
+
+		return undefined;
+	}, context);
+
+	return id;
 }
 
 /**
