@@ -635,6 +635,15 @@ directory outside a repository. It has the shape of the script side of the packa
 can hold `scripts/*.js`, `prompts/*.md` and `agents/*.md`. A project file adds to the package files, and replaces
 the package file of the same name in the same folder. Only the package has `lib/`.
 
+A run in a new worktree, such as a ship run or a child run with `checkout`, runs `.workflows/setup` of that worktree
+before its script, when the file exists, for example to install the dependencies. It runs once per run, with no
+shell and no arguments, in the worktree, as the step `setup`. Its stdout and stderr go to `setup.log` in the run
+directory, which each attempt overwrites. A setup that is not executable fails the run with
+`<worktree>/.workflows/setup is not executable: chmod +x it`. A setup that exits with another code than 0 fails the
+run with `setup failed (exit <code>): <last line>; see <run directory>/setup.log`, where `<last line>` is the last
+line of the log that is not empty, and a setup that a signal stops gives the signal name in place of the code. A resume after a failed setup runs
+it again; a resume after a setup that finished does not. A child run without a worktree of its own runs no setup.
+
 `workflows` without arguments prints one line `<name>: <description>` for each script, or `<name>` for a script
 without `meta.description`.
 
@@ -760,7 +769,9 @@ command draws the tree on stderr in one of three ways:
 
 The store keeps each line with its time; lines that an earlier version saved have none, and show no duration. The
 first `phase` line of an execution of a run, such as after a resume, continues the step of the same text that runs,
-without the time between, and prints nothing. Any other `phase` line starts a new step.
+without the time between, and prints nothing. Any other `phase` line starts a new step. The `setup` step of a run
+ends when its setup finishes; the lines and child runs that come after it, up to the next step of the run, are at the
+level of the run.
 
 The status of the run is the text of each step that runs, outermost first, joined with ` › `, such as
 `item 2/5: Add a thanks line › round 1/3: review`; child runs that run at once join with `, `. Only the `--json` line,
@@ -1640,6 +1651,7 @@ When the attach fails, it notifies the error `<stderr>. Run in another terminal:
 Runs live in `$XDG_STATE_HOME/workflows/runs/<run-id>`, by default `~/.local/state/workflows/runs/<run-id>`:
 
 - `project`: the name of the harness project whose store holds the run: its saved inputs, calls, sessions and progress
+- `setup.log`: the output of `.workflows/setup` of the run's worktree, for a run whose worktree has one
 
 The project store is `$XDG_STATE_HOME/harness/<project>/durable.sqlite`. See [Runs in the harness
 host](#runs-in-the-harness-host).
