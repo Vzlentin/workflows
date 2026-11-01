@@ -41,7 +41,7 @@ phase("implement")
 
 const implemented = { plan, round: 1, start, message: subject, memory: notes.ref }
 const { status, head, reply } = await run("implement", implemented)
-const lines = (await notes.text).split("\n").filter(Boolean)
+const lines = await noteLines(notes)
 
 if (status === "blocked") {
 	const report = [`blocked ${subject}`, reply]

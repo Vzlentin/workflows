@@ -178,6 +178,9 @@ declare function memory(ref?: MemoryRef): Promise<{
 	readonly text: Promise<string>;
 }>;
 
+/** The notes of the run memory `notes`, one `#<k> <note>` line each, without empty lines. */
+declare function noteLines(notes: { readonly text: Promise<string> }): Promise<string[]>;
+
 /** Stages every change, and commits it as `message` when something is staged. */
 declare function commitAll(message: string): Promise<void>;
 

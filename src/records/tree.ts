@@ -5,8 +5,8 @@
 import type { JsonValue } from "@earendil-works/chord";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { duration, type Mark, type Progress, type StepView } from "./progress.ts";
-import type { SavedCall } from "./script.ts";
+import type { SavedCall } from "../run/calls.ts";
+import { duration, type Mark, type Progress, type StepView } from "./steps.ts";
 
 /** One call of the run `runId` in `workflows show`, with the calls of its child run when it is a `run` call. */
 export type Shown = Omit<SavedCall, "child"> & {

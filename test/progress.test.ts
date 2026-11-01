@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { Progress, programStatus, terminalRedraw } from "../src/progress.ts";
+import { programStatus, terminalRedraw } from "../src/cli/terminal/redraw.ts";
+import { Progress } from "../src/records/steps.ts";
 
 /** The color codes that `terminalRedraw` writes around a mark. */
 const COLORS = ["\x1b[32m", "\x1b[36m", "\x1b[31m", "\x1b[0m"];

@@ -5,9 +5,7 @@ import { dirname } from "node:path";
 import { herdr } from "@vzlentin/harness/herdr";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
-import type { ScriptInput } from "./meta.ts";
-
-type Worktree = NonNullable<ScriptInput["worktree"]>;
+import type { Worktree } from "./launch/worktree.ts";
 
 /** The part of the output of `herdr worktree create` that has the workspace that it opened. */
 const WORKTREE_CREATED = Type.Object({

@@ -905,6 +905,7 @@ with. A script's own declaration of the same name takes their place.
 | `subjectOf(text)` | The first non-empty line of `text`, without leading `#` |
 | `oneLine(text)` | `text` with each whitespace run made one space, trimmed |
 | `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without its `report` and `memory` keys at any depth, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
+| `await noteLines(notes)` | The `#<k> <note>` lines of `notes.text`, without empty lines |
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 | `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |
@@ -1690,22 +1691,39 @@ uses the profiles as they were when it started.
 The engine files in `src/`:
 
 - `cli.ts`: the `workflows` command entry point.
-- `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show`, `attach`, `save` and `prune`, a client of the
-  harness host, and the run directory.
+- `cli/main.ts`: the command line: the terminal, the table of commands, usage and `--version`.
+- `cli/host.ts`: the connection to the harness host, the task keys, the run directories and the project store file.
+- `cli/saved.ts`: the saved runs of the command: their run directory, root tasks, status and progress.
+- `cli/follow.ts`: how the command follows a run to its outcome, the answer of a waiting run, and the Ctrl+C presses.
+- `cli/commands/`: one file for each command: `start.ts`, `resume.ts` (also `wait`), `stop.ts`, `list.ts`, `show.ts`,
+  `attach.ts`, `save.ts` and `prune.ts`.
+- `cli/terminal/pick.ts` and `cli/terminal/keys.ts`: the picker of `list --pick` and `show --pick`, and its keys.
 - `entry.ts`: the entry that the harness host loads, with the script task.
-- `calls.ts`: the call tree of a saved run, its lines and agent rows for `show` and `attach`, and the lines of `show`
-  with the agent of each step, for `show --pick`.
-- `progress.ts`: the tree of steps of a run, and how the command draws it on stderr.
-- `store.ts`: the command's read-only reads of the project store: the tasks of the runs, their progress and calls.
-- `meta.ts`: the `meta` of a workflow script, its arguments, its usage, `check`, and the report lines and exit code of
-  a run.
-- `task.ts`: the task of every script run, its saved input and checkpoint, its phase, child runs, and the end of its
-  sessions.
-- `script.ts`: the workflow script calls, agent profiles, prompts for scripts, and sessions on harness's children
-  library.
-- `run.ts`: the run ID, usage errors, and what a run gets from the command line.
-- `git.ts`: Git commands, repository selection, and worktrees, made by Herdr or Git.
-- `prompts.ts`: the instructions of a prompt template.
+- `records/tree.ts`: the call tree of a saved run, its lines and agent rows for `show` and `attach`, and the lines of
+  `show` with the agent of each step, for `show --pick`.
+- `records/steps.ts`: the tree of steps of a run.
+- `records/store.ts`: the command's read-only reads of the project store: the tasks of the runs, their progress and
+  calls.
+- `cli/terminal/redraw.ts`: how the command draws the tree of steps of a run on stderr.
+- `launch/input.ts`: the generic entry point `workflows <wf>`: the checked arguments of a run, its run ID, its saved
+  input, and the input of a child run.
+- `launch/args.ts`: the `meta.args` values of the command line, and the texts that they name.
+- `launch/worktree.ts`: repository selection, the worktree of a run, made by Herdr or Git, and the name of its branch.
+- `run/result.ts`: the title of a run, and the status, report lines and exit code of its result.
+- `workflow/meta.ts`: read and check the `meta` of a workflow script.
+- `workflow/find.ts`: find a script, list the scripts, help and usage, usage errors, and the terminal input and output.
+- `workflow/bundle.ts`: the bundle of a run (scripts, prompt templates, agent profiles and the script lib), the
+  instructions of a prompt template, and the edits of the bundle for a `run()` call.
+- `cli/commands/check.ts`: the static analysis of `workflows check`.
+- `run/version.ts`: the kind and version of the script task, and the task types that the `run/` files share.
+- `run/past.ts`: the saved root runs of the project store, for the `pastRuns` call and `run(name, { from })`.
+- `run/progress.ts`: the progress events of a run, their document, and the lines that wait for the next call.
+- `run/calls.ts`: the workflow script calls and their records in the project store.
+- `run/sessions.ts`: the sessions on harness's children library, and the end of the sessions of a run.
+- `run/child.ts`: the child runs that the `run` calls start.
+- `run/sandbox.ts`: the run of a script in the sandbox, with its globals and prompts.
+- `run/task.ts`: the task of every script run, its phase, its outcome, and the message of a background run.
+- `git.ts`: run a process, and Git commands.
 
 The script side in `workflows/`, published as it is:
 

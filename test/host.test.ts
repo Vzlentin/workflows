@@ -14,10 +14,11 @@ import { addProject } from "@vzlentin/harness/projects";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { programStatus } from "../src/progress.ts";
-import { CtrlC, newRunId } from "../src/run.ts";
-import { SessionsDoc } from "../src/script.ts";
-import { TASK } from "../src/task.ts";
+import { CtrlC } from "../src/cli/follow.ts";
+import { programStatus } from "../src/cli/terminal/redraw.ts";
+import { newRunId } from "../src/launch/input.ts";
+import { SessionsDoc } from "../src/run/sessions.ts";
+import { TASK } from "../src/run/version.ts";
 import { stopAfterPost } from "./stop-entry.ts";
 import {
 	COMMIT,
