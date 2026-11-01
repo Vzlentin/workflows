@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { ModelRef } from "@earendil-works/pi-durable";
+import type { Overlay } from "@vzlentin/harness/overlay";
 import { git } from "../git.ts";
 
 /**
@@ -32,7 +33,6 @@ export type Bundle = {
 	readonly agents: Readonly<Record<string, Profile>>;
 };
 
-/** `T` with fields that a builder sets one by one. */
 /** `T` with fields that a builder sets one by one. */
 export type Writable<T> = { -readonly [K in keyof T]: T[K] };
 
@@ -155,4 +155,82 @@ export function render(body: string, inputs: Record<string, string> = {}): strin
 		.map(([name, value]) => `## ${name}\n${value}`);
 
 	return [body, ...sections].join("\n\n");
+}
+
+/** The overlay key of a bundle item, `<kind>/<name>.md`, as `prompts/<name>.md` or `agents/<name>.md`. */
+const BUNDLE_KEY = /^[^/]+\/[^/]+\.md$/;
+
+/** A kind of bundle item that a `run()` call can replace or remove: its name in errors, the bundle's items, the setter. */
+interface BundleKind {
+	readonly label: string;
+	readonly source: RunBundle["prompts"] | RunBundle["agents"];
+	readonly set: (item: string, text: string | null) => void;
+}
+
+/** The prompts and profiles of a bundle after the edits of a `run()` call, and the overlay files of the call. */
+export type BundleEdits = {
+	readonly prompts: RunBundle["prompts"];
+	readonly agents: RunBundle["agents"];
+	readonly files: Overlay;
+};
+
+/**
+ * The prompts, profiles and overlay files of the `run()` call of the script `name` with `bundle`. `prompts` replaces
+ * the texts of prompts by name. `overlay` replaces or removes templates (`prompts/<name>.md`) and profiles
+ * (`agents/<name>.md`), and wins over `prompts` for the same template; its other keys are files merged over `base`.
+ */
+export function editBundle(
+	name: string,
+	bundle: RunBundle,
+	prompts: Readonly<Record<string, string>>,
+	overlay: Readonly<Record<string, string | null>>,
+	base: Overlay | undefined,
+): BundleEdits {
+	const replaced = { ...bundle.prompts };
+	const agents = { ...bundle.agents };
+	const files: Writable<Overlay> = { ...base };
+
+	const prompt: BundleKind = {
+		label: "prompt",
+		source: bundle.prompts,
+		set: (key: string, text: string | null) => {
+			if (text === null) delete replaced[key];
+			else replaced[key] = instructions(text);
+		},
+	};
+
+	const kinds = new Map<string, BundleKind>([
+		["prompts", prompt],
+		[
+			"agents",
+			{
+				label: "agent profile",
+				source: bundle.agents,
+				set: (key: string, text: string | null) => {
+					if (text === null) delete agents[key];
+					else agents[key] = profileOf(key, text);
+				},
+			},
+		],
+	]);
+
+	// The `prompts` edits come first, so the overlay wins for the same template.
+	const edits: { kind: BundleKind; item: string; value: string | null }[] = Object.entries(prompts).map(
+		([item, text]) => ({ kind: prompt, item, value: text }),
+	);
+
+	for (const [key, value] of Object.entries(overlay)) {
+		const slash = key.indexOf("/");
+		const kind = BUNDLE_KEY.test(key) ? kinds.get(key.slice(0, slash)) : undefined;
+
+		if (kind === undefined) files[key] = value;
+		else edits.push({ kind, item: key.slice(slash + 1, -".md".length), value });
+	}
+
+	for (const { kind, item, value } of edits) {
+		if (!Object.hasOwn(kind.source, item)) throw new Error(`run ${name}: no ${kind.label} ${item}`);
+		kind.set(item, value);
+	}
+
+	return { prompts: replaced, agents, files };
 }

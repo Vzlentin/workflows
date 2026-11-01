@@ -1698,17 +1698,21 @@ The engine files in `src/`:
   with the agent of each step, for `show --pick`.
 - `progress.ts`: the tree of steps of a run, and how the command draws it on stderr.
 - `store.ts`: the command's read-only reads of the project store: the tasks of the runs, their progress and calls.
-- `meta.ts`: the arguments of a run, its saved input, and its title, report lines and exit code.
+- `launch/input.ts`: the generic entry point `workflows <wf>`: the checked arguments of a run, its run ID, its saved
+  input, and the input of a child run.
+- `launch/args.ts`: the `meta.args` values of the command line, and the texts that they name.
+- `launch/worktree.ts`: repository selection, the worktree of a run, made by Herdr or Git, and the name of its branch.
+- `run/result.ts`: the title of a run, and the status, report lines and exit code of its result.
 - `workflow/meta.ts`: read and check the `meta` of a workflow script.
 - `workflow/find.ts`: find a script, list the scripts, help and usage, usage errors, and the terminal input and output.
-- `workflow/bundle.ts`: the bundle of a run (scripts, prompt templates, agent profiles and the script lib), and the
-  instructions of a prompt template.
+- `workflow/bundle.ts`: the bundle of a run (scripts, prompt templates, agent profiles and the script lib), the
+  instructions of a prompt template, and the edits of the bundle for a `run()` call.
 - `cli/commands/check.ts`: the static analysis of `workflows check`.
 - `task.ts`: the task of every script run, its saved input and checkpoint, its phase, child runs, and the end of its
   sessions.
 - `script.ts`: the workflow script calls, prompts for scripts, and sessions on harness's children library.
-- `run.ts`: the run ID, what a run gets from the command line, and the Ctrl+C presses.
-- `git.ts`: Git commands, repository selection, and worktrees, made by Herdr or Git.
+- `run.ts`: the Ctrl+C presses.
+- `git.ts`: run a process, and Git commands.
 
 The script side in `workflows/`, published as it is:
 

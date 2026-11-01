@@ -1,18 +1,4 @@
-/**
- * What a run shares from the command line: the run ID, the run directory and the Ctrl+C presses. The script task is
- * `scriptTask` in `task.ts`.
- */
-import { randomBytes } from "node:crypto";
-
-/** A run ID, `<UTC timestamp>-<8 hex>`, so a sort by name is a sort by start time. */
-export function newRunId(): string {
-	const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
-
-	return `${stamp}-${randomBytes(4).toString("hex")}`;
-}
-
-/** What a run needs from the command line before it starts. */
-export type Run = { readonly id: string; readonly directory: string; readonly cwd: string };
+/** The Ctrl+C presses of the command line. */
 
 /**
  * The Ctrl+C presses of a command. The first detaches the command from its run. A second one stops the run while the

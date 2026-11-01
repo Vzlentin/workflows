@@ -17,11 +17,11 @@ import {
 } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { branchOf, ensureWorktree, renameBranch } from "./git.ts";
 import { herdrWorktree, typePickLoop } from "./herdr.ts";
-import { childInput, report, type ScriptInput, statusOf } from "./meta.ts";
+import { childInput, newRunId, type ScriptInput } from "./launch/input.ts";
+import { branchOf, ensureWorktree, renameBranch } from "./launch/worktree.ts";
 import { allPages, pastRuns, type RunTask, rootRuns, savedBundle } from "./past.ts";
-import { newRunId } from "./run.ts";
+import { reportOf, statusOf } from "./run/result.ts";
 import { addProgress, CallDoc, type Child, type Host, JSON_VALUE, ownerOf, runScript, SessionsDoc } from "./script.ts";
 
 /**
@@ -196,18 +196,7 @@ export function outcomeText(outcome: WorkflowOutcome): string {
 
 /** The outcome of the finished run `input` with `result`, with the report lines that the command prints. */
 function finishedOutcome(input: ScriptInput, result: JsonValue): WorkflowOutcome {
-	const lines: string[] = [];
-
-	const io = {
-		cwd: input.cwd,
-		stdin: async () => undefined,
-		stdout: (line: string) => lines.push(line),
-		stderr: () => {},
-	};
-
-	report(input, result, io);
-
-	return { runId: input.runId, status: "finished", result, report: lines };
+	return { runId: input.runId, status: "finished", result, report: reportOf(input, result).lines };
 }
 
 /**

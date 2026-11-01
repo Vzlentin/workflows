@@ -8,7 +8,7 @@ import { entriesPath } from "@vzlentin/harness/entries";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { newRunId } from "../src/run.ts";
+import { newRunId } from "../src/launch/input.ts";
 import { TASK } from "../src/task.ts";
 import {
 	COMMIT,

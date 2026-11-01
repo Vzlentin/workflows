@@ -28,13 +28,14 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { agentLines, agentRows, callTree, type Shown, showEntries, type TreeEntry, treeLines } from "./calls.ts";
 import { CHECK, check } from "./cli/commands/check.ts";
-import { failure, git, gitSucceeds, repositoryAt, run as runCommand } from "./git.ts";
+import { failure, git, gitSucceeds, run as runCommand } from "./git.ts";
 import { herdrPlace, removedByHerdr } from "./herdr.ts";
-import * as script from "./meta.ts";
+import { newRunId, parse, prepare, type ScriptInput, USAGE } from "./launch/input.ts";
+import { repositoryAt, type Worktree } from "./launch/worktree.ts";
 import type { RunTask } from "./past.ts";
 import type { PickItem } from "./pick.ts";
 import { display, type Mark, Progress, type ProgressEvent, programStatus } from "./progress.ts";
-import { newRunId } from "./run.ts";
+import { reportOf, statusOf, title as titleOf } from "./run/result.ts";
 import type { SavedCall } from "./script.ts";
 import {
 	callRecords,
@@ -136,7 +137,7 @@ const COMMANDS = new Map<string, Command>([
  */
 export async function main(argv: readonly string[], terminal: Terminal): Promise<number> {
 	const usage = [
-		`${script.USAGE} [--background] [--json]`,
+		`${USAGE} [--background] [--json]`,
 		"workflows <workflow> --help",
 		RESUME,
 		WAIT,
@@ -253,7 +254,7 @@ const taskKey = (id: string, n: number) => `wf:${id}#${n}`;
 class Refused extends Error {}
 
 /** Starts the task of `key` with `input` in the host of `client`, and checks the version of the host's task. */
-async function startTask(client: Client, project: string, input: script.ScriptInput, key: string): Promise<void> {
+async function startTask(client: Client, project: string, input: ScriptInput, key: string): Promise<void> {
 	try {
 		// A host whose workflows task has another version refuses before it creates anything, so the key stays free.
 		await client.request({ type: "start", kind: TASK.name, version: TASK.version, input, key });
@@ -304,18 +305,18 @@ async function findTask(terminal: Terminal, project: string, key: string): Promi
 }
 
 async function start(args: readonly string[], terminal: Terminal, json: boolean, background: boolean): Promise<number> {
-	const parsed = await script.parse(args, terminal);
+	const parsed = await parse(args, terminal);
 	const id = newRunId();
 	const directory = join(runsDirectory(), id);
 	const project = await projectOf(terminal.cwd);
 	const key = taskKey(id, 1);
 	await mkdir(directory, { recursive: true });
 	let client: Client | undefined;
-	let input: script.ScriptInput | undefined;
+	let input: ScriptInput | undefined;
 	let sent = false;
 
 	try {
-		const prepared = await script.prepare(parsed, { id, directory, cwd: terminal.cwd });
+		const prepared = await prepare(parsed, { id, directory, cwd: terminal.cwd });
 		// The `workflow` tool of a conversation of the host sets `PI_SESSION_ID`, so the run's sessions go under it.
 		const session = process.env.PI_SESSION_ID;
 		const parented = session ? { ...prepared, parent: session } : prepared;
@@ -430,7 +431,7 @@ function runStatus(task: RunTask): string {
 
 	const { outcome } = state;
 
-	if (outcome.status === "completed") return script.statusOf(outcome.result) ?? "done";
+	if (outcome.status === "completed") return statusOf(outcome.result) ?? "done";
 
 	return outcome.status === "aborted" ? "stopped" : outcome.status;
 }
@@ -461,9 +462,7 @@ async function resume(
 	const { input: last, state } = checked(taskOf(tasks), run.id, wait ? "be waited for" : "resume");
 
 	const waiting =
-		state.status === "terminal" &&
-		state.outcome.status === "completed" &&
-		script.statusOf(state.outcome.result) === "waiting";
+		state.status === "terminal" && state.outcome.status === "completed" && statusOf(state.outcome.result) === "waiting";
 
 	if (answer !== undefined && !waiting) throw new UsageError(`run ${run.id} does not wait for an answer`, RESUME);
 
@@ -591,7 +590,7 @@ async function stop(args: readonly string[], terminal: Terminal, json: boolean):
 
 	if (json) terminal.stdout(JSON.stringify({ runId: run.id, status: "stopped" }));
 	else if (current(latest)) {
-		const title = script.title(latest.input, await progressOf(run));
+		const title = titleOf(latest.input, await progressOf(run));
 		terminal.stdout(`stopped ${title}; continue with: workflows resume ${run.id}`);
 	} else {
 		const { name, later } = savedBy(latest);
@@ -662,7 +661,7 @@ async function listedRuns(store: Store): Promise<Listed[]> {
 		const repository = inputWorktree(task.input)?.repository ?? null;
 
 		if (current(task)) {
-			const title = script.title(task.input, await progressEvents(store, id));
+			const title = titleOf(task.input, await progressEvents(store, id));
 			listed.push({ runId: id, workflow: task.input.name, title, status, repository });
 		} else listed.push({ runId: id, workflow: savedBy(task).name, title: savedBy(task).name, status, repository });
 	}
@@ -724,8 +723,6 @@ function markOf(status: string): Mark | "?" | "·" {
 
 /** The line of the post-merge hook that `prune --install-hook` writes. */
 const HOOK_LINE = "workflows prune --yes >/dev/null 2>&1 &";
-
-type Worktree = NonNullable<script.ScriptInput["worktree"]>;
 
 type Prunable = { readonly runId: string; readonly branch: string; readonly worktree: Worktree };
 
@@ -910,7 +907,7 @@ async function show(args: readonly string[], terminal: Terminal, json: boolean):
 
 /** A saved run as `show` prints it. `end` has the report lines or the error of a run that ended. */
 type ShownRun = {
-	readonly input: script.ScriptInput;
+	readonly input: ScriptInput;
 	readonly title: string;
 	readonly status: string;
 	readonly head: string;
@@ -943,12 +940,12 @@ async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean, ve
 	const checkedTask = checked(task, id, verb);
 	const { input, state } = checkedTask;
 	const outcome = state.status === "terminal" ? state.outcome : undefined;
-	const title = script.title(input, events);
+	const title = titleOf(input, events);
 	const footer: string[] = [];
 	let end: { report: string[] } | { error: string } | undefined;
 
 	if (outcome?.status === "completed") {
-		script.report(input, outcome.result, { ...terminal, stdout: (line) => footer.push(line) });
+		footer.push(...reportOf(input, outcome.result).lines);
 		end = { report: footer };
 	} else if (outcome !== undefined) {
 		const ended = endOf(outcome, title, id);
@@ -1117,7 +1114,7 @@ function checked(
 	latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined,
 	id: string,
 	verb: string,
-): TaskRecord<script.ScriptInput, JsonValue, JsonValue> {
+): TaskRecord<ScriptInput, JsonValue, JsonValue> {
 	if (latest === undefined) throw new Error(`run ${id} has no workflow`);
 
 	if (current(latest)) return latest;
@@ -1134,11 +1131,11 @@ function savedBy(latest: TaskRecord<JsonValue, JsonValue, JsonValue>) {
 }
 
 /** Prints the report of the finished run `id` with `result`, or its JSON outcome line, and gives its exit code. */
-function finished(input: script.ScriptInput, id: string, result: JsonValue, terminal: Terminal, json: boolean): number {
-	if (!json) return script.report(input, result, terminal);
-	const report: string[] = [];
-	const code = script.report(input, result, { ...terminal, stdout: (line) => report.push(line) });
-	terminal.stdout(JSON.stringify({ runId: id, status: "finished", result, report }));
+function finished(input: ScriptInput, id: string, result: JsonValue, terminal: Terminal, json: boolean): number {
+	const { lines, code } = reportOf(input, result);
+
+	if (json) terminal.stdout(JSON.stringify({ runId: id, status: "finished", result, report: lines }));
+	else for (const line of lines) terminal.stdout(line);
 
 	return code;
 }
@@ -1175,7 +1172,7 @@ type Following = {
 	readonly id: string;
 	readonly project: string;
 	readonly key: string;
-	readonly input: script.ScriptInput;
+	readonly input: ScriptInput;
 	readonly client: Client;
 	/** The number of progress events of the run before the ones that the command shows. */
 	readonly from: number;
@@ -1336,7 +1333,7 @@ async function follow(run: Following, terminal: Terminal, json: boolean, backgro
 
 		asking =
 			outcome.status === "completed" &&
-			script.statusOf(outcome.result) === "waiting" &&
+			statusOf(outcome.result) === "waiting" &&
 			terminal.readLine !== undefined &&
 			!json &&
 			!terminal.interrupt.aborted;
@@ -1371,7 +1368,7 @@ async function answering(id: string, terminal: Terminal): Promise<number> {
  * JSON outcome line. It gives the exit code.
  */
 function outcomeOf(
-	input: script.ScriptInput,
+	input: ScriptInput,
 	id: string,
 	outcome: TaskOutcome<JsonValue>,
 	terminal: Terminal,
@@ -1379,7 +1376,7 @@ function outcomeOf(
 	events: readonly ProgressEvent[],
 ): number {
 	if (outcome.status === "completed") return finished(input, id, outcome.result, terminal, json);
-	const ended = endOf(outcome, script.title(input, events), id);
+	const ended = endOf(outcome, titleOf(input, events), id);
 
 	const end = (status: "failed" | "stopped", rest: { error?: string }) => {
 		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
