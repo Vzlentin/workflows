@@ -27,7 +27,7 @@ const reply = await notes
 
 await commitAll(args.message ?? subject)
 
-const lines = (await notes.text).split("\n").filter(Boolean)
+const lines = await noteLines(notes)
 
 if (await ok(["git", "diff", "--quiet", start, "HEAD"])) {
 	return { status: "blocked", reply, memory: lines, report: [`blocked ${subject}`, reply] }

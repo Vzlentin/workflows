@@ -220,6 +220,13 @@ async function memory(ref = {}) {
 	};
 }
 
+/** The notes of the run memory `notes`, one `#<k> <note>` line each, without empty lines. */
+async function noteLines(notes) {
+	const text = await notes.text;
+
+	return text.split("\n").filter(Boolean);
+}
+
 const NOTED = {
 	type: "object",
 	required: ["text", "notes"],

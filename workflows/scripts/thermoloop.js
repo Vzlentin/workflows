@@ -45,7 +45,6 @@ const NOTES =
 	"one in each note. Do not repeat the findings: the document gives them."
 
 const notes = await memory(args.memory)
-const lines = async () => (await notes.text).split("\n").filter(Boolean)
 
 // The handoff that the last implement round followed, and the implementer's reply of that round.
 let plan = args.plan ?? ""
@@ -68,13 +67,13 @@ for (let round = 1; ; round++) {
 
 		const report = [`approved ${subject} in ${round} rounds, ${head}`]
 
-		return notes.finish(item, { status: "approved", rounds: round, memory: await lines(), report })
+		return notes.finish(item, { status: "approved", rounds: round, memory: await noteLines(notes), report })
 	}
 
 	if (round === rounds) {
 		const report = [`stopped ${subject} after ${round} rounds`]
 
-		return notes.finish(item, { status: "stopped", rounds: round, handoff: plan, memory: await lines(), report })
+		return notes.finish(item, { status: "stopped", rounds: round, handoff: plan, memory: await noteLines(notes), report })
 	}
 
 	plan = await reviewer.noted(round, `${await prompts.handoff()}\n\n${EVERY_FINDING}`, NOTES)
@@ -88,7 +87,7 @@ for (let round = 1; ; round++) {
 	if (fixed.status === "blocked") {
 		const report = [`blocked ${subject} after ${next} rounds`, reply]
 
-		return notes.finish(item, { status: "blocked", rounds: next, reply, handoff: plan, memory: await lines(), report })
+		return notes.finish(item, { status: "blocked", rounds: next, reply, handoff: plan, memory: await noteLines(notes), report })
 	}
 }
 
