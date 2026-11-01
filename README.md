@@ -84,9 +84,6 @@ work item, or `none`. A ship that is not a campaign item, and a campaign, also g
 notes, each also a report line. [docs/spec.md](docs/spec.md) describes all the commands, workflow scripts, runs, and the
 `workflow` tool.
 
-When the repository has an executable `.workflows/setup`, such as one that runs `npm ci`, a run runs it once in its new
-worktree before its script. Its output goes to `setup.log` in the run directory.
-
 Optimize uses past completed ship runs as baselines. An INV turn edits prompts and profiles, a DOM turn edits skills and
 `AGENTS.md`. A Compose turn merges the edits into one candidate overlay, with one `kept`, `revised` or `dropped` note
 per edit in the report and in `notes.txt`. An invalid candidate does not roll out; the run reports each reason: a skill
