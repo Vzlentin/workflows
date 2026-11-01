@@ -83,7 +83,7 @@ describe("attach", () => {
 			[1, [`workflows: run ${bare} has no session`]],
 			[2, ["workflows: give one run ID", `usage: ${usage}`]],
 			[1, [`workflows: run ${id} has no session with conversation 999999`]],
-			[1, [`workflows: no run nothing in ${runs}`]],
+			[4, [`workflows: no run nothing in ${runs}`]],
 			[2, ["workflows: give one run ID", `usage: ${usage}`]],
 			[2, ["workflows: x is not a conversation ID", `usage: ${usage}`]],
 		]);

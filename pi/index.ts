@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { type Static, Type } from "@earendil-works/pi-ai";
 import type {
@@ -57,20 +58,38 @@ const STARTED_ENTRY = Type.Object({
 	data: Type.Object({ runId: Type.String(), cwd: Type.String(), workflow: Type.Optional(Type.String()) }),
 });
 
-/** The entry that the watcher records after it posts the outcome of a background run. */
+/**
+ * The entry that the watcher records after it posts the outcome of a background run, or that the tool records after a
+ * call that it waited for gave the outcome. `reason` is the error of a gone run, which ended with no outcome.
+ */
 const ENDED_ENTRY = Type.Object({
 	type: Type.Literal("custom"),
 	customType: Type.Literal("workflow-background-end"),
-	data: Type.Object({ runId: Type.String() }),
+	data: Type.Object({ runId: Type.String(), reason: Type.Optional(Type.String()) }),
 });
 
-/**
- * The lines and the status of a `{"progress":[...]}` stderr line of `workflows --json`, or undefined for any other
- * line.
- */
-function progressLines(line: string): { lines: string[]; status: string | undefined } | undefined {
-	if (!line.startsWith('{"progress":')) return undefined;
+/** The first wait between two waits of a background run that gave no outcome to post, and the longest one, in ms. */
+const RETRY_MS = 1000;
+const MAX_RETRY_MS = 60_000;
 
+/** The most stderr lines that are not progress lines that a call keeps: the last ones. */
+const MAX_STDERR_LINES = 100;
+
+/** Adds `line` to `lines`, and drops the first lines past `MAX_STDERR_LINES`. */
+function keepLast(lines: string[], line: string): void {
+	lines.push(line);
+
+	if (lines.length > MAX_STDERR_LINES) lines.splice(0, lines.length - MAX_STDERR_LINES);
+}
+
+/** The lines and the status of a progress stderr line of `workflows --json`. */
+interface ProgressLine {
+	readonly lines: string[];
+	readonly status: string | undefined;
+}
+
+/** The progress line of a stderr line of `workflows --json`, a JSON object with `progress`, or undefined. */
+function progressLines(line: string): ProgressLine | undefined {
 	try {
 		const parsed = JSON.parse(line);
 
@@ -80,7 +99,11 @@ function progressLines(line: string): { lines: string[]; status: string | undefi
 	}
 }
 
-/** Runs `command` with `args` in `cwd`; each stderr line goes to `progress`, and `signal` sends SIGINT, which detaches. */
+/**
+ * Runs `command` with `args` in `cwd`; each stderr line goes to `progress` with its progress line, or undefined for
+ * another line, and `signal` sends SIGINT, which detaches.
+ * The output keeps the last `MAX_STDERR_LINES` stderr lines that are not progress lines.
+ */
 async function runCli(
 	command: readonly string[],
 	args: readonly string[],
@@ -88,7 +111,7 @@ async function runCli(
 	options: {
 		stdin?: string | undefined;
 		signal?: AbortSignal | undefined;
-		progress?: (line: string) => void;
+		progress?: (line: string, progress: ProgressLine | undefined) => void;
 	},
 ): Promise<Output> {
 	const [program = "", ...prefix] = command;
@@ -100,8 +123,10 @@ async function runCli(
 	const err = createInterface({ input: child.stderr });
 	out.on("line", (line) => stdout.push(line));
 	err.on("line", (line) => {
-		stderr.push(line);
-		options.progress?.(line);
+		const progress = progressLines(line);
+
+		if (progress === undefined) keepLast(stderr, line);
+		options.progress?.(line, progress);
 	});
 	const interrupt = () => child.kill("SIGINT");
 	options.signal?.addEventListener("abort", interrupt, { once: true });
@@ -117,19 +142,21 @@ async function runCli(
 }
 
 /**
- * The steps of the stderr lines of the command: the lines of the last `{"progress":[...]}` line, then any other line.
+ * The steps of the stderr lines of the command: the lines of the last progress line, then the last `MAX_STDERR_LINES`
+ * other lines.
  */
 class Steps {
 	#drawn: readonly string[] = [];
 	#status: string | undefined;
 	readonly #other: string[] = [];
 
-	/** Adds a stderr line, and returns the text of its update: the last progress line, or the line itself. */
-	add(line: string): string {
-		const progress = progressLines(line);
-
+	/**
+	 * Adds a stderr line and its progress line, undefined for another line, and returns the text of its update: the
+	 * last progress line, or the line itself.
+	 */
+	add(line: string, progress: ProgressLine | undefined): string {
 		if (progress === undefined) {
-			this.#other.push(line);
+			keepLast(this.#other, line);
 
 			return line;
 		}
@@ -198,7 +225,7 @@ function detailLines(
 	theme: Theme,
 ): string[] {
 	const lines = steps.map((step) => {
-		const [, indent = "", mark, text = step] = /^(\s*)(?:([✓◉✗]) )?(.*)$/.exec(step) ?? [];
+		const [, indent = "", mark, text = step] = /^(\s*)(?:([✓◉✗·]) )?(.*)$/.exec(step) ?? [];
 		const color = MARKS.get(mark ?? "");
 		const shown = mark === undefined || color === undefined ? "" : `${theme.fg(color, mark)} `;
 
@@ -232,16 +259,17 @@ export function workflowTool(command: readonly string[], watcher: Watcher, tool:
 
 			const steps = new Steps();
 
-			const output = await runCli(command, tool.cliArgs(params), ctx.cwd, {
+			const call = runCli(command, tool.cliArgs(params), ctx.cwd, {
 				stdin: params.script,
 				signal,
-				progress: (line) => {
-					const text = steps.add(line);
+				progress: (line, progress) => {
+					const text = steps.add(line, progress);
 					onUpdate?.({ content: [{ type: "text", text }], details: { steps: steps.lines } });
 				},
-			});
+			}).then((output) => tool.outcomeOf(output));
 
-			const outcome = tool.outcomeOf(output);
+			if (params.resume !== undefined) watcher.foreground(params.resume, call);
+			const outcome = await call;
 
 			if (outcome.status === "started") watcher.started(outcome.runId, ctx.cwd, outcome.workflow);
 
@@ -346,13 +374,38 @@ type Api = Pick<
 	"registerTool" | "registerCommand" | "registerMessageRenderer" | "on" | "sendMessage" | "appendEntry"
 >;
 
-/** A run that the watcher follows: its ID, its directory, its workflow name, or `?` when unknown, and its steps. */
-type Followed = { readonly runId: string; readonly cwd: string; readonly workflow: string; readonly steps: Steps };
+/**
+ * A run that the watcher follows: its ID, its directory, its workflow name, or `?` when unknown, its steps, the
+ * controller that is aborted when its end entry is recorded, and the foreground call of the tool that resumes it.
+ */
+type Followed = {
+	readonly runId: string;
+	readonly cwd: string;
+	readonly workflow: string;
+	readonly steps: Steps;
+	readonly done: AbortController;
+	foreground?: Promise<void>;
+};
+
+/**
+ * What one `workflows wait` gave: its exit code when the command ran, and its outcome, or the error of the command or of
+ * its output.
+ */
+type Waited = { readonly code?: number | null; readonly outcome?: WorkflowOutcome; readonly error?: string };
+
+/** Whether the watcher posts `outcome`: the end of a run. */
+function postable(outcome: WorkflowOutcome | undefined): outcome is WorkflowOutcome {
+	return outcome?.status === "finished" || outcome?.status === "failed" || outcome?.status === "stopped";
+}
 
 /**
  * Follows the background runs of a session with `workflows wait`, and posts the outcome of each one as a
- * `workflow-result` message that starts a turn. Shutdown sends SIGINT to the waits, which detach and post nothing. With
- * a UI from `session_start`, the widget `workflows` above the editor shows the step of each followed run.
+ * `workflow-result` message that starts a turn. A wait that gives no outcome to post, such as a detached run or a host
+ * that stopped, runs again after 1 s, then twice as long each time, up to 60 s. A run that is gone, which `wait` gives
+ * with the exit code `GONE_EXIT`, gets an end entry with the reason, and no message. A call of the tool that resumes a
+ * followed run in the foreground gives the outcome itself: the watcher posts only when that call gave none. Shutdown
+ * sends SIGINT to the waits, which detach and post nothing, and ends the retries. With a UI from `session_start`, the
+ * widget `workflows` above the editor shows the step of each followed run.
  */
 class Watcher {
 	readonly #pi: Api;
@@ -394,6 +447,23 @@ class Watcher {
 		this.#draw();
 	}
 
+	/**
+	 * Takes the foreground call `call` of the tool that resumes the run `runId`. When the run is followed and the call
+	 * gives its outcome, the call ends the run here: it records the end entry, and the watcher posts nothing.
+	 */
+	foreground(runId: string, call: Promise<WorkflowOutcome>): void {
+		const run = this.#watched.get(runId);
+
+		if (run === undefined) return;
+
+		run.foreground = call.then(
+			(outcome) => {
+				if (postable(outcome)) this.#end(run);
+			},
+			() => {},
+		);
+	}
+
 	stop(): void {
 		this.#controller.abort();
 		this.#ui = undefined;
@@ -401,7 +471,7 @@ class Watcher {
 
 	#watch(runId: string, cwd: string, workflow: string): void {
 		if (this.#watched.has(runId)) return;
-		const run: Followed = { runId, cwd, workflow, steps: new Steps() };
+		const run: Followed = { runId, cwd, workflow, steps: new Steps(), done: new AbortController() };
 		this.#watched.set(runId, run);
 		this.#draw();
 		this.#post(run)
@@ -435,24 +505,76 @@ class Watcher {
 		ui.setWidget("workflows", [shown.join(theme.fg("dim", " | "))]);
 	}
 
-	async #post({ runId, cwd, steps }: Followed): Promise<void> {
+	/**
+	 * Records the end entry of `run` once, with `reason` for a run that ended with no outcome, and stops the retry of
+	 * the run that waits.
+	 */
+	#end(run: Followed, reason?: string): void {
+		if (run.done.signal.aborted) return;
+		run.done.abort();
+		this.#pi.appendEntry(
+			"workflow-background-end",
+			reason === undefined ? { runId: run.runId } : { runId: run.runId, reason },
+		);
+	}
+
+	/** Waits for `run` until it ends or the watcher stops, and posts its outcome. */
+	async #post(run: Followed): Promise<void> {
 		const { signal } = this.#controller;
+		const retry = AbortSignal.any([signal, run.done.signal]);
 
-		const output = await runCli(this.#command, ["wait", runId, "--json"], cwd, {
-			signal,
-			progress: (line) => {
-				steps.add(line);
-				this.#draw();
-			},
-		});
+		for (let delay = RETRY_MS; !retry.aborted; delay = Math.min(delay * 2, MAX_RETRY_MS)) {
+			const { code, outcome, error } = await this.#wait(run);
+			await run.foreground;
 
-		// No outcome, or an outcome that is not valid, posts nothing: the next start of the session watches the run again.
-		const outcome = this.#tool.outcomeOf(output);
+			if (retry.aborted) return;
 
-		if (signal.aborted) return;
+			if (postable(outcome)) {
+				this.#send(run, outcome);
 
-		if (outcome.status !== "finished" && outcome.status !== "failed" && outcome.status !== "stopped") return;
-		const details: WorkflowDetails = { steps: steps.lines, outcome };
+				return;
+			}
+
+			if (code === this.#tool.GONE_EXIT && error !== undefined) {
+				this.#end(run, error);
+
+				return;
+			}
+
+			try {
+				await sleep(delay, undefined, { signal: retry });
+			} catch {
+				return;
+			}
+		}
+	}
+
+	/** What one `workflows wait` of `run` gave. */
+	async #wait({ runId, cwd, steps }: Followed): Promise<Waited> {
+		let output: Output;
+
+		try {
+			output = await runCli(this.#command, ["wait", runId, "--json"], cwd, {
+				signal: this.#controller.signal,
+				progress: (line, progress) => {
+					steps.add(line, progress);
+					this.#draw();
+				},
+			});
+		} catch (error) {
+			return { error: error instanceof Error ? error.message : String(error) };
+		}
+
+		try {
+			return { code: output.code, outcome: this.#tool.outcomeOf(output) };
+		} catch (error) {
+			return { code: output.code, error: error instanceof Error ? error.message : String(error) };
+		}
+	}
+
+	/** Posts `outcome` of `run` as a message that starts a turn, and records its end entry. */
+	#send(run: Followed, outcome: WorkflowOutcome): void {
+		const details: WorkflowDetails = { steps: run.steps.lines, outcome };
 		this.#pi.sendMessage(
 			{
 				customType: "workflow-result",
@@ -463,7 +585,7 @@ class Watcher {
 			{ triggerTurn: true, deliverAs: "followUp" },
 		);
 		// a crash between the post and the end entry posts again at the next start; accepted, the window is one sync call
-		this.#pi.appendEntry("workflow-background-end", { runId });
+		this.#end(run);
 	}
 }
 

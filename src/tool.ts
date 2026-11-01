@@ -71,6 +71,9 @@ export const OUTCOME = Type.Union([
 
 export type WorkflowOutcome = Static<typeof OUTCOME>;
 
+/** The `status` of a JSON outcome line of the command. */
+export type OutcomeStatus = WorkflowOutcome["status"];
+
 export const DESCRIPTION =
 	"Run a durable workflow and wait for its result. Give exactly one of: `name` (a workflow script such as " +
 	"`ship`, `campaign` or `optimize`), `script` (the body of an inline workflow script), `resume` (a run " +
@@ -114,7 +117,8 @@ export const GUIDELINES = [
 		"`{ cue, lesson, evidence }` of the notes, `[]` with no turn when there are none, and a report line for each one, " +
 		"when the store opened here), and `.session(profile)`, whose first `.ask` starts with the notes and whose " +
 		"`.noted(round, prompt, rule)` asks for `{ text, notes }` and keeps the notes. `noteLines(notes)` gives the `#<k> <note>` lines of `notes.text`, without empty lines. `commitAll(message)` stages and commits every change, " +
-		"`squash(start, message, subject)` squashes the commits since `start` into one, logs it and gives the short head, " +
+		"`squash(start, message, subject)` squashes the commits since `start` into one (no commit when nothing changed), logs it and gives the short head, " +
+		"`writePatch(path, from)` writes the diff from `from` to `HEAD` to `path` and gives `path`, " +
 		"`diffStat(from, to)` gives `+12 -3 in 2 files`, `assertClean()` throws on changes that are not committed, " +
 		"`changeOf(args, { wip })` gives `{ start, intent, checkout, dirty }` of `args.start` and `args.item`, or else of " +
 		"`args.change` (the current branch, a PR number, a ref or a range) and names the run, and `inCheckout(name, change, args)` runs the script again in a worktree on the " +
@@ -165,11 +169,22 @@ export type Output = {
 	readonly stderr: readonly string[];
 };
 
-/** The outcome line after `run <run-id>`; throws the stderr text when the command stopped without one. */
-export function outcomeOf(output: Output): WorkflowOutcome {
-	const [, line] = output.stdout;
+/** The exit code of a command on a saved run that is gone: its run directory or its task is missing. */
+export const GONE_EXIT = 4;
 
-	if (line === undefined) throw new Error(output.stderr.join("\n") || `workflows exited with ${output.code}`);
+/**
+ * The outcome line after `run <run-id>`; throws the stderr text when the command stopped without one, after `run
+ * <run-id>: ` when the command printed that line.
+ */
+export function outcomeOf(output: Output): WorkflowOutcome {
+	const [first, line] = output.stdout;
+
+	if (line === undefined) {
+		const why = output.stderr.join("\n") || `workflows exited with ${output.code}`;
+
+		throw new Error(first?.startsWith("run ") ? `${first}: ${why}` : why);
+	}
+
 	const outcome = JSON.parse(line);
 
 	if (!Value.Check(OUTCOME, outcome)) throw new Error(`workflows printed an outcome that is not valid: ${line}`);

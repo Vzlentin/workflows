@@ -65,16 +65,35 @@ if (args.workflow !== "ship") throw new Error(`optimize takes ship only, not ${a
 
 if (args.items !== undefined && args.runs !== undefined) throw new Error("give --items or --runs, not both")
 
+// The report lines of the ship worktrees that could not be removed.
+const kept = []
+
 // Ships `item` as a child run with the extra args, and takes the diff of its commits before it removes its worktree
-// and its branch.
+// and its branch: the branch of its result, else the branch that its worktree is on.
 async function ship(item, extra) {
 	const result = await run("ship", { item: item.text, repo: item.repo, base: item.start, ...extra })
 	const diff = await sh(["git", "-C", result.worktree, "diff", item.start, "HEAD"])
-	// Known ceiling: the branch name of a run that did not ship copies ship's branch name.
-	await ok(["git", "-C", item.repo, "worktree", "remove", "--force", result.worktree])
-	await ok(["git", "-C", item.repo, "branch", "-D", result.branch ?? `ship/${result.runId}`])
+	const branch = result.branch ?? (await sh(["git", "-C", result.worktree, "branch", "--show-current"]))
 
-	return { runId: result.runId, result, diff }
+	const shipped = { runId: result.runId, result, diff }
+
+	try {
+		await sh(["git", "-C", item.repo, "worktree", "remove", "--force", result.worktree])
+	} catch (error) {
+		kept.push(`kept ${result.worktree}${branch === "" ? "" : ` on ${branch}`}: ${oneLine(error.message)}`)
+
+		return shipped
+	}
+
+	if (branch === "") return shipped
+
+	try {
+		await sh(["git", "-C", item.repo, "branch", "-D", branch])
+	} catch (error) {
+		kept.push(`kept branch ${branch}: ${oneLine(error.message)}`)
+	}
+
+	return shipped
 }
 
 // The FNV-1a hash of `text`, as an unsigned 32-bit number.
@@ -377,7 +396,7 @@ await sh(["sh", "-c", compare, "diff", runDir, header.join("\n"), "overlay.diff"
 const few = items.length < 4 ? ["fewer than 4 items: nothing promoted"] : []
 const line = `optimized ship: ${wins}/${items.length} wins, ${promoted ? "promoted" : "not promoted"}, ${diff}`
 
-const result = { wins, items: items.length, promoted, overlay, notes, invalid, diff, report: [...notes, ...outcomes, ...few, line] }
+const result = { wins, items: items.length, promoted, overlay, notes, invalid, diff, report: [...notes, ...outcomes, ...few, ...kept, line] }
 
 // When the overlay changes more than one file, no rollout tells which change made a verdict, so no row can teach a
 // lesson and the run makes no harvest turn.

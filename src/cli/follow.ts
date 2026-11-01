@@ -3,14 +3,16 @@
 import { join } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { TaskOutcome } from "@earendil-works/pi-durable";
 import type { Client } from "@vzlentin/harness/client";
 import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
-import { openStore, progressEvents } from "../records/store.ts";
+import { endMark } from "../records/steps.ts";
+import { openReadOnly, progressEvents } from "../records/store.ts";
+import { hasEnded, hasResult, type RunTask, runStatus, type TaskEnd, taskOutcome } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
-import { reportOf, statusOf, title as titleOf } from "../run/result.ts";
-import { abortRun, STORE_FILE } from "./host.ts";
+import { reportOf, title as titleOf } from "../run/result.ts";
+import type { OutcomeStatus } from "../tool.ts";
+import { abortRun, hostStopped, STORE_FILE } from "./host.ts";
 import type { Terminal } from "./main.ts";
 import { display, programStatus } from "./terminal/redraw.ts";
 
@@ -19,9 +21,6 @@ const POLL_MS = 500;
 
 /** How long a command that Ctrl+C detached waits for a second Ctrl+C, which stops the run. */
 const STOP_WINDOW_MS = 2000;
-
-/** The error of harness's client when the host closes the connection, such as when it stops. */
-const HOST_CLOSED = "The harness host closed the connection";
 
 /**
  * The Ctrl+C presses of a command. The first detaches the command from its run. A second one stops the run while the
@@ -62,17 +61,45 @@ export class CtrlC {
 	}
 }
 
-/** The footer lines and the JSON fields of a run that ended with `outcome` without a result. */
-export function endOf(outcome: TaskOutcome<JsonValue>, title: string, id: string) {
+/**
+ * How a run that ended without a result ends: its footer lines, the error that `show` prints, the fields of its JSON
+ * outcome line, and its exit code.
+ */
+type Ended = {
+	readonly lines: string[];
+	readonly error?: string;
+	readonly outcome: { readonly status: OutcomeStatus; readonly error?: string };
+	readonly code: number;
+};
+
+/**
+ * How the run `id` whose task is `task` ended, when it ended without a result. It throws for a run that has a result,
+ * or has not ended. It reads the fields of the outcome, whose `failed` and `faulted` are the run status `failed`.
+ */
+export function endOf(task: RunTask | TaskEnd, title: string, id: string): Ended {
 	const resume = `continue with: workflows resume ${id}`;
+	const outcome = taskOutcome(task);
 
-	if (outcome.status === "failed" || outcome.status === "faulted") {
-		return { lines: [`failed ${title}: ${outcome.error.message}`, resume], error: outcome.error.message };
+	switch (outcome?.status) {
+		case "failed":
+		case "faulted": {
+			const error = outcome.error.message;
+
+			return { lines: [`failed ${title}: ${error}`, resume], error, outcome: { status: "failed", error }, code: 1 };
+		}
+
+		case "orphaned": {
+			const error = `the task was orphaned: ${outcome.reason}`;
+
+			return { lines: [`orphaned ${title}: ${outcome.reason}`, resume], outcome: { status: "failed", error }, code: 1 };
+		}
+
+		case "aborted":
+			return { lines: [`stopped ${title}; ${resume}`], outcome: { status: "stopped" }, code: 130 };
+		case "completed":
+		case undefined:
+			throw new Error(`run ${id} did not end without a result`);
 	}
-
-	if (outcome.status === "orphaned") return { lines: [`orphaned ${title}: ${outcome.reason}`, resume] };
-
-	return { lines: [`stopped ${title}; ${resume}`] };
 }
 
 /** Prints the report of the finished run `id` with `result`, or its JSON outcome line, and gives its exit code. */
@@ -126,9 +153,6 @@ export type Following = {
 /** How a followed run ended: the exit code, and whether the run waits for an answer that this terminal reads. */
 export type Followed = { readonly code: number; readonly asking: boolean };
 
-/** True for the error of a wait whose host stopped: its connection closed. */
-const hostStopped = (cause: unknown) => cause instanceof Error && cause.message === HOST_CLOSED;
-
 /**
  * Shows the progress of the run until its task ends, and reports its outcome. Ctrl+C detaches and leaves the run to
  * the host; a second Ctrl+C, also one that came before the window, stops it. A host that stops leaves the run pending.
@@ -159,23 +183,48 @@ export async function follow(
 	};
 
 	// With `--json`, the outcome line replaces the footer lines on stderr, so each stderr line is a progress line.
-	const end = (status: "failed" | "detached" | "host-stopped", rest: { error?: string }, ...footer: string[]) => {
+	const end = (status: OutcomeStatus, rest: { error?: string }, ...footer: string[]) => {
 		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
 		else for (const line of footer) terminal.stderr(line);
 	};
 
-	const store = await openStore(join(statePaths(run.project).dir, STORE_FILE)).catch((cause: unknown) => {
+	const opened = await openReadOnly(join(statePaths(run.project).dir, STORE_FILE)).catch((cause: unknown) => {
 		client.close();
 		terminal.following(false);
 		throw cause;
 	});
 
+	const store = opened?.store;
+
+	// The host only appends events (`addProgress` pushes and never trims), so `seen` counts the events shown.
 	let seen = run.from;
+	// Set from a failed read to the next good one, so that a series of failures prints one warning.
+	let failing = false;
+
+	/**
+	 * The progress events of the run. A read that fails, such as one that waited too long for a lock, gives none, and
+	 * the first failure of a series prints a warning; the next good read catches up.
+	 */
+	const read = async (): Promise<readonly ProgressEvent[]> => {
+		if (store === undefined) return [];
+
+		try {
+			const events = await progressEvents(store, id);
+			failing = false;
+
+			return events;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+
+			if (!failing) terminal.stderr(`warning: cannot read the progress of run ${id}: ${message}`);
+			failing = true;
+
+			return [];
+		}
+	};
 
 	const poll = async () => {
-		if (store === undefined) return;
-		// A read that fails, such as one that waited too long for a lock, shows nothing; the next read catches up.
-		const events = await progressEvents(store, id).catch(() => []);
+		const events = await read();
 
 		for (const event of events.slice(seen)) {
 			shown.event(event);
@@ -241,9 +290,7 @@ export async function follow(
 				return 130;
 			}
 
-			await abortRun(terminal, run.project, run.key);
-
-			return await report(await waited);
+			return await report(await abortRun(terminal, run.project, run.key));
 		} catch (error) {
 			await stopPolling();
 
@@ -254,7 +301,7 @@ export async function follow(
 				return 1;
 			}
 
-			shown.stop(true);
+			shown.stop("✗");
 			end("failed", { error: error instanceof Error ? error.message : String(error) });
 			throw error;
 		} finally {
@@ -265,24 +312,18 @@ export async function follow(
 		}
 	}
 
-	async function report(info: TaskInfo): Promise<number> {
+	async function report(info: TaskInfo | TaskEnd): Promise<number> {
 		await stopPolling();
-		const { outcome } = info;
+		const status = runStatus(info);
 
-		shown.stop(outcome?.status !== "completed");
+		shown.stop(endMark(status));
 
-		if (outcome === undefined) throw new Error(`run ended ${info.status}`);
+		if (info.outcome === undefined) throw new Error(`run ended ${status}`);
 
-		const events = store === undefined ? [] : await progressEvents(store, id).catch(() => []);
+		const events = await read();
+		asking = status === "waiting" && terminal.readLine !== undefined && !json && !terminal.interrupt.aborted;
 
-		asking =
-			outcome.status === "completed" &&
-			statusOf(outcome.result) === "waiting" &&
-			terminal.readLine !== undefined &&
-			!json &&
-			!terminal.interrupt.aborted;
-
-		return reportOutcome(input, id, outcome, terminal, json, events, asking);
+		return reportOutcome(input, id, info, terminal, json, events, asking);
 	}
 }
 
@@ -293,7 +334,7 @@ export async function follow(
 export function reportOutcome(
 	input: ScriptInput,
 	id: string,
-	outcome: TaskOutcome<JsonValue>,
+	task: RunTask | TaskEnd,
 	terminal: Terminal,
 	json: boolean,
 	events: readonly ProgressEvent[],
@@ -307,7 +348,7 @@ export function reportOutcome(
 	};
 
 	const shownTo = { ...terminal, stdout: keep(terminal.stdout), stderr: keep(terminal.stderr) };
-	const code = outcomeOf(input, id, outcome, shownTo, json, events);
+	const code = outcomeOf(input, id, task, shownTo, json, events);
 
 	if (asking) terminal.status?.(programStatus("blocked", first ?? "", "question"));
 	else if (!json) terminal.status?.(programStatus(code === 0 ? "done" : "error", first ?? ""));
@@ -316,34 +357,26 @@ export function reportOutcome(
 }
 
 /**
- * Prints how the run `id` ended with `outcome`: the report of a finished run, else the footer lines on stderr, or one
- * JSON outcome line. It gives the exit code.
+ * Prints how the run `id` whose task is `task` ended: the report of a finished run, else the footer lines on stderr,
+ * or one JSON outcome line. It gives the exit code.
  */
 export function outcomeOf(
 	input: ScriptInput,
 	id: string,
-	outcome: TaskOutcome<JsonValue>,
+	task: RunTask | TaskEnd,
 	terminal: Terminal,
 	json: boolean,
 	events: readonly ProgressEvent[],
 ): number {
-	if (outcome.status === "completed") return finished(input, id, outcome.result, terminal, json);
-	const ended = endOf(outcome, titleOf(input, events), id);
+	const status = runStatus(task);
 
-	const end = (status: "failed" | "stopped", rest: { error?: string }) => {
-		if (json) terminal.stdout(JSON.stringify({ runId: id, status, ...rest }));
-		else for (const line of ended.lines) terminal.stderr(line);
-	};
+	if (hasResult(status)) return finished(input, id, taskOutcome(task)?.result ?? null, terminal, json);
 
-	if (outcome.status === "aborted") {
-		end("stopped", {});
+	if (!hasEnded(status)) throw new Error(`run ${id} has not ended`);
+	const ended = endOf(task, titleOf(input, events), id);
 
-		return 130;
-	}
+	if (json) terminal.stdout(JSON.stringify({ runId: id, ...ended.outcome }));
+	else for (const line of ended.lines) terminal.stderr(line);
 
-	end("failed", {
-		error: ended.error ?? `the task was orphaned: ${outcome.status === "orphaned" ? outcome.reason : ""}`,
-	});
-
-	return 1;
+	return ended.code;
 }

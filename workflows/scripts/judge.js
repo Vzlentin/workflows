@@ -12,7 +12,7 @@ export const meta = {
 		item: { type: "text", label: "work item" },
 		base: { type: "string", default: "main" },
 	},
-	exit: { unjudged: 1 },
+	exit: { judged: 0, unjudged: 1 },
 }
 
 const { commit = false } = args

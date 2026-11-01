@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -14,20 +15,25 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AGENTS } from "../pi/run-view.ts";
 import type { Choose } from "../src/cli/main.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
-import { branchOf } from "../src/launch/worktree.ts";
+import { branchOf, renameBranch } from "../src/launch/worktree.ts";
+import { callRecords, reading, runTasks } from "../src/records/store.ts";
 import { CallDoc } from "../src/run/calls.ts";
+import { TASK } from "../src/run/version.ts";
 import { profileOf } from "../src/workflow/bundle.ts";
 import {
 	childTasks,
 	conversationOf,
 	detached,
 	git,
+	hostModel,
 	inputsOf,
 	overlayOf,
 	repository,
 	rootTasks,
 	runsOf,
 	sandbox,
+	setEntries,
+	startHost,
 	storeOf,
 	workflows,
 	worktreeAt,
@@ -183,7 +189,7 @@ describe("workflows save", () => {
 		const command = await workflows(["save", id, "show"], { cwd: repo });
 		expect([command.code, command.stderr]).toEqual([1, ["workflows: show is a command and cannot be a workflow name"]]);
 		const unknown = await workflows(["save", "nothing", "other"], { cwd: repo });
-		expect([unknown.code, unknown.stderr]).toEqual([1, [`workflows: no run nothing in ${runs()}`]]);
+		expect([unknown.code, unknown.stderr]).toEqual([4, [`workflows: no run nothing in ${runs()}`]]);
 
 		const cases = [
 			[id, "Fix"],
@@ -270,7 +276,7 @@ describe("input", () => {
 			{ runId: id, workflow: "x", title: "x", status: "waiting", repository: null },
 		]);
 		const shown = await workflows(["show", id], { cwd: root });
-		expect(shown.stdout).toEqual([`run ${id} x waiting x`, "  ✗ input A?", "A?"]);
+		expect(shown.stdout).toEqual([`run ${id} x waiting x`, "  ✗ input A?  waiting", "A?"]);
 
 		const second = await workflows(["resume", id, "--answer", "x"], { cwd: root });
 		expect([second.code, second.stdout]).toEqual([3, [`run ${id}`, "B?"]]);
@@ -283,6 +289,64 @@ describe("input", () => {
 			{ status: "terminal", outcome: "completed" },
 			{ status: "terminal", outcome: "completed" },
 		]);
+	});
+
+	it("fails a run whose --answer answers a question that it did not ask, and a resume asks again", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'try { await sh("test -f f") } catch { return await input("A?") }\nreturn await input("B?")',
+		);
+		const first = await workflows(["x.js"], { cwd: root });
+		const id = first.id ?? "";
+		expect([first.code, first.stdout]).toEqual([3, [`run ${id}`, "A?"]]);
+		await writeFile(join(root, "f"), "");
+
+		const answered = await workflows(["resume", id, "--answer", "a"], { cwd: root });
+		expect([answered.code, answered.stderr]).toEqual([
+			1,
+			['failed x: resume --answer answered "A?", which the run did not ask', `continue with: workflows resume ${id}`],
+		]);
+
+		const again = await workflows(["resume", id], { cwd: root });
+		expect([again.code, again.stdout]).toEqual([3, [`run ${id}`, "B?"]]);
+		const last = await workflows(["resume", id, "--answer", "b"], { cwd: root });
+		expect([last.code, last.stdout]).toEqual([0, [`run ${id}`, "b"]]);
+	});
+
+	it("fails a run whose script catches a second input call that would wait", async () => {
+		await setEntries({ workflows: fileURLToPath(new URL("slow-entry.ts", import.meta.url)) });
+		await writeFile(join(root, "x.js"), 'input("A?")\ntry { await input("B?") } catch { return "caught" }');
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			const run = await workflows(["x.js"], { cwd: root, host });
+			expect([run.code, run.stderr[0]]).toEqual([1, "failed x: the run waits for an answer to: A?"]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("reads one committed state of the store in each reading callback", async () => {
+		await writeFile(join(root, "x.js"), 'return "done"');
+		const run = await workflows(["x.js"], { cwd: root });
+		const id = run.id ?? "";
+		const versionOf = async (store: Parameters<typeof runTasks>[0]) => (await runTasks(store)).get(id)?.[0]?.version;
+
+		const versions = await reading(storeOf(), [0, 0], async (store) => {
+			const before = await versionOf(store);
+			const database = new DatabaseSync(storeOf());
+			database
+				.prepare(
+					`UPDATE tasks SET record = json_set(record, '$.version', 99) WHERE record ->> '$.kind' = 'workflows.run'`,
+				)
+				.run();
+			database.close();
+
+			return [before, await versionOf(store)];
+		});
+
+		expect(versions).toEqual([TASK.version, TASK.version]);
+		expect(await reading(storeOf(), 0, async (store) => versionOf(store))).toBe(99);
 	});
 
 	it("asks each question on a terminal, and goes on with the typed answer", async () => {
@@ -472,7 +536,7 @@ describe("workflows show", () => {
 			...run.stdout.slice(-1),
 		]);
 
-		expect(head).toEqual({ runId: id, workflow: "parent", title: "parent", status: "done" });
+		expect(head).toEqual({ runId: id, workflow: "parent", title: "parent", status: "done", ended: true });
 		expect(agents[1]).toMatchObject({ kind: "agent", depth: 0, mark: "\u2713", text: "Script: plan.", asks: 1 });
 		expect(agents[1].conversation).toBe(await conversationOf(/Script: plan/));
 		expect(agents.at(-1)).toMatchObject({ kind: "agent", depth: 1, text: "Script: child." });
@@ -975,7 +1039,9 @@ return [one, two].join(", ")`,
 
 		const failed = await workflows(["resume", id], { cwd: repo });
 		expect(failed.code).toBe(1);
-		expect(failed.stderr.at(-2)).toMatch(/^failed w: git worktree failed: /);
+		expect(failed.stderr.at(-2)).toBe(
+			`failed w: branch ${branch} is checked out at ${await realpath(join(root, "other"))}`,
+		);
 		expect(failed.stderr.at(-1)).toBe(`continue with: workflows resume ${id}`);
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "failed" }]);
 
@@ -1203,6 +1269,20 @@ return { branch: await sh(["git", "branch", "--show-current"]), start: args.star
 		expect(git(repo, "worktree", "list", "--porcelain").split("\n\n")).toHaveLength(1);
 	});
 
+	it("squashes nothing when nothing changed since the start, and gives the short head", async () => {
+		const repo = join(root, "repo");
+		const start = await repository(repo);
+		await writeFile(join(repo, "x.js"), `return await squash("${start}", "m", "s")`);
+
+		const run = await workflows(["x.js", "--json"], { cwd: repo });
+
+		expect(run.code).toBe(0);
+		const short = git(repo, "rev-parse", "--short", "HEAD");
+		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
+		expect(JSON.parse(run.stdout[1] ?? "").result).toBe(short);
+		expect(run.stderr).toContainEqual(expect.stringContaining(`nothing to commit since ${short}`));
+	});
+
 	it("creates the worktree of a child run through herdr when the command runs in Herdr", async () => {
 		const repo = join(root, "repo");
 		const start = await repository(repo);
@@ -1322,6 +1402,72 @@ esac
 		expect(git(worktreeAt(repo, run.id), "branch", "--show-current")).toBe(`w/${run.id}`);
 	});
 
+	it("closes the workspace that herdr opened when herdr left no worktree, and creates it with Git", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "w.js"),
+			'export const meta = { worktree: true }\nreturn await sh(["git", "branch", "--show-current"])',
+		);
+
+		/** A fake herdr that opens the workspace w7 with no worktree, and whose `workspace close` exits with `close`. */
+		const herdr = (close: number) =>
+			writeFile(
+				join(root, "bin", "herdr"),
+				`#!/bin/sh
+echo "$@" >> "${root}/herdr.log"
+case "$1 $2" in
+"worktree create") echo '{"result":{"workspace":{"workspace_id":"w7"}}}' ;;
+"workspace close") exit ${close} ;;
+esac
+`,
+				{ mode: 0o755 },
+			);
+
+		await herdr(0);
+		process.env.HERDR_ENV = "1";
+		const run = await workflows(["w"], { cwd: repo });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, `w/${run.id}`]);
+		const log = await readFile(join(root, "herdr.log"), "utf8");
+		expect(log).toContain("workspace close w7\n");
+		expect(log).not.toContain("pane run ");
+
+		await herdr(1);
+		const failed = await workflows(["w"], { cwd: repo });
+		expect([failed.code, failed.stderr[0]]).toEqual([
+			1,
+			"failed w: herdr workspace close w7 failed: Command failed: herdr workspace close w7",
+		]);
+		expect(existsSync(worktreeAt(repo, failed.id))).toBe(false);
+	});
+
+	it("fails a child run on a branch that another worktree has checked out, before herdr runs", async () => {
+		const repo = join(root, "repo");
+		const start = await repository(repo);
+		git(repo, "worktree", "add", "-q", "-b", "feature", join(root, "other"));
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "parent.js"),
+			`return await run("child", { start: "${start}", checkout: "feature" })`,
+		);
+		await writeFile(join(scripts, "child.js"), "return cwd");
+		await writeFile(join(root, "bin", "herdr"), `#!/bin/sh\necho "$@" >> "${root}/herdr.log"\nexit 1\n`, {
+			mode: 0o755,
+		});
+		process.env.HERDR_ENV = "1";
+
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(1);
+		const other = await realpath(join(root, "other"));
+		expect(run.stderr[0]).toMatch(
+			new RegExp(`^failed parent: child run \\S+ failed: branch feature is checked out at ${other}$`),
+		);
+		expect(existsSync(join(root, "herdr.log"))).toBe(false);
+	});
+
 	it("gives a child run without meta.worktree its repo, base and branch args", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
@@ -1431,6 +1577,28 @@ return [args.n, args.t, args.other].join(" ")`,
 		expect([valid.code, valid.stdout.at(-1)]).toEqual([0, "2 x y"]);
 	});
 
+	it("starts a child run again in the run directory of its saved run ID, which a crash left", async () => {
+		const scripts = join(root, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { repo: "repo" })');
+		await writeFile(join(scripts, "child.js"), 'export const meta = { worktree: true }\nreturn "done"');
+		const first = await workflows(["parent"], { cwd: root });
+		const id = first.id ?? "";
+		expect(first.code).toBe(1);
+		const records = await reading(storeOf(), new Map(), (store) => callRecords(store, id));
+		const child = [...records.values()].find((record) => record.kind === "run")?.childRun ?? "";
+		expect(child).not.toBe("");
+		// A crash after the directory existed and before the child task, such as with part of a clone in it.
+		await mkdir(join(runs(), child));
+		await writeFile(join(runs(), child, "partial"), "");
+
+		await repository(join(root, "repo"));
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "done"]);
+		expect((await readdir(runs())).sort()).toEqual([id, child].sort());
+		expect(existsSync(join(runs(), child, "partial"))).toBe(false);
+	});
+
 	it("resumes an interrupted child run and repeats no call of a finished one", async () => {
 		await writeFile(
 			join(root, "parent.js"),
@@ -1468,7 +1636,7 @@ return [one.reply, two.reply].join(", ")`,
 		expect(child).toBeDefined();
 		expect(next).toBe(`continue with: workflows resume ${run.id}`);
 		const own = await workflows(["resume", child ?? ""], { cwd: root });
-		expect([own.code, own.stderr[0]]).toEqual([1, `workflows: no run ${child} in ${runs()}`]);
+		expect([own.code, own.stderr[0]]).toEqual([4, `workflows: no run ${child} in ${runs()}`]);
 		const directories = await readdir(runs());
 		expect(directories).toEqual([run.id, child].toSorted());
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
@@ -1480,6 +1648,25 @@ return [one.reply, two.reply].join(", ")`,
 			{ runId: child, status: "terminal", outcome: "failed" },
 			{ runId: child, status: "terminal", outcome: "completed" },
 		]);
+	});
+
+	it("names the kind and version of a failed child task that another version saved", async () => {
+		await writeFile(join(root, "parent.js"), 'return await run("child")');
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(root, ".workflows", "scripts", "child.js"), 'await sh("test -f f")\nreturn "done"');
+
+		const run = await workflows(["parent.js"], { cwd: root });
+		const child = /^failed parent: child run (\S+) failed: /.exec(run.stderr[0] ?? "")?.[1] ?? "";
+		const database = new DatabaseSync(storeOf());
+		database
+			.prepare("UPDATE tasks SET record = json_set(record, '$.version', ?) WHERE record ->> '$.input.runId' = ?")
+			.run(TASK.version - 1, child);
+		database.close();
+		await writeFile(join(root, "f"), "");
+
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
+		const named = ` is ${TASK.name} version ${TASK.version - 1}, not ${TASK.name} version ${TASK.version}`;
+		expect([resumed.code, resumed.stderr[0]?.endsWith(named)]).toEqual([1, true]);
 	});
 
 	it("keeps one session and one child run when a run stops after it opens them", async () => {
@@ -1569,7 +1756,7 @@ return [one.reply, two.reply].join(", ")`,
 
 		const cases: [string[], string, number][] = [
 			[["ok.js"], "1", 0],
-			[["status.js"], '{"status":"toString"}', 0],
+			[["status.js"], '{"status":"toString"}', 1],
 			[["pos.js", "hello"], "hello", 0],
 			[["ok.js", "--word", "x"], "workflows: Unknown option '--word'", 2],
 			[["nope"], "workflows: unknown command nope", 2],
@@ -1740,5 +1927,18 @@ describe("branchOf", () => {
 		expect(branchOf("Fix the README typo")).toBe("fix-the-readme-typo");
 		expect(branchOf(`fix: ${"word ".repeat(20)}`)).toBe(`fix/${Array(9).fill("word").join("-")}`);
 		expect(branchOf("docs: ...")).toBe("");
+	});
+});
+
+describe("renameBranch", () => {
+	it("gives a detached HEAD, and a name that Git refuses, as their own kinds", async () => {
+		const repo = join(root, "repo");
+		const start = await repository(repo);
+		const signal = new AbortController().signal;
+		git(repo, "branch", "feat");
+		git(repo, "checkout", "-q", "-b", "wf/1");
+		expect(await renameBranch(repo, "wf/1", "feat/x", signal)).toEqual({ kind: "refused", name: "feat/x" });
+		git(repo, "checkout", "-q", "--detach", start);
+		expect(await renameBranch(repo, "wf/1", "fix/y", signal)).toEqual({ kind: "detached" });
 	});
 });

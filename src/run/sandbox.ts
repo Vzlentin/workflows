@@ -16,7 +16,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { JSON_VALUE } from "../tool.ts";
 import { META, render } from "../workflow/bundle.ts";
-import { type Calls, callKey, inputCall, memoized, pastRunsCall, type ScriptRun, shellCall } from "./calls.ts";
+import { CallDoc, type Calls, callKey, inputCall, memoized, pastRunsCall, type ScriptRun, shellCall } from "./calls.ts";
 import { childResult } from "./child.ts";
 import { PAST_OPTIONS, profileTexts } from "./past.ts";
 import { addProgress, type PhaseLines, phaseLine, takeLines } from "./progress.ts";
@@ -112,7 +112,18 @@ export async function runScript(
 	// end of the script, the calls are cancelled, and the script ends only once they settled. So a failed run ends its
 	// sessions after its last ask was submitted and its last session opened.
 	const execution = withCancel(context);
-	const calls: Calls = { script, runtime, context: execution.context, counters: new Map(), progress, host, owner };
+
+	const calls: Calls = {
+		script,
+		runtime,
+		context: execution.context,
+		phase: context,
+		counters: new Map(),
+		progress,
+		host,
+		owner,
+	};
+
 	const running = new Set<Promise<unknown>>();
 	const stop = new AbortController();
 
@@ -204,8 +215,19 @@ export async function runScript(
 		}
 	}
 
+	if (signal.aborted && (calls.waiting !== undefined || !result.ok)) throw signal.reason;
+
+	// A second `input` call that would wait fails the run, also when the script caught its error.
+	if (calls.secondInput !== undefined) throw calls.secondInput;
+
+	// An answer to a question that this execution did not ask would be lost: the run fails, and a resume without the
+	// answer asks again.
+	if (script.answer !== undefined && calls.answered !== true && (calls.waiting !== undefined || result.ok)) {
+		const asked = (await runtime.snapshot(CallDoc, script.answer.call, context))?.args.question;
+		throw new Error(`resume --answer answered ${JSON.stringify(asked)}, which the run did not ask`);
+	}
+
 	if (calls.waiting !== undefined) {
-		if (signal.aborted) throw signal.reason;
 		const question = calls.waiting;
 
 		return { status: "waiting", question, report: [question] };
@@ -219,6 +241,5 @@ export async function runScript(
 		return value;
 	}
 
-	if (signal.aborted) throw signal.reason;
 	throw new Error(result.error.message);
 }

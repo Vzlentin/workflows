@@ -6,33 +6,67 @@ import type { JsonValue } from "@earendil-works/chord";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { SavedCall } from "../run/calls.ts";
-import { duration, type Mark, type Progress, type StepView } from "./steps.ts";
+import { duration, type Progress, type StepView } from "./steps.ts";
+
+/** The mark of a call: running, done, or any other state. */
+export type CallMark = "✓" | "◉" | "✗";
+
+/**
+ * The state of a call: `done` or `failed` once it ended, `cancelled` when the end of its script cancelled it, `waiting`
+ * for the open `input` call of a waiting run, `running` while its task runs, and `cut` when its task ended first.
+ */
+export type CallState = "running" | "done" | "failed" | "cancelled" | "cut" | "waiting";
 
 /** One call of the run `runId` in `workflows show`, with the calls of its child run when it is a `run` call. */
-export type Shown = Omit<SavedCall, "child"> & {
+export type Shown = Omit<SavedCall, "child" | "task" | "cancelledAt" | "childRun"> & {
 	readonly runId: string;
 	readonly label: string;
-	readonly mark: Mark;
+	readonly state: CallState;
+	readonly mark: CallMark;
 	readonly calls?: Shown[];
 };
 
 /**
- * The calls of the run `runId` in the order they started, each `run` call with the calls of its child run. A call that
- * started and did not end is `◉` while the run's task runs, and `✗` once it `ended`.
+ * What the state of a call depends on: whether the root run `ended`, whether it `waiting` for an answer, and the IDs
+ * of the tasks that run.
  */
-export function callTree(records: Map<string, SavedCall>, runId: string, ended: boolean): Shown[] {
+export type RunState = { readonly ended: boolean; readonly waiting: boolean; readonly live: ReadonlySet<number> };
+
+/**
+ * The state of the call `record` in a run of `run`. A record of an earlier version has no task: it is cut once the run
+ * ended.
+ */
+function stateOf(record: SavedCall, run: RunState): CallState {
+	if (record.endedAt !== undefined) return record.error === undefined ? "done" : "failed";
+
+	if (record.cancelledAt !== undefined) return "cancelled";
+
+	if (record.kind === "input" && run.waiting) return "waiting";
+
+	if (record.task === undefined) return run.ended ? "cut" : "running";
+
+	return run.live.has(record.task) ? "running" : "cut";
+}
+
+/** The mark of a call in `state`: `◉` running, `✓` done, else `✗`. */
+function markOf(state: CallState): CallMark {
+	return state === "running" ? "◉" : state === "done" ? "✓" : "✗";
+}
+
+/** The calls of the run `runId` in the order they started, each `run` call with the calls of its child run. */
+export function callTree(records: Map<string, SavedCall>, runId: string, run: RunState): Shown[] {
 	const own = [...records].flatMap(([key, record]) => (key.startsWith(`${runId}/`) ? [record] : []));
 
 	return own
 		.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-		.map(({ child: started, ...record }) => {
-			const cut = ended && record.endedAt === undefined;
-			const mark = record.error !== undefined || cut ? "✗" : record.endedAt !== undefined ? "✓" : "◉";
+		.map((record) => {
+			const { child: started, task: _task, cancelledAt: _cancelled, childRun: _childRun, ...rest } = record;
+			const state = stateOf(record, run);
 			// A `run` call that failed before its child run started has no `child`.
 			const child = started?.runId;
-			const shown = { ...record, runId, label: labelOf(record, child, records), mark } as const;
+			const shown = { ...rest, runId, label: labelOf(record, child, records), state, mark: markOf(state) } as const;
 
-			return child === undefined ? shown : { ...shown, calls: callTree(records, child, ended) };
+			return child === undefined ? shown : { ...shown, calls: callTree(records, child, run) };
 		});
 }
 
@@ -57,7 +91,7 @@ export function treeEntries(calls: readonly Shown[], indent: string, now: number
 		phase = call.phase;
 		const mark = works(call, calls) ? "◉" : call.mark;
 		const end = mark === "◉" ? now : call.endedAt === undefined ? undefined : Date.parse(call.endedAt);
-		const time = end === undefined ? "" : `  ${duration(end - Date.parse(call.startedAt))}`;
+		const time = end === undefined ? shownState(call.state) : `  ${duration(end - Date.parse(call.startedAt))}`;
 		const text = `${indent}  ${mark} ${call.kind} ${call.label}${time}`;
 		const conversation = call.kind === "session" ? call.conversation : askedConversation(call);
 
@@ -67,6 +101,11 @@ export function treeEntries(calls: readonly Shown[], indent: string, now: number
 	}
 
 	return entries;
+}
+
+/** The word that a call in `state` with no duration shows in place of it. */
+function shownState(state: CallState): string {
+	return state === "cancelled" || state === "cut" || state === "waiting" ? `  ${state}` : "";
 }
 
 /** The conversation that the ask `call` asks, or undefined for another call. */
@@ -141,7 +180,7 @@ type AgentRow =
 	| {
 			readonly kind: "agent";
 			readonly depth: number;
-			readonly mark: Mark;
+			readonly mark: CallMark;
 			readonly text: string;
 			readonly phase: string | null;
 			readonly model: string;
@@ -151,7 +190,7 @@ type AgentRow =
 			readonly endedAt?: string;
 			readonly facts: string;
 	  }
-	| { readonly kind: "run"; readonly depth: number; readonly mark: Mark; readonly text: string };
+	| { readonly kind: "run"; readonly depth: number; readonly mark: CallMark; readonly text: string };
 
 /** The lines of `text` that are not blank, with their spaces collapsed. */
 function textLines(text: JsonValue | undefined): string[] {

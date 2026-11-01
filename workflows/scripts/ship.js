@@ -9,7 +9,7 @@ export const meta = {
 		rounds: { type: "number", default: 3 },
 	},
 	worktree: true,
-	exit: { blocked: 1, stopped: 1 },
+	exit: { shipped: 0, blocked: 1, stopped: 1 },
 }
 
 const { item, rounds, start, patches = runDir } = args
@@ -33,7 +33,7 @@ const notes = await memory(args.memory)
 
 const built = await run("rpi", { item, start, memory: notes.ref })
 
-if (built.status === "blocked") return notes.finish(item, unshipped(built))
+if (built.status !== "implemented") return notes.finish(item, unshipped(built))
 
 const { plan, reply } = built
 const reviewed = await run("thermoloop", { item, rounds, start, patches, plan, reply, memory: notes.ref })

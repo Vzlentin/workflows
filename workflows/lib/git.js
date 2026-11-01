@@ -12,17 +12,32 @@ async function commitAll(message) {
 
 /**
  * Squashes the commits since `start` into one commit with `message`, logs `commit <short> <subject>` and returns the
- * short head.
+ * short head. When nothing changed since `start`, it makes no commit, logs `nothing to commit since <short>` and returns
+ * the short head, which is `start`.
  */
 async function squash(start, message, subject) {
 	// One command, so that a repeat resets a squash commit that was made but not saved.
-	await sh(["sh", "-c", 'git reset -q --soft "$1" && git commit -q -m "$2"', "squash", start, message]);
+	const made = await sh([
+		"sh",
+		"-c",
+		'git reset -q --soft "$1" && if git diff --cached --quiet; then echo none; else git commit -q -m "$2"; fi',
+		"squash",
+		start,
+		message,
+	]);
 
 	const short = await sh(["git", "rev-parse", "--short", "HEAD"]);
 
-	log(`commit ${short} ${subject}`);
+	log(made === "none" ? `nothing to commit since ${short}` : `commit ${short} ${subject}`);
 
 	return short;
+}
+
+/** Writes the binary diff from `from` to `HEAD` to the file `path`, and returns `path`. */
+async function writePatch(path, from) {
+	await sh(["git", "diff", "--binary", `--output=${path}`, from, "HEAD"]);
+
+	return path;
 }
 
 /** `+12 -3 in 2 files` for the change from `from` to `to`, or `no new changes`. */
@@ -70,10 +85,37 @@ function isBranch(name) {
 	return ok(["git", "show-ref", "--verify", "--quiet", `refs/heads/${name}`]);
 }
 
+/** True when the commit `a` is an ancestor of the commit `b`, or is `b`. */
+function isAncestor(a, b) {
+	return ok(["git", "merge-base", "--is-ancestor", a, b]);
+}
+
+/**
+ * Fetches the head of the PR `number`, and puts the local branch `end` on it when the branch is missing or behind it. A
+ * branch that is ahead of the head stays as it is. Throws when the branch has diverged from the head, and when it is
+ * behind and a worktree has it checked out. Safe to repeat: `git branch -f` gives the same branch.
+ */
+async function pullBranch(number, end) {
+	await sh(["git", "fetch", "origin", `pull/${number}/head`]);
+	const head = await sh(["git", "rev-parse", "FETCH_HEAD"]);
+
+	if (await isBranch(end)) {
+		if (await isAncestor(head, end)) return;
+		const pr = `PR #${number}`;
+
+		if (!(await isAncestor(end, head))) throw new Error(`${end} has diverged from ${pr}; rebase it or delete it`);
+		const path = await checkedOutAt(end);
+
+		if (path !== undefined) throw new Error(`${end} is behind ${pr} and checked out at ${path}; update it there`);
+	}
+
+	await sh(["git", "branch", "-f", end, head]);
+}
+
 /**
  * Where `target` points, as `changeOf` reads it: `{ from, end, start, intent }`. `from` names the start in messages,
  * `end` is the ref that the change ends on, `start` the commit that it starts from, and `intent` the PR of a PR number.
- * Fetches the branch of a PR when it is missing.
+ * Fetches the head of a PR, and moves its branch there with `pullBranch`.
  */
 async function targetOf(target, base) {
 	const mergeBase = (a, b) => sh(["git", "merge-base", a, b]);
@@ -84,7 +126,7 @@ async function targetOf(target, base) {
 		const pr = await prOf(target, "number,title,body,headRefName,baseRefName,isCrossRepository");
 		const end = pr.isCrossRepository ? `pr/${pr.number}` : pr.headRefName;
 
-		if (!(await isBranch(end))) await sh(["git", "fetch", "origin", `pull/${pr.number}/head:refs/heads/${end}`]);
+		await pullBranch(pr.number, end);
 		const from = pr.baseRefName;
 		const start = await mergeBase((await isBranch(from)) ? from : `origin/${from}`, end);
 

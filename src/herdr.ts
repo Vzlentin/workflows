@@ -63,6 +63,17 @@ export async function herdrWorktree(
 	}
 }
 
+/** Closes the Herdr workspace `workspace`. It throws when herdr fails. */
+export async function closeWorkspace(workspace: string): Promise<void> {
+	try {
+		await herdr(["workspace", "close", workspace], process.env);
+	} catch (error) {
+		throw new Error(
+			`herdr workspace close ${workspace} failed: ${error instanceof Error ? error.message : String(error)}`.trim(),
+		);
+	}
+}
+
 /**
  * Types the loop of `show --pick` and `attach --side` on the run `runId` in the first pane of the Herdr workspace
  * `workspace`, so the agents of the run can be opened beside the step tree. Any failure leaves the pane as it is.
@@ -79,10 +90,10 @@ export async function typePickLoop(workspace: string, runId: string): Promise<vo
 	}
 }
 
-/** The ID of the Herdr workspace that has `worktree` open, if any. It throws when herdr fails. */
-async function herdrWorkspace(worktree: Worktree): Promise<string | undefined> {
-	const listed = await herdrJson(WORKTREES, ["worktree", "list", "--cwd", worktree.path]);
-	const path = await realpath(worktree.path);
+/** The ID of the Herdr workspace that has the worktree at `worktree` open, if any. It throws when herdr fails. */
+async function herdrWorkspace(worktree: string): Promise<string | undefined> {
+	const listed = await herdrJson(WORKTREES, ["worktree", "list", "--cwd", worktree]);
+	const path = await realpath(worktree);
 
 	for (const entry of listed.result.worktrees) {
 		const workspace = entry.open_workspace_id;
@@ -104,7 +115,8 @@ export async function herdrPlace(
 	pane: string | undefined,
 ): Promise<{ pane: string } | { workspace: string } | undefined> {
 	if (side && pane !== undefined) return { pane };
-	const workspace = worktree !== undefined && existsSync(worktree.path) ? await herdrWorkspace(worktree) : undefined;
+	const open = worktree !== undefined && existsSync(worktree.path);
+	const workspace = open ? await herdrWorkspace(worktree.path) : undefined;
 
 	if (workspace !== undefined) return { workspace };
 
@@ -113,8 +125,14 @@ export async function herdrPlace(
 		: { workspace: (await herdrJson(PANE, ["pane", "get", pane])).result.pane.workspace_id };
 }
 
-/** Whether Herdr removed `worktree` with the workspace that has it open. Outside Herdr, or when herdr fails, false. */
-export async function removedByHerdr(worktree: Worktree): Promise<boolean> {
+/** The error message of a herdr command that is not installed. harness's `herdr` keeps only the message. */
+const HERDR_MISSING = "spawn herdr ENOENT";
+
+/**
+ * Whether Herdr removed the worktree at `worktree` with the workspace that has it open. Outside Herdr, without the
+ * herdr command, or when no workspace has the worktree open, false. It throws when herdr fails otherwise.
+ */
+export async function removedByHerdr(worktree: string): Promise<boolean> {
 	if (!process.env.HERDR_ENV) return false;
 
 	try {
@@ -124,7 +142,8 @@ export async function removedByHerdr(worktree: Worktree): Promise<boolean> {
 		await herdr(["worktree", "remove", "--workspace", workspace], process.env);
 
 		return true;
-	} catch {
-		return false;
+	} catch (error) {
+		if (error instanceof Error && error.message === HERDR_MISSING) return false;
+		throw error;
 	}
 }

@@ -22,7 +22,7 @@ type Meta = {
 	 * result with a `subject` renames `<wf>/<run-id>` to the name of `subject`.
 	 */
 	worktree?: boolean;
-	/** The exit code of each `result.status`. Any other status exits 0. */
+	/** The exit code of each `result.status`. Any other status exits 1, and a result without a status exits 0. */
 	exit?: Record<string, number>;
 };
 
@@ -189,9 +189,13 @@ declare function commitAll(message: string): Promise<void>;
 
 /**
  * Squashes the commits since `start` into one commit with `message`, logs `commit <short> <subject>` and returns the
- * short head. Safe to repeat: it is one command, so a repeat resets a squash commit that was made but not saved.
+ * short head. When nothing changed since `start`, it makes no commit, logs `nothing to commit since <short>` and returns
+ * the short head. Safe to repeat: it is one command, so a repeat resets a squash commit that was made but not saved.
  */
 declare function squash(start: string, message: string, subject: string): Promise<string>;
+
+/** Writes the binary diff from `from` to `HEAD` to the file `path`, and returns `path`. */
+declare function writePatch(path: string, from: string): Promise<string>;
 
 /** `+12 -3 in 2 files` for the change from `from` to `to` (default `HEAD`), or `no new changes`. */
 declare function diffStat(from: string, to?: string): Promise<string>;
@@ -201,7 +205,7 @@ declare function diffStat(from: string, to?: string): Promise<string>;
  * intent, with no Git step. Else the change is the one that `args.change` points at, from the current directory, and
  * the run gets the subject of its intent as its title. `args.change` is nothing (the current branch from its merge base
  * with `args.base`, default `main`), a PR number (from the merge base with its base branch, fetched as
- * `pull/<n>/head` when its branch is missing), a range `A..B` or `A...B` (from the merge base of `A` and `B` to `B`),
+ * `pull/<n>/head`, with its branch moved to that head when the branch is missing or behind), a range `A..B` or `A...B` (from the merge base of `A` and `B` to `B`),
  * or a ref (from its merge base with `HEAD` to `HEAD`). `start` is a commit, and `intent` is `args.item`, else
  * `# <title>` and the body of the PR, else the commit messages of the change. `checkout` is the branch of a change on
  * a branch that no worktree has. `dirty` says that the checkout has changes that are not committed; with `wip`, a

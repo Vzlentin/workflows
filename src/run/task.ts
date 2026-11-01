@@ -6,9 +6,9 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { herdrWorktree, typePickLoop } from "../herdr.ts";
+import { closeWorkspace, herdrWorktree, typePickLoop } from "../herdr.ts";
 import type { ScriptInput } from "../launch/input.ts";
-import { branchOf, ensureWorktree, renameBranch } from "../launch/worktree.ts";
+import { branchOf, ensureWorktree, type Renamed, renameBranch } from "../launch/worktree.ts";
 import { outcomeText, type WorkflowOutcome } from "../tool.ts";
 import { addProgress } from "./progress.ts";
 import { reportOf, statusOf } from "./result.ts";
@@ -52,6 +52,25 @@ async function notify(runtime: Runtime, input: ScriptInput, outcome: WorkflowOut
 	}
 }
 
+/**
+ * Ends the sessions of the run `input` as `endSessions` does. A failure to end them does not change the outcome of the
+ * run: the host reports it. A closing host rethrows it, so the phase runs again after the restart.
+ */
+async function closeSessions(
+	host: Host,
+	runtime: Runtime,
+	input: ScriptInput,
+	completed: boolean,
+	context: Context,
+): Promise<void> {
+	try {
+		await endSessions(host, runtime, input, completed, context);
+	} catch (error) {
+		if (runtime.signal.aborted) throw error;
+		runtime.report(error);
+	}
+}
+
 const NAMED = Type.Object({ subject: Type.String(), report: Type.Optional(Type.Array(Type.String())) });
 
 /**
@@ -66,14 +85,33 @@ async function named(input: ScriptInput, result: JsonValue, signal: AbortSignal)
 	if (worktree === undefined || !Value.Check(NAMED, result)) return result;
 	const wanted = branchOf(result.subject);
 	const from = `${input.name}/${input.runId}`;
-	const renamed = wanted === "" ? worktree.branch : await renameBranch(worktree.path, from, wanted, signal);
 
-	const line =
-		renamed === undefined
-			? `branch ${wanted} is in conflict with an existing branch; kept ${from}`
-			: `branch ${renamed}`;
+	const renamed: Renamed =
+		wanted === "" ? { kind: "on", branch: worktree.branch } : await renameBranch(worktree.path, from, wanted, signal);
 
-	return { ...result, branch: renamed ?? from, report: [...(result.report ?? []), line] };
+	const { branch, line } = branchLine(renamed, from);
+
+	return { ...result, branch, report: [...(result.report ?? []), line] };
+}
+
+/** The branch that a run ends on, and its report line. */
+type BranchEnd = { readonly branch: string; readonly line: string };
+
+/** The branch that a run ends on after `renamed`, and its report line, where `from` is the branch before the rename. */
+function branchLine(renamed: Renamed, from: string): BranchEnd {
+	switch (renamed.kind) {
+		case "on":
+			return { branch: renamed.branch, line: `branch ${renamed.branch}` };
+
+		case "detached":
+			return { branch: from, line: `the worktree is on a detached HEAD; kept ${from}` };
+
+		case "refused":
+			return { branch: from, line: `branch ${renamed.name} is in conflict with an existing branch; kept ${from}` };
+
+		case "raced":
+			return { branch: from, line: `branch ${renamed.name} was created during the rename; kept ${from}` };
+	}
 }
 
 /**
@@ -108,8 +146,9 @@ async function runPhase(
 		if (worktree !== undefined) {
 			const { repository, path, branch, start } = worktree;
 			// In Herdr, Herdr creates the worktree first, so it shows in the sidebar; when Herdr fails, Git creates it.
-			const create = input.herdr === true ? () => herdrWorktree(repository, path, branch, start) : undefined;
-			const workspace = await ensureWorktree(repository, path, branch, start, create);
+			const make = () => herdrWorktree(repository, path, branch, start);
+			const maker = input.herdr === true ? { make, close: closeWorkspace } : undefined;
+			const workspace = await ensureWorktree(repository, path, branch, start, maker);
 
 			// The workspace that Herdr opened on the worktree of a root run shows the agents of the run beside its steps.
 			if (parent === null && workspace !== undefined) await typePickLoop(workspace, runId);
@@ -132,7 +171,7 @@ async function runPhase(
 		const result = await named(input, ran, runtime.signal);
 
 		// A waiting run keeps its sessions for the task that gets the answer.
-		await endSessions(host, runtime, input, statusOf(result) !== "waiting", context);
+		await closeSessions(host, runtime, input, statusOf(result) !== "waiting", context);
 		await notify(runtime, input, finishedOutcome(input, result), context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: false, at: Date.now() }]);
@@ -144,7 +183,7 @@ async function runPhase(
 		if (runtime.signal.aborted) throw error;
 		// A thrown phase would end the task as faulted, so the phase commits the failure itself.
 		const message = error instanceof Error ? error.message : String(error);
-		await endSessions(host, runtime, input, false, context);
+		await closeSessions(host, runtime, input, false, context);
 		await notify(runtime, input, { runId, status: "failed", error: message }, context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: true, at: Date.now() }]);
@@ -163,10 +202,10 @@ export function scriptTask(host: Host): ScriptTask {
 		phases: { run: (task, runtime, context) => runPhase(definition, task, runtime, context, host) },
 		abort: async (task, runtime, context) => {
 			const { runId, root } = task.input;
-			await endSessions(host, runtime, task.input, false, context);
+			await closeSessions(host, runtime, task.input, false, context);
 			await notify(runtime, task.input, { runId, status: "stopped" }, context);
 			await runtime.commit(async (tx) => {
-				await addProgress(tx, root, [{ kind: "end", run: runId, failed: true, at: Date.now() }]);
+				await addProgress(tx, root, [{ kind: "end", run: runId, failed: false, stopped: true, at: Date.now() }]);
 
 				return { status: "terminal", outcome: { status: "aborted" } };
 			}, context);

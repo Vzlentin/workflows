@@ -7,8 +7,8 @@ import type { Io } from "../../workflow/find.ts";
 /** Where the steps of a run go: the events of its script task, and its end in the command. */
 export type Display = {
 	readonly event: (event: ProgressEvent) => void;
-	/** Marks each step that still runs as failed or done, and draws the steps once more. */
-	readonly stop: (failed: boolean) => void;
+	/** Gives each step that still runs the mark `mark`, and draws the steps once more. */
+	readonly stop: (mark: Mark) => void;
 };
 
 /**
@@ -33,14 +33,14 @@ export function display(io: Io, json: boolean): Display {
 
 	return {
 		event: (event) => draw(progress.add(event)),
-		stop: (failed) => {
-			progress.stop(failed);
+		stop: (mark) => {
+			progress.stop(mark);
 			draw(undefined);
 		},
 	};
 }
 
-const COLORS: Readonly<Record<Mark, string>> = { "✓": "32", "◉": "36", "✗": "31" };
+const COLORS: Readonly<Record<Mark, string>> = { "✓": "32", "◉": "36", "✗": "31", "·": "90" };
 
 /**
  * A `redraw` for a terminal stream. It moves the cursor up to the first line that changed, writes the lines from there
@@ -67,7 +67,7 @@ export function terminalRedraw(stream: {
 			const up = shown.length - first;
 			const movable = up <= below && up < (stream.rows ?? 24);
 			const head = movable && up > 0 ? `\x1b[${up}A\r\x1b[J` : "";
-			const body = cut.slice(first).map((line) => `${line.replace(/^(\s*)([✓◉✗])/, colored)}\n`);
+			const body = cut.slice(first).map((line) => `${line.replace(/^(\s*)([✓◉✗·])/, colored)}\n`);
 			stream.write(head + body.join(""));
 			below = (movable ? below - up : 0) + cut.length - first;
 			shown = cut;

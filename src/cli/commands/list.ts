@@ -5,12 +5,13 @@ import { resolveProject } from "@vzlentin/harness/projects";
 import { statePaths } from "@vzlentin/harness/protocol";
 import { type Mark, Progress } from "../../records/steps.ts";
 import { inputWorktree, progressEvents, reading, runTasks, type Store } from "../../records/store.ts";
+import { type RunStatus, type RunTask, runStatus, taskOf } from "../../run/past.ts";
 import { title as titleOf } from "../../run/result.ts";
 import { current } from "../../run/version.ts";
 import { UsageError } from "../../workflow/find.ts";
 import { runsDirectory, STORE_FILE } from "../host.ts";
 import type { Choose, Terminal } from "../main.ts";
-import { runStatus, savedBy, taskOf } from "../saved.ts";
+import { savedBy, shownStatus, unstartedRuns } from "../saved.ts";
 import type { PickItem } from "../terminal/pick.ts";
 
 export const LIST = "workflows list [--pick] [--json]";
@@ -23,9 +24,12 @@ type Listed = {
 	readonly repository: string | null;
 };
 
+/** A listed run, with its run status `run`, which orders it in the picker and gives its mark, and which JSON leaves out. */
+type Row = Listed & { readonly run: RunStatus };
+
 /**
- * Prints the runs of the project of the current directory that have a run directory, newest run ID first. It reads the
- * project store only.
+ * Prints the runs of the project of the current directory that have a run directory, newest run ID first, also the run
+ * directories whose run has no task, as `unstarted`. It reads the project store only. The picker leaves out these.
  */
 export async function list(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const pick = args[0] === "--pick";
@@ -42,11 +46,35 @@ export async function list(args: readonly string[], terminal: Terminal, json: bo
 		return 0;
 	}
 
-	const listed = await reading(
-		join(statePaths(await resolveProject(process.env, terminal.cwd)).dir, STORE_FILE),
-		[],
-		listedRuns,
+	const project = await resolveProject(process.env, terminal.cwd);
+
+	const { rows, runs } = await reading(
+		join(statePaths(project).dir, STORE_FILE),
+		{ rows: [], runs: new Map<string, RunTask[]>() },
+		async (store) => {
+			const tasks = await runTasks(store);
+
+			return { rows: await listedRuns(store, tasks), runs: tasks };
+		},
 	);
+
+	const unstarted = (await unstartedRuns(project, runs)).map(({ runId }) => ({
+		runId,
+		workflow: "-",
+		title: "-",
+		status: "unstarted",
+		repository: null,
+	}));
+
+	const started = rows.map(({ runId, workflow, title, status, repository }) => ({
+		runId,
+		workflow,
+		title,
+		status,
+		repository,
+	}));
+
+	const listed: Listed[] = [...started, ...unstarted].sort((a, b) => b.runId.localeCompare(a.runId));
 
 	if (json) terminal.stdout(JSON.stringify(listed));
 	else for (const run of listed) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
@@ -54,22 +82,25 @@ export async function list(args: readonly string[], terminal: Terminal, json: bo
 	return 0;
 }
 
-/** The runs of the open project store `store` that have a run directory, newest run ID first. */
-async function listedRuns(store: Store): Promise<Listed[]> {
-	const runs = await runTasks(store);
-	const listed: Listed[] = [];
+/** The runs `runs` of the open project store `store` that have a run directory, newest run ID first. */
+async function listedRuns(store: Store, runs: ReadonlyMap<string, readonly RunTask[]>): Promise<Row[]> {
+	const listed: Row[] = [];
 
 	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
 		const task = taskOf(tasks);
 
 		if (task === undefined || !existsSync(join(runsDirectory(), id, "project"))) continue;
-		const status = runStatus(task);
+		const run = runStatus(task);
+		const status = shownStatus(task, run);
 		const repository = inputWorktree(task.input)?.repository ?? null;
 
 		if (current(task)) {
 			const title = titleOf(task.input, await progressEvents(store, id));
-			listed.push({ runId: id, workflow: task.input.name, title, status, repository });
-		} else listed.push({ runId: id, workflow: savedBy(task).name, title: savedBy(task).name, status, repository });
+			listed.push({ runId: id, workflow: task.input.name, title, status, repository, run });
+		} else {
+			const { name } = savedBy(task);
+			listed.push({ runId: id, workflow: name, title: name, status, repository, run });
+		}
 	}
 
 	return listed;
@@ -96,37 +127,47 @@ async function runItems(terminal: Terminal): Promise<PickItem<string>[]> {
 		join(statePaths(await resolveProject(process.env, terminal.cwd)).dir, STORE_FILE),
 		empty,
 		async (store) => {
-			const live = (run: Listed) => run.status === "running" || run.status === "waiting";
+			const live = ({ run }: Row) => run === "running" || run === "waiting";
 			// A stable sort keeps the newest first within each group.
-			const sorted = (await listedRuns(store)).toSorted((a, b) => Number(live(b)) - Number(live(a)));
+			const tasks = await runTasks(store);
+			const sorted = (await listedRuns(store, tasks)).toSorted((a, b) => Number(live(b)) - Number(live(a)));
 			const found = new Map<string, string>();
 
-			for (const run of sorted.filter((each) => each.status === "running")) {
+			for (const { runId } of sorted.filter((each) => each.run === "running")) {
 				const progress = new Progress();
 
-				for (const event of await progressEvents(store, run.runId)) progress.add(event);
+				for (const event of await progressEvents(store, runId)) progress.add(event);
 				const status = progress.status();
 
-				if (status !== undefined) found.set(run.runId, status);
+				if (status !== undefined) found.set(runId, status);
 			}
 
 			return { runs: sorted, steps: found };
 		},
 	);
 
-	return runs.map((run) => {
-		const step = steps.get(run.runId);
-		const text = `${markOf(run.status)} ${run.title}  ${run.workflow} ${run.status}${step === undefined ? "" : `: ${step}`}`;
+	return runs.map(({ runId, title, workflow, status, run }) => {
+		const step = steps.get(runId);
+		const text = `${markOf(run)} ${title}  ${workflow} ${status}${step === undefined ? "" : `: ${step}`}`;
 
-		return { text, value: run.runId };
+		return { text, value: runId };
 	});
 }
 
 /** The mark of a run in the picker by its status: `◉` running, `?` waiting for an answer, `✗` failed, else `·`. */
-function markOf(status: string): Mark | "?" | "·" {
-	if (status === "running") return "◉";
-
-	if (status === "waiting") return "?";
-
-	return status === "failed" || status === "faulted" ? "✗" : "·";
+function markOf(status: RunStatus): Mark | "?" {
+	switch (status) {
+		case "running":
+			return "◉";
+		case "waiting":
+			return "?";
+		case "failed":
+			return "✗";
+		case "done":
+		case "aborted":
+		case "orphaned":
+		case "earlier-version":
+		case "later-version":
+			return "·";
+	}
 }
