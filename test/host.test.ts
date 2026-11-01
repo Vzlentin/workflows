@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Cursor } from "@earendil-works/pi-durable";
+import { type Cursor, createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { request } from "@vzlentin/harness/client";
 import { addProject } from "@vzlentin/harness/projects";
@@ -16,12 +16,14 @@ import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { programStatus } from "../src/progress.ts";
 import { CtrlC, newRunId } from "../src/run.ts";
+import { SessionsDoc } from "../src/script.ts";
 import { TASK } from "../src/task.ts";
 import { stopAfterPost } from "./stop-entry.ts";
 import {
 	COMMIT,
 	detached,
 	escAgent,
+	FakeModel,
 	hostModel,
 	nextResult,
 	piSettings,
@@ -111,6 +113,42 @@ async function childDocs(): Promise<Record<string, Static<typeof CHILD>>> {
 		return found;
 	} finally {
 		await storage.close(BACKGROUND_CONTEXT);
+	}
+}
+
+const SESSIONS = Type.Object({ sessions: Type.Array(Type.Object({ label: Type.Optional(Type.String()) })) });
+
+/** The records of the `workflows.sessions` document of the root run `id` in the `main` store. */
+async function sessions(id: string): Promise<Static<typeof SESSIONS>["sessions"]> {
+	const storage = await openNodeSqliteStorage(storeOf());
+
+	try {
+		const address = { kind: SessionsDoc.definition.kind, scope: { kind: "session" as const }, key: id };
+		const record = await storage.findDocument(address, "current", BACKGROUND_CONTEXT);
+		const stored = record && (await storage.document(record.id, "current", BACKGROUND_CONTEXT));
+		const value = stored?.value;
+
+		if (!Value.Check(SESSIONS, value)) throw new Error(`no sessions document for ${id}`);
+
+		return value.sessions;
+	} finally {
+		await storage.close(BACKGROUND_CONTEXT);
+	}
+}
+
+/** Removes the `label` of each session record of the root run `id`, as a record that an earlier version saved. */
+async function unlabelSessions(id: string): Promise<void> {
+	const models = new FakeModel({ interrupt: new AbortController() }).models;
+	const storage = await openNodeSqliteStorage(storeOf());
+	const harness = await Harness.open(storage, { models, registry: createRegistry() }, BACKGROUND_CONTEXT);
+
+	try {
+		const conversation = await harness.root(BACKGROUND_CONTEXT);
+		await conversation.commit(async (tx) => {
+			for (const record of (await tx.doc(SessionsDoc, id, null)).sessions) delete record.label;
+		}, BACKGROUND_CONTEXT);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
 	}
 }
 
@@ -556,6 +594,33 @@ await Promise.all([...asks, Promise.reject(new Error("no"))])`,
 
 		await writeFile(join(root, "ok"), "");
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to two"]);
+		expect(Object.values(await children())).toEqual([true, true]);
+	});
+
+	it("labels each session of a run with the name of its agent profile", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'await agent("Script: one", { as: "planner" })\nreturn await session({ as: "reviewer" }).ask("Script: two")',
+		);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, "Reply to two"]);
+		expect((await sessions(run.id ?? "")).map(({ label }) => label)).toEqual(["planner", "reviewer"]);
+	});
+
+	it("resumes and closes the sessions of session records that have no label", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'const s = session()\nawait s.ask("Script spawn: child")\nawait sh("test -f ok")\nreturn await s.ask("Script: two")',
+		);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(1);
+		const id = run.id ?? "";
+		await unlabelSessions(id);
+		expect(await sessions(id)).toEqual([expect.not.objectContaining({ label: expect.anything() })]);
+
+		await writeFile(join(root, "ok"), "");
+		const resumed = await workflows(["resume", id], { cwd: root });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to two"]);
 		expect(Object.values(await children())).toEqual([true, true]);
 	});

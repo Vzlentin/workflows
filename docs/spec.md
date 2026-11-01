@@ -1377,6 +1377,9 @@ directory, starts the host when none runs, asks it to start the run's task, and 
   key>`. The task of each resume finds the sessions of the earlier tasks of the run. When the run completes, its task
   closes its sessions and their subagents. When it fails or stops, it closes only what is under its sessions, such as
   their subagents, and stops the turns of its sessions, which stay for a resume.
+- The run lists its sessions in the session-scoped document `workflows.sessions` of the project store, keyed by the
+  root run ID. Each record has `run`, `conversation`, `task` and `label`, the name of the agent profile that opened the
+  session. A record that an earlier version saved can have no `label`. This `label` is not the call label of `show`.
 - Each try of a run is a task that harness starts with the key `wf:<run-id>#<n>`, from 1.
 
 ### The `workflow` tool of the host
