@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.0](https://github.com/Vzlentin/workflows/compare/v0.6.1...v0.7.0) (2026-11-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* optimize ship from saved runs with overlays and a blind judge ([#83](https://github.com/Vzlentin/workflows/issues/83))
+
+### Features
+
+* label run sessions and give a refused campaign item one fix round ([#85](https://github.com/Vzlentin/workflows/issues/85)) ([9fa3eb2](https://github.com/Vzlentin/workflows/commit/9fa3eb23306ae9f9ae03aa8c594336480388d4f7))
+* optimize ship from saved runs with overlays and a blind judge ([#83](https://github.com/Vzlentin/workflows/issues/83)) ([0a7b35b](https://github.com/Vzlentin/workflows/commit/0a7b35b9c285598f76adee3f053e793ed670897c))
+
+
+### Bug Fixes
+
+* let the sessions install the dependencies of a fresh worktree ([#88](https://github.com/Vzlentin/workflows/issues/88)) ([7100727](https://github.com/Vzlentin/workflows/commit/710072756b3560dff55bea1371fe6cb68af6641f))
+
 ## [0.6.1](https://github.com/Vzlentin/workflows/compare/v0.6.0...v0.6.1) (2026-10-31)
 
 
