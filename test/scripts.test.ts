@@ -991,6 +991,64 @@ return [one, two].join(", ")`,
 		]);
 	});
 
+	it("runs .workflows/setup of a new run worktree once, and again at a resume after it failed", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const project = join(repo, ".workflows");
+		await mkdir(join(project, "scripts"), { recursive: true });
+		const count = join(root, "setup.count");
+		await writeFile(
+			join(project, "setup"),
+			`#!/bin/sh\npwd >> "${count}"\necho installing\n[ -f "${root}/ok" ] || { echo "missing ok" >&2; exit 3; }\necho ready > ready\n`,
+		);
+		await chmod(join(project, "setup"), 0o755);
+		await writeFile(
+			join(project, "scripts", "w.js"),
+			`export const meta = { worktree: true }
+phase("work")
+const ready = await sh("cat ready")
+const one = await agent("Script: one")
+return [ready, one].join(", ")`,
+		);
+		git(repo, "add", ".workflows");
+		git(repo, "commit", "-qm", "setup");
+
+		const failed = await workflows(["w", "--repo", "."], { cwd: repo });
+		const id = failed.id ?? "";
+		const worktree = worktreeAt(repo, id);
+		const log = join(runs(), id, "setup.log");
+		expect(failed.code).toBe(1);
+		expect(failed.stderr).toEqual([
+			"setup",
+			`failed w: setup failed (exit 3): missing ok; see ${log}`,
+			`continue with: workflows resume ${id}`,
+		]);
+		expect(await readFile(log, "utf8")).toBe("installing\nmissing ok\n");
+
+		await writeFile(join(root, "ok"), "");
+		const resumed = await stopped(["resume", id, "--json"], { nth: 1 }, repo);
+		expect(resumed.code).toBe(130);
+		const done = await workflows(["resume", id], { cwd: repo });
+		expect([done.code, done.stdout.at(-1)]).toEqual([0, "ready, Reply to one"]);
+		expect(await readFile(count, "utf8")).toBe(`${worktree}\n${worktree}\n`);
+		expect(await readFile(log, "utf8")).toBe("installing\n");
+	});
+
+	it("fails a run whose .workflows/setup is not executable", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const project = join(repo, ".workflows");
+		await mkdir(join(project, "scripts"), { recursive: true });
+		await writeFile(join(project, "setup"), "#!/bin/sh\n");
+		await writeFile(join(project, "scripts", "w.js"), "export const meta = { worktree: true }\nreturn 1");
+		git(repo, "add", ".workflows");
+		git(repo, "commit", "-qm", "setup");
+
+		const failed = await workflows(["w", "--repo", "."], { cwd: repo });
+		const setup = join(worktreeAt(repo, failed.id), ".workflows", "setup");
+		expect([failed.code, failed.stderr.at(-2)]).toEqual([1, `failed w: ${setup} is not executable: chmod +x it`]);
+	});
+
 	it("resumes an aborted run in a new task with its saved calls", async () => {
 		await writeFile(
 			join(root, "x.js"),

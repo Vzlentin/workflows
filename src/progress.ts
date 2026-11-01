@@ -17,7 +17,8 @@ export const PROGRESS_KIND = "workflows.progress";
  * a child run, with its caller `parent`. `at` is the time of the line or the end in ms since the epoch; events that an
  * earlier version saved have none. `continues` marks the first phase line of an execution of the run, which goes on
  * with the step of that text when it is the current one. A `title` event gives the run the title `text`, which shows
- * in place of the title of its input, and draws no line.
+ * in place of the title of its input, and draws no line. A `done` event ends the current step of the run `run`, so the
+ * lines that come after it are at the level of the run until its next step.
  */
 export const PROGRESS_EVENT = Type.Union([
 	Type.Object({
@@ -34,6 +35,7 @@ export const PROGRESS_EVENT = Type.Union([
 		failed: Type.Boolean(),
 		at: Type.Optional(Type.Number()),
 	}),
+	Type.Object({ kind: Type.Literal("done"), run: Type.String(), at: Type.Optional(Type.Number()) }),
 	Type.Object({ kind: Type.Literal("start"), run: Type.String(), parent: Type.Optional(Type.String()) }),
 	Type.Object({ kind: Type.Literal("title"), run: Type.String(), text: Type.String() }),
 ]);
@@ -85,13 +87,16 @@ export class Progress {
 			return undefined;
 		}
 
-		if (event.kind === "end") {
-			const step = this.#runs.get(event.run)?.current;
+		if (event.kind === "end" || event.kind === "done") {
+			const run = this.#runs.get(event.run);
+			const step = run?.current;
 
 			if (step?.mark === "◉") {
-				step.mark = event.failed ? "✗" : "✓";
+				step.mark = event.kind === "end" && event.failed ? "✗" : "✓";
 				step.ended = event.at;
 			}
+
+			if (event.kind === "done") delete run?.current;
 
 			return undefined;
 		}
@@ -155,7 +160,7 @@ export class Progress {
 
 	/** Whether the run has a step. */
 	get stepped(): boolean {
-		return [...this.#runs.values()].some((run) => run.current !== undefined);
+		return [...this.#runs.values()].some((run) => run.items.some((item) => "mark" in item));
 	}
 
 	/** Marks each step that runs as failed, or as done. */
