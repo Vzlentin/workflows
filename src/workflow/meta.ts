@@ -55,12 +55,20 @@ const SPEC_FLAGS = Type.Object({
 	label: Type.Optional(Type.String()),
 });
 
+/** The values of each argument type, and how an error message names them: `number` is a positive integer. */
+export const ARG_VALUES = {
+	string: { schema: Type.String(), expected: "a string" },
+	number: { schema: Type.Integer({ minimum: 1 }), expected: "a positive integer" },
+	boolean: { schema: Type.Boolean(), expected: "a boolean" },
+	text: { schema: Type.String(), expected: "a string" },
+};
+
 /** The `default` of each argument type. */
 const DEFAULTS = {
-	string: Type.Object({ default: Type.Optional(Type.String()) }),
-	number: Type.Object({ default: Type.Optional(Type.Integer({ minimum: 1 })) }),
-	boolean: Type.Object({ default: Type.Optional(Type.Boolean()) }),
-	text: Type.Object({ default: Type.Optional(Type.String()) }),
+	string: Type.Object({ default: Type.Optional(ARG_VALUES.string.schema) }),
+	number: Type.Object({ default: Type.Optional(ARG_VALUES.number.schema) }),
+	boolean: Type.Object({ default: Type.Optional(ARG_VALUES.boolean.schema) }),
+	text: Type.Object({ default: Type.Optional(ARG_VALUES.text.schema) }),
 };
 
 /** Throws the first problem of `value` as the `meta` of the script `name`. */
@@ -93,11 +101,8 @@ function checkMeta(value: unknown, name: string): asserts value is Partial<Meta>
 
 		if (unknown !== undefined) throw fail(`${at}.${unknown} is not an argument field`);
 		const { type } = spec;
-		const expected = type === "text" ? "string" : type;
 
-		if (!Value.Check(DEFAULTS[type], spec)) {
-			throw fail(`${at}.default is not a ${type === "number" ? "positive integer" : expected}`);
-		}
+		if (!Value.Check(DEFAULTS[type], spec)) throw fail(`${at}.default is not ${ARG_VALUES[type].expected}`);
 
 		if (!Value.Check(SPEC_FLAGS, spec)) {
 			throw fail(`${at}: required and positional are booleans, and label is a string`);

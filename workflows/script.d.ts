@@ -76,7 +76,10 @@ declare function input(question: string): Promise<string>;
 /** A value that a call of a script gives to the host as JSON, which leaves out an object field that is undefined. */
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json | undefined };
 
-/** Runs the script `name` of `workflows/` as a child run and returns its result, with `runId` when it is an object. */
+/**
+ * Runs the script `name` of `workflows/` as a child run and returns its result, with `runId` when it is an object. The
+ * args that its `meta.args` declares are checked before the child starts.
+ */
 declare function run(name: string, args?: { [key: string]: Json | undefined }): Promise<any>;
 
 /** A completed root run of the project store, as `pastRuns` gives it. */

@@ -800,13 +800,18 @@ current step: see [Progress](#progress). It prints no `run` or report line. Its 
 its end ends them as the end of a run does: see [Runs in the harness host](#runs-in-the-harness-host).
 
 - The child's args are the defaults of its `meta.args`, then `args`, without `prompts`, `overlay`, `from` and `checkout`, and with `meta.worktree` also
-  without `repo`, `base` and `branch`. They are not checked against `meta`, so an undeclared arg reaches the script.
+  without `repo`, `base` and `branch`. Before any worktree or child task exists, the declared args are checked against
+  `meta.args` in declaration order, and the first problem fails the call with `run <name>: <arg> <problem>`: a
+  `required` arg without a value `is missing`, and a value of the wrong type (`null` included) `must be a positive
+  integer`, `must be a string` or `must be a boolean`. A `boolean` that is not given gets no `false`. An undeclared
+  arg is not checked and reaches the script.
 - With `meta.worktree` and `args.repo`, the child gets a new worktree on `<name>/<child-id>`, next to the repository as
   for `meta.worktree`, in
   the repository of `args.repo` from the caller's directory, at `args.base` (default `main`), and `args.start`.
   `args.branch` works as `--branch`. Without `args.repo`, or without `meta.worktree`, the child runs in the caller's
   directory, and `start` is an ordinary arg.
-  With `meta.worktree`, a `start` that is not a string fails the call with `run <name>: start is not a string`.
+  With `meta.worktree`, a `repo`, `base`, `branch` or `start` that is not a string fails the call with
+  `run <name>: <key> must be a string`.
 - Without `meta.worktree`, `args.checkout` names an existing branch of the repository of the caller's directory. It is
   not an arg: the child runs in a new worktree on that branch, next to the repository as for `meta.worktree`, and
   `start` stays an ordinary arg. `checkout` needs `start`, the commit that the change on the branch starts from: a
@@ -1713,7 +1718,8 @@ The engine files in `src/`:
 - `cli/terminal/redraw.ts`: how the command draws the tree of steps of a run on stderr.
 - `launch/input.ts`: the generic entry point `workflows <wf>`: the checked arguments of a run, its run ID, its saved
   input, and the input of a child run.
-- `launch/args.ts`: the `meta.args` values of the command line, and the texts that they name.
+- `launch/args.ts`: the `meta.args` values of the command line, and the texts that they name, and the args of a
+  `run()` call, with one check of both against `meta.args`.
 - `launch/worktree.ts`: repository selection, the worktree of a run, made by Herdr or Git, and the name of its branch.
 - `run/result.ts`: the title of a run, and the status, report lines and exit code of its result.
 - `workflow/meta.ts`: read and check the `meta` of a workflow script.

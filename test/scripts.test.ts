@@ -1388,8 +1388,47 @@ return args`,
 		await writeFile(join(scripts, "parent.js"), 'return await run("ship", { item: "x", start: 1 })');
 
 		const run = await workflows(["parent"], { cwd: repo });
-		expect([run.code, run.stderr[0]]).toEqual([1, "failed parent: run ship: start is not a string"]);
+		expect([run.code, run.stderr[0]]).toEqual([1, "failed parent: run ship: start must be a string"]);
 		expect(await readdir(runs())).toHaveLength(1);
+	});
+
+	it("fails a run call that gives a placement arg that is not a string", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "parent.js"), 'return await run("ship", { item: "x", base: 2 })');
+
+		const run = await workflows(["parent"], { cwd: repo });
+		expect([run.code, run.stderr[0]]).toEqual([1, "failed parent: run ship: base must be a string"]);
+		expect(await readdir(runs())).toHaveLength(1);
+	});
+
+	it("checks the args of a run call against the meta of the child before the child starts", async () => {
+		const scripts = join(root, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+
+		await writeFile(
+			join(scripts, "child.js"),
+			`export const meta = { args: { n: { type: "number" }, t: { type: "text", required: true } } }
+return [args.n, args.t, args.other].join(" ")`,
+		);
+
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { n: "2", t: "x" })');
+		const wrong = await workflows(["parent"], { cwd: root });
+		expect([wrong.code, wrong.stderr[0]]).toEqual([1, "failed parent: run child: n must be a positive integer"]);
+		expect(await readdir(runs())).toHaveLength(1);
+		expect(await childTasks(wrong.id ?? "")).toEqual([]);
+
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", {})');
+		const missing = await workflows(["parent"], { cwd: root });
+		expect([missing.code, missing.stderr[0]]).toEqual([1, "failed parent: run child: t is missing"]);
+		expect(await readdir(runs())).toHaveLength(2);
+		expect(await childTasks(missing.id ?? "")).toEqual([]);
+
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { n: 2, t: "x", other: "y" })');
+		const valid = await workflows(["parent"], { cwd: root });
+		expect([valid.code, valid.stdout.at(-1)]).toEqual([0, "2 x y"]);
 	});
 
 	it("resumes an interrupted child run and repeats no call of a finished one", async () => {
