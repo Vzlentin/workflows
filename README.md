@@ -89,7 +89,8 @@ Optimize uses past completed ship runs as baselines. An INV turn edits prompts a
 per edit in the report and in `notes.txt`. An invalid candidate does not roll out; the run reports each reason: a skill
 without `name` or `description`, a removed skill that `AGENTS.md` names, or an `AGENTS.md` longer than `--always-on-max`
 (default: the length of the `AGENTS.md` at the start). A blind judge compares the diffs. The run writes `best/` and
-`overlay.diff`, and never changes prompts, skills or `AGENTS.md` on disk. See [docs/spec.md](docs/spec.md#optimize).
+`overlay.diff`, and never changes prompts, skills or `AGENTS.md` on disk. Each item adds one row to the run memory; a
+harvest gives lessons only when the overlay changes one file. See [docs/spec.md](docs/spec.md#optimize).
 
 ## Development
 

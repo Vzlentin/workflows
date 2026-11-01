@@ -127,7 +127,9 @@ the harvest of `.finish(item, result)`, at each end: shipped, blocked or stopped
 `harvest` prompt with the work item, the outcome (the result without its `report` and `memory` keys, also in its items, as JSON), the run ID and
 the notes, and answers through `respond` with `lessons`: 0 to 3 objects of `cue`, when the lesson applies, `lesson`,
 what to do instead of what, and `evidence`, `run:<run ID>` or a `#conv` ID with the note numbers. The default answer is
-`[]`. With no notes, no turn runs and the lessons are `[]`. The harvest does not change the notes. Each lesson adds the
+`[]`. With no notes, no turn runs and the lessons are `[]`. A note row that says `confounded yes` (see
+[Optimize](#optimize)) cannot tell which change made its verdict, and the prompt gives no lesson that rests only on such
+rows. The harvest does not change the notes. Each lesson adds the
 report line `  lesson <cue>: <lesson> (<evidence>)`, with the whitespace runs of each field made one space, after the
 other report lines of the script and before `branch <name>`.
 
@@ -504,18 +506,26 @@ promoted when there are at least 4 items and `wins / items >= 0.75`.
 The command prints `run <run-id>`, the note lines, then one line `<name>: win|loss|tie` for each item (`<name>` is
 the run ID of the past run, or the file name without `.md`) or the reason lines of a candidate that is not valid,
 `fewer than 4 items: nothing promoted` with fewer than 4 items, then
-`optimized ship: <wins>/<items> wins, promoted|not promoted, <path>`, and exits 0. `<path>` is `overlay.diff` in the
+`optimized ship: <wins>/<items> wins, promoted|not promoted, <path>`, then the lesson lines, and exits 0. `<path>` is `overlay.diff` in the
 run directory. That file starts with the item lines, the reason lines and one line `edit <path>: <moment>` for each
 `inv` and `dom` edit, then `git diff --no-index --no-prefix baseline best` of the run directory. `notes.txt` holds the
 note lines. `baseline/<path>` holds the baseline text of each overlay path that has one (none for a new skill), and
 `best/<path>` the promoted text (none for a removed one), or the baseline text when the overlay is not promoted, so
 then the diff part is empty. An absolute path goes there without its leading `/`. The result is
-`{ wins, items, promoted, overlay, notes, invalid, diff }`, where `overlay` is the candidate overlay, promoted or not,
+`{ wins, items, promoted, overlay, notes, invalid, diff, lessons }`, where `overlay` is the candidate overlay, promoted or not,
 `notes` the note lines and `invalid` the reason lines.
+
+The run opens its own run memory. After the verdict of each item, it adds the row
+`item <subject>: files <paths>, verdict win|loss|tie, confounded yes|no`, where `<subject>` is the first line of the
+work item, `<paths>` the overlay paths, joined with `, `, and `confounded` is `yes` when the overlay has more than one
+path. The run ends with `.finish(<the description of optimize>, result)`, the harvest of [`ship`](#ship),
+which gives `lessons` and one report line for each lesson. When the overlay has more than one path, no rollout tells
+which change made a verdict: the run makes no harvest turn and `lessons` is `[]`. A candidate that is not valid has no
+row, so its `lessons` is `[]` with no turn.
 
 A ship child run that fails stops the optimization with `failed optimize: child run <id> failed: <error>`, as any
 failed `run()` call does. `workflows resume <run-id>` runs the script again: `pastRuns`, the finished ship runs and the
-turns return their saved results, and the failed ship run continues. `workflows list` shows only the optimize run.
+turns and the `memo` calls of the run memory return their saved results, and the failed ship run continues. `workflows list` shows only the optimize run.
 
 ## Sessions
 
@@ -1602,6 +1612,7 @@ An optimize run has:
 - `baseline/<path>` and `best/<path>`: the baseline texts of the edited paths and the promoted texts
 - `notes.txt`: the note lines of the `compose` turn
 - `overlay.diff`: the item lines, the reason lines, the edit lines and the diff
+- `memory/`: the OptMem store of the run memory, with one row for each item
 
 A child run that `run()` starts is a run directory of its own, next to the caller's, without a `project` file: it is a
 task of the caller's run. A child run without a worktree can have an empty run directory.

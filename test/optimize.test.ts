@@ -9,6 +9,9 @@ import {
 	type Edit,
 	git,
 	inputsOf,
+	LESSON,
+	LESSON_LINE,
+	LESSONED,
 	overlayOf,
 	repository,
 	runsOf,
@@ -67,6 +70,36 @@ async function ship(
 	return { code: run.code, runId: run.id ?? "", result: JSON.parse(run.stdout[1] ?? "{}").result };
 }
 
+/** The rows of the run memory of the run directory `directory`, without the `#<k> <date>` start and the padding. */
+async function rows(directory: string) {
+	const log = await readFile(join(directory, "memory", "LOG.txt"), "utf8");
+
+	return log.split("\n").flatMap((line) => (line === "" ? [] : [line.trimEnd().replace(/^#\d+ \S+ /, "")]));
+}
+
+/** The files of the `best/` folder of the run directory `directory`, with their texts, by relative path. */
+async function bestOf(directory: string) {
+	const folder = join(directory, "best");
+	const files = (await readdir(folder, { recursive: true, withFileTypes: true })).filter((entry) => entry.isFile());
+
+	return Object.fromEntries(
+		await Promise.all(
+			files.map(async (entry) => {
+				const path = join(entry.parentPath, entry.name);
+
+				return [path.slice(folder.length + 1), await readFile(path, "utf8")];
+			}),
+		),
+	);
+}
+
+const GOAL =
+	"Propose prompt, profile, skill and AGENTS.md edits from ship runs, and keep them when a blind judge prefers their diffs.";
+
+/** The harvest prompts of the optimize run itself: their work item is the goal of optimize. */
+const goalHarvests = (calls: readonly Call[]) =>
+	calls.filter(({ kind, prompt }) => kind === "harvest" && prompt.includes(`## item\n${GOAL}`));
+
 const reviews = (calls: readonly Call[], marked: boolean) =>
 	calls.filter((call) => call.kind === "review" && call.prompt.includes(MARK) === marked).length;
 
@@ -107,10 +140,27 @@ describe("workflows optimize", () => {
 					],
 				},
 				select: ["Hello, world", "Hello, world", "Hello, world", "Hello world"],
+				lessons: [LESSON],
 			},
 		});
 
 		const directory = join(runsOf(root), first.id ?? "");
+		// The items come newest first, by run ID: run IDs made in the same second do not sort by creation time.
+		const subjects = new Map(saved.map(({ runId }, index) => [runId, `Fix the README typo ${index + 1}`]));
+
+		const newest = saved
+			.map(({ runId }) => runId)
+			.sort()
+			.reverse();
+
+		expect(await rows(directory)).toEqual(
+			newest.map(
+				(runId, index) =>
+					`item ${subjects.get(runId)}: files prompts/review.md, ${typos}, verdict ${["win", "win", "win", "loss"][index]}, confounded yes`,
+			),
+		);
+		expect(goalHarvests(first.model.calls)).toEqual([]);
+		expect(first.stdout.filter((line) => line.startsWith("  lesson"))).toEqual([]);
 		const diff = join(directory, "overlay.diff");
 		expect(first.code).toBe(0);
 		expect(first.stdout.at(-1)).toBe(`optimized ship: 3/4 wins, promoted, ${diff}`);
@@ -220,6 +270,55 @@ describe("workflows optimize", () => {
 		]);
 		expect(run.stdout.at(-1)).toMatch(/^optimized ship: 2\/2 wins, not promoted, /);
 	}, 60_000);
+
+	it("harvests the lessons of a one-file overlay, and resumes an interrupted run to the same result", async () => {
+		const saved = [];
+
+		for (const n of [1, 2]) saved.push(await ship(`Fix the README typo ${n}`));
+		expect(saved.map((run) => run.code)).toEqual([0, 0]);
+		const argv = ["optimize", "ship", "--runs", saved.map(({ runId }) => runId).join(","), "--json"];
+		const script = { edits: Array(2).fill(CANDIDATE), inv: INV, lessons: [LESSON] };
+		const whole = await workflows(argv, { cwd: repo, script: { ...script, select: ["Hello, world", "Hello world"] } });
+		expect(whole.code).toBe(0);
+		const U = JSON.parse(whole.stdout[1] ?? "{}");
+		expect(U.result.lessons).toEqual([LESSONED]);
+		expect(U.report.at(-1)).toBe(LESSON_LINE);
+		const harvests = goalHarvests(whole.model.calls);
+		expect(harvests).toHaveLength(1);
+
+		for (const [index, verdict] of ["win", "loss"].entries()) {
+			const row = `item Fix the README typo ${index + 1}: files prompts/review.md, verdict ${verdict}, confounded no`;
+			expect(harvests[0]?.prompt).toContain(row);
+		}
+
+		const cut = await workflows(argv, {
+			cwd: repo,
+			script: { ...script, select: ["Hello, world"], interruptAt: { kind: "select", nth: 2 } },
+		});
+
+		expect(cut.code).toBe(130);
+		// The interrupted select prompt never got an answer, so it is not among the recorded calls.
+		expect(cut.model.count("select")).toBe(1);
+
+		const resumed = await workflows(["resume", cut.id ?? "", "--json"], {
+			cwd: repo,
+			script: { ...script, select: ["Hello world"] },
+		});
+
+		expect(resumed.code).toBe(0);
+
+		// The JSON output of a run with its run directory replaced by `<run>`.
+		const placed = (json: string | undefined, id: string | undefined) =>
+			JSON.parse((json ?? "{}").replaceAll(join(runsOf(root), id ?? ""), "<run>"));
+
+		const R = placed(resumed.stdout[1], cut.id);
+
+		expect(R).toEqual({ ...placed(whole.stdout[1], whole.id), runId: R.runId });
+		expect([...labels(cut.model.calls), ...labels(resumed.model.calls)]).toEqual(labels(whole.model.calls));
+		expect(await bestOf(join(runsOf(root), cut.id ?? ""))).toEqual(await bestOf(join(runsOf(root), whole.id ?? "")));
+		expect((await childTasks(cut.id ?? "")).length).toBe((await childTasks(whole.id ?? "")).length);
+		expect(resumed.model.count("research")).toBe(0);
+	}, 120_000);
 
 	it("ships the baselines of an items folder with the profiles of the bundle, and keeps the errors of its arguments", async () => {
 		const items = join(root, "items");
@@ -336,7 +435,11 @@ describe("workflows optimize", () => {
 		];
 
 		for (const [argv, edit, reason] of cases) {
-			const run = await workflows(["optimize", "ship", ...argv], { cwd: repo, script: { inv: INV, dom: [edit] } });
+			const run = await workflows(["optimize", "ship", ...argv], {
+				cwd: repo,
+				script: { inv: INV, dom: [edit], lessons: [LESSON] },
+			});
+
 			const diff = join(runsOf(root), run.id ?? "", "overlay.diff");
 			expect(run.code, reason).toBe(0);
 
@@ -349,6 +452,7 @@ describe("workflows optimize", () => {
 			]);
 			expect(run.model.count("research")).toBe(0);
 			expect(run.model.count("select")).toBe(0);
+			expect(run.model.count("harvest")).toBe(0);
 			expect(await childTasks(run.id ?? "")).toEqual([]);
 			expect(await readFile(diff, "utf8")).toContain(`${reason}\n`);
 		}

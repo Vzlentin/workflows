@@ -309,6 +309,12 @@ const shown = (diff) => (diff === "" ? "(no change)" : diff)
 const lines = []
 let wins = 0
 
+const runMemory = await memory()
+
+// The changed files of the candidate: one row of the run memory names them for each item.
+const files = Object.keys(overlay)
+const confounded = files.length > 1
+
 if (invalid.length === 0) {
 	for (const item of items) {
 		const candidate = await ship(item, { overlay, from: item.from })
@@ -326,6 +332,10 @@ if (invalid.length === 0) {
 
 		if (verdict === "win") wins++
 		lines.push(`${item.name}: ${verdict}`)
+
+		await runMemory.note(`item ${subjectOf(item.text)}`, undefined, [
+			`files ${files.join(", ")}, verdict ${verdict}, confounded ${confounded ? "yes" : "no"}`,
+		])
 	}
 }
 
@@ -367,4 +377,8 @@ await sh(["sh", "-c", compare, "diff", runDir, header.join("\n"), "overlay.diff"
 const few = items.length < 4 ? ["fewer than 4 items: nothing promoted"] : []
 const line = `optimized ship: ${wins}/${items.length} wins, ${promoted ? "promoted" : "not promoted"}, ${diff}`
 
-return { wins, items: items.length, promoted, overlay, notes, invalid, diff, report: [...notes, ...outcomes, ...few, line] }
+const result = { wins, items: items.length, promoted, overlay, notes, invalid, diff, report: [...notes, ...outcomes, ...few, line] }
+
+// When the overlay changes more than one file, no rollout tells which change made a verdict, so no row can teach a
+// lesson and the run makes no harvest turn.
+return confounded ? { ...result, lessons: [] } : await runMemory.finish(meta.description, result)
