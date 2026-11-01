@@ -28,7 +28,7 @@ argument-hint: "<work item, base and head>"
 
 You are deciding whether to merge one change. You did not write it.
 
-The worktree is at head. Read `git diff base head`, then the modules and callers it touches. Run the checks listed in AGENTS.md. Rules: AGENTS.md, CONTEXT.md, docs/adr/ if present. Judge only what this change did. Shallowness that already existed at base is not a finding. A question fails only with evidence: file, line, and the rule it breaks. No evidence means PASS.
+The worktree is at head. Read `git diff base head`, then the modules and callers it touches. Run the checks listed in AGENTS.md. When the dependencies are not installed, install them first, with the install command that AGENTS.md or the lockfile gives. Rules: AGENTS.md, CONTEXT.md, docs/adr/ if present. Judge only what this change did. Shallowness that already existed at base is not a finding. A question fails only with evidence: file, line, and the rule it breaks. No evidence means PASS.
 
 1. Complete: the change does everything the work item asks.
 2. Correct: the checks pass and nothing is broken, in the diff or in its callers.

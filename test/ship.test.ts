@@ -245,7 +245,7 @@ describe("workflows ship", () => {
 			/^Plan this change\.\n[\s\S]*ambiguity\.\n\n## item\n# Fix the README typo\n\nThe README says wrold\.\n\n## research\nSummary: README\.md:1 says wrold\.$/,
 		);
 		expect(implement?.prompt).toMatch(
-			/AGENTS\.md`\.\n\nReport what changed and what is unfinished\.\n\n## plan\nHandoff 1: /,
+			/AGENTS\.md` or the lockfile gives\.\n\nReport what changed and what is unfinished\.\n\n## plan\nHandoff 1: /,
 		);
 		const patch = join(runs(), run.id ?? "", "round-1.patch");
 		expect(review?.prompt).toContain(`\n\n## change\n${patch}\n\n## reply\nI fixed the typo in README.md.`);
