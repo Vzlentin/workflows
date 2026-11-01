@@ -6,7 +6,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { herdrWorktree, typePickLoop } from "../herdr.ts";
+import { closeWorkspace, herdrWorktree, typePickLoop } from "../herdr.ts";
 import type { ScriptInput } from "../launch/input.ts";
 import { branchOf, ensureWorktree, renameBranch } from "../launch/worktree.ts";
 import { outcomeText, type WorkflowOutcome } from "../tool.ts";
@@ -127,8 +127,9 @@ async function runPhase(
 		if (worktree !== undefined) {
 			const { repository, path, branch, start } = worktree;
 			// In Herdr, Herdr creates the worktree first, so it shows in the sidebar; when Herdr fails, Git creates it.
-			const create = input.herdr === true ? () => herdrWorktree(repository, path, branch, start) : undefined;
-			const workspace = await ensureWorktree(repository, path, branch, start, create);
+			const make = () => herdrWorktree(repository, path, branch, start);
+			const maker = input.herdr === true ? { make, close: closeWorkspace } : undefined;
+			const workspace = await ensureWorktree(repository, path, branch, start, maker);
 
 			// The workspace that Herdr opened on the worktree of a root run shows the agents of the run beside its steps.
 			if (parent === null && workspace !== undefined) await typePickLoop(workspace, runId);

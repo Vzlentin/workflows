@@ -169,11 +169,22 @@ export type Output = {
 	readonly stderr: readonly string[];
 };
 
-/** The outcome line after `run <run-id>`; throws the stderr text when the command stopped without one. */
-export function outcomeOf(output: Output): WorkflowOutcome {
-	const [, line] = output.stdout;
+/** The exit code of a command on a saved run that is gone: its run directory or its task is missing. */
+export const GONE_EXIT = 4;
 
-	if (line === undefined) throw new Error(output.stderr.join("\n") || `workflows exited with ${output.code}`);
+/**
+ * The outcome line after `run <run-id>`; throws the stderr text when the command stopped without one, after `run
+ * <run-id>: ` when the command printed that line.
+ */
+export function outcomeOf(output: Output): WorkflowOutcome {
+	const [first, line] = output.stdout;
+
+	if (line === undefined) {
+		const why = output.stderr.join("\n") || `workflows exited with ${output.code}`;
+
+		throw new Error(first?.startsWith("run ") ? `${first}: ${why}` : why);
+	}
+
 	const outcome = JSON.parse(line);
 
 	if (!Value.Check(OUTCOME, outcome)) throw new Error(`workflows printed an outcome that is not valid: ${line}`);

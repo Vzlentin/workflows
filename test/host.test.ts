@@ -526,6 +526,12 @@ describe("runs in the harness host", () => {
 			{ runId: id, workflow: "-", title: "-", status: "unstarted", repository: null },
 		]);
 
+		// A command on a run with no task, or with no run directory, exits 4: the run is gone.
+		const waited = await workflows(["wait", id], { cwd: root });
+		expect([waited.code, waited.stderr]).toEqual([4, [`workflows: run ${id} has no workflow`]]);
+		const stopped = await workflows(["stop", id], { cwd: root });
+		expect([stopped.code, stopped.stderr]).toEqual([4, [`workflows: run ${id} has no workflow`]]);
+
 		const young = await workflows(["prune", "--yes"], { cwd: root });
 		expect([young.code, young.stdout, existsSync(directory)]).toEqual([0, [], true]);
 		const old = new Date(Date.now() - 2 * 60 * 60 * 1000);

@@ -204,7 +204,7 @@ declare function diffStat(from: string, to?: string): Promise<string>;
  * intent, with no Git step. Else the change is the one that `args.change` points at, from the current directory, and
  * the run gets the subject of its intent as its title. `args.change` is nothing (the current branch from its merge base
  * with `args.base`, default `main`), a PR number (from the merge base with its base branch, fetched as
- * `pull/<n>/head` when its branch is missing), a range `A..B` or `A...B` (from the merge base of `A` and `B` to `B`),
+ * `pull/<n>/head`, with its branch moved to that head when the branch is missing or behind), a range `A..B` or `A...B` (from the merge base of `A` and `B` to `B`),
  * or a ref (from its merge base with `HEAD` to `HEAD`). `start` is a commit, and `intent` is `args.item`, else
  * `# <title>` and the body of the PR, else the commit messages of the change. `checkout` is the branch of a change on
  * a branch that no worktree has. `dirty` says that the checkout has changes that are not committed; with `wip`, a

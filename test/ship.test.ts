@@ -821,7 +821,7 @@ export default function ({ events }) {
 			[["ship", "--prompts", "none", "Fix it"], `workflows: no prompts folder ${join(repo, "none")}`, 1],
 			[["ship", "--prompts=.", "Fix it"], `workflows: ${repo}/README.md replaces no prompt of the package`, 1],
 			[["resume", "/tmp/run"], "workflows: /tmp/run is not a run ID", 2],
-			[["resume", "nothing"], `workflows: no run nothing in ${runs()}`, 1],
+			[["resume", "nothing"], `workflows: no run nothing in ${runs()}`, 4],
 			[["nope", "goal.md"], "workflows: unknown command nope", 2],
 		];
 
@@ -1167,7 +1167,7 @@ describe("workflows resume of ship runs", () => {
 		);
 		const unknown = await workflows(["show", "20990101T000000-00000000"], { cwd: repo });
 		expect([unknown.code, unknown.stdout, unknown.stderr]).toEqual([
-			1,
+			4,
 			[],
 			[`workflows: no run 20990101T000000-00000000 in ${runs()}`],
 		]);

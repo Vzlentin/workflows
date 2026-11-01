@@ -345,4 +345,47 @@ echo '{"number":74,"title":"Fix the README typo","body":"It says wrold.","headRe
 		expect([git(repo, "branch", "--show-current"), git(repo, "rev-parse", "HEAD")]).toEqual(["main", start]);
 		expect(git(repo, "status", "--porcelain")).toBe("");
 	});
+
+	it("moves the branch of a pull request to its fetched head when it is behind, and fails when it diverged", async () => {
+		const origin = join(root, "origin.git");
+		git(root, "clone", "-q", "--bare", repo, origin);
+		git(repo, "remote", "add", "origin", origin);
+		git(repo, "push", "-q", "origin", "feature:refs/pull/74/head");
+		const head = git(repo, "rev-parse", "feature");
+		git(repo, "checkout", "-q", "main");
+		git(repo, "branch", "-q", "-D", "feature");
+		await fake(
+			root,
+			"gh",
+			`echo '{"number":74,"title":"Fix the README typo","body":"It says wrold.","headRefName":"fix-readme","baseRefName":"main","isCrossRepository":false}'`,
+		);
+
+		// A branch with a commit that the pull request does not have has diverged from it.
+		git(repo, "checkout", "-qb", "fix-readme");
+		await writeFile(join(repo, "OTHER.md"), "other\n");
+		git(repo, "add", "OTHER.md");
+		git(repo, "commit", "-qm", "other");
+		git(repo, "checkout", "-q", "main");
+		const diverged = await workflows(["thermoloop", "74"], { cwd: repo });
+		expect([diverged.code, diverged.stderr[0]]).toEqual([
+			1,
+			"failed thermoloop: fix-readme has diverged from PR #74; rebase it or delete it",
+		]);
+
+		// A branch that an earlier fetch left behind the pull request moves to its head.
+		git(repo, "branch", "-f", "fix-readme", start);
+		const run = await workflows(["thermoloop", "--json", "74"], { cwd: repo, script: { verdicts: ["SHIP"] } });
+		expect(run.code).toBe(0);
+		const path = String(JSON.parse(run.stdout[1] ?? "").report.at(-1)).slice("worktree ".length);
+		expect(git(repo, "rev-parse", "fix-readme")).toBe(head);
+
+		// A branch that is behind and checked out in a worktree stays as it is.
+		git(path, "reset", "-q", "--hard", start);
+		const behind = await workflows(["thermoloop", "74"], { cwd: repo });
+		expect([behind.code, behind.stderr[0]]).toEqual([
+			1,
+			`failed thermoloop: fix-readme is behind PR #74 and checked out at ${path}; update it there`,
+		]);
+		expect(git(repo, "rev-parse", "fix-readme")).toBe(start);
+	});
 });

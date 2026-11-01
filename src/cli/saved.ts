@@ -26,6 +26,9 @@ export function oneRunId(args: readonly string[], usage: string): string {
 	return id;
 }
 
+/** The error of a command on a saved run that is gone: its run directory or its task is missing. It exits `GONE_EXIT`. */
+export class GoneRun extends Error {}
+
 /** A run that the command started: its ID, its project, and the path of the project store. */
 export type SavedRun = { readonly id: string; readonly project: string; readonly store: string };
 
@@ -39,7 +42,7 @@ export async function savedRun(id: string, usage: string): Promise<SavedRun> {
 
 	const project = (
 		await readFile(file, "utf8").catch(() => {
-			throw new Error(`no run ${id} in ${runsDirectory()}`);
+			throw new GoneRun(`no run ${id} in ${runsDirectory()}`);
 		})
 	).trim();
 
@@ -133,13 +136,13 @@ export function progressOf(run: SavedRun): Promise<readonly ProgressEvent[]> {
 
 const PREFIX = "workflows.";
 
-/** The task `latest` of the run `id`. It throws when there is none, or when another version saved it. */
+/** The task `latest` of the run `id`. It throws `GoneRun` when there is none, and an error when another version saved it. */
 export function checked(
 	latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined,
 	id: string,
 	verb: string,
 ): TaskRecord<ScriptInput, JsonValue, JsonValue> {
-	if (latest === undefined) throw new Error(`run ${id} has no workflow`);
+	if (latest === undefined) throw new GoneRun(`run ${id} has no workflow`);
 
 	if (current(latest)) return latest;
 	const { name, later } = savedBy(latest);

@@ -184,7 +184,7 @@ describe("workflows save", () => {
 		const command = await workflows(["save", id, "show"], { cwd: repo });
 		expect([command.code, command.stderr]).toEqual([1, ["workflows: show is a command and cannot be a workflow name"]]);
 		const unknown = await workflows(["save", "nothing", "other"], { cwd: repo });
-		expect([unknown.code, unknown.stderr]).toEqual([1, [`workflows: no run nothing in ${runs()}`]]);
+		expect([unknown.code, unknown.stderr]).toEqual([4, [`workflows: no run nothing in ${runs()}`]]);
 
 		const cases = [
 			[id, "Fix"],
@@ -998,7 +998,9 @@ return [one, two].join(", ")`,
 
 		const failed = await workflows(["resume", id], { cwd: repo });
 		expect(failed.code).toBe(1);
-		expect(failed.stderr.at(-2)).toMatch(/^failed w: git worktree failed: /);
+		expect(failed.stderr.at(-2)).toBe(
+			`failed w: branch ${branch} is checked out at ${await realpath(join(root, "other"))}`,
+		);
 		expect(failed.stderr.at(-1)).toBe(`continue with: workflows resume ${id}`);
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "failed" }]);
 
@@ -1345,6 +1347,72 @@ esac
 		expect(git(worktreeAt(repo, run.id), "branch", "--show-current")).toBe(`w/${run.id}`);
 	});
 
+	it("closes the workspace that herdr opened when herdr left no worktree, and creates it with Git", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "w.js"),
+			'export const meta = { worktree: true }\nreturn await sh(["git", "branch", "--show-current"])',
+		);
+
+		/** A fake herdr that opens the workspace w7 with no worktree, and whose `workspace close` exits with `close`. */
+		const herdr = (close: number) =>
+			writeFile(
+				join(root, "bin", "herdr"),
+				`#!/bin/sh
+echo "$@" >> "${root}/herdr.log"
+case "$1 $2" in
+"worktree create") echo '{"result":{"workspace":{"workspace_id":"w7"}}}' ;;
+"workspace close") exit ${close} ;;
+esac
+`,
+				{ mode: 0o755 },
+			);
+
+		await herdr(0);
+		process.env.HERDR_ENV = "1";
+		const run = await workflows(["w"], { cwd: repo });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, `w/${run.id}`]);
+		const log = await readFile(join(root, "herdr.log"), "utf8");
+		expect(log).toContain("workspace close w7\n");
+		expect(log).not.toContain("pane run ");
+
+		await herdr(1);
+		const failed = await workflows(["w"], { cwd: repo });
+		expect([failed.code, failed.stderr[0]]).toEqual([
+			1,
+			"failed w: herdr workspace close w7 failed: Command failed: herdr workspace close w7",
+		]);
+		expect(existsSync(worktreeAt(repo, failed.id))).toBe(false);
+	});
+
+	it("fails a child run on a branch that another worktree has checked out, before herdr runs", async () => {
+		const repo = join(root, "repo");
+		const start = await repository(repo);
+		git(repo, "worktree", "add", "-q", "-b", "feature", join(root, "other"));
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "parent.js"),
+			`return await run("child", { start: "${start}", checkout: "feature" })`,
+		);
+		await writeFile(join(scripts, "child.js"), "return cwd");
+		await writeFile(join(root, "bin", "herdr"), `#!/bin/sh\necho "$@" >> "${root}/herdr.log"\nexit 1\n`, {
+			mode: 0o755,
+		});
+		process.env.HERDR_ENV = "1";
+
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(1);
+		const other = await realpath(join(root, "other"));
+		expect(run.stderr[0]).toMatch(
+			new RegExp(`^failed parent: child run \\S+ failed: branch feature is checked out at ${other}$`),
+		);
+		expect(existsSync(join(root, "herdr.log"))).toBe(false);
+	});
+
 	it("gives a child run without meta.worktree its repo, base and branch args", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
@@ -1513,7 +1581,7 @@ return [one.reply, two.reply].join(", ")`,
 		expect(child).toBeDefined();
 		expect(next).toBe(`continue with: workflows resume ${run.id}`);
 		const own = await workflows(["resume", child ?? ""], { cwd: root });
-		expect([own.code, own.stderr[0]]).toEqual([1, `workflows: no run ${child} in ${runs()}`]);
+		expect([own.code, own.stderr[0]]).toEqual([4, `workflows: no run ${child} in ${runs()}`]);
 		const directories = await readdir(runs());
 		expect(directories).toEqual([run.id, child].toSorted());
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });

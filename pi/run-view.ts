@@ -65,7 +65,8 @@ export function parseRun(output: Output): Agents | string {
 /**
  * The run view of `/workflows`: the run's phases, agents and child runs, read again `REFRESH_MS` after each read ends.
  * Up and down move between the agents, Enter gives the conversation of the selected agent, Escape gives undefined.
- * Before the first good read it shows the error of the last read; a later failed read keeps the rows it shows.
+ * Before the first good read it shows the error of the last read in place of the tree; a later failed read keeps the
+ * rows it shows, with its error under them, until a good read. A read that rejects counts as a read that failed.
  */
 export class RunView implements Component {
 	readonly #read: () => Promise<Agents | string>;
@@ -101,7 +102,13 @@ export class RunView implements Component {
 	 */
 	async #refresh(): Promise<void> {
 		try {
-			const read = await this.#read();
+			let read: Agents | string;
+
+			try {
+				read = await this.#read();
+			} catch (error) {
+				read = error instanceof Error ? error.message : String(error);
+			}
 
 			if (this.#closed) return;
 
@@ -109,6 +116,7 @@ export class RunView implements Component {
 				this.#error = read;
 			} else {
 				this.#shown = read;
+				this.#error = undefined;
 				const agents = this.#agents();
 
 				if (!agents.some((row) => row.conversation === this.#selected)) {
@@ -166,8 +174,9 @@ export class RunView implements Component {
 		const start = Math.max(0, Math.min(selected - Math.floor(VIEW_HEIGHT / 2), lines.length - VIEW_HEIGHT));
 		const empty = lines.length === 0 ? [theme.fg("dim", "  No agent yet")] : [];
 		const help = theme.fg("dim", "up/down select an agent, enter attaches, escape closes");
+		const failed = (this.#error?.split("\n") ?? []).map((line) => theme.fg("error", line));
 
-		return [header, ...lines.slice(start, start + VIEW_HEIGHT), ...empty, help].map((line) =>
+		return [header, ...lines.slice(start, start + VIEW_HEIGHT), ...empty, ...failed, help].map((line) =>
 			truncateToWidth(line, width),
 		);
 	}

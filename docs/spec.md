@@ -260,8 +260,11 @@ answers SHIP. It commits its fixes on the branch of the change and does not push
 - Nothing: the current branch, from the merge base of `--base` and `HEAD` to `HEAD`.
 - A number: the pull request with that number. The run reads it with `gh pr view <n> --json
   number,title,body,headRefName,baseRefName,isCrossRepository`, and fails when `gh` fails. Its branch is
-  `headRefName`, or `pr/<n>` for a pull request from a fork. When that branch is missing, the run fetches it with
-  `git fetch origin pull/<n>/head:refs/heads/<branch>`, and it uses an existing branch as it is. The change starts at
+  `headRefName`, or `pr/<n>` for a pull request from a fork. The run always fetches the head of the pull request with `git fetch
+  origin pull/<n>/head`. It puts the branch on that head with `git branch -f <branch> <head>` when the branch is missing
+  or behind the head, and uses a branch that is at the head or ahead of it as it is. It fails with `<branch> has
+  diverged from PR #<n>; rebase it or delete it` when the branch and the head have diverged, and with `<branch> is behind
+  PR #<n> and checked out at <path>; update it there` when a worktree has the branch that is behind. The change starts at
   the merge base of the branch with `baseRefName`, or with `origin/<baseRefName>` when there is no local branch of
   that name; `--base` is not used.
 - A range `A..B` or `A...B`: from the merge base of `A` and `B` to `B`.
@@ -554,7 +557,10 @@ Each item of a valid candidate then ships with the overlay:
 `run("ship", { item, repo, base: start, overlay, from: runId })`, where `runId` is the past run, also when its
 baseline ran again; an `--items` item has no `from`. So the overlay is the only difference with the baseline. The diff of each ship child run that optimize starts is
 `git diff <start> HEAD` in its worktree. Then its worktree and its branch are removed: the `worktree` of its result,
-and the `branch` of its result, or `ship/<run-id>` when it did not ship. Its run directory stays. The worktrees and
+and the `branch` of its result, or else the branch that the worktree is on, read with `git branch --show-current`. When
+the worktree removal fails, the worktree and the branch stay, and the report gets the line
+`kept <worktree> on <branch>: <error>` before the last line. When only the branch removal fails, the branch stays, and
+the report gets the line `kept branch <branch>: <error>` before the last line. Its run directory stays. The worktrees and
 branches of the past runs stay.
 
 For each item, one turn of the `select` prompt with the `judge` agent profile gets only the work item and the two
@@ -682,12 +688,15 @@ export const meta = {
   - A `required` argument without a value fails with `missing <label>`. `label` defaults to the argument name.
 - `worktree: true` adds `--repo` and `--base`, with the rules of [Ship](#ship), and `--branch`. The run gets a new
   worktree on the branch `--branch` or `<wf>/<run-id>`, runs the script there, and gives it `args.start`, the
-  start commit. The worktree is `<parent>/.worktrees/<name>/<run-id>`, where `<parent>` is the folder that holds the
+  start commit. When another worktree of the repository has the branch checked out, the run fails with `branch <branch>
+  is checked out at <path>` before Herdr or Git makes anything. The worktree is `<parent>/.worktrees/<name>/<run-id>`, where `<parent>` is the folder that holds the
   repository and `<name>` is the repository folder's name: `~/code/app` gets `~/code/.worktrees/app/<run-id>`, and the
   clone of a GitHub repository gets `<run-directory>/.worktrees/repository/<run-id>`. When the command ran with
   `HERDR_ENV` set, the run first runs `herdr worktree create --cwd <repository> --path <worktree> --branch <branch>
   --base <start> --no-focus`, so the worktree shows in Herdr. When `herdr` fails, is missing, or makes no worktree at
-  that path, Git creates the worktree, as without Herdr. A child run uses Herdr when its root run does. When
+  that path, Git creates the worktree, as without Herdr. When `herdr` printed a workspace ID but made no worktree at
+  that path, the run first closes that workspace with `herdr workspace close <id>`; when that fails, the run fails with
+  `herdr workspace close <id> failed: <error>`. A child run uses Herdr when its root run does. When
   `herdr worktree create` made the worktree of a root run and printed the workspace ID that it opened, in
   `result.workspace.workspace_id`, the run types the pick loop in that workspace: see [Herdr](#herdr). At the end, the
   run names the branch: see [Branch name](#branch-name).
@@ -1020,7 +1029,9 @@ child run.
 workflows resume <run-id> [--answer <text>]
 ```
 
-`workflows resume` finds the workflow that the run saved and continues the run. A run of a workflow script continues
+`workflows resume` finds the workflow that the run saved and continues the run. A run that is gone, with no run
+directory or no task, prints `workflows: no run <run-id> in <runs>` or `workflows: run <run-id> has no workflow`, and
+exits 4. Every command that reads a saved run (`resume`, `wait`, `stop`, `show`, `save` and `attach`) does the same. A run of a workflow script continues
 with the script that the run saved. The `project` file of the run directory names the run's project, so resume reaches
 the host of that project from any directory.
 
@@ -1257,9 +1268,14 @@ it removes anything: a failed `gh` call, or a missing `gh`, prints `workflows: <
 With `--yes`, `prune` removes each merged worktree in order, and prints its line after the removal. When `HERDR_ENV` is
 set and `herdr worktree list --cwd <worktree>` shows a workspace open on the worktree, it runs `herdr worktree remove
 --workspace <id>`. Otherwise, or when a herdr command fails, it runs `git worktree remove <worktree>` in the run's
-repository, without `--force`. Then it deletes the branch with `git branch -D <branch>` when the branch still exists. A
-removal that fails, such as of a worktree with changes, prints the error and exits 1; the next `prune` tries again. The
-run directory and the run's records stay, so `list` and `show` still show the run.
+repository, without `--force`. Then it deletes the branch with `git branch -D <branch>` when the branch still exists. Before
+it removes anything of a run, it writes the marker `runs/<run-id>/pruning`, a JSON object `{ "branch", "repository",
+"path" }`, and it deletes the marker when the worktree and the branch are gone. A run with a marker is a candidate with no
+other check and no `gh` call, so a `prune` that stopped after the worktree removal is finished by the next one. A removal
+that fails, such as of a worktree with changes, prints `workflows: cannot prune <run-id>: <error>` on stderr, leaves the
+run out of stdout and the JSON, and goes on with the next run; `prune` then exits 1. A failed worktree removal deletes the
+marker, as the worktree can get more work; a failed branch removal keeps it. The run directory and the run's records
+stay, so `list` and `show` still show the run.
 
 `prune` also prints one line `<run-id> unstarted <run directory>` for each run directory of the project whose run has
 no task (the `unstarted` runs of `list`) and whose `project` file is more than 1 hour old, after the merged runs. With
@@ -1647,16 +1663,27 @@ widget redraws when a run starts to be followed, at each progress line,
 and at the end of each wait. When the session follows no run, the extension removes the widget. After shutdown, the
 extension draws nothing. As `session_start` follows the pending runs again, they show again after a reload.
 
-A `detached` or `host-stopped` outcome, an outcome line that is not valid, or no outcome line posts nothing and
-appends no end entry, so the next `session_start` follows the run again. A crash between the message and the end entry
+A `detached` or `host-stopped` outcome, an outcome line that is not valid, no outcome line, or a wait that does not
+start posts nothing and appends no end entry. The extension then waits 1 s and runs the wait again, and doubles the time
+before each next wait, up to 60 s. `session_shutdown` ends these retries, so the next `session_start` follows the run
+again. A wait that exits 4 with no outcome line, for a run that is gone, posts nothing and appends the end entry with
+the data `{ runId, reason }`, where `reason` is the error text that the tool gives for that output: the stderr text, or
+`workflows exited with <code>` when it is empty, after `run <id>: ` when the wait printed its run line. A crash between the message and the end entry
 posts the outcome again at the next `session_start`.
+
+A call without `background` that resumes a run that the session follows gives the outcome in its own result. When that
+result is `finished`, `failed` or `stopped`, the call appends the end entry, the wait posts nothing, and a wait
+that waits to run again stops, so the run leaves the widget. Else the wait
+posts the outcome that it gets.
 
 A `save` call returns `{ runId, status: "finished", result: { file }, report: [file] }`, with the absolute path of the
 file that it wrote. A `save` that fails is a normal tool error with the stderr text.
 
 A failed, detached, stopped or host-stopped result is an error result that keeps `structuredContent`. Thus
 `await tools.workflow({ name: "ship", args: { item } })` in a codemode script gets this object. A call that fails
-before a run exists, such as an unknown workflow name, is a normal tool error with the stderr text.
+before a run exists, such as an unknown workflow name, is a normal tool error with the stderr text. A call whose
+command printed `run <run-id>` and then stopped with no outcome line is a normal tool error `run <run-id>: <stderr
+text>`, or `run <run-id>: workflows exited with <code>` with no stderr, so the error keeps the run ID to resume.
 
 ### The `/workflows` command
 
@@ -1680,7 +1707,8 @@ up/down select an agent, enter attaches, escape closes
 ```
 
 The view shows at most 30 rows, around the selected agent. It first selects the last agent that works, else the last
-agent; a new read keeps the selected agent. A read that fails keeps the last tree. Before the first good read, the
+agent; a new read keeps the selected agent. A read that fails, or a `workflows` command that does not start, keeps the last tree and shows its
+error under the tree, above the help line, until the next good read. Before the first good read, the
 view shows `Reading the run...`, or the error of the last read in its place: the stderr of a `show` that fails, such as
 `workflows: no run <run-id>`, or `workflows show did not print the expected JSON`.
 

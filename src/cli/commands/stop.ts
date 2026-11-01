@@ -5,7 +5,7 @@ import { current } from "../../run/version.ts";
 import type { OutcomeStatus } from "../../tool.ts";
 import { abortRun } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { keysOf, oneRunId, progressOf, savedBy, savedRun, tasksOf } from "../saved.ts";
+import { GoneRun, keysOf, oneRunId, progressOf, savedBy, savedRun, tasksOf } from "../saved.ts";
 
 export const STOP = "workflows stop <run-id> [--json]";
 
@@ -17,7 +17,7 @@ export async function stop(args: readonly string[], terminal: Terminal, json: bo
 	const run = await savedRun(oneRunId(args, STOP), STOP);
 	const latest = taskOf(await tasksOf(run));
 
-	if (latest === undefined) throw new Error(`run ${run.id} has no workflow`);
+	if (latest === undefined) throw new GoneRun(`run ${run.id} has no workflow`);
 
 	if (hasEnded(runStatus(latest))) throw new Error(`run ${run.id} is not running`);
 	const key = (await keysOf(run)).keyOf(latest);
