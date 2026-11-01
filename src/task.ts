@@ -23,7 +23,6 @@ import { childInput, report, type ScriptInput, statusOf } from "./meta.ts";
 import { allPages, pastRuns, type RunTask, rootRuns, savedBundle } from "./past.ts";
 import { newRunId } from "./run.ts";
 import { addProgress, CallDoc, type Child, type Host, JSON_VALUE, ownerOf, runScript, SessionsDoc } from "./script.ts";
-import { setUp } from "./setup.ts";
 
 /**
  * The checkpoint of a run: its one phase. The saved calls of its script are documents of the store, so a new task of
@@ -338,7 +337,6 @@ async function runPhase(
 
 			// The workspace that Herdr opened on the worktree of a root run shows the agents of the run beside its steps.
 			if (parent === null && workspace !== undefined) await typePickLoop(workspace, runId);
-			await setUp(runtime, context, input, parent);
 		}
 
 		const ran = await runScript(runtime, context, cwd, host, {

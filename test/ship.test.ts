@@ -793,21 +793,6 @@ export default function ({ events }) {
 		expect(git(repo, "status", "--porcelain")).toBe("");
 	});
 
-	it("runs .workflows/setup once in the worktree of a ship, before its child runs", async () => {
-		const count = join(root, "setup.count");
-		await mkdir(join(repo, ".workflows"), { recursive: true });
-		await writeFile(join(repo, ".workflows", "setup"), `#!/bin/sh\npwd >> "${count}"\n`);
-		await chmod(join(repo, ".workflows", "setup"), 0o755);
-		git(repo, "add", ".workflows");
-		git(repo, "commit", "-qm", "setup");
-
-		const run = await workflows(["ship", "--json", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
-
-		expect(run.code).toBe(0);
-		expect(progressOf(run.stderr).slice(0, 2)).toEqual(["✓ setup", "✓ research"]);
-		expect(await readFile(count, "utf8")).toBe(`${worktreeOf(run.id)}\n`);
-	});
-
 	it("rejects bad input before a run starts", async () => {
 		const cases: [string[], string, number, string?][] = [
 			[["ship", "  \n"], "workflows: the work item is empty", 1],
