@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Choose } from "../src/main.ts";
+import type { Choose } from "../src/cli/main.ts";
 import { conversationOf, repository, runsOf, sandbox, workflows, worktreeAt } from "./support.ts";
 
 let root: string;

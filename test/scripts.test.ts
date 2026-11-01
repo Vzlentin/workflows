@@ -12,9 +12,9 @@ import { REMINDER } from "@vzlentin/harness/answer";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AGENTS } from "../pi/run-view.ts";
+import type { Choose } from "../src/cli/main.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { branchOf } from "../src/launch/worktree.ts";
-import type { Choose } from "../src/main.ts";
 import { CallDoc } from "../src/run/calls.ts";
 import { profileOf } from "../src/workflow/bundle.ts";
 import {

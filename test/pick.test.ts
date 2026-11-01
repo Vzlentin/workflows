@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { actionOf } from "../src/keys.ts";
-import { keepPick, matching, press, render, startPick } from "../src/pick.ts";
+import { actionOf } from "../src/cli/terminal/keys.ts";
+import { keepPick, matching, press, render, startPick } from "../src/cli/terminal/pick.ts";
 
 const UP = { type: "move", by: -1 } as const;
 const DOWN = { type: "move", by: 1 } as const;

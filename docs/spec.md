@@ -1691,8 +1691,13 @@ uses the profiles as they were when it started.
 The engine files in `src/`:
 
 - `cli.ts`: the `workflows` command entry point.
-- `main.ts`: the commands `start`, `resume`, `stop`, `list`, `show`, `attach`, `save` and `prune`, a client of the
-  harness host, and the run directory.
+- `cli/main.ts`: the command line: the terminal, the table of commands, usage and `--version`.
+- `cli/host.ts`: the connection to the harness host, the task keys, the run directories and the project store file.
+- `cli/saved.ts`: the saved runs of the command: their run directory, root tasks, status and progress.
+- `cli/follow.ts`: how the command follows a run to its outcome, the answer of a waiting run, and the Ctrl+C presses.
+- `cli/commands/`: one file for each command: `start.ts`, `resume.ts` (also `wait`), `stop.ts`, `list.ts`, `show.ts`,
+  `attach.ts`, `save.ts` and `prune.ts`.
+- `cli/terminal/pick.ts` and `cli/terminal/keys.ts`: the picker of `list --pick` and `show --pick`, and its keys.
 - `entry.ts`: the entry that the harness host loads, with the script task.
 - `records/tree.ts`: the call tree of a saved run, its lines and agent rows for `show` and `attach`, and the lines of
   `show` with the agent of each step, for `show --pick`.
@@ -1718,7 +1723,6 @@ The engine files in `src/`:
 - `run/child.ts`: the child runs that the `run` calls start.
 - `run/sandbox.ts`: the run of a script in the sandbox, with its globals and prompts.
 - `run/task.ts`: the task of every script run, its phase, its outcome, and the message of a background run.
-- `run.ts`: the Ctrl+C presses.
 - `git.ts`: run a process, and Git commands.
 
 The script side in `workflows/`, published as it is:

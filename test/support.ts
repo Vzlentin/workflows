@@ -24,8 +24,8 @@ import { projectDir } from "@vzlentin/harness/projects";
 import { AGENT_HANDLE, type Replies, type Request, statePaths } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { type Choose, main } from "../src/main.ts";
-import { CtrlC } from "../src/run.ts";
+import { CtrlC } from "../src/cli/follow.ts";
+import { type Choose, main } from "../src/cli/main.ts";
 
 /** The entry of the workflows checkout, which the hosts of the tests load. */
 export const ENTRY = fileURLToPath(new URL("../src/entry.ts", import.meta.url));
