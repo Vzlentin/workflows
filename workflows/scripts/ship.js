@@ -44,15 +44,8 @@ const { score, answers, findings, judgeError, commit } = await run("judge", { it
 const commitSubject = commit?.subject ?? subject
 const commitMessage = commit === undefined ? subject : `${commit.subject}\n\n${commit.body}`
 
-// One command, so that a repeat resets a squash commit that was made but not saved.
-const squash = 'git reset -q --soft "$1" && git commit -q -m "$2"'
-
-await sh(["sh", "-c", squash, "squash", start, commitMessage])
-
-const short = await sh(["git", "rev-parse", "--short", "HEAD"])
+const short = await squash(start, commitMessage, commitSubject)
 const judged = score === undefined ? "failed" : score.toFixed(2)
-
-log(`commit ${short} ${commitSubject}`)
 
 return notes.finish(item, {
 	status: "shipped",

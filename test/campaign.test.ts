@@ -41,6 +41,12 @@ const FIXED = "# Demo\n\nHello world\n";
 const THANKED = `${FIXED}Thanks.\n`;
 const THIRD = "# Thank the reader\n\nEnd the README with Thanks.";
 
+/** The README of the fix round, different from `FIXED`. */
+const FIX = "# Demo\n\nHello, world\n";
+
+/** A judge verdict with the score 0. */
+const ZERO = { answers: ["FAIL", ...Array(7).fill("PASS")], findings: ["1 FAIL: the typo stays."] };
+
 const SHIP = ["research", "plan", "handoff", "implement", "review", "judge", "commit"];
 
 const THANKS: Commit = {
@@ -217,12 +223,100 @@ describe("workflows campaign", () => {
 		expect(shipped[0]).not.toHaveProperty("child");
 	});
 
-	it("resets to the start commit after a judge score of 0, and stops on the answer stop", async () => {
-		const judge = { answers: ["FAIL", ...Array(7).fill("PASS")], findings: ["1 FAIL: the typo stays."] };
+	it("ships an item with a judge score of 0 after one fix round on the judge's findings", async () => {
+		const run = await workflows(["campaign", "--json", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST]], edits: [FIXED, FIX], commit: [COMMIT], judge: [ZERO] },
+		});
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(run.model.calls.map((call) => call.kind)).toEqual([
+			"split",
+			...SHIP,
+			"implement",
+			"judge",
+			"judge",
+			"harvest",
+		]);
+		expect(run.model.find("implement", 1)?.prompt).toContain("## Judge findings\n\n- 1 FAIL: the typo stays.");
+		expect(run.model.count("rundown")).toBe(0);
+		expect(report[1]).toEqual(itemLine(COMMIT.subject));
+		expect(result.items[0].result).toMatchObject({ status: "shipped", score: 5 / 6, findings: PASSING_JUDGE.findings });
+		const worktree = worktreeOf(run.id);
+		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("1");
+		expect(git(worktree, "log", "-1", "--format=%B").trim()).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
+		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(FIX);
+		const progress = progressOf(run.stderr);
+		const item = progress.indexOf("✓ item 1/1: Fix the README typo");
+		expect(progress.slice(item + 1, progress.indexOf("✓ all 1 item"))).toEqual([
+			...itemSteps("+1 -1 in 1 file", COMMIT.subject).slice(0, 6),
+			"  ✓ judge",
+			"    judge 0.00",
+			expect.stringMatching(new RegExp(`^ {2}commit [0-9a-f]+ ${COMMIT.subject}$`)),
+			"  ✓ fix",
+			"    +1 -1 in 1 file",
+			"    ✓ judge",
+			"      judge 0.83",
+			expect.stringMatching(new RegExp(`^ {2}commit [0-9a-f]+ ${COMMIT.subject}$`)),
+		]);
+	});
+
+	it("runs no fix round for a blocked item", async () => {
+		const run = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST]], edits: [] },
+		});
+
+		expect(run.code).toBe(3);
+		expect(run.model.count("implement")).toBe(1);
+		expect(run.stdout.join("\n")).not.toContain("Fix round:");
+	});
+
+	it("runs no fix round for an item whose judge failed", async () => {
+		const failing = "1 PASS\n2 PASS";
 
 		const run = await workflows(["campaign", GOAL], {
 			cwd: repo,
-			script: { items: [[FIRST, SECOND]], edits: [FIXED], judge },
+			script: { items: [[FIRST]], edits: [FIXED, FIX], judge: [failing, failing, failing] },
+		});
+
+		expect(run.code).toBe(0);
+		expect(run.model.count("implement")).toBe(1);
+	});
+
+	it("resumes in the judge of the fix round and makes one commit", async () => {
+		const first = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: {
+				items: [[FIRST]],
+				edits: [FIXED, FIX],
+				commit: [COMMIT],
+				judge: [ZERO],
+				interruptAt: { kind: "judge", nth: 2 },
+			},
+		});
+
+		expect(first.code).toBe(130);
+
+		const resumed = await workflows(["resume", first.id ?? "", "--json"], { cwd: root });
+
+		expect(resumed.code).toBe(0);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["judge", "judge", "harvest"]);
+		const { result } = JSON.parse(resumed.stdout[1] ?? "");
+		expect(result.items[0].result.score).toBe(5 / 6);
+		const worktree = worktreeOf(first.id);
+		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("1");
+		expect(git(worktree, "log", "-1", "--format=%B").trim()).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
+		const reflog = git(worktree, "reflog", "--format=%gs").split("\n");
+		expect(reflog.filter((line) => line === "commit: fix: judge findings of item 1")).toHaveLength(1);
+		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(FIX);
+	});
+
+	it("resets to the start commit after a judge score of 0 that the fix round keeps, and stops on the answer stop", async () => {
+		const run = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST, SECOND]], edits: [FIXED, FIX], judge: ZERO },
 		});
 
 		expect(run.code).toBe(3);
@@ -231,6 +325,7 @@ describe("workflows campaign", () => {
 			`run ${run.id}`,
 			[
 				"Rundown 1: the item failed.",
+				"Fix round: still 0 after one fix round\n- 1 FAIL: the typo stays.",
 				"Suggestions:\n- Split the item.",
 				"Proposed items:",
 				`Patch of the failed item: ${patch}`,
@@ -240,13 +335,13 @@ describe("workflows campaign", () => {
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-parse", "HEAD")).toBe(start);
 		expect(existsSync(patch)).toBe(true);
-		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "rundown"]);
+		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "implement", "judge", "rundown"]);
 		const rundown = run.model.find("rundown")?.prompt;
-		expect(rundown).toContain("## status\nshipped with judge score 0");
+		expect(rundown).toContain("## status\nshipped with judge score 0, still 0 after one fix round\n");
 		expect(rundown).toContain("## findings\n1 FAIL");
 		expect(rundown).toContain(`## remaining\n${JSON.stringify([SECOND])}`);
 		expect(rundown).toMatch(
-			/\n## memory\n#0 item 1 planner: [^\n]*\n#1 item 1 implementer r1: [^\n]*\n#2 campaign: item 1 failed and was reset: its notes describe code that is gone\n/,
+			/\n## memory\n#0 item 1 planner: [^\n]*\n#1 item 1 implementer r1: [^\n]*\n#2 item 1 implementer r2: [^\n]*\n#3 campaign: item 1 failed and was reset: its notes describe code that is gone\n/,
 		);
 		expect(rundown).toContain(`## patch\n${patch}`);
 
@@ -264,6 +359,68 @@ describe("workflows campaign", () => {
 		expect(result.rundown).toBe("Rundown 1: the item failed.");
 		git(worktree, "apply", "--index", patch);
 		expect(git(worktree, "write-tree")).toBe(git(worktree, "rev-parse", `${result.items[0].result.head}^{tree}`));
+	});
+
+	it("resets and asks when a child run of the fix round fails, and does not run it again on resume", async () => {
+		const hook = join(repo, ".git", "hooks", "commit-msg");
+		await writeFile(
+			hook,
+			"#!/bin/sh\nif grep -q '^fix: judge findings' \"$1\"; then echo 'lint failed' >&2; exit 1; fi\n",
+		);
+		await chmod(hook, 0o755);
+
+		const run = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST, SECOND]], edits: [FIXED, FIX], judge: [ZERO] },
+		});
+
+		expect(run.code).toBe(3);
+		const failed = /\n\nFix round: the fix round failed: child run \S+ failed: git commit failed: lint failed\n\n/;
+		expect(run.stdout[1]).toMatch(failed);
+		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "implement", "rundown"]);
+		const rundown = run.model.find("rundown")?.prompt;
+		expect(rundown).toMatch(/## status\nshipped with judge score 0, the fix round failed: child run \S+ failed: /);
+		expect(rundown).toContain("## findings\n1 FAIL: the typo stays.");
+		const worktree = worktreeOf(run.id);
+		expect(git(worktree, "rev-parse", "HEAD")).toBe(start);
+		const reflog = git(worktree, "reflog", "--format=%gs");
+
+		const stopped = await workflows(["resume", run.id ?? "", "--answer", "stop"], { cwd: root });
+		expect(stopped.code).toBe(1);
+		expect(stopped.model.calls.map((call) => call.kind)).toEqual(["harvest"]);
+		expect(git(worktree, "reflog", "--format=%gs")).toBe(reflog);
+	});
+
+	it("resumes between the reset of a failed fix round and its question, and repeats no Git step", async () => {
+		const hook = join(repo, ".git", "hooks", "commit-msg");
+		await writeFile(
+			hook,
+			"#!/bin/sh\nif grep -q '^fix: judge findings' \"$1\"; then echo 'lint failed' >&2; exit 1; fi\n",
+		);
+		await chmod(hook, 0o755);
+
+		const first = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: {
+				items: [[FIRST, SECOND]],
+				edits: [FIXED, FIX],
+				judge: [ZERO],
+				interruptAt: { kind: "rundown", nth: 1 },
+			},
+		});
+
+		expect(first.code).toBe(130);
+		const worktree = worktreeOf(first.id);
+		const reflog = git(worktree, "reflog", "--format=%gs");
+
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+
+		expect(resumed.code).toBe(3);
+		const failed = /\n\nFix round: the fix round failed: child run \S+ failed: git commit failed: lint failed\n\n/;
+		expect(resumed.stdout[1]).toMatch(failed);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["rundown"]);
+		expect(git(worktree, "reflog", "--format=%gs")).toBe(reflog);
+		expect(git(worktree, "rev-parse", "HEAD")).toBe(start);
 	});
 
 	it("distils the lessons of the campaign once, at its end, and none in its items", async () => {

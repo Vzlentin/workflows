@@ -377,6 +377,7 @@ const GUIDELINES = [
 		"`{ cue, lesson, evidence }` of the notes, `[]` with no turn when there are none, and a report line for each one, " +
 		"when the store opened here), and `.session(profile)`, whose first `.ask` starts with the notes and whose " +
 		"`.noted(round, prompt, rule)` asks for `{ text, notes }` and keeps the notes. `commitAll(message)` stages and commits every change, " +
+		"`squash(start, message, subject)` squashes the commits since `start` into one, logs it and gives the short head, " +
 		"`diffStat(from, to)` gives `+12 -3 in 2 files`, `assertClean()` throws on changes that are not committed, " +
 		"`changeOf(args, { wip })` gives `{ start, intent, checkout, dirty }` of `args.start` and `args.item`, or else of " +
 		"`args.change` (the current branch, a PR number, a ref or a range) and names the run, and `inCheckout(name, change, args)` runs the script again in a worktree on the " +

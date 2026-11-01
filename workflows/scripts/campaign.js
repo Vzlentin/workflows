@@ -1,8 +1,9 @@
 // The split and the items of `workflows campaign`, in its worktree. Each item ships through ship.js as one commit on
-// top of the item before it. A failed item gets a rundown and a question, and the answer goes back to the split. When
-// every item shipped, judge.js judges the change of the whole campaign against the goal, which no item's judge sees.
-// The engine names the branch from `subject` of the result. Every Git step is safe to repeat: a resume runs a step
-// again when its result was not saved.
+// top of the item before it. An item that ships with a judge score of 0 gets one fix round, fix.js: an implement turn
+// on the judge's findings, and a new judge. A failed item gets a rundown and a question, and the answer goes back to
+// the split. When every item shipped, judge.js judges the change of the whole campaign against the goal, which no
+// item's judge sees. The engine names the branch from `subject` of the result. Every Git step is safe to repeat: a
+// resume runs a step again when its result was not saved.
 export const meta = {
 	description: "Split a goal into work items and ship each one as a commit on one branch.",
 	args: {
@@ -55,6 +56,58 @@ async function split(inputs) {
 	return answered
 }
 
+// The rundown text of each failed fix round, by the status of fix.js.
+const FIX_FAILED = {
+	failed: (fixed) => `the fix round failed: ${fixed.error}`,
+	blocked: () => "the fix round changed nothing",
+	unjudged: () => "no judge score after one fix round",
+	judged: () => "still 0 after one fix round",
+}
+
+// The outcome of an item's ship: `shipped`, the result of an item that shipped, or `failure`, the rundown inputs of
+// an item that failed: `status`, `reply`, `findings` and an optional `summary` block of the question. An item that
+// shipped with a judge score of 0 and findings gets one fix round, the child run fix.js. With a score above 0 it
+// squashes the item again with its commit message.
+async function settle(n, item, start, result) {
+	if (result.status === "shipped" && result.score !== 0) return { shipped: result }
+
+	if (result.status !== "shipped" || result.findings.length === 0) {
+		const status = result.status === "shipped" ? "shipped with judge score 0" : result.status
+
+		return { failure: { status, reply: result.reply ?? "", findings: result.findings ?? [] } }
+	}
+
+	const message = await sh(["git", "log", "-1", "--format=%B"])
+
+	const fixed = await run("fix", {
+		item,
+		start,
+		findings: result.findings,
+		round: result.rounds + 1,
+		message: `fix: judge findings of item ${n}`,
+		memory: { ...notes.ref, item: n },
+	})
+
+	if (fixed.status === "judged" && fixed.score !== 0) {
+		const { score, answers, findings } = fixed
+		const short = await squash(start, message, result.subject)
+
+		return { shipped: { ...result, head: short, score, answers, findings } }
+	}
+
+	const outcome = FIX_FAILED[fixed.status](fixed)
+	const findings = fixed.status === "judged" ? fixed.findings : []
+
+	return {
+		failure: {
+			status: `shipped with judge score 0, ${outcome}`,
+			reply: fixed.reply ?? result.reply ?? "",
+			findings: findings.length > 0 ? findings : result.findings,
+			summary: [`Fix round: ${outcome}`, ...findings.map((finding) => `- ${finding}`)].join("\n"),
+		},
+	}
+}
+
 let { subject, items: queue } = await split({})
 const notes = await memory()
 
@@ -66,11 +119,15 @@ for (let n = 1; queue.length > 0; n++) {
 	const start = await sh(["git", "rev-parse", "HEAD"])
 	const result = await run("ship", { item, rounds, start, patches, memory: { ...notes.ref, item: n } })
 
-	if (result.status === "shipped" && result.score !== 0) {
-		done.push({ item, result })
+	const outcome = await settle(n, item, start, result)
+
+	if (outcome.shipped) {
+		done.push({ item, result: outcome.shipped })
 		queue = rest
 		continue
 	}
+
+	const { failure } = outcome
 
 	// `start` is the last shipped commit: every earlier item shipped or was reset to its own start.
 	await sh(["git", "reset", "--hard", start])
@@ -83,10 +140,10 @@ for (let n = 1; queue.length > 0; n++) {
 			goal,
 			shipped: shipped(),
 			item,
-			status: result.status === "shipped" ? "shipped with judge score 0" : result.status,
-			reply: result.reply ?? "",
+			status: failure.status,
+			reply: failure.reply,
 			handoff: result.handoff ?? "",
-			findings: (result.findings ?? []).join("\n"),
+			findings: failure.findings.join("\n"),
 			memory: await notes.text,
 			remaining: JSON.stringify(rest),
 			patch,
@@ -98,6 +155,7 @@ for (let n = 1; queue.length > 0; n++) {
 
 	const summary = [
 		rundown,
+		...(failure.summary === undefined ? [] : [failure.summary]),
 		["Suggestions:", ...suggestions.map((suggestion) => `- ${suggestion}`)].join("\n"),
 		["Proposed items:", ...proposed.items.map((next, i) => `${i + 1}. ${next}`)].join("\n\n"),
 		...(patch ? [`Patch of the failed item: ${patch}`] : []),

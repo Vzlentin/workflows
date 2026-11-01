@@ -1,5 +1,5 @@
-// One implement turn: the implementer follows a plan, and every change is committed. `rpi.js` and `thermoloop.js` run
-// it in their directory. A caller gives `start`, the commit that the change starts from, and may give `memory`, the
+// One implement turn: the implementer follows a plan, and every change is committed. `rpi.js`, `thermoloop.js` and
+// `fix.js` run it in their directory. A caller gives `start`, the commit that the change starts from, and may give `memory`, the
 // `ref` of a run memory to go on with. Every Git step is safe to repeat: a resume runs a step again when its result
 // was not saved.
 export const meta = {
