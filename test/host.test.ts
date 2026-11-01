@@ -26,6 +26,7 @@ import {
 	escAgent,
 	FakeModel,
 	hostModel,
+	inputsOf,
 	nextResult,
 	piSettings,
 	postedResults,
@@ -394,6 +395,8 @@ describe("runs in the harness host", () => {
 		await writeFile(join(root, "x.js"), 'return { status: "stopped", report: ["r"] }');
 		const run = await workflows(["x.js"], { cwd: root });
 		const id = run.id ?? "";
+		// The script declares no `meta.exit`, so the status exits 1.
+		expect(run.code).toBe(1);
 		const listed = await workflows(["list"], { cwd: root });
 		expect(listed.stdout).toEqual([`${id} x stopped x`]);
 		const listedJson = await workflows(["list", "--json"], { cwd: root });
@@ -532,7 +535,8 @@ describe("runs in the harness host", () => {
 
 		try {
 			const input = { runId: id, name: "x" };
-			await request({ type: "start", kind: TASK.name, input, key: `wf:${id}#1` }, { start: false });
+			// The key number is not the count of the run's tasks, so stop must find the key of the task.
+			await request({ type: "start", kind: TASK.name, input, key: `wf:${id}#2` }, { start: false });
 		} finally {
 			await old.close();
 		}
@@ -556,6 +560,84 @@ describe("runs in the harness host", () => {
 		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x orphaned x`]);
 		const again = await workflows(["stop", id], { cwd: root });
 		expect(again.stderr).toEqual([`workflows: run ${id} is not running`]);
+	});
+
+	it("resumes a run in a new task at the key after its highest key, also after a gap", async () => {
+		await writeFile(join(root, "x.js"), 'await sh("test -f ok")\nreturn "done"');
+		const first = await workflows(["x.js"], { cwd: root });
+		const id = first.id ?? "";
+		expect(first.code).toBe(1);
+		const [input] = await inputsOf(id);
+
+		if (input === undefined) throw new Error("no input");
+		const host = await startHost();
+
+		try {
+			// A second task at #3 leaves the key #2 free, so the count of tasks gives a key that harness already has.
+			const key = `wf:${id}#3`;
+			await request({ type: "start", kind: TASK.name, version: TASK.version, input, key }, { start: false });
+			await request({ type: "wait-task", key }, { start: false });
+		} finally {
+			await host.close();
+		}
+
+		await writeFile(join(root, "ok"), "");
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${id}`, "done"]]);
+		expect(await rootTasks(id)).toEqual([
+			{ status: "terminal", outcome: "failed" },
+			{ status: "terminal", outcome: "failed" },
+			{ status: "terminal", outcome: "completed" },
+		]);
+	});
+
+	it("fails a resume that another resume of the run beat to its task with another input", async () => {
+		await writeFile(join(root, "x.js"), 'return await input("A?")');
+		const first = await workflows(["x.js"], { cwd: root });
+		const id = first.id ?? "";
+		expect(first.code).toBe(3);
+		const host = await startHost();
+
+		try {
+			const both = await Promise.all(
+				["a", "b"].map((answer) => workflows(["resume", id, "--answer", answer], { cwd: root, host })),
+			);
+
+			const outcomes = both.map(({ code, stdout, stderr }) => [code, stdout.at(-1), stderr.at(-1)]);
+
+			expect(outcomes.toSorted(([a], [b]) => Number(a) - Number(b))).toEqual([
+				[0, expect.stringMatching(/^[ab]$/), undefined],
+				[
+					1,
+					undefined,
+					`workflows: run ${id} was resumed by another command with another input: follow it with workflows wait ${id}`,
+				],
+			]);
+		} finally {
+			await host.close();
+		}
+
+		expect(await rootTasks(id)).toEqual([
+			{ status: "terminal", outcome: "completed" },
+			{ status: "terminal", outcome: "completed" },
+		]);
+	});
+
+	it("lists and shows a run whose task faulted as failed", async () => {
+		await writeFile(join(root, "x.js"), 'throw new Error("no")');
+		const run = await workflows(["x.js"], { cwd: root });
+		const id = run.id ?? "";
+		const database = new DatabaseSync(storeOf());
+		database
+			.prepare(
+				`UPDATE tasks SET record = json_set(record, '$.state.outcome.status', 'faulted') WHERE record ->> '$.kind' = 'workflows.run'`,
+			)
+			.run();
+		database.close();
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "faulted" }]);
+		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x failed x`]);
+		const shown = await workflows(["show", id], { cwd: root });
+		expect([shown.stdout[0], shown.stdout.at(-2)]).toEqual([`run ${id} x failed x`, "failed x: no"]);
 	});
 
 	it("starts no turn in a session of an earlier task after a failed run ended its sessions", async () => {

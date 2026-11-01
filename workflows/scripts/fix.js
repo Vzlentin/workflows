@@ -13,7 +13,7 @@ export const meta = {
 		round: { type: "number", default: 1 },
 		message: { type: "string" },
 	},
-	exit: { failed: 1, blocked: 1, unjudged: 1 },
+	exit: { judged: 0, failed: 1, blocked: 1, unjudged: 1 },
 }
 
 const { item, start, round, findings = [] } = args
@@ -35,7 +35,7 @@ try {
 	const fixed = await run("implement", implement)
 	reply = fixed.reply
 
-	if (fixed.status === "blocked") return { status: "blocked", reply, report: [`blocked ${subject}`, reply] }
+	if (fixed.status !== "implemented") return { status: fixed.status, reply, report: [`${fixed.status} ${subject}`, reply] }
 
 	const judged = await run("judge", { item, start })
 	const { score, answers, judgeError } = judged

@@ -71,6 +71,9 @@ export const OUTCOME = Type.Union([
 
 export type WorkflowOutcome = Static<typeof OUTCOME>;
 
+/** The `status` of a JSON outcome line of the command. */
+export type OutcomeStatus = WorkflowOutcome["status"];
+
 export const DESCRIPTION =
 	"Run a durable workflow and wait for its result. Give exactly one of: `name` (a workflow script such as " +
 	"`ship`, `campaign` or `optimize`), `script` (the body of an inline workflow script), `resume` (a run " +

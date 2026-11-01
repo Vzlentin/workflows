@@ -11,7 +11,7 @@ export const meta = {
 		rounds: { type: "number", default: 3 },
 	},
 	worktree: true,
-	exit: { stopped: 1 },
+	exit: { done: 0, stopped: 1 },
 }
 
 const { goal, rounds, start: first } = args

@@ -9,7 +9,7 @@ export const meta = {
 		message: { type: "string" },
 		round: { type: "number", default: 1 },
 	},
-	exit: { blocked: 1 },
+	exit: { implemented: 0, blocked: 1 },
 }
 
 const { plan, round } = args

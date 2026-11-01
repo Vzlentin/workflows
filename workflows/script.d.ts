@@ -22,7 +22,7 @@ type Meta = {
 	 * result with a `subject` renames `<wf>/<run-id>` to the name of `subject`.
 	 */
 	worktree?: boolean;
-	/** The exit code of each `result.status`. Any other status exits 0. */
+	/** The exit code of each `result.status`. Any other status exits 1, and a result without a status exits 0. */
 	exit?: Record<string, number>;
 };
 

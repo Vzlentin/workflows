@@ -3,12 +3,87 @@
  * tasks of the kind `workflows.run`, at the current version and at earlier versions alike.
  */
 import type { Context, JsonValue } from "@earendil-works/chord";
-import type { Cursor, Page, TaskRecord } from "@earendil-works/pi-durable";
+import type { Cursor, Page, TaskOutcome, TaskRecord } from "@earendil-works/pi-durable";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
-import { type Runtime, TASK } from "./version.ts";
+import { statusOf } from "./result.ts";
+import { current, type Runtime, TASK, thisVersion } from "./version.ts";
 
 export type RunTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
+
+/** A task as the host's `TaskInfo` gives it: its kind and version, and its outcome once it ended. */
+export type TaskEnd = { readonly kind: string; readonly version: number; readonly outcome?: TaskOutcome<JsonValue> };
+
+/**
+ * The status of a run. A task that has not ended is `running`, or `earlier-version` or `later-version` when another
+ * version saved it. A completed task is `waiting` when its result waits for an answer, else `done`. A task that ended
+ * without a result is `failed` (also when pi-durable faulted it), `aborted` or `orphaned`.
+ */
+export type RunStatus =
+	| "running"
+	| "earlier-version"
+	| "later-version"
+	| "waiting"
+	| "done"
+	| "failed"
+	| "aborted"
+	| "orphaned";
+
+/** The outcome of `task`, or undefined when it has not ended. */
+export function taskOutcome(task: RunTask | TaskEnd): TaskOutcome<JsonValue> | undefined {
+	return "state" in task ? task.state.outcome : task.outcome;
+}
+
+/** Whether a task of another version than this one, the version of `task`, is later. */
+export function savedLater(task: { readonly kind: string; readonly version: number }): boolean {
+	return task.kind === TASK.name && task.version > TASK.version;
+}
+
+/** The status of the run whose task is `task`. It is the one place that computes it. */
+export function runStatus(task: RunTask | TaskEnd): RunStatus {
+	const outcome = taskOutcome(task);
+
+	if (outcome === undefined) {
+		if (thisVersion(task)) return "running";
+
+		return savedLater(task) ? "later-version" : "earlier-version";
+	}
+
+	switch (outcome.status) {
+		case "completed":
+			return statusOf(outcome.result) === "waiting" ? "waiting" : "done";
+		case "failed":
+		case "faulted":
+			return "failed";
+		case "aborted":
+			return "aborted";
+		case "orphaned":
+			return "orphaned";
+	}
+}
+
+/** Whether a run of `status` has ended: its task is terminal. */
+export function hasEnded(status: RunStatus): boolean {
+	return status !== "running" && status !== "earlier-version" && status !== "later-version";
+}
+
+/** Whether a run of `status` has a result: it is `done`, or `waiting` for an answer. */
+export function hasResult(status: RunStatus): boolean {
+	return status === "done" || status === "waiting";
+}
+
+/**
+ * The task of a run that the commands go by: its last task, unless that is a task of another version that ended after
+ * a task of this version, as when the command refused the host's version and aborted it; then the last task of this
+ * version.
+ */
+export function taskOf(tasks: readonly RunTask[]): RunTask | undefined {
+	const latest = tasks.at(-1);
+
+	if (latest === undefined || current(latest) || !hasEnded(runStatus(latest))) return latest;
+
+	return tasks.findLast(current) ?? latest;
+}
 
 const PROFILE = Type.Object({
 	model: Type.Optional(Type.Object({ provider: Type.String(), modelId: Type.String() })),
@@ -138,9 +213,7 @@ export function pastRuns(
 	const completed = new Map<string, JsonValue>();
 
 	for (const [id, { task, input }] of savedRuns(roots)) {
-		const { state } = task;
-
-		if (input.name !== workflow || state.status !== "terminal" || state.outcome.status !== "completed") continue;
+		if (input.name !== workflow || runStatus(task) !== "done") continue;
 		const { args, worktree, bundle } = input;
 
 		completed.set(id, {
@@ -150,7 +223,7 @@ export function pastRuns(
 			start: worktree?.start ?? null,
 			prompts: bundle.prompts,
 			agents: profileTexts(bundle.agents),
-			result: state.outcome.result ?? null,
+			result: taskOutcome(task)?.result ?? null,
 		});
 	}
 

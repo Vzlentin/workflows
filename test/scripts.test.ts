@@ -1569,7 +1569,7 @@ return [one.reply, two.reply].join(", ")`,
 
 		const cases: [string[], string, number][] = [
 			[["ok.js"], "1", 0],
-			[["status.js"], '{"status":"toString"}', 0],
+			[["status.js"], '{"status":"toString"}', 1],
 			[["pos.js", "hello"], "hello", 0],
 			[["ok.js", "--word", "x"], "workflows: Unknown option '--word'", 2],
 			[["nope"], "workflows: unknown command nope", 2],

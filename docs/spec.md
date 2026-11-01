@@ -691,8 +691,9 @@ export const meta = {
   `herdr worktree create` made the worktree of a root run and printed the workspace ID that it opened, in
   `result.workspace.workspace_id`, the run types the pick loop in that workspace: see [Herdr](#herdr). At the end, the
   run names the branch: see [Branch name](#branch-name).
-- `exit` maps `result.status` to the exit code. Any other status, or a result without `status`, exits 0. The status
-  `waiting` always exits 3, whatever `exit` says. See [Input](#input).
+- `exit` maps `result.status` to the exit code. A script declares each status that it returns, also the ones that exit
+  0. A status that `exit` does not declare exits 1, and a result without `status` exits 0. The status `waiting` always
+  exits 3, whatever `exit` says. See [Input](#input).
 
 Every script also takes `--prompts <folder>`, as `ship` does, `--background`, `--json` and `--help`. `workflows <wf> --help` prints
 the usage line, built from `meta`, and `meta.description` when the script has one, and exits 0. Any other flag is bad usage. Bad usage prints
@@ -890,7 +891,8 @@ or an array of strings, or a `prompts.<name>` input that is not a string, fails 
 #### Past runs
 
 `pastRuns(workflow, { runs, limit })` returns the root runs of the script `workflow` in the project store whose last
-task completed, newest first by run ID. Child runs and runs in progress are not in the list. It reads the tasks of
+task completed with a result that does not wait for an answer, newest first by run ID. Child runs, waiting runs and
+runs in progress are not in the list. It reads the tasks of
 `workflows.run` through the host, at the current task version and at earlier ones, and skips a task whose saved input
 does not have the fields below. Each run is an object:
 
@@ -1034,13 +1036,15 @@ A run has one live task at a time. When the run's last task has not ended, becau
 the host to start, resume follows that task and prints its outcome. When the host runs, resume prints the progress
 lines of the task's current execution from its start. When no host runs, resume starts it and prints the progress
 lines that come after. A host that starts continues the unfinished runs of its project on its own. When resume starts
-a new task, it prints the progress lines of that task.
+a new task, it prints the progress lines of that task. When two resumes of a run start a new task at the same time,
+the first one gets the task. The other follows that task when it sent the same input, else it prints `workflows: run
+<run-id> was resumed by another command with another input: follow it with workflows wait <run-id>` and exits 1.
 
 A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows resume <run-id>`, and
 exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. The run's task ends as
 failed. Resume runs the script again in a new task of the same run, with the same input: a failed Git step runs again,
 a failed turn is sent again in the same session, saved calls return their results, and child runs continue. A run whose
-task ended in another way, such as a stopped, faulted or orphaned task, resumes in the same way. An ask whose answer
+task ended in another way, such as a stopped or orphaned task, or one that pi-durable faulted, resumes in the same way. An ask whose answer
 stopped for a reason other than its end, such as its length, fails its call, and a resume asks again. So does an ask
 whose answer did not call `respond`. A resumed ask never returns the answer of another ask in its session.
 
@@ -1195,7 +1199,7 @@ runs are not listed: they are tasks of their caller. The title is the last `titl
 else the script name. A finished run has the
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
 `done` when the result has no `status`. A run that waits for an answer to `input()` is `waiting`. A run whose task has not ended is `running`, also when it waits for its host
-to start. A run whose task ended without a result is `aborted` (a second Ctrl+C or `workflows stop` stopped it), `failed`, `faulted` or `orphaned`. A pending run that
+to start. A run whose task ended without a result is `aborted` (a second Ctrl+C or `workflows stop` stopped it), `failed` (also a task that pi-durable faulted) or `orphaned`. A pending run that
 another version of workflows saved is `earlier-version` or `later-version`, with its workflow name as its title: it
 cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status", "repository" }`.
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
@@ -1204,7 +1208,7 @@ Only the runs that have a run directory with a `project` file are listed.
 
 With `--pick`, on a terminal, the command asks `Pick a run:` with the runs that run or wait first, each as `<mark>
 <title>  <workflow> <status>`, with `: <status of the run>` of [Progress](#progress) for a running run. The mark is `◉` running, `?` waiting,
-`✗` failed, else `·`. Typing filters by each word, in any case; the arrows move, Enter prints the run ID, and Esc or
+`✗` failed (a task that ended without a result, not a result whose `status` is `failed`), else `·`. Typing filters by each word, in any case; the arrows move, Enter prints the run ID, and Esc or
 Ctrl+C exits 130. So commands compose: `workflows wait "$(workflows list --pick)"`. While the pick waits for a key, the
 command reads the runs again 1 s after each read ends and draws the new lines, with the typed filter kept and the cursor
 on the same run, else on the first match. A read that fails keeps the lines it has, and a read that finds no run shows
@@ -1448,7 +1452,10 @@ directory, starts the host when none runs, asks it to start the run's task, and 
 - The run lists its sessions in the session-scoped document `workflows.sessions` of the project store, keyed by the
   root run ID. Each record has `run`, `conversation`, `task` and `label`, the name of the agent profile that opened the
   session. A record that an earlier version saved can have no `label`. This `label` is not the call label of `show`.
-- Each try of a run is a task that harness starts with the key `wf:<run-id>#<n>`, from 1.
+- Each try of a run is a task that harness starts with the key `wf:<run-id>#<n>`, from 1. A new task of a run gets
+  the highest `<n>` of the run's keys in harness's document of keys, plus 1. `stop`, and `resume` of a task that has not
+  ended, reach the task by its own key in that document. A task that has no key there, such as one that no `start`
+  created, fails them with `workflows: run <run-id> has no harness task key for its task <task-id>`.
 
 ### The `workflow` tool of the host
 
@@ -1717,7 +1724,8 @@ The engine files in `src/`:
 - `cli.ts`: the `workflows` command entry point.
 - `cli/main.ts`: the command line: the terminal, the table of commands, usage and `--version`.
 - `cli/host.ts`: the connection to the harness host, the task keys, the run directories and the project store file.
-- `cli/saved.ts`: the saved runs of the command: their run directory, root tasks, status and progress.
+- `cli/saved.ts`: the saved runs of the command: their run directory, root tasks and their keys, the status that
+  `list` and `show` print, and progress.
 - `cli/follow.ts`: how the command follows a run to its outcome, the answer of a waiting run, and the Ctrl+C presses.
 - `cli/commands/`: one file for each command: `start.ts`, `resume.ts` (also `wait`), `stop.ts`, `list.ts`, `show.ts`,
   `attach.ts`, `save.ts` and `prune.ts`.
@@ -1726,8 +1734,8 @@ The engine files in `src/`:
 - `records/tree.ts`: the call tree of a saved run, its lines and agent rows for `show` and `attach`, and the lines of
   `show` with the agent of each step, for `show --pick`.
 - `records/steps.ts`: the tree of steps of a run.
-- `records/store.ts`: the command's read-only reads of the project store: the tasks of the runs, their progress and
-  calls.
+- `records/store.ts`: the command's read-only reads of the project store: the tasks of the runs, harness's task
+  keys, their progress and calls.
 - `cli/terminal/redraw.ts`: how the command draws the tree of steps of a run on stderr.
 - `launch/input.ts`: the generic entry point `workflows <wf>`: the checked arguments of a run, its run ID, its saved
   input, and the input of a child run.
@@ -1741,7 +1749,8 @@ The engine files in `src/`:
   instructions of a prompt template, and the edits of the bundle for a `run()` call.
 - `cli/commands/check.ts`: the static analysis of `workflows check`.
 - `run/version.ts`: the kind and version of the script task, and the task types that the `run/` files share.
-- `run/past.ts`: the saved root runs of the project store, for the `pastRuns` call and `run(name, { from })`.
+- `run/past.ts`: the saved root runs of the project store, for the `pastRuns` call and `run(name, { from })`, the task
+  of a run that the commands go by, and `runStatus`, the one place that computes the status of a run.
 - `run/progress.ts`: the progress events of a run, their document, and the lines that wait for the next call.
 - `run/calls.ts`: the workflow script calls and their records in the project store.
 - `run/sessions.ts`: the sessions on harness's children library, and the end of the sessions of a run.

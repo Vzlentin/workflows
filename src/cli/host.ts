@@ -54,17 +54,31 @@ export function runsDirectory(): string {
 	return join(state, "workflows", "runs");
 }
 
+/** The start of the `start` key of every task of the run `id`. */
+const keyPrefix = (id: string) => `wf:${id}#`;
+
 /** The `start` key of the task `n` of the run `id`, counting from 1. */
-export const taskKey = (id: string, n: number) => `wf:${id}#${n}`;
+export const taskKey = (id: string, n: number) => `${keyPrefix(id)}${n}`;
+
+/** The number `n` of the `start` key `key` of a task of the run `id`, or undefined when `key` is not one. */
+export function keyNumber(id: string, key: string): number | undefined {
+	const prefix = keyPrefix(id);
+	const n = key.startsWith(prefix) ? key.slice(prefix.length) : "";
+
+	return /^[1-9]\d*$/.test(n) ? Number(n) : undefined;
+}
 
 /** An error after which the host has no task of the request, or none that runs. */
 export class Refused extends Error {}
 
-/** Starts the task of `key` with `input` in the host of `client`, and checks the version of the host's task. */
-export async function startTask(client: Client, project: string, input: ScriptInput, key: string): Promise<void> {
+/**
+ * Starts the task of `key` with `input` in the host of `client`, and checks the version of the host's task. It gives
+ * the info of the task of `key`, which is a task that an earlier `start` of the same key created, when there is one.
+ */
+export async function startTask(client: Client, project: string, input: ScriptInput, key: string): Promise<TaskInfo> {
 	try {
 		// A host whose workflows task has another version refuses before it creates anything, so the key stays free.
-		await client.request({ type: "start", kind: TASK.name, version: TASK.version, input, key });
+		return await client.request({ type: "start", kind: TASK.name, version: TASK.version, input, key });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 
@@ -111,14 +125,14 @@ export async function findTask(terminal: Terminal, project: string, key: string)
 	}
 }
 
-/** Aborts the task of `key` in the host of `project`, and gives its outcome once it ended. */
-export async function abortRun(terminal: Terminal, project: string, key: string): Promise<TaskInfo["outcome"]> {
+/** Aborts the task of `key` in the host of `project`, and gives its info once it ended. */
+export async function abortRun(terminal: Terminal, project: string, key: string): Promise<TaskInfo> {
 	const client = await connectTo(terminal, project, true);
 
 	try {
 		await client.request({ type: "abort-task", key });
 
-		return (await client.request({ type: "wait-task", key })).outcome;
+		return await client.request({ type: "wait-task", key });
 	} finally {
 		client.close();
 	}

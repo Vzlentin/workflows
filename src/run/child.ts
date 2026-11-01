@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { childInput, newRunId, type ScriptInput } from "../launch/input.ts";
 import { CallDoc, type Calls, type Child, type ScriptRun } from "./calls.ts";
-import { savedBundle, scanRuns } from "./past.ts";
+import { hasEnded, hasResult, runStatus, savedBundle, scanRuns } from "./past.ts";
 import { current, type Runtime, type ScriptTask } from "./version.ts";
 
 /** The child run saved in the record of the `run` call `key`. */
@@ -119,18 +119,18 @@ export async function childResult(
 	const { runtime, context, script } = calls;
 	const saved = (await runtime.snapshot(CallDoc, key, context))?.child;
 	const started = saved ?? (await startChild(runtime, context, script, cwd, key, name, args));
-	const { state } = (await runtime.getTask(started.task, context)) ?? {};
-	const ended = state?.status === "terminal" && state.outcome.status !== "completed";
+	const record = await runtime.getTask(started.task, context);
+	const before = record === undefined ? undefined : runStatus(record);
+	const ended = before !== undefined && hasEnded(before) && !hasResult(before);
 	const { task, runId } = ended ? await restartChild(script.definition, runtime, context, key, started.task) : started;
-	const { outcome } = (await runtime.waitForTask(task, context)).state;
+	const waited = await runtime.waitForTask(task, context);
+	const { outcome } = waited.state;
+	const status = runStatus(waited);
 
-	if (outcome.status !== "completed") {
-		const cause = outcome.error?.message ?? outcome.reason ?? outcome.status;
-		const verb = outcome.status === "aborted" || outcome.status === "orphaned" ? "stopped" : "failed";
+	if (hasResult(status)) return { runId, result: outcome.result ?? null };
+	const cause = outcome.error?.message ?? outcome.reason ?? outcome.status;
+	const verb = status === "failed" ? "failed" : "stopped";
 
-		// The error of a nested child run already names the deepest run and whether it failed or stopped.
-		throw new Error(cause.startsWith("child run ") ? cause : `child run ${runId} ${verb}: ${cause}`);
-	}
-
-	return { runId, result: outcome.result };
+	// The error of a nested child run already names the deepest run and whether it failed or stopped.
+	throw new Error(cause.startsWith("child run ") ? cause : `child run ${runId} ${verb}: ${cause}`);
 }

@@ -364,6 +364,22 @@ export default function ({ events }) {
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
 	});
 
+	it("ends with the status of an rpi run that did not implement, and exits 1 for that undeclared status", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "rpi.js"), 'return { status: "deferred", rounds: 1, reply: "later" }');
+		git(repo, "add", ".workflows");
+		git(repo, "commit", "-qm", "rpi");
+
+		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo });
+
+		expect([run.code, run.stdout]).toEqual([
+			1,
+			[`run ${run.id}`, `deferred Fix the README typo after 1 rounds: ${worktreeOf(run.id)}`],
+		]);
+		expect(run.model.calls).toEqual([]);
+	});
+
 	it("prints one JSON outcome line with --json, at the start and at resume", async () => {
 		const run = await workflows(["ship", "--json", "Fix the README typo"], {
 			cwd: repo,
@@ -777,7 +793,7 @@ export default function ({ events }) {
 		await mkdir(scripts, { recursive: true });
 		await writeFile(
 			join(scripts, "caller.js"),
-			'return await run("ship", { item: "Fix the README typo", repo: ".", branch: "docs/child" })',
+			'export const meta = { exit: { shipped: 0 } }\nreturn await run("ship", { item: "Fix the README typo", repo: ".", branch: "docs/child" })',
 		);
 		git(repo, "add", ".workflows");
 		git(repo, "commit", "-qm", "caller");
@@ -901,6 +917,27 @@ describe("pastRuns", () => {
 		const resumed = await workflows(["resume", waiting.id ?? "", "--answer", "yes"], { cwd: repo });
 		expect([resumed.code, JSON.parse(resumed.stdout.at(-1) ?? "")]).toEqual([0, [second.runId, first.runId]]);
 		expect((await past({ limit: 1 }))[1][0].runId).toBe(third.runId);
+	});
+
+	it("leaves out a run of the workflow that waits for an answer", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "asked.js"), 'return await input("Go?")\n');
+		await writeFile(join(scripts, "past.js"), 'return (await pastRuns("asked")).map((run) => run.runId)\n');
+
+		const past = async () => {
+			const run = await workflows(["past"], { cwd: repo });
+			expect(run.code).toBe(0);
+
+			return JSON.parse(run.stdout.at(-1) ?? "");
+		};
+
+		const asked = await workflows(["asked"], { cwd: repo });
+		expect(asked.code).toBe(3);
+		expect(await past()).toEqual([]);
+		const answered = await workflows(["resume", asked.id ?? "", "--answer", "yes"], { cwd: repo });
+		expect(answered.code).toBe(0);
+		expect(await past()).toEqual([asked.id]);
 	});
 });
 
@@ -1105,6 +1142,12 @@ describe("workflows resume of ship runs", () => {
 				1,
 				[],
 				[`workflows: run ${id} was saved by ${word} version of ${name} and cannot be saved`],
+			]);
+			// The task was not started with a key of the harness host, so no command can reach it.
+			const stopped = await workflows(["stop", id], { cwd: repo });
+			expect([stopped.code, stopped.stderr]).toEqual([
+				1,
+				[expect.stringMatching(`^workflows: run ${id} has no harness task key for its task \\d+$`)],
 			]);
 		}
 

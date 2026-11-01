@@ -136,6 +136,35 @@ describe("workflows prune", () => {
 		expect(existsSync(runDir)).toBe(true);
 	});
 
+	it("decides by the last task of this version when a later version saved the last task", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await writeFile(
+			join(scripts, "gated.js"),
+			`export const meta = { worktree: true }\nawait sh("test -f ${root}/go")`,
+		);
+		const failed = await workflows(["gated"], { cwd: repo });
+		expect(failed.code).toBe(1);
+		const id = failed.id ?? "";
+		await writeFile(join(root, "go"), "");
+		expect((await workflows(["resume", id], { cwd: repo })).code).toBe(0);
+		const worktree = worktreeAt(repo, id);
+		git(worktree, "branch", "-m", "feat/x");
+		// The last task of the run ended, and a later version saved it; the failed task before it is of this version.
+		const database = new DatabaseSync(storeOf());
+
+		database
+			.prepare(
+				`UPDATE tasks SET record = json_set(record, '$.version', ?) WHERE id = (SELECT max(id) FROM tasks WHERE record ->> '$.kind' = 'workflows.run')`,
+			)
+			.run(TASK.version + 1);
+
+		database.close();
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		expect(existsSync(worktree)).toBe(false);
+	});
+
 	it("keeps a run that a later version saved", async () => {
 		const { worktree } = await mergedRun();
 		saveAs(TASK.version + 1, false);

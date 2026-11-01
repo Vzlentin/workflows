@@ -15,7 +15,7 @@ export const meta = {
 		base: { type: "string", default: "main" },
 		rounds: { type: "number", default: 3 },
 	},
-	exit: { blocked: 1, stopped: 1 },
+	exit: { approved: 0, blocked: 1, stopped: 1 },
 }
 
 const { rounds, patches = runDir } = args
@@ -84,9 +84,9 @@ for (let round = 1; ; round++) {
 	const fixed = await run("implement", { plan, round: next, start: before, message: `round ${next}`, memory: notes.ref })
 	reply = fixed.reply
 
-	if (fixed.status === "blocked") {
-		const report = [`blocked ${subject} after ${next} rounds`, reply]
+	if (fixed.status !== "implemented") {
+		const report = [`${fixed.status} ${subject} after ${next} rounds`, reply]
 
-		return notes.finish(item, { status: "blocked", rounds: next, reply, handoff: plan, memory: await noteLines(notes), report })
+		return notes.finish(item, { status: fixed.status, rounds: next, reply, handoff: plan, memory: await noteLines(notes), report })
 	}
 }

@@ -13,11 +13,12 @@ import {
 	treeLines,
 } from "../../records/tree.ts";
 import type { SavedCall } from "../../run/calls.ts";
+import { hasEnded, hasResult, runStatus, taskOf, taskOutcome } from "../../run/past.ts";
 import { reportOf, title as titleOf } from "../../run/result.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin, endOf } from "../follow.ts";
 import type { Choose, Terminal } from "../main.ts";
-import { checked, oneRunId, runStatus, type SavedRun, savedRun, taskOf } from "../saved.ts";
+import { checked, oneRunId, type SavedRun, savedRun, shownStatus } from "../saved.ts";
 import type { PickItem } from "../terminal/pick.ts";
 
 export const SHOW = "workflows show <run-id> [--pick | [--calls | --agents] [--json]]";
@@ -112,29 +113,31 @@ export async function readRun(run: SavedRun, terminal: Terminal, withCalls: bool
 	});
 
 	const checkedTask = checked(task, id, verb);
-	const { input, state } = checkedTask;
-	const outcome = state.status === "terminal" ? state.outcome : undefined;
+	const { input } = checkedTask;
+	const known = runStatus(checkedTask);
+	const completed = hasResult(known);
+	const ended = hasEnded(known);
 	const title = titleOf(input, events);
 	const footer: string[] = [];
 	let end: { report: string[] } | { error: string } | undefined;
 
-	if (outcome?.status === "completed") {
-		footer.push(...reportOf(input, outcome.result).lines);
+	if (completed) {
+		footer.push(...reportOf(input, taskOutcome(checkedTask)?.result ?? null).lines);
 		end = { report: footer };
-	} else if (outcome !== undefined) {
-		const ended = endOf(outcome, title, id);
-		footer.push(...ended.lines);
+	} else if (ended) {
+		const shown = endOf(checkedTask, title, id);
+		footer.push(...shown.lines);
 
-		if (ended.error !== undefined) end = { error: ended.error };
+		if (shown.error !== undefined) end = { error: shown.error };
 	}
 
-	const status = runStatus(checkedTask);
+	const status = shownStatus(checkedTask, known);
 
-	if (outcome !== undefined) progress.stop(outcome.status !== "completed");
+	if (ended) progress.stop(!completed);
 	const head = `run ${id} ${input.name} ${status} ${title}`;
-	const calls = callTree(saved, id, outcome !== undefined);
+	const calls = callTree(saved, id, ended);
 
-	return { input, title, status, head, ended: outcome !== undefined, calls, progress, footer, end };
+	return { input, title, status, head, ended, calls, progress, footer, end };
 }
 
 /** The lines of `show` of `read`, each with its agent: the head line, the lines of `showEntries`, then the footer. */

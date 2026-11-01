@@ -180,6 +180,21 @@ export async function runTasks(store: Store): Promise<Map<string, RunTask[]>> {
 	return rootRuns(await allPages((cursor) => store.scanTasks({ kind: TASK.name }, 256, cursor, BACKGROUND_CONTEXT)));
 }
 
+/** The document of harness that maps each `start` key to the ID of the task that it created. */
+const STARTED = { kind: "harness.tasks", scope: { kind: "session" as const } };
+
+const STARTED_TASKS = Type.Object({ tasks: Type.Record(Type.String(), Type.Integer()) });
+
+/** The task ID of each `start` key of the host, from harness's document of the keys; empty when it has none. */
+export async function startedTasks(store: Store): Promise<Map<string, number>> {
+	const record = await store.findDocument(STARTED, "current", BACKGROUND_CONTEXT);
+
+	const value =
+		record === undefined ? undefined : (await store.document(record.id, "current", BACKGROUND_CONTEXT))?.value;
+
+	return Value.Check(STARTED_TASKS, value) ? new Map(Object.entries(value.tasks)) : new Map();
+}
+
 const PROGRESS = Type.Object({ events: Type.Array(Type.Unknown()) });
 
 /** The progress events of the root run `id`, without an event that is not valid. */

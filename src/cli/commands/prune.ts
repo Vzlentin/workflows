@@ -11,11 +11,11 @@ import { failure, git, gitSucceeds, run as runCommand } from "../../git.ts";
 import { removedByHerdr } from "../../herdr.ts";
 import { repositoryAt, type Worktree } from "../../launch/worktree.ts";
 import { inputWorktree, reading, runTasks } from "../../records/store.ts";
-import type { RunTask } from "../../run/past.ts";
+import { hasEnded, type RunTask, runStatus, taskOf } from "../../run/past.ts";
 import { withUsage } from "../../workflow/find.ts";
 import { runsDirectory, STORE_FILE } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { savedBy, taskOf } from "../saved.ts";
+import { savedBy } from "../saved.ts";
 
 export const PRUNE = "workflows prune [--yes] [--install-hook] [--json]";
 
@@ -74,10 +74,9 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 async function prunable(id: string, tasks: readonly RunTask[]): Promise<Prunable | undefined> {
 	if (!existsSync(join(runsDirectory(), id, "project"))) return undefined;
 
-	if (tasks.at(-1)?.state.status !== "terminal") return undefined;
 	const task = taskOf(tasks);
 
-	if (task === undefined || savedBy(task).later) return undefined;
+	if (task === undefined || !hasEnded(runStatus(task)) || savedBy(task).later) return undefined;
 	const worktree = inputWorktree(task.input);
 
 	if (worktree === undefined || (await repositoryAt(worktree.path)) === undefined) return undefined;
