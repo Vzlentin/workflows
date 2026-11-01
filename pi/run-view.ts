@@ -43,6 +43,7 @@ export const AGENTS = Type.Object({
 	workflow: Type.String(),
 	title: Type.String(),
 	status: Type.String(),
+	ended: Type.Boolean(),
 	agents: Type.Array(AGENT_ROW),
 });
 
@@ -63,7 +64,8 @@ export function parseRun(output: Output): Agents | string {
 }
 
 /**
- * The run view of `/workflows`: the run's phases, agents and child runs, read again `REFRESH_MS` after each read ends.
+ * The run view of `/workflows`: the run's phases, agents and child runs, read again `REFRESH_MS` after each read ends,
+ * until a read shows that the run ended.
  * Up and down move between the agents, Enter gives the conversation of the selected agent, Escape gives undefined.
  * Before the first good read it shows the error of the last read in place of the tree; a later failed read keeps the
  * rows it shows, with its error under them, until a good read. A read that rejects counts as a read that failed.
@@ -98,9 +100,11 @@ export class RunView implements Component {
 
 	/**
 	 * Reads the run, keeps the selected agent, or selects the last agent that works, else the last agent, and reads
-	 * again `REFRESH_MS` later.
+	 * again `REFRESH_MS` later, unless the run ended.
 	 */
 	async #refresh(): Promise<void> {
+		let ended = false;
+
 		try {
 			let read: Agents | string;
 
@@ -117,6 +121,7 @@ export class RunView implements Component {
 			} else {
 				this.#shown = read;
 				this.#error = undefined;
+				ended = read.ended;
 				const agents = this.#agents();
 
 				if (!agents.some((row) => row.conversation === this.#selected)) {
@@ -126,7 +131,7 @@ export class RunView implements Component {
 
 			this.#render();
 		} finally {
-			if (!this.#closed) this.#timer = setTimeout(() => void this.#refresh(), REFRESH_MS);
+			if (!this.#closed && !ended) this.#timer = setTimeout(() => void this.#refresh(), REFRESH_MS);
 		}
 	}
 

@@ -125,9 +125,12 @@ export async function herdrPlace(
 		: { workspace: (await herdrJson(PANE, ["pane", "get", pane])).result.pane.workspace_id };
 }
 
+/** The error message of a herdr command that is not installed. harness's `herdr` keeps only the message. */
+const HERDR_MISSING = "spawn herdr ENOENT";
+
 /**
- * Whether Herdr removed the worktree at `worktree` with the workspace that has it open. Outside Herdr, or when herdr
- * fails, false.
+ * Whether Herdr removed the worktree at `worktree` with the workspace that has it open. Outside Herdr, without the
+ * herdr command, or when no workspace has the worktree open, false. It throws when herdr fails otherwise.
  */
 export async function removedByHerdr(worktree: string): Promise<boolean> {
 	if (!process.env.HERDR_ENV) return false;
@@ -139,7 +142,8 @@ export async function removedByHerdr(worktree: string): Promise<boolean> {
 		await herdr(["worktree", "remove", "--workspace", workspace], process.env);
 
 		return true;
-	} catch {
-		return false;
+	} catch (error) {
+		if (error instanceof Error && error.message === HERDR_MISSING) return false;
+		throw error;
 	}
 }

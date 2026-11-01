@@ -189,7 +189,8 @@ declare function commitAll(message: string): Promise<void>;
 
 /**
  * Squashes the commits since `start` into one commit with `message`, logs `commit <short> <subject>` and returns the
- * short head. Safe to repeat: it is one command, so a repeat resets a squash commit that was made but not saved.
+ * short head. When nothing changed since `start`, it makes no commit, logs `nothing to commit since <short>` and returns
+ * the short head. Safe to repeat: it is one command, so a repeat resets a squash commit that was made but not saved.
  */
 declare function squash(start: string, message: string, subject: string): Promise<string>;
 

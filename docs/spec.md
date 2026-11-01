@@ -77,7 +77,7 @@ a turn or a Git step, and the lines after it.
 
 Each implement step logs the size of the round's change, `+<insertions> -<deletions> in <n> file(s)` or `no new
 changes`; each review step logs `SHIP` or `FIX`; the judge step logs `judge <score>`. After the squash, the run logs
-`commit <commit> <subject>`. See the example of [Campaign](#campaign).
+`commit <commit> <subject>`, or `nothing to commit since <commit>` when the work changed nothing since its start. See the example of [Campaign](#campaign).
 
 The research session gets the work item and writes a research document: what the code that the work item touches
 does today, with `path:line` references, the patterns and tests of that area, and open questions. It documents and
@@ -739,6 +739,9 @@ the worktree is on `<wf>/<run-id>`, so a repeat after the rename keeps the branc
 `--branch` branch keeps it. The result gets `branch`, the branch that the worktree ends on, and the report gets the
 last line `branch <branch>`. A name that Git refuses, such as `docs/typo` when a branch `docs` exists, keeps
 `<wf>/<run-id>`, and the last line is `branch <name> is in conflict with an existing branch; kept <wf>/<run-id>`.
+A branch `<name>` that another process creates while the run renames keeps `<wf>/<run-id>`, with the last line `branch
+<name> was created during the rename; kept <wf>/<run-id>`. A worktree on a detached HEAD keeps `<wf>/<run-id>` in
+`branch`, with the last line `the worktree is on a detached HEAD; kept <wf>/<run-id>`.
 
 `--branch <name>` puts the worktree on the new branch `<name>` in place of `<wf>/<run-id>`, from the start of the run.
 A value that is not a valid branch name fails before the run starts with `--branch <name> is not a valid branch name`,
@@ -748,7 +751,9 @@ and a branch that exists with `--branch <name> exists`.
 
 The command prints `run <run-id>` on stdout, then each `phase` and `log` line on stderr when the script's next call
 runs, or when the script ends. The script runs in the host, which saves these lines in the project store, and the
-command reads them from the store file about every 0.5 s. See [Progress](#progress). When the script returns a result with `report`, a list of lines, the command prints
+command reads them from the store file about every 0.5 s. A read that fails prints `warning: cannot read the progress
+of run <run-id>: <error>` on stderr once for each series of failed reads, also with `--json`; the next good read prints
+the lines that it missed. See [Progress](#progress). When the script returns a result with `report`, a list of lines, the command prints
 those lines on stdout. Otherwise it prints the return value: a string as it is, and any other value as JSON. The exit
 code comes from `meta.exit`. A run that waits for an answer to `input(question)` prints the question and exits 3. When
 stdin and stderr are terminals, and without `--json` or `--background`, the command asks the question in place of the
@@ -1012,8 +1017,8 @@ as its label and the word `waiting`. A waiting run keeps its sessions, as a fail
 
 `workflows resume <run-id> --answer <text>` starts a new task of the run with the answer to the open `input` call: the
 last one that started and did not end. The script runs again from the top, and that call returns `<text>`. A later
-`input` call waits again in the same way. While one `input` call waits, a second one that would wait fails with `the
-run waits for an answer to: <question>`. A run without an open `input` call fails with `workflows: run <run-id> has no
+`input` call waits again in the same way. While one `input` call waits, a second one that would wait fails the run with
+`the run waits for an answer to: <question>`, the question of the first; the script cannot catch it. A run without an open `input` call fails with `workflows: run <run-id> has no
 open input call` and exits 1. When the script returns or waits again without the `input` call of the answer, such as
 after a call that failed before now succeeds, the run fails with `resume --answer answered "<question>", which the run
 did not ask`. A resume without `--answer` drops the answer of the last task: a call that used it returns it from its
@@ -1267,8 +1272,8 @@ it removes anything: a failed `gh` call, or a missing `gh`, prints `workflows: <
 
 With `--yes`, `prune` removes each merged worktree in order, and prints its line after the removal. When `HERDR_ENV` is
 set and `herdr worktree list --cwd <worktree>` shows a workspace open on the worktree, it runs `herdr worktree remove
---workspace <id>`. Otherwise, or when a herdr command fails, it runs `git worktree remove <worktree>` in the run's
-repository, without `--force`. Then it deletes the branch with `git branch -D <branch>` when the branch still exists. Before
+--workspace <id>`. Otherwise, or when the herdr command is not installed, it runs `git worktree remove <worktree>` in
+the run's repository, without `--force`. A herdr command that fails otherwise fails the removal of the run. Then it deletes the branch with `git branch -D <branch>` when the branch still exists. Before
 it removes anything of a run, it writes the marker `runs/<run-id>/pruning`, a JSON object `{ "branch", "repository",
 "path" }`, and it deletes the marker when the worktree and the branch are gone. A run with a marker is a candidate with no
 other check and no `gh` call, so a `prune` that stopped after the worktree removal is finished by the next one. A removal
@@ -1362,7 +1367,8 @@ run <run-id> <workflow> <status> <title>
 - A phase line comes before the first agent or child run under it. Other calls, such as `sh`, are not in the tree. The
   rows of a child run are indented by 4 more under its `run` line.
 
-With `--agents --json`, the command prints one JSON object `{ "runId", "workflow", "title", "status", "agents" }`.
+With `--agents --json`, the command prints one JSON object `{ "runId", "workflow", "title", "status", "ended",
+"agents" }`, where `ended` is true when the run has ended, also when it waits for an answer.
 `agents` has one object for each line of the tree, in order: `{ "kind": "phase", "depth", "text" }`, `{ "kind": "run",
 "depth", "mark", "text" }` with the text `run <workflow> <child run-id>`, or `{ "kind": "agent", "depth", "mark", "text",
 "phase", "model", "asks", "conversation", "startedAt", "endedAt"?, "facts" }`, where `phase` is the phase line of the
@@ -1603,15 +1609,17 @@ The tool adds guidelines to the system prompt on how to write a `script`: its sh
 the sandbox and resume rules, `input` and how to answer a `waiting` result, `save`, and `background`. A test checks that they name every global of
 `workflows/script.d.ts`.
 
-Each stderr line of the run is a progress update of the tool. The text of an update is the last line of a
-`{"progress":[...]}` line, or the stderr line itself. Esc sends SIGINT to the command, as Ctrl+C does, so the command
+Each stderr line of the run is a progress update of the tool. A progress line is a stderr line that is a JSON object
+with a `progress` array, whatever the order of its keys. The text of an update is the last line of a progress line, or
+the stderr line itself. The tool keeps only the last 100 stderr lines that are not progress lines, for the steps and
+for the error text of a failed command. Esc sends SIGINT to the command, as Ctrl+C does, so the command
 detaches after 2 s, and the run goes on in the host. The result then says to follow the run with `resume`, or to stop
 it with `workflows stop <run-id>`.
 
 In Pi, the call line is `workflow <name> <slug>`, `workflow <name>`, `workflow script`, `workflow resume <run-id>` or
 `workflow save <run-id> <name>`, such as `workflow ship Fix the README typo` or `workflow optimize ship`. The slug comes from the first string arg: the
 file name of a `.md` file without `.md`, or else the first 40 characters of its subject. Under it are the lines of the last `{"progress":[...]}` line of the command, as the
-command draws them on a terminal, with the marks in the theme's colors, then any other stderr line, such as a warning.
+command draws them on a terminal, with the marks in the theme's colors, then the last 100 other stderr lines, such as a warning.
 See [Progress](#progress). So a campaign shows its item steps with the ship steps of each item under them. The tool
 does not make the steps itself. A finished run ends with its `report` lines,
 such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8 on fix/readme-typo`. A failed, detached or stopped run ends with
@@ -1693,7 +1701,7 @@ text>`, or `run <run-id>: workflows exited with <code>` with no stderr, so the e
 `No workflow runs in this project`. When the list fails, it notifies its stderr as an error.
 
 The chosen run opens in the run view. It reads [`workflows show <run-id> --agents --json`](#show) at once, and again 2 s
-after each read ends, and draws its tree:
+after each read ends, until a read shows that the run ended, and draws its tree:
 
 ```text
 <workflow> <run-id> <status> <title>

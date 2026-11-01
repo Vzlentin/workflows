@@ -72,13 +72,24 @@ const ENDED_ENTRY = Type.Object({
 const RETRY_MS = 1000;
 const MAX_RETRY_MS = 60_000;
 
-/**
- * The lines and the status of a `{"progress":[...]}` stderr line of `workflows --json`, or undefined for any other
- * line.
- */
-function progressLines(line: string): { lines: string[]; status: string | undefined } | undefined {
-	if (!line.startsWith('{"progress":')) return undefined;
+/** The most stderr lines that are not progress lines that a call keeps: the last ones. */
+const MAX_STDERR_LINES = 100;
 
+/** Adds `line` to `lines`, and drops the first lines past `MAX_STDERR_LINES`. */
+function keepLast(lines: string[], line: string): void {
+	lines.push(line);
+
+	if (lines.length > MAX_STDERR_LINES) lines.splice(0, lines.length - MAX_STDERR_LINES);
+}
+
+/** The lines and the status of a progress stderr line of `workflows --json`. */
+interface ProgressLine {
+	readonly lines: string[];
+	readonly status: string | undefined;
+}
+
+/** The progress line of a stderr line of `workflows --json`, a JSON object with `progress`, or undefined. */
+function progressLines(line: string): ProgressLine | undefined {
 	try {
 		const parsed = JSON.parse(line);
 
@@ -88,7 +99,11 @@ function progressLines(line: string): { lines: string[]; status: string | undefi
 	}
 }
 
-/** Runs `command` with `args` in `cwd`; each stderr line goes to `progress`, and `signal` sends SIGINT, which detaches. */
+/**
+ * Runs `command` with `args` in `cwd`; each stderr line goes to `progress` with its progress line, or undefined for
+ * another line, and `signal` sends SIGINT, which detaches.
+ * The output keeps the last `MAX_STDERR_LINES` stderr lines that are not progress lines.
+ */
 async function runCli(
 	command: readonly string[],
 	args: readonly string[],
@@ -96,7 +111,7 @@ async function runCli(
 	options: {
 		stdin?: string | undefined;
 		signal?: AbortSignal | undefined;
-		progress?: (line: string) => void;
+		progress?: (line: string, progress: ProgressLine | undefined) => void;
 	},
 ): Promise<Output> {
 	const [program = "", ...prefix] = command;
@@ -108,8 +123,10 @@ async function runCli(
 	const err = createInterface({ input: child.stderr });
 	out.on("line", (line) => stdout.push(line));
 	err.on("line", (line) => {
-		stderr.push(line);
-		options.progress?.(line);
+		const progress = progressLines(line);
+
+		if (progress === undefined) keepLast(stderr, line);
+		options.progress?.(line, progress);
 	});
 	const interrupt = () => child.kill("SIGINT");
 	options.signal?.addEventListener("abort", interrupt, { once: true });
@@ -125,19 +142,21 @@ async function runCli(
 }
 
 /**
- * The steps of the stderr lines of the command: the lines of the last `{"progress":[...]}` line, then any other line.
+ * The steps of the stderr lines of the command: the lines of the last progress line, then the last `MAX_STDERR_LINES`
+ * other lines.
  */
 class Steps {
 	#drawn: readonly string[] = [];
 	#status: string | undefined;
 	readonly #other: string[] = [];
 
-	/** Adds a stderr line, and returns the text of its update: the last progress line, or the line itself. */
-	add(line: string): string {
-		const progress = progressLines(line);
-
+	/**
+	 * Adds a stderr line and its progress line, undefined for another line, and returns the text of its update: the
+	 * last progress line, or the line itself.
+	 */
+	add(line: string, progress: ProgressLine | undefined): string {
 		if (progress === undefined) {
-			this.#other.push(line);
+			keepLast(this.#other, line);
 
 			return line;
 		}
@@ -243,8 +262,8 @@ export function workflowTool(command: readonly string[], watcher: Watcher, tool:
 			const call = runCli(command, tool.cliArgs(params), ctx.cwd, {
 				stdin: params.script,
 				signal,
-				progress: (line) => {
-					const text = steps.add(line);
+				progress: (line, progress) => {
+					const text = steps.add(line, progress);
 					onUpdate?.({ content: [{ type: "text", text }], details: { steps: steps.lines } });
 				},
 			}).then((output) => tool.outcomeOf(output));
@@ -537,8 +556,8 @@ class Watcher {
 		try {
 			output = await runCli(this.#command, ["wait", runId, "--json"], cwd, {
 				signal: this.#controller.signal,
-				progress: (line) => {
-					steps.add(line);
+				progress: (line, progress) => {
+					steps.add(line, progress);
 					this.#draw();
 				},
 			});

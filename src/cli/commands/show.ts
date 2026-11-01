@@ -60,12 +60,12 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 
 	const mode = values.agents ? "agents" : values.calls ? "calls" : "steps";
 	const shown = await readRun(await savedRun(id, SHOW), terminal, mode !== "steps" || json, "be shown");
-	const { input, title, status, head, calls, progress, footer, end } = shown;
+	const { input, title, status, head, ended, calls, progress, footer, end } = shown;
 	const now = Date.now();
 
 	if (mode === "agents" && json) {
 		const agents = agentRows(calls, 0, now);
-		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, agents }));
+		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ended, agents }));
 	} else if (mode === "agents") {
 		for (const line of [head, ...agentLines(agentRows(calls, 0, now)), ...footer]) terminal.stdout(line);
 	} else if (json) {

@@ -50,6 +50,11 @@ ok)
 -)
 	echo "run r2"; cat > stdin.js
 	echo '{"runId":"r2","status":"finished","result":"from stdin","report":["from stdin"]}' ;;
+keys) echo "run r12"; echo '{"status":"s","progress":["◉ one"]}' >&2; echo '{"runId":"r12","status":"finished","result":1,"report":["one"]}' ;;
+many|cutmany)
+	echo "run r13"; i=1; while [ $i -le 150 ]; do echo "warning: $i" >&2; i=$((i + 1)); done
+	[ "$1" = cutmany ] && exit 1
+	echo '{"runId":"r13","status":"finished","result":1,"report":["one"]}' ;;
 bad) echo "run r3"; echo '{"progress":["✗ one"]}' >&2; echo '{"runId":"r3","status":"failed","error":"boom"}'; exit 1 ;;
 slow)
 	echo "run r4"
@@ -477,6 +482,19 @@ describe("the workflow tool", () => {
 		]);
 	});
 
+	it("takes a JSON line with progress as a progress line, whatever the order of its keys", async () => {
+		const { result, updates } = await call({ name: "keys" });
+		expect(updates).toEqual(["◉ one"]);
+		expect(draw({ name: "keys" }, result)).toEqual(["workflow keys", "◉ one", "one"]);
+	});
+
+	it("keeps only the last 100 other stderr lines, in the steps and in the error text", async () => {
+		const last = Array.from({ length: 100 }, (_, index) => `warning: ${index + 51}`);
+		const { result } = await call({ name: "many" });
+		expect(draw({ name: "many" }, result)).toEqual(["workflow many", ...last, "one"]);
+		await expect(call({ name: "cutmany" })).rejects.toThrow(new Error(`run r13: ${last.join("\n")}`));
+	});
+
 	it("draws the report lines after the steps of a finished run", async () => {
 		const ok = await call({ name: "ok" });
 		expect(draw({ name: "ok" }, ok.result)).toEqual([
@@ -839,6 +857,7 @@ describe("the /workflows command", () => {
 		workflow: "mine",
 		title: "Mine",
 		status: "running",
+		ended: false,
 		agents: [
 			{ kind: "phase", depth: 0, text: "plan" },
 			agent(1, "You plan the fleet.", "✓"),
@@ -935,7 +954,16 @@ describe("the /workflows command", () => {
 		vi.useFakeTimers();
 
 		const agents = [{ kind: "agent", depth: 0, mark: "◉", text: "You plan.", conversation: 1, facts: "sonnet" }];
-		const json = JSON.stringify({ runId: good, workflow: "mine", title: "Mine", status: "running", agents });
+
+		const json = JSON.stringify({
+			runId: good,
+			workflow: "mine",
+			title: "Mine",
+			status: "running",
+			ended: false,
+			agents,
+		});
+
 		const tree = parseRun({ code: 0, stdout: [json], stderr: [] });
 
 		const reads = [
@@ -961,6 +989,32 @@ describe("the /workflows command", () => {
 			expect(view.render(200)).toEqual([...rows, `workflows: no run ${good}`, help]);
 			await vi.advanceTimersByTimeAsync(2000);
 			expect(view.render(200)).toEqual([...rows, help]);
+		} finally {
+			view.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("reads the run no more once a read shows that it ended", async () => {
+		vi.useFakeTimers();
+
+		const agents = [{ kind: "agent", depth: 0, mark: "✓", text: "You plan.", conversation: 1, facts: "sonnet" }];
+		const json = JSON.stringify({ runId: good, workflow: "mine", title: "Mine", status: "done", ended: true, agents });
+		const tree = parseRun({ code: 0, stdout: [json], stderr: [] });
+		let reads = 0;
+
+		const read = async () => {
+			reads++;
+
+			return tree;
+		};
+
+		const view = new RunView({ read, render: () => {}, theme, matches: () => false, done: () => {} });
+
+		try {
+			await vi.advanceTimersByTimeAsync(6000);
+			expect(reads).toBe(1);
+			expect(view.render(200)[0]).toBe(`mine ${good} done Mine`);
 		} finally {
 			view.dispose();
 			vi.useRealTimers();

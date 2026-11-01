@@ -8,7 +8,7 @@ import { Value } from "typebox/value";
 import { childInput, newRunId, type ScriptInput } from "../launch/input.ts";
 import { CallDoc, type Calls, type Child, type ScriptRun } from "./calls.ts";
 import { hasEnded, hasResult, runStatus, savedBundle, scanRuns } from "./past.ts";
-import { current, type Runtime, type ScriptTask } from "./version.ts";
+import { current, type Runtime, type ScriptTask, TASK } from "./version.ts";
 
 /** The child run saved in the record of the `run` call `key`. */
 async function savedChild(runtime: Runtime, key: string, context: Context): Promise<Child> {
@@ -109,7 +109,13 @@ async function restartChild(
 ): Promise<Child> {
 	const record = await runtime.getTask(ended, context);
 
-	if (record === undefined || !current(record)) throw new Error(`the child task ${ended} is missing`);
+	if (record === undefined) throw new Error(`the child task ${ended} is missing`);
+
+	if (!current(record)) {
+		const expected = `${TASK.name} version ${TASK.version}`;
+		throw new Error(`the child task ${ended} is ${record.kind} version ${record.version}, not ${expected}`);
+	}
+
 	const { input } = record;
 	await runtime.commit(async (tx) => {
 		const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });

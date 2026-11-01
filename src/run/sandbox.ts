@@ -217,6 +217,9 @@ export async function runScript(
 
 	if (signal.aborted && (calls.waiting !== undefined || !result.ok)) throw signal.reason;
 
+	// A second `input` call that would wait fails the run, also when the script caught its error.
+	if (calls.secondInput !== undefined) throw calls.secondInput;
+
 	// An answer to a question that this execution did not ask would be lost: the run fails, and a resume without the
 	// answer asks again.
 	if (script.answer !== undefined && calls.answered !== true && (calls.waiting !== undefined || result.ok)) {

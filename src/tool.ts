@@ -117,7 +117,7 @@ export const GUIDELINES = [
 		"`{ cue, lesson, evidence }` of the notes, `[]` with no turn when there are none, and a report line for each one, " +
 		"when the store opened here), and `.session(profile)`, whose first `.ask` starts with the notes and whose " +
 		"`.noted(round, prompt, rule)` asks for `{ text, notes }` and keeps the notes. `noteLines(notes)` gives the `#<k> <note>` lines of `notes.text`, without empty lines. `commitAll(message)` stages and commits every change, " +
-		"`squash(start, message, subject)` squashes the commits since `start` into one, logs it and gives the short head, " +
+		"`squash(start, message, subject)` squashes the commits since `start` into one (no commit when nothing changed), logs it and gives the short head, " +
 		"`writePatch(path, from)` writes the diff from `from` to `HEAD` to `path` and gives `path`, " +
 		"`diffStat(from, to)` gives `+12 -3 in 2 files`, `assertClean()` throws on changes that are not committed, " +
 		"`changeOf(args, { wip })` gives `{ start, intent, checkout, dirty }` of `args.start` and `args.item`, or else of " +

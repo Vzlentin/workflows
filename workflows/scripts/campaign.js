@@ -15,6 +15,12 @@ export const meta = {
 }
 
 const { goal, rounds, start: first } = args
+
+// The engine gives a `meta.worktree` script `start` as a string or not at all.
+if (first === undefined) {
+	throw new Error('campaign needs start: run it with workflows campaign, run("campaign", { goal, repo }) or run("campaign", { goal, start })')
+}
+
 const name = subjectOf(goal)
 
 // The branch of the campaign worktree. Each item and each end checks that the worktree is still on it.

@@ -86,6 +86,22 @@ const itemLine = (subject: string) => expect.stringMatching(new RegExp(`^ {2}[0-
 
 // Each test runs a whole campaign, and some resume it: on CI one takes about 5 s.
 describe("workflows campaign", () => {
+	it("fails with no model call when a script runs it with no start commit", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "parent.js"), `return await run("campaign", { goal: ${JSON.stringify(GOAL)} })`);
+
+		const run = await workflows(["parent"], { cwd: repo });
+
+		expect(run.code).toBe(1);
+		expect(run.stderr).toContainEqual(
+			expect.stringMatching(
+				/^failed parent: child run \S+ failed: campaign needs start: run it with workflows campaign, run\("campaign", \{ goal, repo \}\) or run\("campaign", \{ goal, start \}\)$/,
+			),
+		);
+		expect(run.model.calls).toEqual([]);
+	});
+
 	it("gives judgeError and no judge when the campaign judge fails", async () => {
 		const failing = "1 PASS\n2 PASS";
 

@@ -21,27 +21,16 @@ export const STORE_FILE = "durable.sqlite";
 
 /**
  * A connection to the host of `project`. With `start`, it starts the host when none runs; without, it is undefined
- * then. harness's client reads the project from `HARNESS_PROJECT`.
+ * then.
  */
 export async function connectTo(terminal: Terminal, project: string, start: true): Promise<Client>;
 export async function connectTo(terminal: Terminal, project: string, start: boolean): Promise<Client | undefined>;
 export async function connectTo(terminal: Terminal, project: string, start: boolean): Promise<Client | undefined> {
 	// A host that starts from here loads this entry. A host that runs already loads it only after it starts again.
 	if (start) setEntry("workflows", ENTRY);
-	let connected: Client | undefined;
 
-	if (terminal.connect !== undefined) connected = await terminal.connect(project, start);
-	else {
-		const saved = process.env.HARNESS_PROJECT;
-		process.env.HARNESS_PROJECT = project;
-
-		try {
-			connected = await connect({ start });
-		} finally {
-			if (saved === undefined) delete process.env.HARNESS_PROJECT;
-			else process.env.HARNESS_PROJECT = saved;
-		}
-	}
+	const connected =
+		terminal.connect === undefined ? await connect({ project, start }) : await terminal.connect(project, start);
 
 	if (start && connected === undefined) throw new Error(`no harness host for ${project}`);
 

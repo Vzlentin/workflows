@@ -226,6 +226,20 @@ esac
 		expect(hasBranch("feat/x")).toBe(false);
 	});
 
+	it("keeps the worktree, and exits 1, when herdr fails", async () => {
+		const { id, worktree } = await mergedRun();
+		process.env.HERDR_ENV = "1";
+		await fake("herdr", 'echo "herdr: no server" >&2\nexit 1\n');
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout, pruned.stderr]).toEqual([
+			1,
+			[],
+			[`workflows: cannot prune ${id}: herdr: no server`],
+		]);
+		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([true, true]);
+	});
+
 	it("keeps a run that has not ended, also on a merged branch", async () => {
 		const run = await workflows(["slow"], { cwd: repo, script: { interruptAt: { kind: "script", nth: 1 } } });
 		expect(run.code).toBe(130);

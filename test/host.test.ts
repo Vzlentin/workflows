@@ -570,6 +570,36 @@ describe("runs in the harness host", () => {
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
 	});
 
+	it("warns once when the reads of the progress fail, and catches up after them", async () => {
+		await writeFile(join(root, "talk.js"), 'phase("talk")\nawait sh("./gate.sh g")\nreturn "done"');
+		const pending = workflows(["talk.js"], { cwd: root });
+		await reached("g");
+		const database = new DatabaseSync(storeOf());
+
+		const move = database.prepare(
+			`UPDATE document_revisions SET document_id = -document_id WHERE abs(document_id) IN (SELECT id FROM documents WHERE kind = '"workflows.progress"')`,
+		);
+
+		try {
+			move.run();
+			await new Promise((resolve) => setTimeout(resolve, 1200));
+			move.run();
+		} finally {
+			database.close();
+		}
+
+		await writeFile(join(root, "g.open"), "");
+		const run = await pending;
+
+		expect([run.code, run.stdout]).toEqual([0, [`run ${run.id}`, "done"]]);
+		expect(run.stderr.filter((line) => line.startsWith("warning:"))).toEqual([
+			expect.stringMatching(
+				new RegExp(`^warning: cannot read the progress of run ${run.id}: Document \\S+ is missing a required base$`),
+			),
+		]);
+		expect(run.stderr).toContain("talk");
+	});
+
 	it("shows a call of a task that runs as running, and one of a task that does not as cut", async () => {
 		const { id, host } = await detachedRun();
 

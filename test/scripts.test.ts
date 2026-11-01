@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -14,21 +15,25 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AGENTS } from "../pi/run-view.ts";
 import type { Choose } from "../src/cli/main.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
-import { branchOf } from "../src/launch/worktree.ts";
-import { callRecords, reading } from "../src/records/store.ts";
+import { branchOf, renameBranch } from "../src/launch/worktree.ts";
+import { callRecords, reading, runTasks } from "../src/records/store.ts";
 import { CallDoc } from "../src/run/calls.ts";
+import { TASK } from "../src/run/version.ts";
 import { profileOf } from "../src/workflow/bundle.ts";
 import {
 	childTasks,
 	conversationOf,
 	detached,
 	git,
+	hostModel,
 	inputsOf,
 	overlayOf,
 	repository,
 	rootTasks,
 	runsOf,
 	sandbox,
+	setEntries,
+	startHost,
 	storeOf,
 	workflows,
 	worktreeAt,
@@ -308,6 +313,42 @@ describe("input", () => {
 		expect([last.code, last.stdout]).toEqual([0, [`run ${id}`, "b"]]);
 	});
 
+	it("fails a run whose script catches a second input call that would wait", async () => {
+		await setEntries({ workflows: fileURLToPath(new URL("slow-entry.ts", import.meta.url)) });
+		await writeFile(join(root, "x.js"), 'input("A?")\ntry { await input("B?") } catch { return "caught" }');
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			const run = await workflows(["x.js"], { cwd: root, host });
+			expect([run.code, run.stderr[0]]).toEqual([1, "failed x: the run waits for an answer to: A?"]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("reads one committed state of the store in each reading callback", async () => {
+		await writeFile(join(root, "x.js"), 'return "done"');
+		const run = await workflows(["x.js"], { cwd: root });
+		const id = run.id ?? "";
+		const versionOf = async (store: Parameters<typeof runTasks>[0]) => (await runTasks(store)).get(id)?.[0]?.version;
+
+		const versions = await reading(storeOf(), [0, 0], async (store) => {
+			const before = await versionOf(store);
+			const database = new DatabaseSync(storeOf());
+			database
+				.prepare(
+					`UPDATE tasks SET record = json_set(record, '$.version', 99) WHERE record ->> '$.kind' = 'workflows.run'`,
+				)
+				.run();
+			database.close();
+
+			return [before, await versionOf(store)];
+		});
+
+		expect(versions).toEqual([TASK.version, TASK.version]);
+		expect(await reading(storeOf(), 0, async (store) => versionOf(store))).toBe(99);
+	});
+
 	it("asks each question on a terminal, and goes on with the typed answer", async () => {
 		await writeFile(join(root, "x.js"), 'const a = await input("A?");\nconst b = await input("B?");\nreturn a + b;');
 		const run = await workflows(["x.js"], { cwd: root, lines: ["x", "y"] });
@@ -495,7 +536,7 @@ describe("workflows show", () => {
 			...run.stdout.slice(-1),
 		]);
 
-		expect(head).toEqual({ runId: id, workflow: "parent", title: "parent", status: "done" });
+		expect(head).toEqual({ runId: id, workflow: "parent", title: "parent", status: "done", ended: true });
 		expect(agents[1]).toMatchObject({ kind: "agent", depth: 0, mark: "\u2713", text: "Script: plan.", asks: 1 });
 		expect(agents[1].conversation).toBe(await conversationOf(/Script: plan/));
 		expect(agents.at(-1)).toMatchObject({ kind: "agent", depth: 1, text: "Script: child." });
@@ -1228,6 +1269,20 @@ return { branch: await sh(["git", "branch", "--show-current"]), start: args.star
 		expect(git(repo, "worktree", "list", "--porcelain").split("\n\n")).toHaveLength(1);
 	});
 
+	it("squashes nothing when nothing changed since the start, and gives the short head", async () => {
+		const repo = join(root, "repo");
+		const start = await repository(repo);
+		await writeFile(join(repo, "x.js"), `return await squash("${start}", "m", "s")`);
+
+		const run = await workflows(["x.js", "--json"], { cwd: repo });
+
+		expect(run.code).toBe(0);
+		const short = git(repo, "rev-parse", "--short", "HEAD");
+		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
+		expect(JSON.parse(run.stdout[1] ?? "").result).toBe(short);
+		expect(run.stderr).toContainEqual(expect.stringContaining(`nothing to commit since ${short}`));
+	});
+
 	it("creates the worktree of a child run through herdr when the command runs in Herdr", async () => {
 		const repo = join(root, "repo");
 		const start = await repository(repo);
@@ -1595,6 +1650,25 @@ return [one.reply, two.reply].join(", ")`,
 		]);
 	});
 
+	it("names the kind and version of a failed child task that another version saved", async () => {
+		await writeFile(join(root, "parent.js"), 'return await run("child")');
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(root, ".workflows", "scripts", "child.js"), 'await sh("test -f f")\nreturn "done"');
+
+		const run = await workflows(["parent.js"], { cwd: root });
+		const child = /^failed parent: child run (\S+) failed: /.exec(run.stderr[0] ?? "")?.[1] ?? "";
+		const database = new DatabaseSync(storeOf());
+		database
+			.prepare("UPDATE tasks SET record = json_set(record, '$.version', ?) WHERE record ->> '$.input.runId' = ?")
+			.run(TASK.version - 1, child);
+		database.close();
+		await writeFile(join(root, "f"), "");
+
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
+		const named = ` is ${TASK.name} version ${TASK.version - 1}, not ${TASK.name} version ${TASK.version}`;
+		expect([resumed.code, resumed.stderr[0]?.endsWith(named)]).toEqual([1, true]);
+	});
+
 	it("keeps one session and one child run when a run stops after it opens them", async () => {
 		await writeFile(join(root, "parent.js"), 'session()\nreturn await run("child")');
 		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
@@ -1853,5 +1927,18 @@ describe("branchOf", () => {
 		expect(branchOf("Fix the README typo")).toBe("fix-the-readme-typo");
 		expect(branchOf(`fix: ${"word ".repeat(20)}`)).toBe(`fix/${Array(9).fill("word").join("-")}`);
 		expect(branchOf("docs: ...")).toBe("");
+	});
+});
+
+describe("renameBranch", () => {
+	it("gives a detached HEAD, and a name that Git refuses, as their own kinds", async () => {
+		const repo = join(root, "repo");
+		const start = await repository(repo);
+		const signal = new AbortController().signal;
+		git(repo, "branch", "feat");
+		git(repo, "checkout", "-q", "-b", "wf/1");
+		expect(await renameBranch(repo, "wf/1", "feat/x", signal)).toEqual({ kind: "refused", name: "feat/x" });
+		git(repo, "checkout", "-q", "--detach", start);
+		expect(await renameBranch(repo, "wf/1", "fix/y", signal)).toEqual({ kind: "detached" });
 	});
 });

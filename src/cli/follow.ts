@@ -7,7 +7,7 @@ import type { Client } from "@vzlentin/harness/client";
 import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
 import { endMark } from "../records/steps.ts";
-import { openStore, progressEvents } from "../records/store.ts";
+import { openReadOnly, progressEvents } from "../records/store.ts";
 import { hasEnded, hasResult, type RunTask, runStatus, type TaskEnd, taskOutcome } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
 import { reportOf, title as titleOf } from "../run/result.ts";
@@ -188,18 +188,43 @@ export async function follow(
 		else for (const line of footer) terminal.stderr(line);
 	};
 
-	const store = await openStore(join(statePaths(run.project).dir, STORE_FILE)).catch((cause: unknown) => {
+	const opened = await openReadOnly(join(statePaths(run.project).dir, STORE_FILE)).catch((cause: unknown) => {
 		client.close();
 		terminal.following(false);
 		throw cause;
 	});
 
+	const store = opened?.store;
+
+	// The host only appends events (`addProgress` pushes and never trims), so `seen` counts the events shown.
 	let seen = run.from;
+	// Set from a failed read to the next good one, so that a series of failures prints one warning.
+	let failing = false;
+
+	/**
+	 * The progress events of the run. A read that fails, such as one that waited too long for a lock, gives none, and
+	 * the first failure of a series prints a warning; the next good read catches up.
+	 */
+	const read = async (): Promise<readonly ProgressEvent[]> => {
+		if (store === undefined) return [];
+
+		try {
+			const events = await progressEvents(store, id);
+			failing = false;
+
+			return events;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+
+			if (!failing) terminal.stderr(`warning: cannot read the progress of run ${id}: ${message}`);
+			failing = true;
+
+			return [];
+		}
+	};
 
 	const poll = async () => {
-		if (store === undefined) return;
-		// A read that fails, such as one that waited too long for a lock, shows nothing; the next read catches up.
-		const events = await progressEvents(store, id).catch(() => []);
+		const events = await read();
 
 		for (const event of events.slice(seen)) {
 			shown.event(event);
@@ -295,7 +320,7 @@ export async function follow(
 
 		if (info.outcome === undefined) throw new Error(`run ended ${status}`);
 
-		const events = store === undefined ? [] : await progressEvents(store, id).catch(() => []);
+		const events = await read();
 		asking = status === "waiting" && terminal.readLine !== undefined && !json && !terminal.interrupt.aborted;
 
 		return reportOutcome(input, id, info, terminal, json, events, asking);

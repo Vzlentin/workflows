@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { closeWorkspace, herdrWorktree, typePickLoop } from "../herdr.ts";
 import type { ScriptInput } from "../launch/input.ts";
-import { branchOf, ensureWorktree, renameBranch } from "../launch/worktree.ts";
+import { branchOf, ensureWorktree, type Renamed, renameBranch } from "../launch/worktree.ts";
 import { outcomeText, type WorkflowOutcome } from "../tool.ts";
 import { addProgress } from "./progress.ts";
 import { reportOf, statusOf } from "./result.ts";
@@ -85,14 +85,33 @@ async function named(input: ScriptInput, result: JsonValue, signal: AbortSignal)
 	if (worktree === undefined || !Value.Check(NAMED, result)) return result;
 	const wanted = branchOf(result.subject);
 	const from = `${input.name}/${input.runId}`;
-	const renamed = wanted === "" ? worktree.branch : await renameBranch(worktree.path, from, wanted, signal);
 
-	const line =
-		renamed === undefined
-			? `branch ${wanted} is in conflict with an existing branch; kept ${from}`
-			: `branch ${renamed}`;
+	const renamed: Renamed =
+		wanted === "" ? { kind: "on", branch: worktree.branch } : await renameBranch(worktree.path, from, wanted, signal);
 
-	return { ...result, branch: renamed ?? from, report: [...(result.report ?? []), line] };
+	const { branch, line } = branchLine(renamed, from);
+
+	return { ...result, branch, report: [...(result.report ?? []), line] };
+}
+
+/** The branch that a run ends on, and its report line. */
+type BranchEnd = { readonly branch: string; readonly line: string };
+
+/** The branch that a run ends on after `renamed`, and its report line, where `from` is the branch before the rename. */
+function branchLine(renamed: Renamed, from: string): BranchEnd {
+	switch (renamed.kind) {
+		case "on":
+			return { branch: renamed.branch, line: `branch ${renamed.branch}` };
+
+		case "detached":
+			return { branch: from, line: `the worktree is on a detached HEAD; kept ${from}` };
+
+		case "refused":
+			return { branch: from, line: `branch ${renamed.name} is in conflict with an existing branch; kept ${from}` };
+
+		case "raced":
+			return { branch: from, line: `branch ${renamed.name} was created during the rename; kept ${from}` };
+	}
 }
 
 /**

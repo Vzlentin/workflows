@@ -1005,7 +1005,7 @@ describe("workflows show", () => {
 			"    judge",
 			child("sh git rev-parse HEAD"),
 			...asks("judge", 2, child),
-			call(`sh sh -c git reset -q --soft "\\$1" && git commit -q -m "\\$2" squash ${start.slice(0, 17)}`),
+			call('sh sh -c git reset -q --soft "\\$1" && if git diff --cached --quiet; then echo none; '),
 			call("sh git rev-parse --short HEAD"),
 			notes(),
 			...asks("summarizer", 1),
