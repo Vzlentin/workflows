@@ -4,10 +4,10 @@ import { createInterface } from "node:readline";
 import { text } from "node:stream/consumers";
 import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { StdinBuffer } from "@earendil-works/pi-tui";
+import { terminalRedraw } from "./cli/terminal/redraw.ts";
 import { actionOf } from "./keys.ts";
 import { main } from "./main.ts";
 import { keepPick, type Pick, type PickItem, press, render, startPick } from "./pick.ts";
-import { terminalRedraw } from "./progress.ts";
 import { CtrlC } from "./run.ts";
 
 const ctrlC = new CtrlC(() => process.exit(130));

@@ -26,19 +26,14 @@ import { resolveProject } from "@vzlentin/harness/projects";
 import { cliPath, statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { agentLines, agentRows, callTree, type Shown, showEntries, type TreeEntry, treeLines } from "./calls.ts";
 import { CHECK, check } from "./cli/commands/check.ts";
+import { display, programStatus } from "./cli/terminal/redraw.ts";
 import { failure, git, gitSucceeds, run as runCommand } from "./git.ts";
 import { herdrPlace, removedByHerdr } from "./herdr.ts";
 import { newRunId, parse, prepare, type ScriptInput, USAGE } from "./launch/input.ts";
 import { repositoryAt, type Worktree } from "./launch/worktree.ts";
 import type { PickItem } from "./pick.ts";
-import { display, type Mark, Progress, programStatus } from "./progress.ts";
-import type { SavedCall } from "./run/calls.ts";
-import type { RunTask } from "./run/past.ts";
-import type { ProgressEvent } from "./run/progress.ts";
-import { reportOf, statusOf, title as titleOf } from "./run/result.ts";
-import { current, TASK } from "./run/version.ts";
+import { type Mark, Progress } from "./records/steps.ts";
 import {
 	callRecords,
 	inputString,
@@ -48,7 +43,13 @@ import {
 	reading,
 	runTasks,
 	type Store,
-} from "./store.ts";
+} from "./records/store.ts";
+import { agentLines, agentRows, callTree, type Shown, showEntries, type TreeEntry, treeLines } from "./records/tree.ts";
+import type { SavedCall } from "./run/calls.ts";
+import type { RunTask } from "./run/past.ts";
+import type { ProgressEvent } from "./run/progress.ts";
+import { reportOf, statusOf, title as titleOf } from "./run/result.ts";
+import { current, TASK } from "./run/version.ts";
 import { loadScripts, projectFolder } from "./workflow/bundle.ts";
 import { help, type Io, listScripts, parseArgsMessage, UsageError, withUsage } from "./workflow/find.ts";
 
