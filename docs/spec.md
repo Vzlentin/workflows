@@ -219,6 +219,28 @@ the implementer made are kept. When the branch has no change from `start`, the r
 The result has `status` (`implemented` or `blocked`), `reply`, the implementer's report, `memory`, the notes of the store
 as `#<k> <note>` lines, and `head`, the short commit, when implemented.
 
+## Fix
+
+```sh
+workflows fix --start 1a2b3c4 item.md
+```
+
+`workflows fix` is the fix round of a work item that a judge scored 0, in the current directory. It has no worktree of
+its own. Its step is `fix`. `--start`, which it needs, is the commit that the change of the item starts from, and
+`--round`, default 1, is the round of the implementer's notes. A caller, as `campaign` is, also gives `findings`, the
+judge's findings as a list of lines, `message`, the commit message of the fix, and `memory`, the `ref` of a run memory
+to go on with. It runs the child run `implement` with the work item, then `## Judge findings` with one `- <finding>`
+line for each finding, as the plan, from the commit of `HEAD`, and then the child run `judge` on the change from
+`--start`.
+
+The result is `{ "status": "judged", "score", "answers", "findings", "reply" }`, and the command prints
+`judge <score>: <subject>` and one line `  <finding>` for each finding, and exits 0. When the implement is blocked, the
+result is `{ "status": "blocked", "reply" }` and the command prints `blocked <subject>` and the reply. When the judge
+gives no score, the result is `{ "status": "unjudged", "judgeError", "reply" }` and the command prints `judge failed
+on <subject>: <error>`. When a child run fails, the run does not fail: the result is `{ "status": "failed", "error" }`,
+with `reply` when the implement ended, and the command prints `fix failed on <subject>: <error>`. So a caller saves the
+result, and a resume does not run the fix round again. These three exit 1.
+
 ## Thermoloop
 
 ```sh
@@ -299,7 +321,7 @@ workflows judge main..feature --item item.md
 `workflows judge [<change>]` judges a change against its intent with the fixed rubric of `prompts/judge.md`. The
 change, `--base`, `--item`, the intent and the worktree of a change on another branch are as in
 [Thermoloop](#thermoloop). The judge changes nothing: it commits no `wip`, and when the checkout has changes that are
-not committed, it logs `uncommitted changes are not judged` and adds that line at the end of its report. `ship` and
+not committed, it logs `uncommitted changes are not judged` and adds that line at the end of its report. `ship`, `fix` and
 `campaign` give it `start`, the commit that the change starts from, and `item`. Its step is `judge`. As a child
 run, it also takes `overlay`: see [Child runs](#child-runs).
 
@@ -381,15 +403,42 @@ terminal and in Pi they move under the item step when it comes.
   [Branch name](#branch-name), with the `subject` of the last split, and exits 0. The score of the campaign judge does
   not change the outcome.
 
-- When an item is blocked or stopped, or ships with a judge score of 0, the item fails. A missing score, when the judge
+- When an item ships with a judge score of 0 and the judge gave findings, the item gets one fix round. The run reads
+  the item's commit message, then runs the child run [`fix`](#fix) with the work item, `start` at the commit that the
+  item started from, the judge's findings, `round` at the rounds of the item plus 1, the message `fix: judge findings
+  of item <n>` and the run memory of the item. When `fix` is judged with a score above 0, the run squashes the change
+  of the item again into one commit with the item's message, logs `commit <commit> <commit subject>`, and the item
+  ships: its result is the ship result with the new `head`, `score`, `answers` and `findings`. The step `fix` comes
+  under the item step, its `judge` step under it, and the log line under the item step:
+
+  ```text
+  ✓ item 1/2: Fix the README typo  6m12s
+    ...
+    ✓ judge  19s
+      judge 0.00
+    commit a1b2c3d fix: correct the README typo
+    ✓ fix  1m20s
+      +1 -1 in 1 file
+      ✓ judge  18s
+        judge 0.83
+    commit b2c3d4e fix: correct the README typo
+  ```
+
+  Otherwise the fix round fails with an outcome: `the fix round failed: <error>` when `fix` is `failed`, `the fix
+  round changed nothing` when it is `blocked`, `no judge score after one fix round` when it is `unjudged`, and `still 0
+  after one fix round` when the score is 0 again. Then the item fails as below.
+- When an item is blocked or stopped, or ships with a judge score of 0 and no fix round ships it, the item fails. A missing score, when the judge
   failed, is not a failure. The run resets the worktree with `git reset --hard` to the commit that the item started
   from: the last shipped commit, or the start commit when no item shipped, and adds the note `campaign: item <n>
 failed and was reset: its notes describe code that is gone` to the run memory. Then a new planner session gets the
   `rundown` prompt with the inputs `goal`, `shipped` (the shipped items, each one as `{ item, commit, divergence }`, as JSON), `item`, `status`
-  (the ship status, or `shipped with judge score 0`), `reply`, `handoff`, `findings`, `memory` (the notes of the run memory of the campaign, as `#<k> <note>` lines), `remaining` (the
+  (the ship status, or `shipped with judge score 0`, with `, <outcome>` of the fix round after it when the item had
+  one), `reply` (the reply of the fix round's implementer after a fix round that has one), `handoff`, `findings` (the findings of the
+  fix round's judge when it gave some), `memory` (the notes of the run memory of the campaign, as `#<k> <note>` lines), `remaining` (the
   remaining items, as JSON) and `patch` (the path of `item-<n>/round-<rounds of the item>.patch`, when that file
   exists). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and proposed items.
-  The run asks the question of [Input](#input): the question summary, which is the rundown, `Suggestions:` with one
+  The run asks the question of [Input](#input): the question summary, which is the rundown, after a fix round
+  `Fix round: <outcome>` with one `- <finding>` line for each finding of the fix round's judge, `Suggestions:` with one
   `- <suggestion>` line each, `Proposed items:` with the numbered items, and `Patch of the failed item: <path>` when
   the patch exists, then `How should the campaign continue? Answer stop, or nothing, to end it.` The command prints
   the question and exits 3 with the status `waiting`. Continue with `workflows resume <run-id> --answer <text>`.
@@ -406,7 +455,7 @@ items. The number of the item step counts every item that ran. The result is
 `{ "status": "done", "subject", "head", "judge": { "score", "findings" }, "branch", "items": [{ "item", "result" }], "lessons" }`,
 with `judgeError` in place of `judge` when the campaign judge failed, or `{ "status": "stopped", "items", "rundown", "lessons" }`. The `result` of
 each shipped item, and of the failed item in a stopped result, is its `ship` result, with its `divergence` and its child run ID as
-`runId`. `head` is the commit of the last item, and `branch` is the
+`runId`, and after a fix round that shipped it, the `head`, `score`, `answers` and `findings` of the fix round. `head` is the commit of the last item, and `branch` is the
 branch that the worktree ends on.
 
 ## Optimize
@@ -1377,6 +1426,9 @@ directory, starts the host when none runs, asks it to start the run's task, and 
   key>`. The task of each resume finds the sessions of the earlier tasks of the run. When the run completes, its task
   closes its sessions and their subagents. When it fails or stops, it closes only what is under its sessions, such as
   their subagents, and stops the turns of its sessions, which stay for a resume.
+- The run lists its sessions in the session-scoped document `workflows.sessions` of the project store, keyed by the
+  root run ID. Each record has `run`, `conversation`, `task` and `label`, the name of the agent profile that opened the
+  session. A record that an earlier version saved can have no `label`. This `label` is not the call label of `show`.
 - Each try of a run is a task that harness starts with the key `wf:<run-id>#<n>`, from 1.
 
 ### The `workflow` tool of the host

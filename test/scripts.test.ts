@@ -153,14 +153,14 @@ describe("workflows/script.d.ts", () => {
 const SOURCE = 'export const meta = { args: { word: { type: "string" } } }\nreturn "word " + args.word\n';
 const SAVE = "usage: workflows save <run-id> <name> [--force]";
 
-/** A finished run of the script `SOURCE` from stdin in a new repository, and the path that `workflows save <id> fix` writes. */
+/** A finished run of the script `SOURCE` from stdin in a new repository, and the path that `workflows save <id> tweak` writes. */
 async function stdinRun() {
 	const repo = join(root, "repo");
 	await repository(repo);
 	const run = await workflows(["-", "--word", "a"], { cwd: repo, stdin: SOURCE });
 	expect([run.code, run.stdout.at(-1)]).toEqual([0, "word a"]);
 	// Git prints the real path of the repository, which differs from `repo` where the temporary folder is a link.
-	const file = join(await realpath(repo), ".workflows", "scripts", "fix.js");
+	const file = join(await realpath(repo), ".workflows", "scripts", "tweak.js");
 
 	return { repo, id: run.id ?? "", file };
 }
@@ -170,11 +170,11 @@ describe("workflows save", () => {
 		const { repo, id, file } = await stdinRun();
 		const sub = join(repo, "sub");
 		await mkdir(sub);
-		const saved = await workflows(["save", id, "fix"], { cwd: sub });
+		const saved = await workflows(["save", id, "tweak"], { cwd: sub });
 		expect([saved.code, saved.stdout, saved.stderr]).toEqual([0, [file], []]);
 		expect(await readFile(file, "utf8")).toBe(SOURCE);
-		const fix = await workflows(["fix", "--word", "x"], { cwd: repo });
-		expect([fix.code, fix.stdout.at(-1)]).toEqual([0, "word x"]);
+		const tweak = await workflows(["tweak", "--word", "x"], { cwd: repo });
+		expect([tweak.code, tweak.stdout.at(-1)]).toEqual([0, "word x"]);
 	});
 
 	it("rejects a bad name, a command name, a bad run ID and bad usage", async () => {
@@ -187,11 +187,11 @@ describe("workflows save", () => {
 		const cases = [
 			[id, "Fix"],
 			[id, "-x"],
-			["a/b", "fix"],
-			["-x", "fix"],
+			["a/b", "tweak"],
+			["-x", "tweak"],
 			[id],
-			[id, "fix", "more"],
-			[id, "fix", "--forse"],
+			[id, "tweak", "more"],
+			[id, "tweak", "--forse"],
 		];
 
 		for (const args of cases) {
@@ -206,13 +206,13 @@ describe("workflows save", () => {
 		const { repo, id, file } = await stdinRun();
 		await mkdir(join(repo, ".workflows", "scripts"), { recursive: true });
 		await writeFile(file, 'return "old"');
-		const taken = await workflows(["save", id, "fix"], { cwd: repo });
-		expect([taken.code, taken.stderr]).toEqual([1, ["workflows: a workflow fix exists; replace it with --force"]]);
+		const taken = await workflows(["save", id, "tweak"], { cwd: repo });
+		expect([taken.code, taken.stderr]).toEqual([1, ["workflows: a workflow tweak exists; replace it with --force"]]);
 		const ship = await workflows(["save", id, "ship"], { cwd: repo });
 		expect([ship.code, ship.stderr]).toEqual([1, ["workflows: a workflow ship exists; replace it with --force"]]);
 		expect(await readFile(file, "utf8")).toBe('return "old"');
 
-		const forced = await workflows(["save", "--force", id, "fix"], { cwd: repo });
+		const forced = await workflows(["save", "--force", id, "tweak"], { cwd: repo });
 		expect([forced.code, forced.stdout]).toEqual([0, [file]]);
 		expect(await readFile(file, "utf8")).toBe(SOURCE);
 		const shipped = await workflows(["save", id, "ship", "--force"], { cwd: repo });
@@ -1565,14 +1565,14 @@ return [one.reply, two.reply].join(", ")`,
 		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(join(scripts, "ship.js"), 'return "project ship"');
-		await writeFile(join(scripts, "fix.js"), 'return "project fix"');
+		await writeFile(join(scripts, "tweak.js"), 'return "project tweak"');
 
 		const ship = await workflows(["ship"], { cwd: repo });
-		const fix = await workflows(["fix"], { cwd: repo });
-		const outside = await workflows(["fix"], { cwd: root });
+		const tweak = await workflows(["tweak"], { cwd: repo });
+		const outside = await workflows(["tweak"], { cwd: root });
 		expect([ship.code, ship.stdout.at(-1)]).toEqual([0, "project ship"]);
-		expect([fix.code, fix.stdout.at(-1)]).toEqual([0, "project fix"]);
-		expect([outside.code, outside.stderr[0]]).toEqual([2, "workflows: unknown command fix"]);
+		expect([tweak.code, tweak.stdout.at(-1)]).toEqual([0, "project tweak"]);
+		expect([outside.code, outside.stderr[0]]).toEqual([2, "workflows: unknown command tweak"]);
 	});
 
 	it("lists the workflows and prints the usage of one from its meta", async () => {
@@ -1587,6 +1587,7 @@ return [one.reply, two.reply].join(", ")`,
 		expect(listed.code).toBe(0);
 		expect(listed.stdout).toEqual([
 			"campaign: Split a goal into work items and ship each one as a commit on one branch.",
+			"fix: Fix a work item on the judge's findings in one implement turn, and judge it again.",
 			"implement: Implement a plan in the current directory, and commit the change.",
 			"judge: Judge a change (the current branch, a PR, a ref or a range) against its intent with the fixed rubric.",
 			"optimize: Propose prompt, profile, skill and AGENTS.md edits from ship runs, and keep them when a blind judge prefers their diffs.",

@@ -324,8 +324,11 @@ export const ProgressDoc = defineDocFamily<{ events: ProgressEvent[] }, null>({
 	checkpointWhen,
 });
 
-/** One session of a run: its run ID, its conversation, and the task that opened it. */
-export type OpenedSession = { run: string; conversation: ConversationId; task: number };
+/**
+ * One session of a run: its run ID, its conversation, the task that opened it, and `label`, the name of the agent profile
+ * that opened it. A record that an earlier version saved can have no `label`.
+ */
+export type OpenedSession = { run: string; conversation: ConversationId; task: number; label?: string };
 
 /**
  * The sessions of a root run and its child runs, keyed by the root run ID, so the end of a run closes them, also those
@@ -557,7 +560,10 @@ async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionAr
 
 			(await tx.doc(CallDoc, key, null)).conversation = conversation;
 			const opened = await tx.doc(SessionsDoc, script.root, null);
-			opened.sessions.push({ run: script.runId, conversation, task: runtime.taskId });
+			const record: OpenedSession = { run: script.runId, conversation, task: runtime.taskId };
+
+			if (args.profile !== "") record.label = args.profile;
+			opened.sessions.push(record);
 		},
 	);
 

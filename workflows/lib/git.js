@@ -10,6 +10,21 @@ async function commitAll(message) {
 	if (!(await ok(["git", "diff", "--cached", "--quiet"]))) await sh(["git", "commit", "--allow-empty", "-m", message]);
 }
 
+/**
+ * Squashes the commits since `start` into one commit with `message`, logs `commit <short> <subject>` and returns the
+ * short head.
+ */
+async function squash(start, message, subject) {
+	// One command, so that a repeat resets a squash commit that was made but not saved.
+	await sh(["sh", "-c", 'git reset -q --soft "$1" && git commit -q -m "$2"', "squash", start, message]);
+
+	const short = await sh(["git", "rev-parse", "--short", "HEAD"]);
+
+	log(`commit ${short} ${subject}`);
+
+	return short;
+}
+
 /** `+12 -3 in 2 files` for the change from `from` to `to`, or `no new changes`. */
 async function diffStat(from, to = "HEAD") {
 	const shortstat = await sh(["git", "diff", "--shortstat", from, to]);

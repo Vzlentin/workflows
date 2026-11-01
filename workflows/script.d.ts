@@ -181,6 +181,12 @@ declare function memory(ref?: MemoryRef): Promise<{
 /** Stages every change, and commits it as `message` when something is staged. */
 declare function commitAll(message: string): Promise<void>;
 
+/**
+ * Squashes the commits since `start` into one commit with `message`, logs `commit <short> <subject>` and returns the
+ * short head. Safe to repeat: it is one command, so a repeat resets a squash commit that was made but not saved.
+ */
+declare function squash(start: string, message: string, subject: string): Promise<string>;
+
 /** `+12 -3 in 2 files` for the change from `from` to `to` (default `HEAD`), or `no new changes`. */
 declare function diffStat(from: string, to?: string): Promise<string>;
 
