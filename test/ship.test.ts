@@ -9,7 +9,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newRunId } from "../src/launch/input.ts";
-import { TASK } from "../src/task.ts";
+import { TASK } from "../src/run/version.ts";
 import {
 	COMMIT,
 	conversationOf,

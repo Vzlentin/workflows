@@ -1708,9 +1708,14 @@ The engine files in `src/`:
 - `workflow/bundle.ts`: the bundle of a run (scripts, prompt templates, agent profiles and the script lib), the
   instructions of a prompt template, and the edits of the bundle for a `run()` call.
 - `cli/commands/check.ts`: the static analysis of `workflows check`.
-- `task.ts`: the task of every script run, its saved input and checkpoint, its phase, child runs, and the end of its
-  sessions.
-- `script.ts`: the workflow script calls, prompts for scripts, and sessions on harness's children library.
+- `run/version.ts`: the kind and version of the script task, and the task types that the `run/` files share.
+- `run/past.ts`: the saved root runs of the project store, for the `pastRuns` call and `run(name, { from })`.
+- `run/progress.ts`: the progress events of a run, their document, and the lines that wait for the next call.
+- `run/calls.ts`: the workflow script calls and their records in the project store.
+- `run/sessions.ts`: the sessions on harness's children library, and the end of the sessions of a run.
+- `run/child.ts`: the child runs that the `run` calls start.
+- `run/sandbox.ts`: the run of a script in the sandbox, with its globals and prompts.
+- `run/task.ts`: the task of every script run, its phase, its outcome, and the message of a background run.
 - `run.ts`: the Ctrl+C presses.
 - `git.ts`: run a process, and Git commands.
 

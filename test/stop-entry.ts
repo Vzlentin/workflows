@@ -8,8 +8,7 @@ import type { Context } from "@earendil-works/chord";
 import type { ConversationHandle } from "@earendil-works/pi-durable";
 import type { Host as HarnessHost } from "@vzlentin/harness/host";
 import workflowsEntry from "../src/entry.ts";
-import type { Host } from "../src/script.ts";
-import type { Runtime } from "../src/task.ts";
+import type { Host, Runtime } from "../src/run/version.ts";
 
 type ConversationId = ConversationHandle["id"];
 

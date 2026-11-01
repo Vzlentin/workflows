@@ -2,10 +2,11 @@
  * The saved root runs of a project store, as the `pastRuns` script call and `run(name, { from })` read them from the
  * tasks of the kind `workflows.run`, at the current version and at earlier versions alike.
  */
-import type { JsonValue } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import type { Cursor, Page, TaskRecord } from "@earendil-works/pi-durable";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
+import { type Runtime, TASK } from "./version.ts";
 
 export type RunTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 
@@ -69,6 +70,22 @@ export function rootRuns(tasks: readonly RunTask[]): Map<string, RunTask[]> {
 	}
 
 	return runs;
+}
+
+/**
+ * The root tasks of the kind `workflows.run` in the store, of every version, by run ID, oldest first. The commit only
+ * reads, so it keeps the task state and takes no lock but the host's own.
+ */
+export async function scanRuns(runtime: Runtime, context: Context): Promise<Map<string, RunTask[]>> {
+	let tasks: RunTask[] = [];
+
+	await runtime.commit(async (tx) => {
+		tasks = await allPages((cursor) => tx.scanTasks({ kind: TASK.name }, 256, cursor));
+
+		return undefined;
+	}, context);
+
+	return rootRuns(tasks);
 }
 
 /** The options of `pastRuns(workflow, options)`. */

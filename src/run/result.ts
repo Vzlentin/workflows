@@ -3,7 +3,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { type ScriptInput, subject } from "../launch/input.ts";
-import type { ProgressEvent } from "../progress.ts";
+import type { ProgressEvent } from "./progress.ts";
 
 /** The first `text` argument of `input`, whose subject is the run's title. */
 function textArg(input: ScriptInput): string | undefined {

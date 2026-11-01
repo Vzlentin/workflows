@@ -5,40 +5,8 @@
  * so both show the same steps.
  */
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { type Static, Type } from "typebox";
+import type { ProgressEvent } from "./run/progress.ts";
 import type { Io } from "./workflow/find.ts";
-
-/** The document kind of the progress of a run in the project store. */
-export const PROGRESS_KIND = "workflows.progress";
-
-/**
- * A `phase` or `log` line of the run `run`, whose caller is `parent`, the end of the run `run`, or the start of an
- * execution of the run `run`: of a root run, from which a command that reaches the running task shows the lines, or of
- * a child run, with its caller `parent`. `at` is the time of the line or the end in ms since the epoch; events that an
- * earlier version saved have none. `continues` marks the first phase line of an execution of the run, which goes on
- * with the step of that text when it is the current one. A `title` event gives the run the title `text`, which shows
- * in place of the title of its input, and draws no line.
- */
-export const PROGRESS_EVENT = Type.Union([
-	Type.Object({
-		kind: Type.Union([Type.Literal("phase"), Type.Literal("log")]),
-		run: Type.String(),
-		parent: Type.Union([Type.String(), Type.Null()]),
-		text: Type.String(),
-		at: Type.Optional(Type.Number()),
-		continues: Type.Optional(Type.Boolean()),
-	}),
-	Type.Object({
-		kind: Type.Literal("end"),
-		run: Type.String(),
-		failed: Type.Boolean(),
-		at: Type.Optional(Type.Number()),
-	}),
-	Type.Object({ kind: Type.Literal("start"), run: Type.String(), parent: Type.Optional(Type.String()) }),
-	Type.Object({ kind: Type.Literal("title"), run: Type.String(), text: Type.String() }),
-]);
-
-export type ProgressEvent = Readonly<Static<typeof PROGRESS_EVENT>>;
 
 export type Mark = "✓" | "◉" | "✗";
 

@@ -16,9 +16,9 @@ import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newRunId } from "../src/launch/input.ts";
 import { programStatus } from "../src/progress.ts";
+import { SessionsDoc } from "../src/run/sessions.ts";
+import { TASK } from "../src/run/version.ts";
 import { CtrlC } from "../src/run.ts";
-import { SessionsDoc } from "../src/script.ts";
-import { TASK } from "../src/task.ts";
 import { stopAfterPost } from "./stop-entry.ts";
 import {
 	COMMIT,

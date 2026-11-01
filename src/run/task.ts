@@ -1,147 +1,20 @@
 /**
- * The task of every script run: its saved input and checkpoint, its one phase, the child runs that the `run` calls of
- * its script start, and the end of its sessions.
+ * The task of every script run: its one phase, which runs the script, its outcome, the message that a background run
+ * posts, and its abort.
  */
-import { mkdir, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import type { Context, JsonValue } from "@earendil-works/chord";
-import {
-	type ConversationId,
-	defineTask,
-	type JsonObject,
-	type RunningTask,
-	type Task,
-	type TaskId,
-	type TaskRecord,
-	type TaskRuntime,
-} from "@earendil-works/pi-durable";
+import { type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { herdrWorktree, typePickLoop } from "./herdr.ts";
-import { childInput, newRunId, type ScriptInput } from "./launch/input.ts";
-import { branchOf, ensureWorktree, renameBranch } from "./launch/worktree.ts";
-import { allPages, pastRuns, type RunTask, rootRuns, savedBundle } from "./past.ts";
-import { reportOf, statusOf } from "./run/result.ts";
-import { addProgress, CallDoc, type Child, type Host, JSON_VALUE, ownerOf, runScript, SessionsDoc } from "./script.ts";
-
-/**
- * The checkpoint of a run: its one phase. The saved calls of its script are documents of the store, so a new task of
- * the run finds them.
- */
-export type Checkpoint = { readonly phase: "run" };
-
-export type Runtime = TaskRuntime<ScriptInput, Checkpoint, JsonValue, object>;
-
-type ScriptTask = Task<ScriptInput, Checkpoint, JsonValue, object>;
-
-/** The child run saved in the record of the `run` call `key`. */
-async function savedChild(runtime: Runtime, key: string, context: Context): Promise<Child> {
-	const child = (await runtime.snapshot(CallDoc, key, context))?.child;
-
-	if (child === undefined) throw new Error(`the child run of ${key} is missing`);
-
-	return child;
-}
-
-/**
- * The root tasks of the kind `workflows.run` in the store, of every version, by run ID, oldest first. The commit only
- * reads, so it keeps the task state and takes no lock but the host's own.
- */
-async function scanRuns(runtime: Runtime, context: Context): Promise<Map<string, RunTask[]>> {
-	let tasks: RunTask[] = [];
-
-	await runtime.commit(async (tx) => {
-		tasks = await allPages((cursor) => tx.scanTasks({ kind: TASK.name }, 256, cursor));
-
-		return undefined;
-	}, context);
-
-	return rootRuns(tasks);
-}
-
-/** `bundle` with the prompts and profiles of the saved root run `from`, the arg of the `run` call of `name`. */
-async function bundleFrom(
-	runtime: Runtime,
-	context: Context,
-	name: string,
-	bundle: ScriptInput["bundle"],
-	from: JsonValue | undefined,
-): Promise<ScriptInput["bundle"]> {
-	if (from === undefined) return bundle;
-
-	if (!Value.Check(Type.String(), from)) throw new Error(`run ${name}: from is not a run ID`);
-	const saved = savedBundle(await scanRuns(runtime, context), from);
-
-	if (saved === undefined) throw new Error(`run ${name}: no run ${from}`);
-
-	return { ...bundle, prompts: saved.prompts, agents: saved.agents };
-}
-
-/**
- * A new child task of the `run` call `key` of the task of `runtime`, in a new run directory next to `input.runDir`. The
- * commit that creates it also saves it in the record of the call. With `from`, the child gets the prompts and profiles
- * of that saved root run in place of the caller's.
- */
-async function startChild(
-	definition: ScriptTask,
-	runtime: Runtime,
-	context: Context,
-	caller: { readonly input: ScriptInput; readonly cwd: string },
-	key: string,
-	name: string,
-	{ from, ...args }: JsonObject,
-): Promise<Child> {
-	const bundle = await bundleFrom(runtime, context, name, caller.input.bundle, from);
-	const id = newRunId();
-	const directory = join(dirname(caller.input.runDir), id);
-	await mkdir(directory, { recursive: true });
-
-	try {
-		const run = { id, directory, cwd: caller.cwd, root: caller.input.root };
-		const own = await childInput({ name, args, bundle, overlay: caller.input.overlay }, run);
-		const { parent, herdr } = caller.input;
-		const parented = parent === undefined ? own : { ...own, parent };
-		const input = herdr === undefined ? parented : { ...parented, herdr };
-		await runtime.commit(async (tx) => {
-			const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
-			const doc = await tx.doc(CallDoc, key, null);
-			doc.child = { task, runId: id };
-
-			return undefined;
-		}, context);
-	} catch (error) {
-		await rm(directory, { recursive: true, force: true });
-		throw error;
-	}
-
-	return savedChild(runtime, key, context);
-}
-
-/**
- * A new child task with the input, so also the run ID and directory, of the ended child task `ended`. The commit that
- * creates it also saves it in the record of the `run` call `key`.
- */
-async function restartChild(
-	definition: ScriptTask,
-	runtime: Runtime,
-	context: Context,
-	key: string,
-	ended: TaskId<JsonValue>,
-): Promise<Child> {
-	const record = await runtime.getTask(ended, context);
-
-	if (record === undefined || !current(record)) throw new Error(`the child task ${ended} is missing`);
-	const { input } = record;
-	await runtime.commit(async (tx) => {
-		const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
-		const doc = await tx.doc(CallDoc, key, null);
-		doc.child = { task, runId: input.runId };
-
-		return undefined;
-	}, context);
-
-	return savedChild(runtime, key, context);
-}
+import { herdrWorktree, typePickLoop } from "../herdr.ts";
+import type { ScriptInput } from "../launch/input.ts";
+import { branchOf, ensureWorktree, renameBranch } from "../launch/worktree.ts";
+import { JSON_VALUE } from "./calls.ts";
+import { addProgress } from "./progress.ts";
+import { reportOf, statusOf } from "./result.ts";
+import { runScript } from "./sandbox.ts";
+import { endSessions } from "./sessions.ts";
+import { type Checkpoint, current, type Host, type Runtime, type ScriptTask, TASK } from "./version.ts";
 
 /** The stdout line of `workflows --json` after `run <run-id>`, and the outcome that a background run posts. */
 export const OUTCOME = Type.Union([
@@ -230,41 +103,6 @@ async function notify(runtime: Runtime, input: ScriptInput, outcome: WorkflowOut
 	}
 }
 
-/**
- * Ends the sessions of the run `input`. After a completed root run, it closes the sessions of the run and of its child
- * runs, also of a failed child run that the script caught, with everything under them. After a completed child run, it
- * closes the sessions of that run. After a failed or aborted run, it closes only what is under the sessions of the run,
- * such as their subagents, and keeps them for a resume. The store aborts the turns of the sessions that this task owns,
- * but not of those that an earlier task of the run opened, so it aborts those itself.
- */
-async function endSessions(
-	host: Host,
-	runtime: Runtime,
-	input: ScriptInput,
-	completed: boolean,
-	context: Context,
-): Promise<void> {
-	const { children, place } = host;
-	const { runId, root } = input;
-	const all = completed && runId === root;
-
-	for (const { run, conversation, task } of (await runtime.snapshot(SessionsDoc, root, context))?.sessions ?? []) {
-		if (!all && run !== runId) continue;
-		const child = await children.find(place, ownerOf(runtime, run), { id: String(conversation) }, context);
-
-		if (child === undefined) continue;
-
-		if (completed) {
-			await child.close(context);
-			continue;
-		}
-
-		await child.close(context, { below: true });
-
-		if (task !== runtime.taskId) await child.conversation.abort(context, { background: true });
-	}
-}
-
 const NAMED = Type.Object({ subject: Type.String(), report: Type.Optional(Type.Array(Type.String())) });
 
 /**
@@ -338,9 +176,8 @@ async function runPhase(
 			session: input.parent,
 			answer: input.answer,
 			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },
-			child: (key, name, args) => startChild(definition, runtime, context, { input, cwd }, key, name, args),
-			restart: (key, ended) => restartChild(definition, runtime, context, key, ended),
-			pastRuns: async (workflow, options) => pastRuns(await scanRuns(runtime, context), workflow, options),
+			herdr: input.herdr,
+			definition,
 		});
 
 		const result = await named(input, ran, runtime.signal);
@@ -366,16 +203,6 @@ async function runPhase(
 			return { status: "terminal", outcome: { status: "failed", error: { message } } };
 		}, context);
 	}
-}
-
-/** The kind and version of the task of every script run. A run saved by another version cannot resume. */
-export const TASK = { name: "workflows.run", version: 18 } as const;
-
-/** Whether the script task can continue the task `latest`. */
-export function current<R>(
-	latest: TaskRecord<JsonValue, JsonValue, R>,
-): latest is TaskRecord<ScriptInput, JsonValue, R> {
-	return latest.kind === TASK.name && latest.version === TASK.version;
 }
 
 /** The task of every script run, which runs its sessions on the children library of `host`. */

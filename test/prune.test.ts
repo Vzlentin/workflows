@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/p
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { TASK } from "../src/task.ts";
+import { TASK } from "../src/run/version.ts";
 import { git, repository, runsOf, sandbox, storeOf, workflows, worktreeAt } from "./support.ts";
 
 let root: string;

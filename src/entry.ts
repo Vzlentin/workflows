@@ -12,8 +12,9 @@ import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-wo
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { type Host, TOOL_EXTENSION } from "./script.ts";
-import { OUTCOME, outcomeText, scriptTask, type WorkflowOutcome } from "./task.ts";
+import { TOOL_EXTENSION } from "./run/sessions.ts";
+import { OUTCOME, outcomeText, scriptTask, type WorkflowOutcome } from "./run/task.ts";
+import type { Host } from "./run/version.ts";
 
 const SAVE = Type.Object(
 	{
