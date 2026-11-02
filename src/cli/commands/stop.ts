@@ -1,9 +1,11 @@
 /** `workflows stop <run-id>`: stops a run in its host. */
+import { hasEnded, runStatus, taskOf } from "../../run/past.ts";
 import { title as titleOf } from "../../run/result.ts";
 import { current } from "../../run/version.ts";
-import { abortRun, taskKey } from "../host.ts";
+import type { OutcomeStatus } from "../../tool.ts";
+import { abortRun } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { oneRunId, progressOf, savedBy, savedRun, tasksOf } from "../saved.ts";
+import { GoneRun, keysOf, oneRunId, progressOf, savedBy, savedRun, tasksOf } from "../saved.ts";
 
 export const STOP = "workflows stop <run-id> [--json]";
 
@@ -13,17 +15,17 @@ export const STOP = "workflows stop <run-id> [--json]";
  */
 export async function stop(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const run = await savedRun(oneRunId(args, STOP), STOP);
-	const tasks = await tasksOf(run);
-	const latest = tasks.at(-1);
+	const latest = taskOf(await tasksOf(run));
 
-	if (latest === undefined) throw new Error(`run ${run.id} has no workflow`);
+	if (latest === undefined) throw new GoneRun(`run ${run.id} has no workflow`);
 
-	if (latest.state.status === "terminal") throw new Error(`run ${run.id} is not running`);
-	const outcome = await abortRun(terminal, run.project, taskKey(run.id, tasks.length));
+	if (hasEnded(runStatus(latest))) throw new Error(`run ${run.id} is not running`);
+	const key = (await keysOf(run)).keyOf(latest);
+	const status = runStatus(await abortRun(terminal, run.project, key));
 
-	if (outcome?.status !== "aborted" && outcome?.status !== "orphaned") throw new Error(`run ${run.id} is not running`);
+	if (status !== "aborted" && status !== "orphaned") throw new Error(`run ${run.id} is not running`);
 
-	if (json) terminal.stdout(JSON.stringify({ runId: run.id, status: "stopped" }));
+	if (json) terminal.stdout(JSON.stringify({ runId: run.id, status: "stopped" satisfies OutcomeStatus }));
 	else if (current(latest)) {
 		const title = titleOf(latest.input, await progressOf(run));
 		terminal.stdout(`stopped ${title}; continue with: workflows resume ${run.id}`);

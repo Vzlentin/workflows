@@ -1,8 +1,8 @@
 /** `workflows show <run-id>`: the steps, the calls or the agents of a run. */
 import { parseArgs } from "node:util";
 import type { ScriptInput } from "../../launch/input.ts";
-import { Progress } from "../../records/steps.ts";
-import { callRecords, progressEvents, reading, runTasks } from "../../records/store.ts";
+import { endMark, Progress } from "../../records/steps.ts";
+import { callRecords, progressEvents, reading, runTasksAndLive } from "../../records/store.ts";
 import {
 	agentLines,
 	agentRows,
@@ -13,11 +13,12 @@ import {
 	treeLines,
 } from "../../records/tree.ts";
 import type { SavedCall } from "../../run/calls.ts";
+import { hasEnded, hasResult, runStatus, taskOf, taskOutcome } from "../../run/past.ts";
 import { reportOf, title as titleOf } from "../../run/result.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin, endOf } from "../follow.ts";
 import type { Choose, Terminal } from "../main.ts";
-import { checked, oneRunId, runStatus, type SavedRun, savedRun, taskOf } from "../saved.ts";
+import { checked, oneRunId, type SavedRun, savedRun, shownStatus } from "../saved.ts";
 import type { PickItem } from "../terminal/pick.ts";
 
 export const SHOW = "workflows show <run-id> [--pick | [--calls | --agents] [--json]]";
@@ -59,12 +60,12 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 
 	const mode = values.agents ? "agents" : values.calls ? "calls" : "steps";
 	const shown = await readRun(await savedRun(id, SHOW), terminal, mode !== "steps" || json, "be shown");
-	const { input, title, status, head, calls, progress, footer, end } = shown;
+	const { input, title, status, head, ended, calls, progress, footer, end } = shown;
 	const now = Date.now();
 
 	if (mode === "agents" && json) {
 		const agents = agentRows(calls, 0, now);
-		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, agents }));
+		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ended, agents }));
 	} else if (mode === "agents") {
 		for (const line of [head, ...agentLines(agentRows(calls, 0, now)), ...footer]) terminal.stdout(line);
 	} else if (json) {
@@ -99,42 +100,52 @@ type ShownRun = {
  */
 export async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean, verb: string): Promise<ShownRun> {
 	const { id } = run;
-	const empty = { task: undefined, saved: new Map<string, SavedCall>(), progress: new Progress(), events: [] };
 
-	const { task, saved, progress, events } = await reading(run.store, empty, async (store) => {
+	const empty = {
+		task: undefined,
+		saved: new Map<string, SavedCall>(),
+		progress: new Progress(),
+		events: [],
+		live: new Set<number>(),
+	};
+
+	const { task, saved, progress, events, live } = await reading(run.store, empty, async (store) => {
 		const read = new Progress();
 		const stored = await progressEvents(store, id);
 
 		for (const event of stored) read.add(event);
 		const calls = withCalls || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
+		const { runs, live } = await runTasksAndLive(store);
 
-		return { task: taskOf((await runTasks(store)).get(id) ?? []), saved: calls, progress: read, events: stored };
+		return { task: taskOf(runs.get(id) ?? []), saved: calls, progress: read, events: stored, live };
 	});
 
 	const checkedTask = checked(task, id, verb);
-	const { input, state } = checkedTask;
-	const outcome = state.status === "terminal" ? state.outcome : undefined;
+	const { input } = checkedTask;
+	const known = runStatus(checkedTask);
+	const completed = hasResult(known);
+	const ended = hasEnded(known);
 	const title = titleOf(input, events);
 	const footer: string[] = [];
 	let end: { report: string[] } | { error: string } | undefined;
 
-	if (outcome?.status === "completed") {
-		footer.push(...reportOf(input, outcome.result).lines);
+	if (completed) {
+		footer.push(...reportOf(input, taskOutcome(checkedTask)?.result ?? null).lines);
 		end = { report: footer };
-	} else if (outcome !== undefined) {
-		const ended = endOf(outcome, title, id);
-		footer.push(...ended.lines);
+	} else if (ended) {
+		const shown = endOf(checkedTask, title, id);
+		footer.push(...shown.lines);
 
-		if (ended.error !== undefined) end = { error: ended.error };
+		if (shown.error !== undefined) end = { error: shown.error };
 	}
 
-	const status = runStatus(checkedTask);
+	const status = shownStatus(checkedTask, known);
 
-	if (outcome !== undefined) progress.stop(outcome.status !== "completed");
+	if (ended) progress.stop(endMark(known));
 	const head = `run ${id} ${input.name} ${status} ${title}`;
-	const calls = callTree(saved, id, outcome !== undefined);
+	const calls = callTree(saved, id, { ended, waiting: known === "waiting", live });
 
-	return { input, title, status, head, ended: outcome !== undefined, calls, progress, footer, end };
+	return { input, title, status, head, ended, calls, progress, footer, end };
 }
 
 /** The lines of `show` of `read`, each with its agent: the head line, the lines of `showEntries`, then the footer. */

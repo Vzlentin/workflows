@@ -33,7 +33,7 @@ export type Meta = {
 	 * result with a `subject` renames `<wf>/<run-id>`.
 	 */
 	readonly worktree: boolean;
-	/** The exit code of each `result.status`; any other status exits 0. */
+	/** The exit code of each `result.status`; any other status exits 1, and a result without a status exits 0. */
 	readonly exit: Readonly<Record<string, number>>;
 };
 

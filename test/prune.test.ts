@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -27,13 +28,13 @@ beforeEach(async () => {
 		join(scripts, "slow.js"),
 		'export const meta = { worktree: true }\nreturn await agent("Script: one")',
 	);
-	// A merged pull request comes from the branch feat/x at the commit of the worktree, and from feat/old at another
+	// A merged pull request comes from the branches feat/x and feat/y at the commit of the worktree, and from feat/old at another
 	// commit.
 	await fake(
 		"gh",
 		`echo "$@" >> "${root}/gh.log"
 case "$*" in
-*"--head feat/x "*) echo "[{\\"headRefOid\\":\\"$(git rev-parse HEAD)\\"}]" ;;
+*"--head feat/x "* | *"--head feat/y "*) echo "[{\\"headRefOid\\":\\"$(git rev-parse HEAD)\\"}]" ;;
 *"--head feat/old "*) echo '[{"headRefOid":"0000000000000000000000000000000000000000"}]' ;;
 *) echo '[]' ;;
 esac
@@ -136,6 +137,35 @@ describe("workflows prune", () => {
 		expect(existsSync(runDir)).toBe(true);
 	});
 
+	it("decides by the last task of this version when a later version saved the last task", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await writeFile(
+			join(scripts, "gated.js"),
+			`export const meta = { worktree: true }\nawait sh("test -f ${root}/go")`,
+		);
+		const failed = await workflows(["gated"], { cwd: repo });
+		expect(failed.code).toBe(1);
+		const id = failed.id ?? "";
+		await writeFile(join(root, "go"), "");
+		expect((await workflows(["resume", id], { cwd: repo })).code).toBe(0);
+		const worktree = worktreeAt(repo, id);
+		git(worktree, "branch", "-m", "feat/x");
+		// The last task of the run ended, and a later version saved it; the failed task before it is of this version.
+		const database = new DatabaseSync(storeOf());
+
+		database
+			.prepare(
+				`UPDATE tasks SET record = json_set(record, '$.version', ?) WHERE id = (SELECT max(id) FROM tasks WHERE record ->> '$.kind' = 'workflows.run')`,
+			)
+			.run(TASK.version + 1);
+
+		database.close();
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		expect(existsSync(worktree)).toBe(false);
+	});
+
 	it("keeps a run that a later version saved", async () => {
 		const { worktree } = await mergedRun();
 		saveAs(TASK.version + 1, false);
@@ -196,6 +226,20 @@ esac
 		expect(hasBranch("feat/x")).toBe(false);
 	});
 
+	it("keeps the worktree, and exits 1, when herdr fails", async () => {
+		const { id, worktree } = await mergedRun();
+		process.env.HERDR_ENV = "1";
+		await fake("herdr", 'echo "herdr: no server" >&2\nexit 1\n');
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout, pruned.stderr]).toEqual([
+			1,
+			[],
+			[`workflows: cannot prune ${id}: herdr: no server`],
+		]);
+		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([true, true]);
+	});
+
 	it("keeps a run that has not ended, also on a merged branch", async () => {
 		const run = await workflows(["slow"], { cwd: repo, script: { interruptAt: { kind: "script", nth: 1 } } });
 		expect(run.code).toBe(130);
@@ -205,6 +249,49 @@ esac
 		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
 		expect([pruned.code, pruned.stdout]).toEqual([0, []]);
 		expect(existsSync(worktree)).toBe(true);
+	});
+
+	it("finishes at the next prune the removal that stopped after the worktree, with no gh call", async () => {
+		const { id, worktree } = await mergedRun();
+		const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+		// The first `git branch -D` fails, as when prune stops after it removed the worktree.
+		await fake(
+			"git",
+			`case "$*" in
+*"branch -D "*) [ -e "${root}/failed" ] || { touch "${root}/failed"; exit 1; } ;;
+esac
+exec "${real}" "$@"
+`,
+		);
+
+		const stopped = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([stopped.code, stopped.stdout]).toEqual([1, []]);
+		expect(stopped.stderr[0]).toMatch(new RegExp(`^workflows: cannot prune ${id}: git branch failed`));
+		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([false, true]);
+		await rm(join(root, "gh.log"));
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		expect(hasBranch("feat/x")).toBe(false);
+		expect(existsSync(join(root, "gh.log"))).toBe(false);
+		expect(existsSync(join(runsOf(root), id, "pruning"))).toBe(false);
+	});
+
+	it("reports a run whose removal fails, prunes the others, and exits 1", async () => {
+		const dirty = await workflows(["w"], { cwd: repo });
+		expect(dirty.code).toBe(0);
+		const kept = worktreeAt(repo, dirty.id);
+		git(kept, "branch", "-m", "feat/y");
+		await writeFile(join(kept, "work.txt"), "more work\n");
+		const { id, worktree } = await mergedRun();
+
+		const pruned = await workflows(["prune", "--yes", "--json"], { cwd: repo });
+		expect(pruned.code).toBe(1);
+		expect(JSON.parse(pruned.stdout[0] ?? "")).toEqual([{ runId: id, branch: "feat/x", worktree }]);
+		expect(pruned.stderr[0]).toMatch(new RegExp(`^workflows: cannot prune ${dirty.id}: git worktree failed`));
+		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([false, false]);
+		expect([existsSync(kept), hasBranch("feat/y")]).toEqual([true, true]);
+		expect(existsSync(join(runsOf(root), dirty.id ?? "", "pruning"))).toBe(false);
 	});
 
 	it("removes nothing when gh fails", async () => {

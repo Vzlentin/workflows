@@ -19,7 +19,7 @@ import { DefaultPackageManager, loadSkills, SettingsManager } from "@earendil-wo
 import { entriesPath } from "@vzlentin/harness/entries";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import extension, { type workflowTool } from "../pi/index.ts";
-import { RunView } from "../pi/run-view.ts";
+import { parseRun, RunView } from "../pi/run-view.ts";
 import workflowsEntry from "../src/entry.ts";
 import type { Host } from "../src/run/version.ts";
 import * as toolModule from "../src/tool.ts";
@@ -50,14 +50,21 @@ ok)
 -)
 	echo "run r2"; cat > stdin.js
 	echo '{"runId":"r2","status":"finished","result":"from stdin","report":["from stdin"]}' ;;
+keys) echo "run r12"; echo '{"status":"s","progress":["◉ one"]}' >&2; echo '{"runId":"r12","status":"finished","result":1,"report":["one"]}' ;;
+many|cutmany)
+	echo "run r13"; i=1; while [ $i -le 150 ]; do echo "warning: $i" >&2; i=$((i + 1)); done
+	[ "$1" = cutmany ] && exit 1
+	echo '{"runId":"r13","status":"finished","result":1,"report":["one"]}' ;;
 bad) echo "run r3"; echo '{"progress":["✗ one"]}' >&2; echo '{"runId":"r3","status":"failed","error":"boom"}'; exit 1 ;;
 slow)
 	echo "run r4"
 	trap 'echo '"'"'{"runId":"r4","status":"detached"}'"'"'; exit 130' INT
 	echo "started" >&2
 	while :; do sleep 0.02; done ;;
+resume) echo "run $2"; touch fg-done; echo '{"runId":"'"$2"'","status":"finished","result":2,"report":["two"]}' ;;
 stopped) echo "run r8"; echo '{"runId":"r8","status":"stopped"}'; exit 130 ;;
 host) echo "run r9"; echo '{"runId":"r9","status":"host-stopped"}'; exit 1 ;;
+cut) echo "run r11"; echo "workflows: lost the host" >&2; exit 1 ;;
 invalid) echo "run r10"; echo '{"runId":"r10","status":"lost"}' ;;
 usage) echo "workflows: unknown flag" >&2; exit 2 ;;
 save)
@@ -78,7 +85,14 @@ wait)
 	rb) echo '{"progress":["✓ plan"]}' >&2; echo '{"runId":"rb","status":"finished","result":1,"report":["one"]}' ;;
 	failed) echo '{"progress":["✗ plan"]}' >&2; echo '{"runId":"failed","status":"failed","error":"boom"}'; exit 1 ;;
 	stopped) echo '{"runId":"stopped","status":"stopped"}'; exit 130 ;;
-	gone) echo "workflows: no run gone" >&2; exit 1 ;;
+	gone) echo "workflows: no run gone" >&2; exit 4 ;;
+	sleepy) echo '{"runId":"sleepy","status":"host-stopped"}'; exit 1 ;;
+	flaky)
+		if [ -e flaky-once ]; then echo '{"runId":"flaky","status":"finished","result":1,"report":["one"]}'
+		else touch flaky-once; echo '{"runId":"flaky","status":"host-stopped"}'; exit 1; fi ;;
+	fg)
+		until [ -e fg-done ]; do sleep 0.02; done
+		echo '{"runId":"fg","status":"finished","result":2,"report":["two"]}' ;;
 	long)
 		trap 'touch detached; echo '"'"'{"runId":"long","status":"detached"}'"'"'; exit 130' INT
 		touch waiting
@@ -468,6 +482,19 @@ describe("the workflow tool", () => {
 		]);
 	});
 
+	it("takes a JSON line with progress as a progress line, whatever the order of its keys", async () => {
+		const { result, updates } = await call({ name: "keys" });
+		expect(updates).toEqual(["◉ one"]);
+		expect(draw({ name: "keys" }, result)).toEqual(["workflow keys", "◉ one", "one"]);
+	});
+
+	it("keeps only the last 100 other stderr lines, in the steps and in the error text", async () => {
+		const last = Array.from({ length: 100 }, (_, index) => `warning: ${index + 51}`);
+		const { result } = await call({ name: "many" });
+		expect(draw({ name: "many" }, result)).toEqual(["workflow many", ...last, "one"]);
+		await expect(call({ name: "cutmany" })).rejects.toThrow(new Error(`run r13: ${last.join("\n")}`));
+	});
+
 	it("draws the report lines after the steps of a finished run", async () => {
 		const ok = await call({ name: "ok" });
 		expect(draw({ name: "ok" }, ok.result)).toEqual([
@@ -502,6 +529,10 @@ describe("the workflow tool", () => {
 		const both = "give exactly one of name, script, resume or save";
 		await expect(call({ name: "ok", resume: "r1" })).rejects.toThrow(both);
 		await expect(call({ script: "return 1", save: { runId: "r2", name: "fix" } })).rejects.toThrow(both);
+	});
+
+	it("throws the stderr text after the run ID when the run started and the command gave no outcome", async () => {
+		await expect(call({ name: "cut" })).rejects.toThrow(/^run r11: workflows: lost the host$/);
 	});
 
 	it("gives the question of a waiting run, and continues the run with the answer", async () => {
@@ -649,13 +680,47 @@ describe("a background run of the workflow tool", () => {
 		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: "run rb finished: 1\none" }]);
 	});
 
-	it("posts nothing when the wait prints no outcome", async () => {
+	it("ends a gone run with its reason, and posts nothing", async () => {
 		const pi = fakePi([startEntry("gone", root)]);
 		await pi.fire("session_start");
-		await vi.waitFor(async () => expect(await waits()).toEqual(["wait gone --json"]));
+		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
+		expect(pi.entries[1]?.data).toEqual({ runId: "gone", reason: "run gone: workflows: no run gone" });
+		expect(pi.messages).toEqual([]);
+		expect(await waits()).toEqual(["wait gone --json"]);
+	});
+
+	it("waits again after a wait that gives no outcome to post, and posts the next outcome", async () => {
+		const pi = fakePi([startEntry("flaky", root)]);
+		await pi.fire("session_start");
+		await vi.waitFor(() => expect(pi.messages).toHaveLength(1), { timeout: 3000 });
+		expect(await waits()).toEqual(["wait flaky --json", "wait flaky --json"]);
+		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: "run flaky finished: 1\none" }]);
+		expect(pi.entries.map((entry) => entry.data)).toEqual([{ runId: "flaky", cwd: root }, { runId: "flaky" }]);
+	});
+
+	it("lets a foreground resume of a followed run give the outcome, and posts nothing", async () => {
+		const pi = fakePi([startEntry("fg", root)]);
+		await pi.fire("session_start");
+		await vi.waitFor(async () => expect(await waits()).toEqual(["wait fg --json"]));
+		const result = await pi.registered.execute("call-1", { resume: "fg" }, undefined, undefined, contextOf(root));
+		expect(result.structuredContent).toEqual({ runId: "fg", status: "finished", result: 2, report: ["two"] });
+		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
 		await new Promise((resolve) => setTimeout(resolve, 200));
 		expect(pi.messages).toEqual([]);
-		expect(pi.entries).toHaveLength(1);
+		expect(pi.entries.map((entry) => entry.data)).toEqual([{ runId: "fg", cwd: root }, { runId: "fg" }]);
+	});
+
+	it("removes a run that a foreground resume ends while the watcher waits to retry", async () => {
+		const pi = fakePi([startEntry("sleepy", root)]);
+		const { ui, widgets } = fakeUi();
+		await pi.fire("session_start", ui);
+		await vi.waitFor(async () => expect(await waits()).toEqual(["wait sleepy --json"]));
+		await pi.registered.execute("call-1", { resume: "sleepy" }, undefined, undefined, contextOf(root));
+
+		// The first retry comes after 1 s; the run leaves the widget before it.
+		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", undefined]), { timeout: 500 });
+		expect(pi.messages).toEqual([]);
+		expect(pi.entries.map((entry) => entry.data)).toEqual([{ runId: "sleepy", cwd: root }, { runId: "sleepy" }]);
 	});
 
 	it("detaches the waits at shutdown, and posts nothing", async () => {
@@ -792,6 +857,7 @@ describe("the /workflows command", () => {
 		workflow: "mine",
 		title: "Mine",
 		status: "running",
+		ended: false,
 		agents: [
 			{ kind: "phase", depth: 0, text: "plan" },
 			agent(1, "You plan the fleet.", "✓"),
@@ -882,6 +948,77 @@ describe("the /workflows command", () => {
 		expect(view.render(200)).toEqual([`workflows: no run ${good}`]);
 		view.handleInput("cancel");
 		await ended;
+	});
+
+	it("shows the error of a later read that fails or rejects under the tree, until a good read", async () => {
+		vi.useFakeTimers();
+
+		const agents = [{ kind: "agent", depth: 0, mark: "◉", text: "You plan.", conversation: 1, facts: "sonnet" }];
+
+		const json = JSON.stringify({
+			runId: good,
+			workflow: "mine",
+			title: "Mine",
+			status: "running",
+			ended: false,
+			agents,
+		});
+
+		const tree = parseRun({ code: 0, stdout: [json], stderr: [] });
+
+		const reads = [
+			async () => tree,
+			async () => {
+				throw new Error("spawn workflows ENOENT");
+			},
+			async () => `workflows: no run ${good}`,
+			async () => tree,
+		];
+
+		const read = () => (reads.shift() ?? (async () => tree))();
+		const help = "up/down select an agent, enter attaches, escape closes";
+		const view = new RunView({ read, render: () => {}, theme, matches: () => false, done: () => {} });
+
+		try {
+			const rows = [`mine ${good} running Mine`, ">   ◉ You plan.  sonnet"];
+			await vi.advanceTimersByTimeAsync(0);
+			expect(view.render(200)).toEqual([...rows, help]);
+			await vi.advanceTimersByTimeAsync(2000);
+			expect(view.render(200)).toEqual([...rows, "spawn workflows ENOENT", help]);
+			await vi.advanceTimersByTimeAsync(2000);
+			expect(view.render(200)).toEqual([...rows, `workflows: no run ${good}`, help]);
+			await vi.advanceTimersByTimeAsync(2000);
+			expect(view.render(200)).toEqual([...rows, help]);
+		} finally {
+			view.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("reads the run no more once a read shows that it ended", async () => {
+		vi.useFakeTimers();
+
+		const agents = [{ kind: "agent", depth: 0, mark: "✓", text: "You plan.", conversation: 1, facts: "sonnet" }];
+		const json = JSON.stringify({ runId: good, workflow: "mine", title: "Mine", status: "done", ended: true, agents });
+		const tree = parseRun({ code: 0, stdout: [json], stderr: [] });
+		let reads = 0;
+
+		const read = async () => {
+			reads++;
+
+			return tree;
+		};
+
+		const view = new RunView({ read, render: () => {}, theme, matches: () => false, done: () => {} });
+
+		try {
+			await vi.advanceTimersByTimeAsync(6000);
+			expect(reads).toBe(1);
+			expect(view.render(200)[0]).toBe(`mine ${good} done Mine`);
+		} finally {
+			view.dispose();
+			vi.useRealTimers();
+		}
 	});
 
 	it("gives the error of an attach that fails", async () => {

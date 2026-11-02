@@ -38,8 +38,9 @@ export function title(input: ScriptInput, events: readonly ProgressEvent[]): str
 export type Report = { readonly lines: string[]; readonly code: number };
 
 /**
- * The report lines of the result of the run `input`, and the exit code of its status: 3 for `waiting`, whatever
- * `meta.exit` says.
+ * The report lines of the result of the run `input`, and the exit code of its status as `meta.exit` gives it: 3 for
+ * `waiting`, whatever `meta.exit` says, 0 for a result without a status, and 1 for a status that `meta.exit` does not
+ * declare.
  */
 export function reportOf(input: ScriptInput, result: JsonValue): Report {
 	const lines = Value.Check(REPORT, result)
@@ -49,7 +50,9 @@ export function reportOf(input: ScriptInput, result: JsonValue): Report {
 	const status = statusOf(result);
 
 	if (status === "waiting") return { lines, code: 3 };
-	const code = status !== undefined && Object.hasOwn(input.meta.exit, status) ? (input.meta.exit[status] ?? 0) : 0;
+
+	if (status === undefined) return { lines, code: 0 };
+	const code = Object.hasOwn(input.meta.exit, status) ? (input.meta.exit[status] ?? 1) : 1;
 
 	return { lines, code };
 }

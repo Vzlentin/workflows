@@ -7,8 +7,8 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { childInput, newRunId, type ScriptInput } from "../launch/input.ts";
 import { CallDoc, type Calls, type Child, type ScriptRun } from "./calls.ts";
-import { savedBundle, scanRuns } from "./past.ts";
-import { current, type Runtime, type ScriptTask } from "./version.ts";
+import { hasEnded, hasResult, runStatus, savedBundle, scanRuns } from "./past.ts";
+import { current, type Runtime, type ScriptTask, TASK } from "./version.ts";
 
 /** The child run saved in the record of the `run` call `key`. */
 async function savedChild(runtime: Runtime, key: string, context: Context): Promise<Child> {
@@ -39,8 +39,9 @@ async function bundleFrom(
 
 /**
  * A new child task of the `run` call `key` of the task of `runtime`, in a new run directory next to `script.runDir`,
- * whose calls run in `cwd`. The commit that creates it also saves it in the record of the call. With `from`, the child
- * gets the prompts and profiles of that saved root run in place of the caller's.
+ * whose calls run in `cwd`. The record of the call saves the child's run ID before its run directory exists, so a
+ * rerun after a crash reuses the ID and its directory. The commit that creates the task also saves it in the record
+ * of the call. With `from`, the child gets the prompts and profiles of that saved root run in place of the caller's.
  */
 async function startChild(
 	runtime: Runtime,
@@ -52,8 +53,10 @@ async function startChild(
 	{ from, ...args }: JsonObject,
 ): Promise<Child> {
 	const bundle = await bundleFrom(runtime, context, name, script.bundle, from);
-	const id = newRunId();
+	const id = await childRunId(runtime, context, key);
 	const directory = join(dirname(script.runDir), id);
+	// A crash can leave the directory of an earlier try, with part of its clone.
+	await rm(directory, { recursive: true, force: true });
 	await mkdir(directory, { recursive: true });
 
 	try {
@@ -70,11 +73,27 @@ async function startChild(
 			return undefined;
 		}, context);
 	} catch (error) {
-		await rm(directory, { recursive: true, force: true });
+		// An aborted call runs again with the same run ID, which cleans the directory.
+		if (!context.abortSignal?.aborted) await rm(directory, { recursive: true, force: true });
 		throw error;
 	}
 
 	return savedChild(runtime, key, context);
+}
+
+/** The run ID of the child run of the `run` call `key`: the `childRun` of its record, or a new one that it saves. */
+async function childRunId(runtime: Runtime, context: Context, key: string): Promise<string> {
+	const saved = (await runtime.snapshot(CallDoc, key, context))?.childRun;
+
+	if (saved !== undefined) return saved;
+	const id = newRunId();
+	await runtime.commit(async (tx) => {
+		(await tx.doc(CallDoc, key, null)).childRun = id;
+
+		return undefined;
+	}, context);
+
+	return id;
 }
 
 /**
@@ -90,7 +109,13 @@ async function restartChild(
 ): Promise<Child> {
 	const record = await runtime.getTask(ended, context);
 
-	if (record === undefined || !current(record)) throw new Error(`the child task ${ended} is missing`);
+	if (record === undefined) throw new Error(`the child task ${ended} is missing`);
+
+	if (!current(record)) {
+		const expected = `${TASK.name} version ${TASK.version}`;
+		throw new Error(`the child task ${ended} is ${record.kind} version ${record.version}, not ${expected}`);
+	}
+
 	const { input } = record;
 	await runtime.commit(async (tx) => {
 		const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
@@ -106,7 +131,8 @@ async function restartChild(
 /**
  * The result of the child run of the `run` call `key`, whose calls run in `cwd`: the `child` of its record, or a new
  * child task, run to its end. A saved child task that ended without completing gets a new child task with the same
- * input and run ID. Throws `child run <id> failed: <error>` when the child run fails.
+ * input and run ID. Throws `child run <id> failed: <error>` when the child run fails, and
+ * `child run <id> stopped: <reason>` when it was aborted or orphaned.
  */
 export async function childResult(
 	calls: Calls,
@@ -118,17 +144,18 @@ export async function childResult(
 	const { runtime, context, script } = calls;
 	const saved = (await runtime.snapshot(CallDoc, key, context))?.child;
 	const started = saved ?? (await startChild(runtime, context, script, cwd, key, name, args));
-	const { state } = (await runtime.getTask(started.task, context)) ?? {};
-	const ended = state?.status === "terminal" && state.outcome.status !== "completed";
+	const record = await runtime.getTask(started.task, context);
+	const before = record === undefined ? undefined : runStatus(record);
+	const ended = before !== undefined && hasEnded(before) && !hasResult(before);
 	const { task, runId } = ended ? await restartChild(script.definition, runtime, context, key, started.task) : started;
-	const { outcome } = (await runtime.waitForTask(task, context)).state;
+	const waited = await runtime.waitForTask(task, context);
+	const { outcome } = waited.state;
+	const status = runStatus(waited);
 
-	if (outcome.status !== "completed") {
-		const cause = outcome.error?.message ?? outcome.reason ?? outcome.status;
+	if (hasResult(status)) return { runId, result: outcome.result ?? null };
+	const cause = outcome.error?.message ?? outcome.reason ?? outcome.status;
+	const verb = status === "failed" ? "failed" : "stopped";
 
-		// The error of a nested child run already names the deepest run that failed.
-		throw new Error(cause.startsWith("child run ") ? cause : `child run ${runId} failed: ${cause}`);
-	}
-
-	return { runId, result: outcome.result };
+	// The error of a nested child run already names the deepest run and whether it failed or stopped.
+	throw new Error(cause.startsWith("child run ") ? cause : `child run ${runId} ${verb}: ${cause}`);
 }

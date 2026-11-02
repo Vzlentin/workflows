@@ -2,10 +2,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { taskOf } from "../../run/past.ts";
 import { loadScripts, projectFolder } from "../../workflow/bundle.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import type { Terminal } from "../main.ts";
-import { checked, savedRun, taskOf, tasksOf } from "../saved.ts";
+import { checked, savedRun, tasksOf } from "../saved.ts";
 
 export const SAVE = "workflows save <run-id> <name> [--force]";
 

@@ -12,6 +12,15 @@ const MEMO =
 // Without `memo`, the store is this file of `#<k> <note>` lines in the store folder, with no summaries.
 const PLAIN = "notes.txt";
 
+// The file of the keys of the plain notes, one line each: the number of a note is the line of its key, from 0.
+const PLAIN_KEYS = "notes.keys";
+
+// The most summaries that one note or wake answers before it fails.
+const COMPRESS_PASSES = 64;
+
+// The count of the plain notes that this run added, for the key `<runId>/<n>` of the next one.
+let plainAdds = 0;
+
 // The longest note that `memo note` and `memo nap` take, in UTF-8 bytes.
 const NOTE_BYTES = 280;
 
@@ -79,10 +88,20 @@ async function openStore() {
 function optmemStore(path) {
 	// Answers each compression that `output` asks for with a summarizer turn, until none is left.
 	const compress = async (output) => {
-		while (output.includes("Compress memories")) {
+		for (let pass = 0; output.includes("Compress memories"); pass++) {
+			if (pass === COMPRESS_PASSES) {
+				throw new Error(`memo still asks for compressions after ${COMPRESS_PASSES} summaries`);
+			}
+
 			const asked = output.slice(output.indexOf("Compress memories"));
 			const prompt = asked.slice(0, asked.search(/^Run:/m)).trim();
-			const [, lo, hi] = /nap (\d+)-(\d+)/.exec(asked);
+			const nap = /nap (\d+)-(\d+)/.exec(asked);
+
+			if (nap === null) {
+				throw new Error(`memo asked for a compression without "nap <a>-<b>": ${asked.split("\n")[0]}`);
+			}
+
+			const [, lo, hi] = nap;
 			const answer = "When you are done, answer with only the one line, with no other text.";
 			const summary = await agent(`${prompt}\n\n${answer}`, { as: "summarizer" });
 
@@ -105,7 +124,11 @@ function optmemStore(path) {
 	};
 }
 
-/** The plain store `path`: the file `<path>/notes.txt`, with one `#<k> <note>` line for each note. */
+/**
+ * The plain store `path`: the file `<path>/notes.txt`, with one `#<k> <note>` line for each note. Each note has the key
+ * `<runId>/<n>` in `<path>/notes.keys`, and `<k>` is the line of its key. An add that runs again finds its key and its
+ * line, and an add that runs at the same time as another appends another key.
+ */
 function plainStore(path) {
 	const file = `${path}/${PLAIN}`;
 	const read = () => sh(["cat", file]);
@@ -113,7 +136,20 @@ function plainStore(path) {
 	return {
 		wake: read,
 		add: async (line) => {
-			await sh(["sh", "-c", 'n=$(wc -l < "$1"); printf "#%d %s\\n" $n "$2" >> "$1"', "memory", file, line]);
+			const key = `${runId}/${plainAdds++}`;
+
+			await sh([
+				"sh",
+				"-c",
+				'grep -qxF "$3" "$2" 2>/dev/null || printf "%s\\n" "$3" >> "$2"; ' +
+					'k=$(($(grep -nxF "$3" "$2" | head -n 1 | cut -d: -f1) - 1)); ' +
+					'grep -q "^#$k " "$1" || printf "#%d %s\\n" "$k" "$4" >> "$1"',
+				"memory",
+				file,
+				`${path}/${PLAIN_KEYS}`,
+				key,
+				line,
+			]);
 		},
 		text: read,
 	};

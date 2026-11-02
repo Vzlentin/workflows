@@ -1,12 +1,15 @@
 import { existsSync } from "node:fs";
-import { chmod, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { abortFix } from "./abort-entry.ts";
 import {
 	COMMIT,
 	type Commit,
 	conversationOf,
 	git,
+	hostModel,
 	LESSON,
 	LESSON_LINE,
 	LESSONED,
@@ -14,6 +17,8 @@ import {
 	progressOf,
 	repository,
 	sandbox,
+	setEntries,
+	startHost,
 	statusesOf,
 	untimed,
 	workflows,
@@ -81,6 +86,22 @@ const itemLine = (subject: string) => expect.stringMatching(new RegExp(`^ {2}[0-
 
 // Each test runs a whole campaign, and some resume it: on CI one takes about 5 s.
 describe("workflows campaign", () => {
+	it("fails with no model call when a script runs it with no start commit", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "parent.js"), `return await run("campaign", { goal: ${JSON.stringify(GOAL)} })`);
+
+		const run = await workflows(["parent"], { cwd: repo });
+
+		expect(run.code).toBe(1);
+		expect(run.stderr).toContainEqual(
+			expect.stringMatching(
+				/^failed parent: child run \S+ failed: campaign needs start: run it with workflows campaign, run\("campaign", \{ goal, repo \}\) or run\("campaign", \{ goal, start \}\)$/,
+			),
+		);
+		expect(run.model.calls).toEqual([]);
+	});
+
 	it("gives judgeError and no judge when the campaign judge fails", async () => {
 		const failing = "1 PASS\n2 PASS";
 
@@ -192,7 +213,7 @@ describe("workflows campaign", () => {
 		for (const [n, child] of children.entries()) {
 			const at = lines.indexOf(`  ✓ run ship ${child}`);
 			const item = n === 0 ? "Fix the README typo" : "Add a thanks line";
-			expect(lines[at - 3], child).toBe(`item ${n + 1}/2: ${item}`);
+			expect(lines[at - 4], child).toBe(`item ${n + 1}/2: ${item}`);
 			researchers.push(await conversationOf(new RegExp(`Research the codebase[\\s\\S]*${item}`)));
 			expect(lines.slice(at + 1, at + 5)).toEqual([
 				expect.stringMatching(/^ {6}✓ run rpi \S+$/),
@@ -273,7 +294,7 @@ describe("workflows campaign", () => {
 		expect(run.stdout.join("\n")).not.toContain("Fix round:");
 	});
 
-	it("runs no fix round for an item whose judge failed", async () => {
+	it("fails an item whose judge failed, with no fix round", async () => {
 		const failing = "1 PASS\n2 PASS";
 
 		const run = await workflows(["campaign", GOAL], {
@@ -281,8 +302,101 @@ describe("workflows campaign", () => {
 			script: { items: [[FIRST]], edits: [FIXED, FIX], judge: [failing, failing, failing] },
 		});
 
-		expect(run.code).toBe(0);
+		expect(run.code).toBe(3);
 		expect(run.model.count("implement")).toBe(1);
+		expect(run.model.find("rundown")?.prompt).toContain(
+			"## status\nshipped with a failed judge: the answer did not call respond\n",
+		);
+		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
+	});
+
+	it("fails an item cleanly when the fix round ends with an unknown status", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "fix.js"), 'return { status: "weird", report: ["weird"] }\n');
+		git(repo, "add", ".workflows");
+		git(repo, "commit", "-qm", "a fix round with an unknown status");
+		start = git(repo, "rev-parse", "HEAD");
+
+		const run = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST]], edits: [FIXED], judge: [ZERO] },
+		});
+
+		expect(run.code).toBe(3);
+		expect(run.stdout[1]).toContain("\n\nFix round: the fix round ended with the unknown status weird\n\n");
+		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
+	});
+
+	it("fails the campaign when a child run of the fix round was stopped, and runs it again on resume", async () => {
+		// The CLI sets the entry of this checkout before it starts a host, so the test starts the host itself.
+		await setEntries({ workflows: fileURLToPath(new URL("abort-entry.ts", import.meta.url)) });
+		abortFix.armed = true;
+		const model = hostModel({ items: [[FIRST]], edits: [FIXED, FIX], commit: [COMMIT], judge: [ZERO] });
+		const host = await startHost("main", model.models);
+		const run = await workflows(["campaign", GOAL], { cwd: repo, host }).finally(() => host.close());
+
+		expect(abortFix.armed).toBe(false);
+		expect(run.code).toBe(1);
+		expect(run.stderr.join("\n")).toMatch(/child run \S+ stopped: aborted/);
+		expect(model.count("rundown")).toBe(0);
+
+		const resumed = await workflows(["resume", run.id ?? "", "--json"], {
+			cwd: root,
+			script: { edits: [FIX], commit: [COMMIT] },
+		});
+
+		expect(resumed.code).toBe(0);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "judge", "judge", "harvest"]);
+		expect(JSON.parse(resumed.stdout[1] ?? "").result.items[0].result.score).toBe(5 / 6);
+		expect(await readFile(join(worktreeOf(run.id), "README.md"), "utf8")).toBe(FIX);
+	});
+
+	it("puts the campaign branch back on a detached HEAD, and names it", async () => {
+		const hook = join(repo, ".git", "hooks", "post-commit");
+		await writeFile(
+			hook,
+			`#!/bin/sh\n[ -f "${root}/detached" ] && exit 0\ntouch "${root}/detached"\ngit checkout -q --detach\n`,
+		);
+		await chmod(hook, 0o755);
+
+		const run = await workflows(["campaign", "--json", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST]], edits: [FIXED], commit: [COMMIT] },
+		});
+
+		expect(existsSync(join(root, "detached"))).toBe(true);
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(result.branch).toBe("docs/readme");
+		expect(report.at(-1)).toBe("branch docs/readme");
+		const worktree = worktreeOf(run.id);
+		expect(git(worktree, "branch", "--show-current")).toBe("docs/readme");
+		expect(git(worktree, "rev-parse", "HEAD~1")).toBe(start);
+	});
+
+	it("fails and does not reset when HEAD no longer contains the last shipped commit", async () => {
+		const hook = join(repo, ".git", "hooks", "post-commit");
+		await writeFile(
+			hook,
+			`#!/bin/sh\n[ -f "${root}/replaced" ] && exit 0\ntouch "${root}/replaced"\n` +
+				'git reset -q --soft "$(git commit-tree "HEAD^{tree}" -m orphan)"\n',
+		);
+		await chmod(hook, 0o755);
+
+		const run = await workflows(["campaign", "--rounds", "1", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST]], edits: [FIXED], verdicts: ["FIX"] },
+		});
+
+		expect(run.code).toBe(1);
+		const worktree = worktreeOf(run.id);
+		const head = git(worktree, "rev-parse", "--short", "HEAD");
+		expect(run.stderr.join("\n")).toContain(
+			`HEAD ${head} does not contain the last shipped commit ${start.slice(0, 7)}: the campaign does not reset it`,
+		);
+		expect(git(worktree, "log", "-1", "--format=%s")).toBe("orphan");
+		expect(run.model.count("rundown")).toBe(0);
 	});
 
 	it("resumes in the judge of the fix round and makes one commit", async () => {
@@ -320,7 +434,7 @@ describe("workflows campaign", () => {
 		});
 
 		expect(run.code).toBe(3);
-		const patch = join(runs(), run.id ?? "", "item-1", "round-1.patch");
+		const patch = join(runs(), run.id ?? "", "item-1", "item.patch");
 		expect(run.stdout).toEqual([
 			`run ${run.id}`,
 			[
@@ -358,7 +472,8 @@ describe("workflows campaign", () => {
 		const result = JSON.parse(json.stdout[1] ?? "").result;
 		expect(result.rundown).toBe("Rundown 1: the item failed.");
 		git(worktree, "apply", "--index", patch);
-		expect(git(worktree, "write-tree")).toBe(git(worktree, "rev-parse", `${result.items[0].result.head}^{tree}`));
+		// The patch is the whole change of the item, with the commit of its fix round.
+		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(FIX);
 	});
 
 	it("resets and asks when a child run of the fix round fails, and does not run it again on resume", async () => {

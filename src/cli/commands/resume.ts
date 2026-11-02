@@ -1,13 +1,14 @@
 /** `workflows resume <run-id>` and `workflows wait <run-id>`: continue or follow a run. */
-import { parseArgs } from "node:util";
+import { isDeepStrictEqual, parseArgs } from "node:util";
 import type { Client } from "@vzlentin/harness/client";
+import type { ScriptInput } from "../../launch/input.ts";
 import { callRecords, reading } from "../../records/store.ts";
-import { statusOf } from "../../run/result.ts";
+import { hasEnded, hasResult, runStatus, taskOf } from "../../run/past.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { type Following, follow, outcomeOf, reportOutcome } from "../follow.ts";
-import { checkVersion, connectTo, startTask, taskKey } from "../host.ts";
+import { checkVersion, connectTo, startTask } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { checked, oneRunId, progressOf, type SavedRun, savedRun, taskOf, tasksOf } from "../saved.ts";
+import { checked, inputOf, keysOf, oneRunId, progressOf, type SavedRun, savedRun, tasksOf } from "../saved.ts";
 import { programStatus } from "../terminal/redraw.ts";
 
 export const RESUME = "workflows resume <run-id> [--answer <text>] [--background] [--json]";
@@ -30,30 +31,32 @@ export async function resume(
 	const usage = wait ? WAIT : RESUME;
 	const { id, answer } = wait ? { id: oneRunId(args, usage), answer: undefined } : resumeArgs(args);
 	const run = await savedRun(id, usage);
-	const tasks = await tasksOf(run);
-	const { input: last, state } = checked(taskOf(tasks), run.id, wait ? "be waited for" : "resume");
-
-	const waiting =
-		state.status === "terminal" && state.outcome.status === "completed" && statusOf(state.outcome.result) === "waiting";
+	const task = checked(taskOf(await tasksOf(run)), run.id, wait ? "be waited for" : "resume");
+	const { input: last } = task;
+	const status = runStatus(task);
+	const waiting = status === "waiting";
+	const ended = hasEnded(status);
 
 	if (answer !== undefined && !waiting) throw new UsageError(`run ${run.id} does not wait for an answer`, RESUME);
 
 	if (waiting && answer === undefined && !wait && !json && !background && terminal.readLine !== undefined) {
 		terminal.stdout(`run ${run.id}`);
-		reportOutcome(last, run.id, state.outcome, terminal, json, await progressOf(run), true);
+		reportOutcome(last, run.id, task, terminal, json, await progressOf(run), true);
 
 		return answering(run.id, terminal);
 	}
 
-	if (state.status === "terminal" && answer === undefined && (wait || state.outcome.status === "completed")) {
+	if (ended && answer === undefined && (wait || hasResult(status))) {
 		terminal.stdout(`run ${run.id}`);
 
-		return outcomeOf(last, run.id, state.outcome, terminal, json, await progressOf(run));
+		return outcomeOf(last, run.id, task, terminal, json, await progressOf(run));
 	}
 
-	const input = answer === undefined ? last : { ...last, answer: { call: await openInput(run), text: answer } };
-	const ended = tasks.at(-1)?.state.status === "terminal";
-	const key = taskKey(run.id, tasks.length + (ended ? 1 : 0));
+	// An answer that a call used replays from its record, so a resume without `--answer` drops the earlier answer.
+	const { answer: _earlier, ...unanswered } = last;
+	const input = answer === undefined ? unanswered : { ...last, answer: { call: await openInput(run), text: answer } };
+	const keys = await keysOf(run);
+	const key = ended ? keys.next : keys.keyOf(task);
 
 	// A wait never tells the terminal that it follows a run, so a second Ctrl+C exits rather than stops the run. It
 	// never asks for the answer of a waiting run.
@@ -71,7 +74,15 @@ export async function resume(
 			client = await connectTo(terminal, run.project, true);
 			// The new task posts its outcome only when this resume runs in the background, whatever the last task did.
 			const { notify: _ended, ...saved } = input;
-			await startTask(client, run.project, background ? { ...saved, notify: true } : saved, key);
+			const sent: ScriptInput = background ? { ...saved, notify: true } : saved;
+			const started = await startTask(client, run.project, sent, key);
+
+			// Another resume of the run that took the same key first started its task, which this one then follows.
+			if (!isDeepStrictEqual(await inputOf(run, started.id), JSON.parse(JSON.stringify(sent)))) {
+				throw new Error(
+					`run ${run.id} was resumed by another command with another input: follow it with workflows wait ${run.id}`,
+				);
+			}
 		} else {
 			const before = (await progressOf(run)).length;
 			client = await connectTo(terminal, run.project, false);

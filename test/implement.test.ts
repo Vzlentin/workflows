@@ -67,7 +67,8 @@ describe("workflows implement", () => {
 		await mkdir(scripts, { recursive: true });
 		await writeFile(
 			join(scripts, "parent.js"),
-			`phase("fix")
+			`export const meta = { exit: { implemented: 0 } }
+phase("fix")
 const notes = await memory({ item: 2 })
 await notes.note("planner", undefined, ["one word changes."])
 const { report: _report, runId: _runId, ...result } = await run("implement", {

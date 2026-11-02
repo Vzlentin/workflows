@@ -4,9 +4,18 @@
  * comes. The command draws the tree on stderr, and the Pi tool draws the lines that the command sends with `--json`,
  * so both show the same steps.
  */
+import { hasResult, type RunStatus } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
 
-export type Mark = "✓" | "◉" | "✗";
+/** The mark of a step: done, running, failed, or stopped. */
+export type Mark = "✓" | "◉" | "✗" | "·";
+
+/** The mark of the steps that run when the run ends with `status`: `✓` done or waiting, `·` stopped, else `✗`. */
+export function endMark(status: RunStatus): Mark {
+	if (hasResult(status)) return "✓";
+
+	return status === "aborted" ? "·" : "✗";
+}
 
 /**
  * A step of the run `runId`, with the times of its start and its end when the events give them. `started` moves
@@ -55,7 +64,8 @@ export class Progress {
 			const step = this.#runs.get(event.run)?.current;
 
 			if (step?.mark === "◉") {
-				step.mark = event.failed ? "✗" : "✓";
+				if ("stopped" in event) step.mark = "·";
+				else step.mark = event.failed ? "✗" : "✓";
 				step.ended = event.at;
 			}
 
@@ -124,15 +134,15 @@ export class Progress {
 		return [...this.#runs.values()].some((run) => run.current !== undefined);
 	}
 
-	/** Marks each step that runs as failed, or as done. */
-	stop(failed: boolean): void {
+	/** Gives each step that runs the mark `mark`. */
+	stop(mark: Mark): void {
 		const visit = (items: readonly Item[]) => {
 			for (const item of items) {
 				if ("run" in item) visit(item.run.items);
 
 				if (!("mark" in item)) continue;
 
-				if (item.mark === "◉") item.mark = failed ? "✗" : "✓";
+				if (item.mark === "◉") item.mark = mark;
 				visit(item.items);
 			}
 		};

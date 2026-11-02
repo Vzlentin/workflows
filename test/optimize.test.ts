@@ -271,6 +271,47 @@ describe("workflows optimize", () => {
 		expect(run.stdout.at(-1)).toMatch(/^optimized ship: 2\/2 wins, not promoted, /);
 	}, 60_000);
 
+	it("removes the branch that a ship worktree is on, and reports a worktree or a branch that it cannot remove", async () => {
+		const items = join(root, "items");
+		await mkdir(items);
+		await writeFile(
+			join(items, "one.md"),
+			`---\nrepo: ../repo\nstart: "${start}"\n---\n# One item\n\nFix the README.\n`,
+		);
+		const scripts = join(root, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		// A ship that does not ship, on a branch of its own name; the branch ref of the first ship and the worktree of the
+		// second ship are locked.
+		await writeFile(
+			join(scripts, "ship.js"),
+			`export const meta = { args: { item: { type: "text", positional: true, required: true } }, worktree: true, exit: { blocked: 1 } }
+await sh(["git", "branch", "-m", \`own/\${runId}\`])
+await sh(["sh", "-c", 'if [ -e "$1" ]; then git worktree lock "$2"; else touch "$1" "$(git rev-parse --git-common-dir)/refs/heads/$3.lock"; fi', "lock", "${join(root, "shipped")}", cwd, \`own/\${runId}\`])
+return { status: "blocked", worktree: cwd, report: [] }`,
+		);
+
+		const run = await workflows(["optimize", "--workflow", "ship", "--items", "items"], {
+			cwd: root,
+			script: { inv: INV, select: ["tie"] },
+		});
+
+		expect(run.code).toBe(0);
+		const worktrees = git(repo, "worktree", "list", "--porcelain").split("\n\n");
+		expect(worktrees).toHaveLength(2);
+		const path = (worktrees[1] ?? "").split("\n")[0]?.slice("worktree ".length) ?? "";
+		const branch = git(path, "branch", "--show-current");
+		expect(branch).toMatch(/^own\//);
+		const kept = run.stdout.find((line) => line.startsWith(`kept ${path} `));
+		expect(kept).toMatch(new RegExp(`^kept \\S+ on ${branch}: git -C failed: fatal: cannot remove a locked`));
+		// The worktree of the first ship is gone, and only its branch stays.
+		const line = run.stdout.find((text) => text.startsWith("kept branch ")) ?? "";
+		const first = /^kept branch (own\/\S+): git -C failed: /.exec(line)?.[1];
+		expect(first).toBeDefined();
+		expect(first).not.toBe(branch);
+		const branches = git(repo, "branch", "--format=%(refname:short)").split("\n").toSorted();
+		expect(branches).toEqual(["main", branch, first].toSorted());
+	}, 60_000);
+
 	it("harvests the lessons of a one-file overlay, and resumes an interrupted run to the same result", async () => {
 		const saved = [];
 

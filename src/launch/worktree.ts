@@ -138,26 +138,36 @@ export function branchOf(subject: string): string {
 }
 
 /**
- * Renames the branch `from` of the worktree at `path` to `to`, or to `to-2`, `to-3`... when `to` exists, and returns
- * the branch that the worktree is on. A worktree that is not on `from` keeps its branch, so a repeat after the rename
- * returns the new name. Undefined when Git refuses the name, such as `feat/x` while a branch `feat` exists. `signal`
- * stops the Git commands, which `git` and `gitSucceeds` cannot do.
+ * How `renameBranch` ended: the worktree is `on` the branch `branch`, it is on a `detached` HEAD, Git `refused` the
+ * name `name`, such as `feat/x` while a branch `feat` exists, or a branch `name` was created during the rename
+ * (`raced`).
  */
-export async function renameBranch(
-	path: string,
-	from: string,
-	to: string,
-	signal: AbortSignal,
-): Promise<string | undefined> {
+export type Renamed =
+	| { readonly kind: "on"; readonly branch: string }
+	| { readonly kind: "detached" }
+	| { readonly kind: "refused"; readonly name: string }
+	| { readonly kind: "raced"; readonly name: string };
+
+/**
+ * Renames the branch `from` of the worktree at `path` to `to`, or to `to-2`, `to-3`... when `to` exists, and gives the
+ * branch that the worktree is on. A worktree that is on another branch keeps it, so a repeat after the rename gives
+ * the new name. `signal` stops the Git commands, which `git` and `gitSucceeds` cannot do.
+ */
+export async function renameBranch(path: string, from: string, to: string, signal: AbortSignal): Promise<Renamed> {
 	const succeeds = async (...args: string[]) => (await run("git", args, path, signal)).code === 0;
+	const exists = (name: string) => succeeds("show-ref", "--verify", "--quiet", `refs/heads/${name}`);
 	const current = (await run("git", ["branch", "--show-current"], path, signal)).stdout.trim();
 
-	if (current !== from) return current;
+	if (current === "") return { kind: "detached" };
+
+	if (current !== from) return { kind: "on", branch: current };
 	let name = to;
 
-	for (let n = 2; await succeeds("show-ref", "--verify", "--quiet", `refs/heads/${name}`); n++) name = `${to}-${n}`;
+	for (let n = 2; await exists(name); n++) name = `${to}-${n}`;
 
-	return (await succeeds("branch", "-m", name)) ? name : undefined;
+	if (await succeeds("branch", "-m", name)) return { kind: "on", branch: name };
+
+	return (await exists(name)) ? { kind: "raced", name } : { kind: "refused", name };
 }
 
 /** Removes the folder at `path` and the registrations of worktrees whose folder is gone. */
@@ -166,30 +176,53 @@ async function clearWorktree(repository: string, path: string): Promise<void> {
 	await git(repository, "worktree", "prune");
 }
 
+/** What makes a worktree before Git does, such as Herdr: `make` gives an ID, such as a workspace, and `close` closes it. */
+export type WorktreeMaker = {
+	readonly make: () => Promise<string | undefined>;
+	readonly close: (id: string) => Promise<void>;
+};
+
+/** The path of the worktree of `repository` that has `branch` checked out, or undefined when none has it. */
+async function checkedOutAt(repository: string, branch: string): Promise<string | undefined> {
+	let path: string | undefined;
+
+	for (const line of (await git(repository, "worktree", "list", "--porcelain")).split("\n")) {
+		if (line.startsWith("worktree ")) path = line.slice("worktree ".length);
+		else if (line === `branch refs/heads/${branch}`) return path;
+	}
+
+	return undefined;
+}
+
 /**
  * A worktree at `path` on `branch`, created from `start` when the branch is new. Safe to repeat after an interruption
  * at any point: an existing worktree is kept, and each attempt starts from a clean path, with no folder and no stale
- * registration. The repository's checkout stays untouched. `create` makes the worktree first when it is given, and gives
- * an ID, such as a workspace; Git makes it when `create` left no repository at `path`. It gives the ID of `create` when
- * its worktree is used, else undefined.
+ * registration. The repository's checkout stays untouched. It throws when another worktree has `branch` checked out.
+ * `maker` makes the worktree first when it is given; when it left no repository at `path`, `maker.close` closes what it
+ * opened, and Git makes the worktree. It gives the ID of `maker` when its worktree is used, else undefined.
  */
 export async function ensureWorktree(
 	repository: string,
 	path: string,
 	branch: string,
 	start: string,
-	create?: () => Promise<string | undefined>,
+	maker?: WorktreeMaker,
 ): Promise<string | undefined> {
 	if ((await repositoryAt(path)) !== undefined) return undefined;
+	await clearWorktree(repository, path);
+	const holder = await checkedOutAt(repository, branch);
 
-	if (create !== undefined) {
+	if (holder !== undefined) throw new Error(`branch ${branch} is checked out at ${holder}`);
+
+	if (maker !== undefined) {
+		const made = await maker.make();
+
+		if ((await repositoryAt(path)) !== undefined) return made;
+
+		if (made !== undefined) await maker.close(made);
 		await clearWorktree(repository, path);
-		const created = await create();
-
-		if ((await repositoryAt(path)) !== undefined) return created;
 	}
 
-	await clearWorktree(repository, path);
 	const exists = await gitSucceeds(repository, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`);
 	await git(repository, "worktree", "add", ...(exists ? [path, branch] : ["-b", branch, path, start]));
 

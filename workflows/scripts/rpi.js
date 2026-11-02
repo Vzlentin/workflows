@@ -8,7 +8,7 @@ export const meta = {
 		item: { type: "text", positional: true, label: "work item", required: true },
 	},
 	worktree: true,
-	exit: { blocked: 1 },
+	exit: { implemented: 0, blocked: 1 },
 }
 
 const { item, start } = args
@@ -43,10 +43,10 @@ const implemented = { plan, round: 1, start, message: subject, memory: notes.ref
 const { status, head, reply } = await run("implement", implemented)
 const lines = await noteLines(notes)
 
-if (status === "blocked") {
-	const report = [`blocked ${subject}`, reply]
+if (status !== "implemented") {
+	const report = [`${status} ${subject}`, reply]
 
-	return notes.finish(item, { status: "blocked", rounds: 1, reply, handoff: plan, memory: lines, report })
+	return notes.finish(item, { status, rounds: 1, reply, handoff: plan, memory: lines, report })
 }
 
 const report = [`implemented ${subject}, ${head}`]

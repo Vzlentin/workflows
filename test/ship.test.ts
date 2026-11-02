@@ -364,6 +364,22 @@ export default function ({ events }) {
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
 	});
 
+	it("ends with the status of an rpi run that did not implement, and exits 1 for that undeclared status", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "rpi.js"), 'return { status: "deferred", rounds: 1, reply: "later" }');
+		git(repo, "add", ".workflows");
+		git(repo, "commit", "-qm", "rpi");
+
+		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo });
+
+		expect([run.code, run.stdout]).toEqual([
+			1,
+			[`run ${run.id}`, `deferred Fix the README typo after 1 rounds: ${worktreeOf(run.id)}`],
+		]);
+		expect(run.model.calls).toEqual([]);
+	});
+
 	it("prints one JSON outcome line with --json, at the start and at resume", async () => {
 		const run = await workflows(["ship", "--json", "Fix the README typo"], {
 			cwd: repo,
@@ -777,7 +793,7 @@ export default function ({ events }) {
 		await mkdir(scripts, { recursive: true });
 		await writeFile(
 			join(scripts, "caller.js"),
-			'return await run("ship", { item: "Fix the README typo", repo: ".", branch: "docs/child" })',
+			'export const meta = { exit: { shipped: 0 } }\nreturn await run("ship", { item: "Fix the README typo", repo: ".", branch: "docs/child" })',
 		);
 		git(repo, "add", ".workflows");
 		git(repo, "commit", "-qm", "caller");
@@ -805,7 +821,7 @@ export default function ({ events }) {
 			[["ship", "--prompts", "none", "Fix it"], `workflows: no prompts folder ${join(repo, "none")}`, 1],
 			[["ship", "--prompts=.", "Fix it"], `workflows: ${repo}/README.md replaces no prompt of the package`, 1],
 			[["resume", "/tmp/run"], "workflows: /tmp/run is not a run ID", 2],
-			[["resume", "nothing"], `workflows: no run nothing in ${runs()}`, 1],
+			[["resume", "nothing"], `workflows: no run nothing in ${runs()}`, 4],
 			[["nope", "goal.md"], "workflows: unknown command nope", 2],
 		];
 
@@ -902,6 +918,27 @@ describe("pastRuns", () => {
 		expect([resumed.code, JSON.parse(resumed.stdout.at(-1) ?? "")]).toEqual([0, [second.runId, first.runId]]);
 		expect((await past({ limit: 1 }))[1][0].runId).toBe(third.runId);
 	});
+
+	it("leaves out a run of the workflow that waits for an answer", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "asked.js"), 'return await input("Go?")\n');
+		await writeFile(join(scripts, "past.js"), 'return (await pastRuns("asked")).map((run) => run.runId)\n');
+
+		const past = async () => {
+			const run = await workflows(["past"], { cwd: repo });
+			expect(run.code).toBe(0);
+
+			return JSON.parse(run.stdout.at(-1) ?? "");
+		};
+
+		const asked = await workflows(["asked"], { cwd: repo });
+		expect(asked.code).toBe(3);
+		expect(await past()).toEqual([]);
+		const answered = await workflows(["resume", asked.id ?? "", "--answer", "yes"], { cwd: repo });
+		expect(answered.code).toBe(0);
+		expect(await past()).toEqual([asked.id]);
+	});
 });
 
 describe("workflows show", () => {
@@ -968,7 +1005,7 @@ describe("workflows show", () => {
 			"    judge",
 			child("sh git rev-parse HEAD"),
 			...asks("judge", 2, child),
-			call(`sh sh -c git reset -q --soft "\\$1" && git commit -q -m "\\$2" squash ${start.slice(0, 17)}`),
+			call('sh sh -c git reset -q --soft "\\$1" && if git diff --cached --quiet; then echo none; '),
 			call("sh git rev-parse --short HEAD"),
 			notes(),
 			...asks("summarizer", 1),
@@ -1012,6 +1049,7 @@ describe("workflows show", () => {
 			label: `planner conversation ${conversation}`,
 			phase: "plan",
 			args: { profile: "planner" },
+			state: "done",
 			mark: "✓",
 			startedAt: time,
 			endedAt: time,
@@ -1106,6 +1144,12 @@ describe("workflows resume of ship runs", () => {
 				[],
 				[`workflows: run ${id} was saved by ${word} version of ${name} and cannot be saved`],
 			]);
+			// The task was not started with a key of the harness host, so no command can reach it.
+			const stopped = await workflows(["stop", id], { cwd: repo });
+			expect([stopped.code, stopped.stderr]).toEqual([
+				1,
+				[expect.stringMatching(`^workflows: run ${id} has no harness task key for its task \\d+$`)],
+			]);
 		}
 
 		const listed = await workflows(["list"], { cwd: repo });
@@ -1123,7 +1167,7 @@ describe("workflows resume of ship runs", () => {
 		);
 		const unknown = await workflows(["show", "20990101T000000-00000000"], { cwd: repo });
 		expect([unknown.code, unknown.stdout, unknown.stderr]).toEqual([
-			1,
+			4,
 			[],
 			[`workflows: no run 20990101T000000-00000000 in ${runs()}`],
 		]);

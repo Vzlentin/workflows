@@ -18,7 +18,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { ScriptInput } from "../launch/input.ts";
 import { CALL_KIND, CALL_RECORD, type SavedCall } from "../run/calls.ts";
-import { allPages, type RunTask, rootRuns, savedInput } from "../run/past.ts";
+import { allPages, type RunTask, rootRuns, runStatus, savedInput } from "../run/past.ts";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "../run/progress.ts";
 import { TASK } from "../run/version.ts";
 
@@ -44,6 +44,8 @@ class ReadOnlyDatabase implements SqliteDatabase {
 	readonly #database: DatabaseSync;
 	readonly #statements = new Map<string, StatementSync>();
 	#transactions: Promise<unknown> = Promise.resolve();
+	// True while `snapshot` runs its read.
+	#inSnapshot = false;
 
 	constructor(path: string) {
 		this.#database = new sqlite.DatabaseSync(path, { readOnly: true, timeout: BUSY_TIMEOUT_MS });
@@ -83,6 +85,30 @@ class ReadOnlyDatabase implements SqliteDatabase {
 	}
 
 	transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
+		// A transaction inside `snapshot` joins it: a nested `BEGIN` fails, and the chain would wait for itself.
+		if (this.#inSnapshot) return callback(this);
+
+		return this.#chained(callback);
+	}
+
+	/**
+	 * Runs `read` in one read transaction, so that each of its reads sees the same committed state. A deferred
+	 * `BEGIN` on a read-only connection takes no write lock.
+	 */
+	snapshot<T>(read: () => Promise<T>): Promise<T> {
+		return this.#chained(async () => {
+			this.#inSnapshot = true;
+
+			try {
+				return await read();
+			} finally {
+				this.#inSnapshot = false;
+			}
+		});
+	}
+
+	/** Runs `callback` in a transaction after the transactions that came before it. */
+	#chained<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
 		const result = this.#transactions.then(async () => {
 			this.#database.exec("BEGIN");
 
@@ -110,15 +136,19 @@ class ReadOnlyDatabase implements SqliteDatabase {
 
 export type Store = SqliteStorage;
 
+/** A store open for reads, and the database under it, whose `snapshot` runs reads in one read transaction. */
+export type Opened = { readonly store: Store; readonly database: ReadOnlyDatabase };
+
 /**
- * The store at `path`, open for reads, or undefined when it does not exist. A store whose schema pi-durable must update
- * first cannot open read-only; the host of its project updates it when it starts.
+ * The store at `path`, open for reads with its database, or undefined when it does not exist. A store whose schema
+ * pi-durable must update first cannot open read-only; the host of its project updates it when it starts.
  */
-export async function openStore(path: string): Promise<Store | undefined> {
+export async function openReadOnly(path: string): Promise<Opened | undefined> {
 	if (!existsSync(path)) return undefined;
+	const database = new ReadOnlyDatabase(path);
 
 	try {
-		return await SqliteStorage.open(new ReadOnlyDatabase(path));
+		return { store: await SqliteStorage.open(database), database };
 	} catch (error) {
 		if (!String(error).includes("readonly")) throw error;
 		const project = basename(dirname(path));
@@ -128,16 +158,19 @@ export async function openStore(path: string): Promise<Store | undefined> {
 	}
 }
 
-/** `read` on the store at `path`, open for reads; `fallback` when the store does not exist. */
+/**
+ * `read` on the store at `path`, open for reads, in one read transaction, so that all its reads see one committed
+ * state; `fallback` when the store does not exist.
+ */
 export async function reading<T>(path: string, fallback: T, read: (store: Store) => Promise<T>): Promise<T> {
-	const store = await openStore(path);
+	const opened = await openReadOnly(path);
 
-	if (store === undefined) return fallback;
+	if (opened === undefined) return fallback;
 
 	try {
-		return await read(store);
+		return await opened.database.snapshot(() => read(opened.store));
 	} finally {
-		await store.close(BACKGROUND_CONTEXT);
+		await opened.store.close(BACKGROUND_CONTEXT);
 	}
 }
 
@@ -172,12 +205,45 @@ export function inputWorktree(input: JsonValue): SavedWorktree | undefined {
 	return savedInput(WORKTREE, input)?.worktree;
 }
 
+/** The tasks of the kind `workflows.run`, root or child, also of another version. */
+function scanRuns(store: Store): Promise<RunTask[]> {
+	return allPages((cursor) => store.scanTasks({ kind: TASK.name }, 256, cursor, BACKGROUND_CONTEXT));
+}
+
 /**
  * The tasks of the kind `workflows.run` that no task owns, so not the tasks of child runs, by run ID, oldest first,
  * also of another version.
  */
 export async function runTasks(store: Store): Promise<Map<string, RunTask[]>> {
-	return rootRuns(await allPages((cursor) => store.scanTasks({ kind: TASK.name }, 256, cursor, BACKGROUND_CONTEXT)));
+	return rootRuns(await scanRuns(store));
+}
+
+/**
+ * From one scan: the root tasks as `runTasks` gives them, and the IDs of the tasks, root or child, whose status is
+ * `running`.
+ */
+export async function runTasksAndLive(
+	store: Store,
+): Promise<{ readonly runs: Map<string, RunTask[]>; readonly live: Set<number> }> {
+	const tasks = await scanRuns(store);
+	const live = new Set(tasks.flatMap((task) => (runStatus(task) === "running" ? [task.id] : [])));
+
+	return { runs: rootRuns(tasks), live };
+}
+
+/** The document of harness that maps each `start` key to the ID of the task that it created. */
+const STARTED = { kind: "harness.tasks", scope: { kind: "session" as const } };
+
+const STARTED_TASKS = Type.Object({ tasks: Type.Record(Type.String(), Type.Integer()) });
+
+/** The task ID of each `start` key of the host, from harness's document of the keys; empty when it has none. */
+export async function startedTasks(store: Store): Promise<Map<string, number>> {
+	const record = await store.findDocument(STARTED, "current", BACKGROUND_CONTEXT);
+
+	const value =
+		record === undefined ? undefined : (await store.document(record.id, "current", BACKGROUND_CONTEXT))?.value;
+
+	return Value.Check(STARTED_TASKS, value) ? new Map(Object.entries(value.tasks)) : new Map();
 }
 
 const PROGRESS = Type.Object({ events: Type.Array(Type.Unknown()) });
