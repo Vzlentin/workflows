@@ -78,7 +78,9 @@ export const DESCRIPTION =
 	"Run a durable workflow and wait for its result. Give exactly one of: `name` (a workflow script such as " +
 	"`ship`, `campaign` or `optimize`), `script` (the body of an inline workflow script), `resume` (a run " +
 	"ID), or `save` (keeps the script of a run as a named workflow of the project). `args` are the arguments of " +
-	"`name` or `script`, each passed as `--<key>`; a script's `meta` declares them. For " +
+	"`name` or `script`, each passed as `--<key>`; a script's `meta` declares them. Every run also takes `agents`, " +
+	"`<name>=<provider>/<id>:<thinking>,...` (`*` for every role), the models of its roles above the agents.json " +
+	"tables. For " +
 	"`ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and `prompts`. For `campaign`, which " +
 	"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
 	"`base`, `rounds` and `prompts`. For `optimize`, which proposes edits to the ship prompts, skills " +
@@ -101,8 +103,8 @@ export const GUIDELINES = [
 		"returns the reply, or the checked answer with a JSON Schema. `session(name)` or " +
 		"`session({ as, provider, model, thinking })` gives a session that keeps its history, and its " +
 		"`.ask(prompt, { schema })` is one turn. `as` is a role name (default `default`): `<repo>/.workflows/agents.json` " +
-		'and `~/.config/workflows/agents.json` give a name or `"*"` a `model` and `thinking`, else the Pi model, and ' +
-		"`provider`, `model` and `thinking` override them. `sh(cmd)` returns stdout and throws on a nonzero exit, `ok(cmd)` returns true on exit 0. " +
+		'and `~/.config/workflows/agents.json` give a name or `"*"` a `model` and `thinking`, else the Pi model; the ' +
+		"run's `agents` arg comes before the tables, and `provider`, `model` and `thinking` override them all. `sh(cmd)` returns stdout and throws on a nonzero exit, `ok(cmd)` returns true on exit 0. " +
 		"`run(name, args)` runs a named workflow as a child run, and `from: <run-id>` in `args` gives it the prompts and " +
 		"agents table of that saved run. `pastRuns(workflow, { runs, limit })` gives the completed root runs of a workflow, " +
 		"newest first, with their item, repository, start, prompts and result. " +

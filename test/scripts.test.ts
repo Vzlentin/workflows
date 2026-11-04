@@ -1211,6 +1211,33 @@ return { runId, runDir, cwd, branch, start: args.start, plan: await prompts.plan
 		]);
 	});
 
+	it("gives a child run from a saved run the run layer of --agents above the saved table", async () => {
+		const folder = join(root, ".workflows");
+		await mkdir(join(folder, "scripts"), { recursive: true });
+		await writeFile(
+			join(folder, "agents.json"),
+			JSON.stringify({ "*": { thinking: "high" }, j: { model: "other/o-1" } }),
+		);
+		await writeFile(
+			join(folder, "scripts", "child.js"),
+			'await agent("Script: one")\nreturn await agent("Script: two", { as: "j" })',
+		);
+		const saved = await workflows(["child"], { cwd: root });
+		expect(saved.code).toBe(0);
+
+		await writeFile(join(folder, "agents.json"), "{}");
+		await writeFile(
+			join(folder, "scripts", "parent.js"),
+			`return await run("child", { from: ${JSON.stringify(saved.id)} })`,
+		);
+		const run = await workflows(["parent", "--agents", "*=:minimal"], { cwd: root });
+		expect(run.code).toBe(0);
+		expect(run.model.calls.map(({ provider, model, thinking }) => [provider, model, thinking])).toEqual([
+			["anthropic", "claude-opus-5-5", "minimal"],
+			["other", "o-1", "minimal"],
+		]);
+	});
+
 	it("fails a run call whose overlay is not an object of path to text or null, or names no template", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
@@ -1712,6 +1739,28 @@ return [one.reply, two.reply].join(", ")`,
 		]);
 	});
 
+	it("gives the run layer of --agents to its child runs, above the tables, also on resume", async () => {
+		const folder = join(root, ".workflows");
+		await mkdir(join(folder, "scripts"), { recursive: true });
+		await writeFile(join(folder, "agents.json"), JSON.stringify({ "*": { thinking: "low" } }));
+		await writeFile(join(folder, "scripts", "child.js"), 'return await agent("Script: child")');
+		await writeFile(
+			join(root, "x.js"),
+			'await agent("Script: one")\nawait input("Go?")\nreturn [await agent("Script: two"), await run("child")].join(", ")',
+		);
+		const first = await workflows(["x.js", "--agents", "*=:high"], { cwd: root });
+		const id = first.id ?? "";
+		expect([first.code, first.model.calls.map(({ thinking }) => thinking)]).toEqual([3, ["high"]]);
+
+		await writeFile(join(folder, "agents.json"), JSON.stringify({ "*": { thinking: "minimal" } }));
+		const resumed = await workflows(["resume", id, "--answer", "go"], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to two, Reply to child"]);
+		expect(resumed.model.calls.map(({ prompt, thinking }) => [prompt, thinking])).toEqual([
+			["Script: two", "high"],
+			["Script: child", "high"],
+		]);
+	});
+
 	it("rejects bad scripts and arguments", async () => {
 		for (const [code, name] of [
 			["Date.now()", "Date.now"],
@@ -1807,16 +1856,18 @@ return [one.reply, two.reply].join(", ")`,
 			"plain",
 		]);
 		const plain = await workflows(["plain", "--help"], { cwd: root });
-		expect(plain.stdout).toEqual(["usage: workflows plain [--prompts <folder>] [--background] [--json]"]);
+		expect(plain.stdout).toEqual([
+			"usage: workflows plain [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--background] [--json]",
+		]);
 
 		const ship = await workflows(["ship", "--help"], { cwd: root });
 		expect([ship.code, ship.stdout[0]]).toEqual([
 			0,
-			"usage: workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [<item.md> | <text>] [--background] [--json]",
+			"usage: workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [<item.md> | <text>] [--background] [--json]",
 		]);
 		const own = await workflows(["count.js", "--help"], { cwd: root });
 		expect(own.stdout).toEqual([
-			"usage: workflows count [--depth <n>] [--all] [--prompts <folder>] <path> [--background] [--json]",
+			"usage: workflows count [--depth <n>] [--all] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] <path> [--background] [--json]",
 			"Count words.",
 		]);
 
@@ -1849,12 +1900,19 @@ return [one.reply, two.reply].join(", ")`,
 			join(root, "x.js"),
 			`export const meta = { args: { path: { type: "string", positional: true, required: true }, depth: { type: "number" } } }\nreturn args`,
 		);
-		const usage = "usage: workflows x [--depth <n>] [--prompts <folder>] <path> [--background] [--json]";
+
+		const usage =
+			"usage: workflows x [--depth <n>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] <path> [--background] [--json]";
 
 		const cases: [string[], string][] = [
 			[["x.js", "--depth", "two", "src"], "workflows: --depth must be a positive integer"],
 			[["x.js"], "workflows: missing path"],
 			[["x.js", "--path", "a", "b"], "workflows: give the path once"],
+			[["x.js", "--agents", "x", "src"], "workflows: --agents 'x' must be <name>=<provider>/<id>:<thinking>"],
+			[["x.js", "--agents", "=:high", "src"], "workflows: --agents '=:high' must be <name>=<provider>/<id>:<thinking>"],
+			[["x.js", "--agents", "j=opus", "src"], "workflows: --agents 'j=opus' has a model that is not <provider>/<id>"],
+			[["x.js", "--agents", "j=:", "src"], "workflows: --agents 'j=:' must be <name>=<provider>/<id>:<thinking>"],
+			[["x.js", "--agents", "j=:high,j=:low", "src"], "workflows: --agents 'j=:low' gives j again"],
 		];
 
 		for (const [argv, error] of cases) {

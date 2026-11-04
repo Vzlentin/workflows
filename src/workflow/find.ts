@@ -109,7 +109,7 @@ export function usageOf(name: string, meta: Meta): string {
 	for (const [arg, spec] of entries) if (!spec.positional) words.push(flagUsage(arg, spec));
 
 	if (meta.worktree) words.push("[--repo <repository>]", "[--base <branch>]", "[--branch <name>]");
-	words.push("[--prompts <folder>]");
+	words.push("[--prompts <folder>]", "[--agents <name>=<provider/id>:<thinking>,...]");
 
 	for (const [arg, spec] of entries) {
 		if (!spec.positional) continue;

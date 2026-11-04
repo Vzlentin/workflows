@@ -631,14 +631,14 @@ turns and the `memo` calls of the run memory return their saved results, and the
 
 The research, plan, implement, review and judge sessions use the roles `researcher`, `planner`, `implementer`,
 `reviewer` and `judge`. The `summarizer` sessions, which compress the notes of the run memory, use the role
-`summarizer`. A role takes its model and thinking level from the agents tables, else from the project agent: the Pi
-default model and thinking level. The package table gives `summarizer` the thinking level `low` and nothing else. See
-[Roles](#roles). Every session gets the same tools, and the same instructions: the session is not the user's main
-agent and does not write to the user's memory or note tools, because the run keeps its own memory. Like every
-workflow script, `ship` and `campaign` read the scripts, prompts and agents table of the package and of the project
-folder `.workflows/` of the current directory, also when `--repo` selects another repository. See
-[Workflow scripts](#workflow-scripts). `{ "planner": { "model": "openai/gpt-5" } }` in `.workflows/agents.json`, for
-example, gives the planner another model.
+`summarizer`. A role takes its model and thinking level from `--agents` and the agents tables, else from the project
+agent: the Pi default model and thinking level. The package table gives `summarizer` the thinking level `low` and
+nothing else. See [Roles](#roles). Every session gets the same tools, and the same instructions: the session is not the
+user's main agent and does not write to the user's memory or note tools, because the run keeps its own memory. Like
+every workflow script, `ship` and `campaign` read the scripts, prompts and agents table of the package and of the
+project folder `.workflows/` of the current directory, also when `--repo` selects another repository. See [Workflow
+scripts](#workflow-scripts). `{ "planner": { "model": "openai/gpt-5" } }` in `.workflows/agents.json`, for example,
+gives the planner another model.
 
 Sessions are children of harness's children library in the harness host of the run's project, and use the host's
 providers and credentials: Pi's, from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers that Pi
@@ -739,7 +739,8 @@ export const meta = {
   0. A status that `exit` does not declare exits 1, and a result without `status` exits 0. The status `waiting` always
   exits 3, whatever `exit` says. See [Input](#input).
 
-Every script also takes `--prompts <folder>`, as `ship` does, `--background`, `--json` and `--help`. `workflows <wf> --help` prints
+Every script also takes `--prompts <folder>`, as `ship` does, `--agents <name>=<provider>/<id>:<thinking>,...`, the
+run layer of the roles (see [Roles](#roles)), `--background`, `--json` and `--help`. `workflows <wf> --help` prints
 the usage line, built from `meta`, and `meta.description` when the script has one, and exits 0. Any other flag is bad usage. Bad usage prints
 `workflows: <error>` and the usage line of the script, and exits 2. A bad `meta` fails with
 `workflows: <name>: <problem>` and exits 1.
@@ -899,9 +900,11 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
   prompts and agents table of that run's saved bundle in place of the caller's; the scripts and the lib stay the
   caller's. `args.prompts` and `args.overlay` apply on top of them. A run ID that is not a root run of the store, such
   as a child run ID, fails the call with `run <name>: no run <id>`, and a `from` that is not a string fails it with
-  `run <name>: from is not a run ID`. `from` is a reserved argument name.
+  `run <name>: from is not a run ID`. `from` is a reserved argument name. The caller's run layer of `--agents` stays
+  above the agents table of that run.
 - The child run gets the caller's saved scripts, prompts and agents table, or those of `args.from`, with the replacements
-  of `args.prompts` and `args.overlay`, and the caller's file overlay. So every child run of a child run gets them too.
+  of `args.prompts` and `args.overlay`, the caller's file overlay, and the caller's run layer of `--agents`. So every
+  child run of a child run gets them too.
 
 `run()` returns the child's result, with `runId`, the child run ID, added to an object result. A failed child run
 fails the call with `child run <id> failed: <error>`, where `<id>` is the deepest child run that failed, and the child's task ends as failed. A child run that was stopped (aborted or orphaned) fails the call with `child run <id> stopped: <reason>`. A caller that fails aborts
@@ -998,12 +1001,15 @@ the same calls each time it runs.
 ### Roles
 
 A role is a name: `name` of `session(name)`, or `as` of `agent(..., { as })` and `session({ as })`, `default` when
-the call gives none. Any name is a role. Three `agents.json` tables give a role its model and thinking level, in this
-order:
+the call gives none. Any name is a role. A role takes its model and thinking level from these layers, first layer
+first:
 
-1. `<repo>/.workflows/agents.json`, in the project folder.
-2. `$XDG_CONFIG_HOME/workflows/agents.json`, or `~/.config/workflows/agents.json` without `XDG_CONFIG_HOME`.
-3. `workflows/agents.json` of the package: `{ "summarizer": { "thinking": "low" } }`.
+1. The call: `provider`, `model` and `thinking` of `session(...)` or `agent(...)`.
+2. The run: `--agents <name>=<provider>/<id>:<thinking>,...` of the command, or `args.agents` of the `workflow` tool.
+3. `<repo>/.workflows/agents.json`, in the project folder.
+4. `$XDG_CONFIG_HOME/workflows/agents.json`, or `~/.config/workflows/agents.json` without `XDG_CONFIG_HOME`.
+5. `workflows/agents.json` of the package: `{ "summarizer": { "thinking": "low" } }`.
+6. The project agent of harness: the Pi default model and thinking level.
 
 ```json
 {
@@ -1018,7 +1024,20 @@ entry, else the field of `"*"`, and the first table that gives the field wins. S
 entry of the role. A missing file is an empty table. A file that is not JSON, or an entry with another field or a bad
 value, fails the command before the run starts with `<file>: <problem>`, such as
 `<repo>/.workflows/agents.json: judge.model must be <provider>/<id>`. The command reads the tables when it starts a
-run, and the run saves the merged table.
+run, and the run saves the merged table, with the run layer above the tables.
+
+The value of `--agents` is a list of parts split on `,`, such as `*=anthropic/claude-opus-5-5:high,judge=:low`. A part
+is `<name>=<value>`, split on its first `=`, and `*` is every role, as `"*"` of a table. The value splits on its last
+`:` into the model, `<provider>/<id>`, and the thinking level; without a `:`, the whole value is the model. Each part
+and each half is trimmed, and an empty half gives no field. The run layer takes each field as a table does. Thinking
+level names are not checked here. A bad part is bad usage, exit 2, before the run starts:
+
+- `--agents '<part>' must be <name>=<provider>/<id>:<thinking>`: a part without `=`, with an empty name, or with
+  neither a model nor a thinking level.
+- `--agents '<part>' has a model that is not <provider>/<id>`.
+- `--agents '<part>' gives <name> again`: a name that an earlier part gave.
+
+`agents` is a reserved argument name. `resume` and `check` take no `--agents`: a resume uses the saved table.
 
 A call can give `provider`, `model` and `thinking`. Each field that the call gives overrides the role, and the role
 fills the rest. A session without a provider or a model from the call or the role takes the model of the project
@@ -1032,7 +1051,8 @@ anthropic/nope`.
 ### Saved inputs and resume
 
 Before the run starts, it saves the script, every `scripts/*.js` of the package and the project, the lib, the instructions
-of every prompt, the merged agents table, the args and the current directory. Resume and `run()` use these saved
+of every prompt, the merged agents table, the run layer of `--agents` apart from it (`agents`, `{}` without the
+option), the args and the current directory. Resume and `run()` use these saved
 inputs, so a later edit of a script, prompt or `agents.json`, in the package, the user folder or `.workflows/`,
 changes only new runs. The shared instructions of the sessions are not saved: a resume uses the text of the loaded
 code.
@@ -1559,12 +1579,13 @@ directory, starts the host when none runs, asks it to start the run's task, and 
 ### The `workflow` tool of the host
 
 The entry also gives the conversations of the host the `workflow` tool: the project agent, its subagents, and the
-subagents of sessions. The sessions of a run do not get it. `src/tool.ts` defines it once for the host and for Pi:
-its description, its parameters, its output schema, the command arguments of a call, and the text and the outcome of a
-result. The host tool has no prompt guidelines. It takes the parameters of
-[The `workflow` tool](#the-workflow-tool) of Pi, and runs the `workflows` command of the same install as a child
-process with the Node of the host, in the conversation's directory, with `--json`. It sets `HARNESS_PROJECT` to the
-project of the host and `PI_SESSION_ID` to the conversation ID.
+subagents of sessions. The sessions of a run do not get it. `src/tool.ts` defines it once for the host and for Pi: its
+description, its parameters, its output schema, the command arguments of a call, and the text and the outcome of a
+result. The host tool has no prompt guidelines. It takes the parameters of [The `workflow` tool](#the-workflow-tool) of
+Pi, and runs the `workflows` command of the same install as a child process with the Node of the host, in the
+conversation's directory, with `--json`. `args.agents` reaches the command as `--agents=<text>`, so a bad part is the
+error result of the command's usage error, before a run exists. It sets `HARNESS_PROJECT` to the project of the host and
+`PI_SESSION_ID` to the conversation ID.
 
 - When the command prints `run <run-id>`, the running output of the call gets `run <run-id>: if this call stops, the
   run is detached and goes on in the harness host; follow it with resume: "<run-id>"`. Each stderr line appends a line to the running output, the last progress line or the line itself,
@@ -1858,7 +1879,7 @@ The engine files in `src/`:
 - `workflow/find.ts`: find a script, list the scripts, help and usage, usage errors, and the terminal input and output.
 - `workflow/bundle.ts`: the bundle of a run (scripts, prompt templates, the merged agents table and the script lib), the
   instructions of a prompt template, and the edits of the bundle for a `run()` call.
-- `workflow/roles.ts`: the `agents.json` tables, their merge, and the role of a name.
+- `workflow/roles.ts`: the `agents.json` tables, the `--agents` parser, their merge, and the role of a name.
 - `cli/commands/check.ts`: the static analysis of `workflows check`.
 - `run/version.ts`: the kind and version of the script task, and the task types that the `run/` files share.
 - `run/past.ts`: the saved root runs of the project store, for the `pastRuns` call and `run(name, { from })`, the task

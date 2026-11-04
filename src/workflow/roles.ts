@@ -77,6 +77,11 @@ function roleWith(model: Role["model"], thinking: string | undefined): Role {
 	return role;
 }
 
+/** The role of a checked entry. */
+function entryRole(entry: Static<typeof ENTRY>): Role {
+	return roleWith(entry.model === undefined ? undefined : modelRef(entry.model), entry.thinking);
+}
+
 /**
  * The table of the file `path`. A missing file is an empty table; bad JSON or a bad entry throws `<path>: <problem>`.
  */
@@ -100,12 +105,50 @@ export async function readRoles(path: string): Promise<Roles> {
 		throw new Error(`${path}: ${tableProblem(deepest)}`);
 	}
 
-	return Object.fromEntries(
-		Object.entries(table).map(([name, { model, thinking }]) => [
-			name,
-			roleWith(model === undefined ? undefined : modelRef(model), thinking),
-		]),
-	);
+	return Object.fromEntries(Object.entries(table).map(([name, entry]) => [name, entryRole(entry)]));
+}
+
+/** The role of one part `<name>=<provider>/<id>:<thinking>` of `parseRoles`, which throws the problem of `part`. */
+function partRole(part: string): readonly [string, Role] {
+	const malformed = `'${part}' must be <name>=<provider>/<id>:<thinking>`;
+	const equals = part.indexOf("=");
+
+	if (equals < 0) throw new Error(malformed);
+	const name = part.slice(0, equals).trim();
+	const value = part.slice(equals + 1);
+	const colon = value.lastIndexOf(":");
+	const model = (colon < 0 ? value : value.slice(0, colon)).trim();
+	const thinking = colon < 0 ? "" : value.slice(colon + 1).trim();
+	const entry: Static<typeof ENTRY> = {};
+
+	if (model !== "") entry.model = model;
+
+	if (thinking !== "") entry.thinking = thinking;
+
+	if (name === "" || (entry.model === undefined && entry.thinking === undefined)) throw new Error(malformed);
+
+	if (!Value.Check(ENTRY, entry)) throw new Error(`'${part}' has a model that is not <provider>/<id>`);
+
+	return [name, entryRole(entry)];
+}
+
+/**
+ * The roles of the text of `--agents`: parts `<name>=<provider>/<id>:<thinking>`, split on `,`, where `*` is every
+ * role. The value splits on its last `:`; without one it is the model. An empty half is not given. Throws the problem
+ * of the first bad part.
+ */
+export function parseRoles(text: string): Roles {
+	const roles = new Map<string, Role>();
+
+	for (const raw of text.split(",")) {
+		const part = raw.trim();
+		const [name, role] = partRole(part);
+
+		if (roles.has(name)) throw new Error(`'${part}' gives ${name} again`);
+		roles.set(name, role);
+	}
+
+	return Object.fromEntries(roles);
 }
 
 /** The role of `name` in `table`: each field of `table[name]`, else of `table["*"]`. */

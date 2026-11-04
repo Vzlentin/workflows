@@ -42,9 +42,9 @@ declare const cwd: string;
 declare const prompts: Record<string, (inputs?: Record<string, string>) => string>;
 
 /**
- * The model of a session. `as` is the role name, any name (default `default`). The `agents.json` tables give the model
- * and thinking of each name or of `"*"`. `provider`, `model` and `thinking` override them, and a field that none
- * gives comes from the project agent.
+ * The model of a session. `as` is the role name, any name (default `default`). The run's `--agents`, then the
+ * `agents.json` tables, give the model and thinking of each name or of `"*"`. `provider`, `model` and `thinking`
+ * override them, and a field that none gives comes from the project agent.
  */
 type SessionOptions = { as?: string; provider?: string; model?: string; thinking?: string };
 

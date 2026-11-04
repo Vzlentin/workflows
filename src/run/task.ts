@@ -160,6 +160,7 @@ async function runPhase(
 			root,
 			runDir: input.runDir,
 			bundle: input.bundle,
+			agents: input.agents,
 			overlay: input.overlay,
 			session: input.parent,
 			answer: input.answer,

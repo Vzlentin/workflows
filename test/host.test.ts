@@ -1157,6 +1157,64 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 		}
 	});
 
+	it("gives the roles of the agents arg of the CLI and of the tool, above the tables and below the call", async () => {
+		await mkdir(join(root, ".workflows"), { recursive: true });
+		await writeFile(
+			join(root, ".workflows", "agents.json"),
+			JSON.stringify({ b: { model: "other/o-1", thinking: "low" }, c: { model: "other/o-1" } }),
+		);
+
+		const script = `await agent("Script: one", { as: "a" })
+await agent("Script: two", { as: "b" })
+await agent("Script: three", { as: "b", thinking: "low" })
+await agent("Script: four", { as: "c", provider: "other", model: "o-1" })
+await agent("Script: five", { as: "c" })
+return "done"`;
+
+		await writeFile(join(root, "x.js"), script);
+		const agents = "*=anthropic/claude-opus-5-5:high, b=:minimal";
+
+		const expected = [
+			["anthropic", "claude-opus-5-5", "high"],
+			["anthropic", "claude-opus-5-5", "minimal"],
+			["anthropic", "claude-opus-5-5", "low"],
+			["other", "o-1", "high"],
+			["anthropic", "claude-opus-5-5", "high"],
+		];
+
+		const run = await workflows(["x.js", "--agents", agents], { cwd: root });
+		expect(run.code).toBe(0);
+		expect(run.model.calls.map((call) => [call.provider, call.model, call.thinking])).toEqual(expected);
+
+		const model = hostModel();
+		const host = await startHost("main", model.models);
+
+		try {
+			await tellAgent(`Script workflow: ${JSON.stringify({ script, args: { agents } })}`);
+			expect((await nextResult(0)).isError).toBe(false);
+			const calls = model.calls.filter((call) => call.prompt.startsWith("Script: "));
+			expect(calls.map((call) => [call.provider, call.model, call.thinking])).toEqual(expected);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("refuses a bad part of the agents arg before a run exists", async () => {
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			await tellAgent(
+				`Script workflow: ${JSON.stringify({ script: 'return "x"', args: { agents: "*=:high,b=opus" } })}`,
+			);
+			const result = await nextResult(0);
+			expect(result.isError).toBe(true);
+			expect(result.text).toContain("--agents 'b=opus' has a model that is not <provider>/<id>");
+			expect(existsSync(runsOf(root)) ? await readdir(runsOf(root)) : []).toEqual([]);
+		} finally {
+			await host.close();
+		}
+	});
+
 	it("gives the question of a waiting run, and continues the run with the answer", async () => {
 		const host = await startHost("main", hostModel().models);
 

@@ -71,6 +71,8 @@ Each arg becomes a flag of `workflows <name>`. Give only the args that the user 
 A run uses the Pi model and thinking level. `<repo>/.workflows/agents.json` and `~/.config/workflows/agents.json` set
 them for each role name (`researcher`, `planner`, `implementer`, `reviewer`, `judge`, `summarizer`) or for `"*"`, as
 `{ "judge": { "model": "<provider>/<id>", "thinking": "high" } }`. The repo table wins over the user table.
+For one run, `args.agents` wins over both tables: `"*=<provider>/<id>:high,judge=:low"` (`*` is every role; leave
+out the model or the thinking level to keep it from the tables).
 
 ## Read the outcome
 

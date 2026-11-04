@@ -65,6 +65,7 @@ harness host that runs keeps the old version until it stops. It stops by itself 
 workflows ship plan.md                     # ship the work item in plan.md
 workflows ship "Fix the README typo"
 workflows campaign goal.md
+workflows ship plan.md --agents '*=anthropic/claude-opus-5-5:high,judge=:low'   # the models of the run's roles
 workflows thermoloop                       # review and fix the current branch against main
 workflows thermoloop 74                    # review and fix PR 74 in a worktree of its own
 workflows optimize ship --limit 4          # propose and test surface edits from past ship runs

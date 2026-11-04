@@ -21,7 +21,7 @@ export type Runtime = TaskRuntime<ScriptInput, Checkpoint, JsonValue, object>;
 export type ScriptTask = Task<ScriptInput, Checkpoint, JsonValue, object>;
 
 /** The kind and version of the task of every script run. A run saved by another version cannot resume. */
-export const TASK = { name: "workflows.run", version: 19 } as const;
+export const TASK = { name: "workflows.run", version: 20 } as const;
 
 /** Whether `task` has the kind and version of the script task of this version. */
 export function thisVersion(task: { readonly kind: string; readonly version: number }): boolean {
