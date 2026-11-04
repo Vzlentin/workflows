@@ -41,7 +41,9 @@ try {
 	const { score, judgeError } = shipped
 
 	if (score === undefined) {
-		return { status: "unjudged", judgeError, reply, report: [`judge failed on ${subject}: ${judgeError}`] }
+		const report = [`judge failed on ${subject}: ${judgeError}`]
+
+		return { status: "unjudged", judgeError, shipped, reply, report }
 	}
 
 	const report = [`judge ${score.toFixed(2)}: ${subject}`, ...shipped.findings.map((finding) => `  ${finding}`)]

@@ -80,6 +80,16 @@ const FINDING = "  finding 4 FAIL README.md:3 adds a line the work item does not
 /** The steps of the judge of a campaign that is done. */
 const JUDGE_STEPS = ["✓ all 2 items", "  ✓ judge", "    judge 0.83"];
 
+/** The question about item 1 that the fix round keeps at 0 with the findings of `ZERO`, at the commit `head`. */
+const stillZero = (head: string) =>
+	[
+		`Item 1 shipped with judge score 0, still 0 after one fix round: ${head} fix: correct the README typo`,
+		"Findings:\n- 1 FAIL: the typo stays.",
+		"How should the campaign continue? Answer keep to ship the item as it is, fix: <words> for one more fix round on " +
+			"your words, or reset to reset the item and get a rundown. Answer stop, or nothing, to end the campaign and " +
+			"keep the commit.",
+	].join("\n\n");
+
 /** The report line of a shipped item with the commit `subject`. */
 const itemLine = (subject: string) => expect.stringMatching(new RegExp(`^ {2}[0-9a-f]+ ${subject}, judge 0\\.83$`));
 
@@ -319,10 +329,20 @@ describe("workflows campaign", () => {
 
 		expect(run.code).toBe(3);
 		expect(run.model.count("implement")).toBe(1);
-		expect(run.model.find("rundown")?.prompt).toContain(
+		expect(run.model.count("rundown")).toBe(0);
+		expect(run.stdout[1]).toMatch(
+			/^Item 1 shipped with a failed judge: the answer did not call respond: [0-9a-f]+ fix: correct the README typo\n\n/,
+		);
+		const worktree = worktreeOf(run.id);
+		expect(git(worktree, "rev-parse", "HEAD")).not.toBe(start);
+
+		const reset = await workflows(["resume", run.id ?? "", "--answer", "reset"], { cwd: root });
+
+		expect(reset.code).toBe(3);
+		expect(reset.model.find("rundown")?.prompt).toContain(
 			"## status\nshipped with a failed judge: the answer did not call respond\n",
 		);
-		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
+		expect(git(worktree, "rev-parse", "HEAD")).toBe(start);
 	});
 
 	it("fails an item cleanly when the fix round ends with an unknown status", async () => {
@@ -442,15 +462,134 @@ describe("workflows campaign", () => {
 		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(FIX);
 	});
 
-	it("resets to the start commit after a judge score of 0 that the fix round keeps, and stops on the answer stop", async () => {
+	it("asks about an item that the fix round keeps at 0, ships it on keep, and repeats no call", async () => {
+		const run = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST, SECOND]], edits: [FIXED], judge: [ZERO, ZERO] },
+		});
+
+		expect(run.code).toBe(3);
+		const worktree = worktreeOf(run.id);
+		const head = git(worktree, "rev-parse", "--short", "HEAD");
+		expect(run.stdout).toEqual([`run ${run.id}`, stillZero(head)]);
+		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("1");
+		expect(run.model.count("rundown")).toBe(0);
+		expect(existsSync(join(runs(), run.id ?? "", "item-1", "item.patch"))).toBe(false);
+		const reflog = git(worktree, "reflog", "--format=%gs");
+
+		const kept = await workflows(["resume", run.id ?? "", "--answer", "keep", "--json"], {
+			cwd: root,
+			script: { edits: [THANKED], commit: [THANKS] },
+		});
+
+		expect(kept.code).toBe(0);
+		expect(kept.model.calls.map((call) => call.kind)).toEqual([...SHIP, "judge", "harvest"]);
+		const { result, report } = JSON.parse(kept.stdout[1] ?? "");
+		expect(report[1]).toEqual(expect.stringMatching(new RegExp(`^ {2}${head} ${COMMIT.subject}, judge 0\\.00$`)));
+		expect(report[2]).toBe("    finding 1 FAIL: the typo stays.");
+		expect(report[3]).toEqual(itemLine(THANKS.subject));
+		expect(result.items[0].kept).toBe(true);
+		expect(result.items[1]).not.toHaveProperty("kept");
+		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("2");
+		expect(git(worktree, "reflog", "--format=%gs").endsWith(reflog)).toBe(true);
+	});
+
+	it("runs a fix round on the words of the user's answer, and ships the item", async () => {
+		const run = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST]], edits: [FIXED], judge: [ZERO, ZERO] },
+		});
+
+		expect(run.code).toBe(3);
+		const worktree = worktreeOf(run.id);
+		expect(run.stdout[1]).toBe(stillZero(git(worktree, "rev-parse", "--short", "HEAD")));
+		const before = git(worktree, "reflog", "--format=%gs");
+
+		const fixed = await workflows(["resume", run.id ?? "", "--answer", "fix: Put a comma after Hello", "--json"], {
+			cwd: root,
+			script: { edits: [FIX], commit: [COMMIT] },
+		});
+
+		expect(fixed.code).toBe(0);
+		expect(fixed.model.calls.map((call) => call.kind)).toEqual(["implement", "commit", "judge", "judge", "harvest"]);
+		expect(fixed.model.find("implement")?.prompt).toContain("## Judge findings\n\n- Put a comma after Hello");
+		const { result } = JSON.parse(fixed.stdout[1] ?? "");
+		expect(result.items[0].result.score).toBe(5 / 6);
+		expect(result.items[0]).not.toHaveProperty("kept");
+		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(FIX);
+		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("1");
+		// The first fix round made no change, so the fix round of the answer makes the only fix commit.
+		const reflog = git(worktree, "reflog", "--format=%gs");
+		expect(reflog.endsWith(before)).toBe(true);
+		const fixes = reflog.split("\n").filter((line) => line === "commit: fix: judge findings of item 1");
+		expect(fixes).toHaveLength(1);
+	});
+
+	it("keeps an item whose fix round judge failed, and ships the next item on top of it", async () => {
+		const failing = "1 PASS\n2 PASS";
+
+		const run = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST, SECOND]], edits: [FIXED, FIX], judge: [ZERO, failing, failing, failing] },
+		});
+
+		expect(run.code).toBe(3);
+		const worktree = worktreeOf(run.id);
+		const head = git(worktree, "rev-parse", "--short", "HEAD");
+		expect(run.stdout[1]).toMatch(
+			new RegExp(
+				`^Item 1 shipped with judge score 0, no judge score after one fix round: ${head} ${COMMIT.subject}\\n`,
+			),
+		);
+
+		const kept = await workflows(["resume", run.id ?? "", "--answer", "keep", "--json"], {
+			cwd: root,
+			script: { edits: [`${FIX}Thanks.\n`], commit: [THANKS] },
+		});
+
+		expect(kept.code).toBe(0);
+		const { report } = JSON.parse(kept.stdout[1] ?? "");
+		expect(report[1]).toEqual(expect.stringMatching(new RegExp(`^ {2}${head} ${COMMIT.subject}, judge failed$`)));
+		// The fix round judge gave no findings, so the kept item has the findings of the question, from the ship judge.
+		expect(report[2]).toBe(`    finding ${ZERO.findings[0]}`);
+		expect(report[3]).toEqual(itemLine(THANKS.subject));
+		expect(git(worktree, "rev-parse", "--short", "HEAD~1")).toBe(head);
+	});
+
+	it("asks again on an unknown answer about an item still at 0", async () => {
+		const run = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST]], edits: [FIXED], judge: [ZERO, ZERO] },
+		});
+
+		expect(run.code).toBe(3);
+		const head = git(worktreeOf(run.id), "rev-parse", "--short", "HEAD");
+
+		for (const answer of ["maybe", "fix:  "]) {
+			const asked = await workflows(["resume", run.id ?? "", "--answer", answer], { cwd: root });
+
+			expect(asked.code).toBe(3);
+			expect(asked.stdout[1]).toBe(`Unknown answer: ${answer.trim()}\n\n${stillZero(head)}`);
+			expect(asked.model.calls).toEqual([]);
+		}
+	});
+
+	it("resets to the start commit on the answer reset about an item still at 0, and stops on the answer stop", async () => {
 		const run = await workflows(["campaign", GOAL], {
 			cwd: repo,
 			script: { items: [[FIRST, SECOND]], edits: [FIXED, FIX], judge: ZERO },
 		});
 
 		expect(run.code).toBe(3);
+		const worktree = worktreeOf(run.id);
+		expect(run.stdout[1]).toBe(stillZero(git(worktree, "rev-parse", "--short", "HEAD")));
+		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "implement", "commit", "judge"]);
+
+		const reset = await workflows(["resume", run.id ?? "", "--answer", "Reset"], { cwd: root });
+
+		expect(reset.code).toBe(3);
 		const patch = join(runs(), run.id ?? "", "item-1", "item.patch");
-		expect(run.stdout).toEqual([
+		expect(reset.stdout).toEqual([
 			`run ${run.id}`,
 			[
 				"Rundown 1: the item failed.",
@@ -461,18 +600,10 @@ describe("workflows campaign", () => {
 				"How should the campaign continue? Answer stop, or nothing, to end it.",
 			].join("\n\n"),
 		]);
-		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-parse", "HEAD")).toBe(start);
 		expect(existsSync(patch)).toBe(true);
-		expect(run.model.calls.map((call) => call.kind)).toEqual([
-			"split",
-			...SHIP,
-			"implement",
-			"commit",
-			"judge",
-			"rundown",
-		]);
-		const rundown = run.model.find("rundown")?.prompt;
+		expect(reset.model.calls.map((call) => call.kind)).toEqual(["rundown"]);
+		const rundown = reset.model.find("rundown")?.prompt;
 		expect(rundown).toContain("## status\nshipped with judge score 0, still 0 after one fix round\n");
 		expect(rundown).toContain("## findings\n1 FAIL");
 		expect(rundown).toContain(`## remaining\n${JSON.stringify([SECOND])}`);
@@ -589,7 +720,7 @@ describe("workflows campaign", () => {
 		expect(outcome).not.toContain('"memory"');
 	});
 
-	it("distils the lessons of a stopped campaign after its rundown", async () => {
+	it("distils the lessons of a campaign stopped at an item still at 0", async () => {
 		const judge = { answers: ["FAIL", ...Array(7).fill("PASS")], findings: ["1 FAIL: the typo stays."] };
 
 		const run = await workflows(["campaign", GOAL], {
@@ -606,9 +737,14 @@ describe("workflows campaign", () => {
 		});
 
 		expect(stopped.code).toBe(1);
-		expect(stopped.stdout.slice(-2)).toEqual(["Rundown 1: the item failed.", LESSON_LINE]);
+		expect(stopped.stdout.slice(1)).toEqual([`stopped Fix the README at item 1: ${worktreeOf(run.id)}`, LESSON_LINE]);
 		const json = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
-		expect(JSON.parse(json.stdout[1] ?? "").result).toMatchObject({ status: "stopped", lessons: [LESSONED] });
+		const { result } = JSON.parse(json.stdout[1] ?? "");
+		expect(result).toMatchObject({ status: "stopped", lessons: [LESSONED] });
+		expect(result).not.toHaveProperty("rundown");
+		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).not.toBe(start);
+		// The fix round squashed the item again: the stopped item has the commit of the fix round.
+		expect(result.items[0].result.head).toBe(git(worktreeOf(run.id), "rev-parse", "--short", "HEAD"));
 	});
 
 	it("resets to the last shipped commit after a stopped item, and goes on with the answer", async () => {

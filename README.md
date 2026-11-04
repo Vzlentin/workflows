@@ -4,7 +4,7 @@
 
 - `workflows ship` ships one work item onto a new Git branch: research, plan, implement, review, one squashed commit, judge.
 - `workflows campaign` splits a goal into work items and ships them one after another onto one branch, then judges
-  the whole branch.
+  the whole branch. It asks you about an item that is still at judge 0 after its fix round.
 - `workflows thermoloop` reviews a change (your current branch, a PR, a ref or a range) and fixes it in rounds;
   `workflows judge` judges it.
 - `workflows rpi` researches, plans and implements a work item in one commit, with no review.
