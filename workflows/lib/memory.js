@@ -177,8 +177,8 @@ async function memory(ref = {}) {
 		}
 	};
 
-	const remembering = (profile) => {
-		const s = session(profile);
+	const remembering = (name) => {
+		const s = session(name);
 		let first = true;
 
 		// Only the first prompt gets the notes: the session keeps them in its history.
@@ -202,7 +202,7 @@ async function memory(ref = {}) {
 				`${NOTE_BYTES} bytes.`;
 
 			const { text, notes: added } = await ask(`${await prompt}\n\n${answer}`, { schema: NOTED });
-			await note(profile, round, added);
+			await note(name, round, added);
 
 			return text;
 		};

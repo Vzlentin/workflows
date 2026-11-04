@@ -2,9 +2,9 @@
 // `changeOf` finds, as `thermoloop.js` does, against the intent from `--item`, the PR or the commit messages. It
 // commits nothing: it says that it does not judge the changes of the checkout that are not committed. A change on a
 // branch that no worktree has runs again as a child run in a worktree on that branch. A caller gives `start`, the
-// commit that its change starts from, with `item`, and with `commit: true` also gets the commit message of the change,
-// which the judge writes in the same session. `ship.js` runs it on the change of its rounds, `fix.js` on the change of
-// an item after its fix, and `campaign.js` on the change of all its items.
+// commit that its change starts from, with `item`. The result also gives `divergence`, one line on how the change
+// differs from its intent, or `none`. `ship.js` runs it on the squashed commit of an item, `fix.js` on the squashed
+// commit of an item after its fix, and `campaign.js` on the change of all its items.
 export const meta = {
 	description: "Judge a change (the current branch, a PR, a ref or a range) against its intent with the fixed rubric.",
 	args: {
@@ -14,8 +14,6 @@ export const meta = {
 	},
 	exit: { judged: 0, unjudged: 1 },
 }
-
-const { commit = false } = args
 
 phase("judge")
 
@@ -33,17 +31,12 @@ const head = await sh(["git", "rev-parse", "HEAD"])
 
 const VERDICT = {
 	type: "object",
-	required: ["answers", "findings"],
+	required: ["answers", "findings", "divergence"],
 	properties: {
 		answers: { type: "array", minItems: 8, maxItems: 8, items: { enum: ["PASS", "FAIL"] } },
 		findings: { type: "array", items: { type: "string" } },
+		divergence: { type: "string" },
 	},
-}
-
-const COMMIT = {
-	type: "object",
-	required: ["subject", "body", "divergence"],
-	properties: { subject: { type: "string" }, body: { type: "string" }, divergence: { type: "string" } },
 }
 
 const judge = session("judge")
@@ -65,25 +58,8 @@ const score = scoreOf(answers)
 log(`judge ${score.toFixed(2)}`)
 
 const report = [`judge ${score.toFixed(2)}: ${subject}`, ...findings.map((finding) => `  ${finding}`), ...notes]
-const judged = { status: "judged", score, answers, findings, report }
-const message = commit ? await commitMessage() : undefined
 
-return message === undefined ? judged : { ...judged, commit: message }
-
-// The commit message that the judge writes for the change it judged, or undefined when it gives none.
-async function commitMessage() {
-	try {
-		const answer = await judge.ask(prompts.commit(), { schema: COMMIT })
-
-		if (answer.subject.trim() === "") return undefined
-
-		const divergence = oneLine(answer.divergence)
-
-		return { subject: answer.subject.trim(), body: answer.body.trim(), divergence }
-	} catch {
-		return undefined
-	}
-}
+return { status: "judged", score, answers, findings, divergence: oneLine(verdict.divergence), report }
 
 // Zero when question 1 or 2 fails, else the passing fraction of questions 3 to 8.
 function scoreOf(answers) {

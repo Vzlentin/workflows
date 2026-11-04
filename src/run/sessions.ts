@@ -8,6 +8,7 @@ import type { Failure, Owner, Spec } from "@vzlentin/harness/children";
 import { type Static, Type } from "typebox";
 import type { ScriptInput } from "../launch/input.ts";
 import type { Writable } from "../workflow/bundle.ts";
+import { roleOf } from "../workflow/roles.ts";
 import { CallDoc, type Calls } from "./calls.ts";
 import type { Host, Runtime } from "./version.ts";
 
@@ -15,8 +16,8 @@ import type { Host, Runtime } from "./version.ts";
 export const TOOL_EXTENSION = "workflows";
 
 /**
- * One session of a run: its run ID, its conversation, the task that opened it, and `label`, the name of the agent profile
- * that opened it. A record that an earlier version saved can have no `label`.
+ * One session of a run: its run ID, its conversation, the task that opened it, and `label`, the role name that opened
+ * it. A record that an earlier version saved can have no `label`.
  */
 export type OpenedSession = { run: string; conversation: ConversationId; task: number; label?: string };
 
@@ -33,7 +34,12 @@ export const SessionsDoc = defineDocFamily<{ sessions: OpenedSession[] }, null>(
 	initial: () => ({ sessions: [] }),
 });
 
-/** The args of a `session` call: the profile, and the fields that override it. */
+/** The instructions of every session. */
+export const INSTRUCTIONS =
+	"You are a session of a workflows run, not the user's main agent. The run keeps its own memory in your prompts, so do\n" +
+	"not write to the user's memory or note tools, even when instructions ask every agent to.";
+
+/** The args of a `session` call: `profile`, the role name, and the fields that override its role. */
 export const SESSION_ARGS = Type.Object({
 	profile: Type.String(),
 	provider: Type.Optional(Type.String()),
@@ -60,29 +66,26 @@ async function treeOf(calls: Calls): Promise<{ parent: string } | { root: string
 }
 
 /**
- * The session of the call `key`, opened in the children library under the key `wf:<key>` in `cwd`. Each field of
- * `args` overrides the profile, and the profile fills the rest; a field that neither gives comes from the project
- * agent. The session does not get the `workflow` tool. The commit that opens it saves its conversation in the call
- * record and in the sessions of the run. The same key again gives the same session.
+ * The session of the call `key`, opened in the children library under the key `wf:<key>` in `cwd`, with
+ * `INSTRUCTIONS`. Each field of `args` overrides the role of `args.profile` in the agents table of the bundle, and the
+ * role fills the rest; a field that neither gives comes from the project agent. The session does not get the
+ * `workflow` tool. The commit that opens it saves its conversation in the call record and in the sessions of the run.
+ * The same key again gives the same session.
  */
 export async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionArgs): Promise<JsonValue> {
 	const { runtime, context, host, script } = calls;
-	const profile = script.bundle.agents[args.profile];
+	const role = roleOf(script.bundle.agents, args.profile);
+	const provider = args.provider ?? role.model?.provider;
+	const model = args.model ?? role.model?.modelId;
+	const thinking = args.thinking ?? role.thinking;
 
-	if (profile === undefined) throw new Error(`no agent profile ${args.profile}`);
-	const provider = args.provider ?? profile.model?.provider;
-	const model = args.model ?? profile.model?.modelId;
-	const thinking = args.thinking ?? profile.thinking;
-
-	const spec: Writable<Spec> = { ...(await treeOf(calls)), cwd };
+	const spec: Writable<Spec> = { ...(await treeOf(calls)), cwd, instructions: INSTRUCTIONS };
 
 	if (provider !== undefined) spec.provider = provider;
 
 	if (model !== undefined) spec.model = model;
 
 	if (thinking !== undefined) spec.thinking = thinking;
-
-	if (profile.instructions !== "") spec.instructions = profile.instructions;
 
 	if (script.overlay !== undefined) spec.overlay = script.overlay;
 

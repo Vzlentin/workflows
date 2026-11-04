@@ -66,6 +66,14 @@ Each arg becomes a flag of `workflows <name>`. Give only the args that the user 
   message in this conversation. Use it for a campaign, or when the user wants to go on with other work. Without it,
   the call waits until the run ends.
 
+### Models
+
+A run uses the Pi model and thinking level. `<repo>/.workflows/agents.json` and `~/.config/workflows/agents.json` set
+them for each role name (`researcher`, `planner`, `implementer`, `reviewer`, `judge`, `summarizer`) or for `"*"`, as
+`{ "judge": { "model": "<provider>/<id>", "thinking": "high" } }`. The repo table wins over the user table.
+For one run, `args.agents` wins over both tables: `"*=<provider>/<id>:high,judge=:low"` (`*` is every role; leave
+out the model or the thinking level to keep it from the tables).
+
 ## Read the outcome
 
 The tool result is `{ runId, status, result?, report?, error? }`. Lead your report with the outcome.
@@ -85,12 +93,12 @@ The values of `result.status` for a `finished` run:
 
 | Workflow | `result.status` | Give |
 | --- | --- | --- |
-| ship | `shipped` | The branch (`result.branch`, and the report line `branch <name>`), the rounds, the judge score and `result.findings`. The change is one squashed commit. A `judge failed` score means that the judge gave no verdict: `result.judgeError` says why. |
+| ship | `shipped` | The branch (`result.branch`, and the report line `branch <name>`), the rounds, the judge score and `result.findings`. The change is one squashed commit, and the judge judged that commit and its message. A `judge failed` score means that the judge gave no verdict: `result.judgeError` says why. |
 | ship | `stopped` | The review rounds ended without SHIP. Give the worktree, the last patches and the findings of the last review. |
 | ship, rpi, thermoloop | `blocked` | A round changed nothing. Give the worktree and `result.reply`, the implementer's reason. |
 | campaign | `done` | The branch, one line for each item with its commit and score, and the findings of the campaign judge. |
-| campaign | `stopped` | The user stopped the campaign after a failed item. Give the rundown. |
-| campaign | `waiting` | An item failed, and the campaign asks how to continue. See below. |
+| campaign | `stopped` | The user stopped the campaign at an item. Give the rundown when the result has one. |
+| campaign | `waiting` | An item failed, or is still at judge 0, and the campaign asks how to continue. See below. |
 | rpi | `implemented` | The commit `result.head` and the branch. |
 | thermoloop | `approved` | The reviewer answered SHIP. Give `result.rounds` and the report line. |
 | thermoloop | `stopped` | The rounds ended without SHIP. Give the findings of the last review. |
@@ -104,7 +112,9 @@ rounds are in the `thermoloop` child run, in the `calls` of its `run` call. `sho
 
 A run that waits for an answer is `finished` with `result: { status: "waiting", question }`. Show the question to the
 user. When he answers, call `{ resume: "<runId>", answer: "<his answer>" }`. For a campaign, `stop` or an empty answer
-ends it.
+ends it. For a campaign item still at judge 0, the answers are `keep` (ship it as it is), `fix: <words>` (one more fix
+round on his words), `reset` (reset the item and get a rundown), and `stop` or empty (end the campaign, keep the
+commit).
 
 ## Follow a run
 

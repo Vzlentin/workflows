@@ -1,10 +1,10 @@
-// `workflows optimize ship`: an INV turn reads the traces of baseline ship runs and proposes prompt and profile edits,
-// a DOM turn proposes skill and AGENTS.md edits, and a Compose turn joins them into one candidate overlay. A valid
-// candidate ships each item again, and a blind selector compares the two diffs of each item. The result is a diff from
-// the baseline texts to the promoted ones; `prompts/`, `agents/` and the skills stay unchanged.
+// `workflows optimize ship`: an INV turn reads the traces of baseline ship runs and proposes prompt edits, a DOM turn
+// proposes skill and AGENTS.md edits, and a Compose turn joins them into one candidate overlay. A valid candidate ships
+// each item again, and a blind selector compares the two diffs of each item. The result is a diff from the baseline
+// texts to the promoted ones; `prompts/` and the skills stay unchanged.
 export const meta = {
 	description:
-		"Propose prompt, profile, skill and AGENTS.md edits from ship runs, and keep them when a blind judge prefers their diffs.",
+		"Propose prompt, skill and AGENTS.md edits from ship runs, and keep them when a blind judge prefers their diffs.",
 	args: {
 		workflow: { type: "string", positional: true, default: "ship" },
 		items: { type: "string" },
@@ -163,14 +163,12 @@ if (args.items === undefined) {
 
 	for (const item of items) item.baseline = await ship(item, {})
 
-	source = { prompts: {}, agents }
+	source = { prompts: {} }
 
 	for (const name of Object.keys(prompts)) source.prompts[name] = await prompts[name]()
 }
 
 for (const [name, text] of Object.entries(source.prompts)) texts[`prompts/${name}.md`] = text
-
-for (const [name, text] of Object.entries(source.agents)) texts[`agents/${name}.md`] = text
 
 for (const path of OWN) delete texts[path]
 
@@ -262,7 +260,7 @@ const skills = checked(
 	"is not a skill or AGENTS.md path",
 )
 
-// INV paths are prompt and profile paths, and DOM paths are skill and AGENTS.md paths, so the two never overlap.
+// INV paths are prompt paths, and DOM paths are skill and AGENTS.md paths, so the two never overlap.
 const proposed = new Set([...inv.keys(), ...skills.keys()])
 
 // The baseline text of `path`, or null for a new path.

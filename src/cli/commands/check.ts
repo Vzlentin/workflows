@@ -1,11 +1,12 @@
 /**
- * `workflows check <wf>`: the static analysis of a workflow script, which reads its `meta`, its prompts and profiles,
- * and the literal models of its calls.
+ * `workflows check <wf>`: the static analysis of a workflow script, which reads its `meta` and its prompts, and the
+ * models of its agents table and of the literal fields of its calls.
  */
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { Bundle } from "../../workflow/bundle.ts";
-import { findScript, type Io, namedProfiles, problem, UsageError } from "../../workflow/find.ts";
+import { findScript, type Io, problem, UsageError } from "../../workflow/find.ts";
 import { readMeta } from "../../workflow/meta.ts";
+import { roleOf } from "../../workflow/roles.ts";
 
 export const CHECK = "workflows check <workflow>";
 
@@ -122,8 +123,9 @@ function sessionFields(source: string): Fields[] {
 
 /**
  * The first model, as `<provider>/<id>`, that a session call of `source` names with a literal `provider` or `model`,
- * with the profile of its `as` (default `default`) for the other field, and that `models` does not have. A call with a
- * computed field, or without a provider or a model after its profile, is left to the start of the session.
+ * with the role of its `as` (default `default`) in the agents table for the other field, and that `models` does not
+ * have. A call with a computed field, or without a provider or a model after its role, is left to the start of the
+ * session.
  */
 async function unknownModel(
 	source: string,
@@ -134,8 +136,8 @@ async function unknownModel(
 		if (provider === null || model === null || as === null) return [];
 
 		if (provider === undefined && model === undefined) return [];
-		const profile = bundle.agents[as ?? "default"]?.model;
-		const found = { provider: provider ?? profile?.provider, model: model ?? profile?.modelId };
+		const role = roleOf(bundle.agents, as ?? "default").model;
+		const found = { provider: provider ?? role?.provider, model: model ?? role?.modelId };
 
 		return found.provider === undefined || found.model === undefined ? [] : [found];
 	});
@@ -147,35 +149,25 @@ async function unknownModel(
 	return unknown === undefined ? undefined : `${unknown.provider}/${unknown.model}`;
 }
 
-/**
- * The first agent profile that `source` uses, by name or as `default` for a session or an agent without one, whose
- * `model:` line names a model that `models` does not have, with that model as `<provider>/<id>`.
- */
-async function unknownProfileModel(
-	source: string,
+/** The first name of the agents table of `bundle` whose model `models` does not have, with that model. */
+async function unknownTableModel(
 	bundle: Bundle,
 	models: () => Promise<Models>,
-): Promise<{ readonly profile: string; readonly model: string } | undefined> {
-	const names = new Set(namedProfiles(source));
+): Promise<{ readonly name: string; readonly model: string } | undefined> {
+	const named = Object.entries(bundle.agents).flatMap(([name, { model }]) =>
+		model === undefined ? [] : [{ name, model }],
+	);
 
-	if (/\b(?:session|agent)\s*\(/.test(source)) names.add("default");
-
-	const used = [...names].flatMap((profile) => {
-		const model = bundle.agents[profile]?.model;
-
-		return model === undefined ? [] : [{ profile, model }];
-	});
-
-	if (used.length === 0) return undefined;
+	if (named.length === 0) return undefined;
 	const registry = await models();
-	const found = used.find(({ model }) => registry.getModel(model.provider, model.modelId) === undefined);
+	const found = named.find(({ model }) => registry.getModel(model.provider, model.modelId) === undefined);
 
-	return found && { profile: found.profile, model: `${found.model.provider}/${found.model.modelId}` };
+	return found && { name: found.name, model: `${found.model.provider}/${found.model.modelId}` };
 }
 
 /**
- * `workflows check <wf>`: reads `meta` and checks the prompts and profiles that the script names, and the literal
- * models of its calls against Pi's model registry; starts no run.
+ * `workflows check <wf>`: reads `meta` and checks the prompts that the script names, and the models of the agents
+ * table and the literal models of its calls against Pi's model registry; starts no run. A role name needs no entry.
  */
 export async function check(
 	args: readonly string[],
@@ -186,18 +178,18 @@ export async function check(
 	if (word === undefined || rest.length > 0) throw new UsageError("give one workflow to check", CHECK);
 	const found = await findScript(word, io);
 	await readMeta(found.source, found.name);
-	const failed = problem(found.source, found.name, found.bundle, true);
+	const failed = problem(found.source, found.name, found.bundle);
 
 	if (failed !== undefined) throw new Error(failed);
 	const model = await unknownModel(found.source, found.bundle, io.models);
 
 	if (model !== undefined)
 		throw new Error(`${found.name} uses the model ${model}, which Pi's model registry does not have`);
-	const profile = await unknownProfileModel(found.source, found.bundle, io.models);
+	const table = await unknownTableModel(found.bundle, io.models);
 
-	if (profile !== undefined) {
+	if (table !== undefined) {
 		throw new Error(
-			`${found.name} uses the agent profile ${profile.profile}, whose model ${profile.model} Pi's model registry does not have`,
+			`agents.json gives ${table.name} the model ${table.model}, which Pi's model registry does not have`,
 		);
 	}
 

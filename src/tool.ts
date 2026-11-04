@@ -78,10 +78,12 @@ export const DESCRIPTION =
 	"Run a durable workflow and wait for its result. Give exactly one of: `name` (a workflow script such as " +
 	"`ship`, `campaign` or `optimize`), `script` (the body of an inline workflow script), `resume` (a run " +
 	"ID), or `save` (keeps the script of a run as a named workflow of the project). `args` are the arguments of " +
-	"`name` or `script`, each passed as `--<key>`; a script's `meta` declares them. For " +
+	"`name` or `script`, each passed as `--<key>`; a script's `meta` declares them. Every run also takes `agents`, " +
+	"`<name>=<provider>/<id>:<thinking>,...` (`*` for every role), the models of its roles above the agents.json " +
+	"tables. For " +
 	"`ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and `prompts`. For `campaign`, which " +
 	"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
-	"`base`, `rounds` and `prompts`. For `optimize`, which proposes edits to the ship prompts, profiles, skills " +
+	"`base`, `rounds` and `prompts`. For `optimize`, which proposes edits to the ship prompts, skills " +
 	"and `AGENTS.md` from past ship runs and keeps them when a blind judge prefers their diffs: `workflow` " +
 	"(`ship`), and optional `runs`, `limit`, `items` and `always-on-max` (the most characters of `AGENTS.md`). " +
 	"Each `run()` call of a " +
@@ -98,26 +100,28 @@ export const GUIDELINES = [
 		'`export const meta = { args: { <name>: { type: "string" | "number" | "boolean" | "text" } } }` at ' +
 		"the top declares the args, which the tool's `args` fill and the script reads as `args.<name>`.",
 	"Script globals: `agent(prompt, { as, provider, model, thinking, schema })` is one turn in a new session and " +
-		"returns the reply, or the checked answer with a JSON Schema. `session(profile)` or " +
+		"returns the reply, or the checked answer with a JSON Schema. `session(name)` or " +
 		"`session({ as, provider, model, thinking })` gives a session that keeps its history, and its " +
-		"`.ask(prompt, { schema })` is one turn. `as` names an agent profile (default `default`), and `provider`, " +
-		"`model` and `thinking` override it. `sh(cmd)` returns stdout and throws on a nonzero exit, `ok(cmd)` returns true on exit 0. " +
+		"`.ask(prompt, { schema })` is one turn. `as` is a role name (default `default`): `<repo>/.workflows/agents.json` " +
+		'and `~/.config/workflows/agents.json` give a name or `"*"` a `model` and `thinking`, else the Pi model; the ' +
+		"run's `agents` arg comes before the tables, and `provider`, `model` and `thinking` override them all. `sh(cmd)` returns stdout and throws on a nonzero exit, `ok(cmd)` returns true on exit 0. " +
 		"`run(name, args)` runs a named workflow as a child run, and `from: <run-id>` in `args` gives it the prompts and " +
-		"profiles of that saved run. `pastRuns(workflow, { runs, limit })` gives the completed root runs of a workflow, " +
-		"newest first, with their item, repository, start, prompts, agents and result. " +
+		"agents table of that saved run. `pastRuns(workflow, { runs, limit })` gives the completed root runs of a workflow, " +
+		"newest first, with their item, repository, start, prompts and result. " +
 		"`input(question)` stops the run, and the tool gives a " +
 		"`waiting` result with the question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` " +
 		"then returns the answer. `parallel([() => ...])` and " +
-		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template, and `agents.<name>` the text of an agent profile. " +
+		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. " +
 		"`phase(title)` and `log(text)` write progress lines, and `title(text)` names the run. `args`, `runId`, `runDir` and `cwd`, the " +
 		"directory of `sh`, are values.",
 	"Script lib: `subjectOf(text)` gives the first non-empty line without leading `#`. `oneLine(text)` gives the text with each whitespace run made one space, trimmed. `memory(path, item)` gives a promise of a run memory in an " +
 		"OptMem store, `<runDir>/memory` without `path`: `.path` and `.item` to pass to a child run, `.note(author, round, notes)`, " +
 		"`.text` (a promise of the notes), `.finish(item, result)` (the result with `lessons`, 0 to 3 " +
 		"`{ cue, lesson, evidence }` of the notes, `[]` with no turn when there are none, and a report line for each one, " +
-		"when the store opened here), and `.session(profile)`, whose first `.ask` starts with the notes and whose " +
+		"when the store opened here), and `.session(name)`, whose first `.ask` starts with the notes and whose " +
 		"`.noted(round, prompt, rule)` asks for `{ text, notes }` and keeps the notes. `noteLines(notes)` gives the `#<k> <note>` lines of `notes.text`, without empty lines. `commitAll(message)` stages and commits every change, " +
 		"`squash(start, message, subject)` squashes the commits since `start` into one (no commit when nothing changed), logs it and gives the short head, " +
+		"`commitAndJudge(item, start)` writes the commit message of the change since `start` in an `implementer` turn, squashes the change with it, runs the child run `judge` and gives `{ head, subject, score, answers, findings, judgeError, divergence }`, " +
 		"`writePatch(path, from)` writes the diff from `from` to `HEAD` to `path` and gives `path`, " +
 		"`diffStat(from, to)` gives `+12 -3 in 2 files`, `assertClean()` throws on changes that are not committed, " +
 		"`changeOf(args, { wip })` gives `{ start, intent, checkout, dirty }` of `args.start` and `args.item`, or else of " +

@@ -46,15 +46,13 @@ const INV: readonly Edit[] = [
 	},
 ];
 
-/** The hash of the package's `prompts/` and `agents/` folders. */
+/** The hash of the package's `prompts/` folder and `agents.json`. */
 async function promptsHash(): Promise<string> {
 	const hash = createHash("sha256");
+	const folder = fileURLToPath(new URL("../workflows/prompts/", import.meta.url));
 
-	for (const name of ["prompts", "agents"]) {
-		const folder = fileURLToPath(new URL(`../workflows/${name}/`, import.meta.url));
-
-		for (const file of (await readdir(folder)).sort()) hash.update(file).update(await readFile(join(folder, file)));
-	}
+	for (const file of (await readdir(folder)).sort()) hash.update(file).update(await readFile(join(folder, file)));
+	hash.update(await readFile(new URL("../workflows/agents.json", import.meta.url)));
 
 	return hash.digest("hex");
 }
@@ -94,7 +92,7 @@ async function bestOf(directory: string) {
 }
 
 const GOAL =
-	"Propose prompt, profile, skill and AGENTS.md edits from ship runs, and keep them when a blind judge prefers their diffs.";
+	"Propose prompt, skill and AGENTS.md edits from ship runs, and keep them when a blind judge prefers their diffs.";
 
 /** The harvest prompts of the optimize run itself: their work item is the goal of optimize. */
 const goalHarvests = (calls: readonly Call[]) =>
@@ -361,13 +359,9 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 		expect(resumed.model.count("research")).toBe(0);
 	}, 120_000);
 
-	it("ships the baselines of an items folder with the profiles of the bundle, and keeps the errors of its arguments", async () => {
+	it("ships the baselines of an items folder with the prompts of the bundle, and keeps the errors of its arguments", async () => {
 		const items = join(root, "items");
 		await mkdir(items);
-		const researcher = await readFile(new URL("../workflows/agents/researcher.md", import.meta.url), "utf8");
-		const body = researcher.slice(researcher.indexOf("\n---\n", 4) + 5).trim();
-		const profile = (thinking: string) => `---\nmodel: anthropic/claude-opus-5-5\nthinking: ${thinking}\n---\n${body}`;
-		const edits: readonly Edit[] = [...INV, { path: "agents/researcher.md", text: profile("high"), moment: "run y" }];
 
 		for (const name of ["First", "Second", "Third", "Fourth"]) {
 			await writeFile(
@@ -380,7 +374,7 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 			cwd: root,
 			script: {
 				edits: [...Array(4).fill(FIXED), ...Array(4).fill(CANDIDATE)],
-				inv: edits,
+				inv: INV,
 				select: Array(3).fill("Hello, world"),
 			},
 		});
@@ -389,13 +383,9 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 		const diff = join(directory, "overlay.diff");
 		expect(run.code).toBe(0);
 
-		const research = run.model.calls.flatMap(({ kind, thinking }) => (kind === "research" ? [thinking] : []));
-
-		expect(research.toSorted()).toEqual([...Array(4).fill("high"), ...Array(4).fill("medium")]);
 		expect(reviews(run.model.calls, true)).toBe(4);
 		expect(run.stdout.slice(1)).toEqual([
 			KEPT,
-			"kept -> agents/researcher.md -> run y",
 			"first: win",
 			"fourth: win",
 			"second: win",
@@ -404,13 +394,11 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 		]);
 
 		const overlayText = await readFile(diff, "utf8");
-		expect(overlayText).toContain("diff --git baseline/agents/researcher.md best/agents/researcher.md\n");
-		expect(overlayText).toContain("\n-thinking: medium\n");
-		expect(overlayText).toContain("\n+thinking: high\n");
-		expect(overlayText).toContain("edit agents/researcher.md: run y\n");
-		const written = (folder: string) => readFile(join(directory, folder, "agents", "researcher.md"), "utf8");
-		expect(await written("baseline")).toBe(`${profile("medium")}\n`);
-		expect(await written("best")).toBe(`${profile("high")}\n`);
+		expect(overlayText).toContain("diff --git baseline/prompts/review.md best/prompts/review.md\n");
+		expect(overlayText).toContain(`\n+${MARK}\n`);
+		const written = (folder: string) => readFile(join(directory, folder, "prompts", "review.md"), "utf8");
+		expect(await written("baseline")).not.toContain(MARK);
+		expect(await written("best")).toContain(MARK);
 		expect(git(repo, "branch", "--format=%(refname:short)")).toBe("main");
 
 		// The baselines of an items folder run again with new run IDs, and the order of the diffs stays the same.

@@ -6,6 +6,7 @@ import type { JsonObject } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { type Io, labelOf, UsageError, withUsage } from "../workflow/find.ts";
 import { ARG_VALUES, type ArgSpec, type Meta } from "../workflow/meta.ts";
+import { parseRoles, type Roles } from "../workflow/roles.ts";
 
 /**
  * The text that `noun` names, such as `work item`: a `.md` file, inline text, or piped stdin. Throws when it has no
@@ -100,6 +101,7 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 
 	const options: Record<string, { type: "string" | "boolean" }> = {};
 	options.prompts = { type: "string" };
+	options.agents = { type: "string" };
 	options.help = { type: "boolean" };
 	options.json = { type: "boolean" };
 
@@ -118,6 +120,7 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 	);
 
 	const { values } = parsed;
+	const agents = agentsOption(stringOption(values.agents), usage);
 
 	if (positional !== undefined) {
 		const [arg, spec] = positional;
@@ -176,10 +179,22 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 	return {
 		args,
 		prompts: stringOption(values.prompts),
+		agents,
 		repo: stringOption(values.repo),
 		base: stringOption(values.base) ?? "main",
 		branch: stringOption(values.branch),
 	};
+}
+
+/** The roles of the `--agents` text, `{}` without it; a bad part throws `UsageError`. */
+function agentsOption(text: string | undefined, usage: string): Roles {
+	if (text === undefined) return {};
+
+	try {
+		return parseRoles(text);
+	} catch (error) {
+		throw new UsageError(`--agents ${error instanceof Error ? error.message : String(error)}`, usage);
+	}
 }
 
 /** The value of a `parseArgs` option of the type `string`, which is never a boolean. */

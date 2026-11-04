@@ -6,6 +6,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import type { Cursor, Page, TaskOutcome, TaskRecord } from "@earendil-works/pi-durable";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
+import { ROLE } from "../workflow/roles.ts";
 import { statusOf } from "./result.ts";
 import { current, type Runtime, TASK, thisVersion } from "./version.ts";
 
@@ -85,12 +86,6 @@ export function taskOf(tasks: readonly RunTask[]): RunTask | undefined {
 	return tasks.findLast(current) ?? latest;
 }
 
-const PROFILE = Type.Object({
-	model: Type.Optional(Type.Object({ provider: Type.String(), modelId: Type.String() })),
-	thinking: Type.Optional(Type.String()),
-	instructions: Type.String(),
-});
-
 /** The fields of a saved input that a past run gives; an input without them is not a past run. */
 const SAVED = Type.Object({
 	runId: Type.String(),
@@ -98,7 +93,7 @@ const SAVED = Type.Object({
 	args: Type.Object({ item: Type.Optional(Type.Unknown()) }),
 	bundle: Type.Object({
 		prompts: Type.Record(Type.String(), Type.String()),
-		agents: Type.Record(Type.String(), PROFILE),
+		agents: Type.Record(Type.String(), ROLE),
 	}),
 	worktree: Type.Optional(Type.Object({ repository: Type.String(), start: Type.String() })),
 });
@@ -185,21 +180,6 @@ function savedRuns(roots: ReadonlyMap<string, readonly RunTask[]>): Map<string, 
 	return saved;
 }
 
-/** The text of `agents/<name>.md` that gives `profile`. */
-function profileText({ model, thinking, instructions }: Static<typeof PROFILE>): string {
-	const fields = [
-		...(model === undefined ? [] : [`model: ${model.provider}/${model.modelId}`]),
-		...(thinking === undefined ? [] : [`thinking: ${thinking}`]),
-	];
-
-	return fields.length === 0 ? instructions : `---\n${fields.join("\n")}\n---\n${instructions}`;
-}
-
-/** The text of `agents/<name>.md` for each profile of `agents`, by name. */
-export function profileTexts(agents: Saved["bundle"]["agents"]): { [name: string]: string } {
-	return Object.fromEntries(Object.entries(agents).map(([name, profile]) => [name, profileText(profile)]));
-}
-
 /**
  * The completed root runs of `workflow` in `roots` (the root tasks by run ID, as `rootRuns` gives them), newest first:
  * all of them, the first `limit`, or the runs `runs` in that order. Throws `no completed <workflow> run <id>` for an ID
@@ -222,7 +202,6 @@ export function pastRuns(
 			repository: worktree?.repository ?? null,
 			start: worktree?.start ?? null,
 			prompts: bundle.prompts,
-			agents: profileTexts(bundle.agents),
 			result: taskOutcome(task)?.result ?? null,
 		});
 	}
@@ -243,7 +222,7 @@ export function pastRuns(
 }
 
 /**
- * The saved `prompts` and `agents` of the root run `id` of `roots` (the root tasks by run ID, as `rootRuns` gives
+ * The saved `prompts` and agents table of the root run `id` of `roots` (the root tasks by run ID, as `rootRuns` gives
  * them), or undefined when it has none.
  */
 export function savedBundle(roots: ReadonlyMap<string, readonly RunTask[]>, id: string) {
