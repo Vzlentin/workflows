@@ -1580,6 +1580,23 @@ directory, starts the host when none runs, asks it to start the run's task, and 
   the highest `<n>` of the run's keys in harness's document of keys, plus 1. `stop`, and `resume` of a task that has not
   ended, reach the task by its own key in that document. A task that has no key there, such as one that no `start`
   created, fails them with `workflows: run <run-id> has no harness task key for its task <task-id>`.
+- The entry gives the host the catch-up hook `workflows.runs`. Before each input of the project agent, the host calls
+  it with what it said the agent saw at the last catch-up, `{ lastTaskId, pending }`: the highest task ID of harness's
+  document of keys, and the `workflows.run` tasks that were not terminal. The hook reads each task after `lastTaskId`,
+  and each task in `pending`. A task of another kind is skipped, and a task that is not terminal goes in `pending`.
+  The lines are `Workflow runs that ended:`, then one line for each run that ended,
+  `- <run-id> (<workflow>): <status>`, with `; subject: <subject>`, `; branch: <branch> @ <head>`,
+  `; divergence: <divergence>`, `; lessons: <JSON>` and `; sessions: [run <run>: <label> #<conversation>, ...]` when
+  they are known, then `Workflow runs that cannot be reported:` and `- task <id>: <reason>` for a task whose input is
+  not a workflows run input, and a task in `pending` whose record is gone. A block with no line is left out. The status
+  is the `status` of the result of a completed run, else the outcome (`completed`, `failed` or `aborted`). The branch is
+  the result's, else the branch of the run's worktree. The sessions come from `workflows.sessions` of the root run; a
+  session without a label shows its lineage key, and without one only `#<conversation>`. The data of the lines is
+  `{ runs, lost? }`: `runs` has `{ task, runId, workflow, status, subject?, branch?, head?, divergence?, lessons?,
+  sessions }` for each run, with `{ run, conversation, key?, label? }` for each session, and `lost` has
+  `{ task, reason }`. The first time, and with a `seen` that is not valid, the hook only records the runs, with no
+  line. When a read fails, the hook fails: the host warns `catch-up: workflows.runs: <message>`, keeps the last `seen`,
+  and the next catch-up reads the same runs again.
 
 ### The `workflow` tool of the host
 
@@ -1867,7 +1884,7 @@ The engine files in `src/`:
 - `cli/commands/`: one file for each command: `start.ts`, `resume.ts` (also `wait`), `stop.ts`, `list.ts`, `show.ts`,
   `attach.ts`, `save.ts` and `prune.ts`.
 - `cli/terminal/pick.ts` and `cli/terminal/keys.ts`: the picker of `list --pick` and `show --pick`, and its keys.
-- `entry.ts`: the entry that the harness host loads, with the script task.
+- `entry.ts`: the entry that the harness host loads, with the script task and the catch-up hook.
 - `records/tree.ts`: the call tree of a saved run, its lines and agent rows for `show` and `attach`, and the lines of
   `show` with the agent of each step, for `show --pick`.
 - `records/steps.ts`: the tree of steps of a run.
@@ -1895,6 +1912,7 @@ The engine files in `src/`:
 - `run/child.ts`: the child runs that the `run` calls start.
 - `run/sandbox.ts`: the run of a script in the sandbox, with its globals and prompts.
 - `run/task.ts`: the task of every script run, its phase, its outcome, and the message of a background run.
+- `run/catchup.ts`: the catch-up hook `workflows.runs`, which tells the project agent about the runs that ended.
 - `git.ts`: run a process, and Git commands.
 
 The script side in `workflows/`, published as it is:

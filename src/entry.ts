@@ -1,7 +1,8 @@
 /**
  * The entry of workflows in the harness host. The host of a project loads it, from harness's `entries.json`, and starts its script task for
  * `workflows <wf>`, so a run executes in the host, with its sessions on the host's children library. It also gives the
- * conversations of the host the `workflow` tool, which runs the `workflows` command of this package as a child process.
+ * conversations of the host the `workflow` tool, which runs the `workflows` command of this package as a child process,
+ * and the project agent the catch-up hook `workflows.runs`, which tells it about the runs that ended.
  */
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -12,6 +13,7 @@ import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-wo
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { runsCatchUp } from "./run/catchup.ts";
 import { TOOL_EXTENSION } from "./run/sessions.ts";
 import { scriptTask } from "./run/task.ts";
 import type { Host } from "./run/version.ts";
@@ -203,5 +205,10 @@ function workflowExtension(host: Host) {
 }
 
 export default function workflowsEntry(host: Host) {
-	return { extensions: [workflowExtension(host)], tasks: [scriptTask(host)], close: async () => {} };
+	return {
+		extensions: [workflowExtension(host)],
+		tasks: [scriptTask(host)],
+		catchUp: runsCatchUp(host),
+		close: async () => {},
+	};
 }
