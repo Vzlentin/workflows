@@ -68,7 +68,7 @@ async function split(inputs) {
 // The rundown text of each failed fix round, by the status of fix.js.
 const FIX_FAILED = {
 	failed: (fixed) => `the fix round failed: ${fixed.error}`,
-	blocked: () => "the fix round changed nothing",
+	blocked: () => "the fix round left no change",
 	unjudged: () => "no judge score after one fix round",
 	judged: () => "still 0 after one fix round",
 }
@@ -118,7 +118,8 @@ async function assertResettable(start) {
 // The outcome of an item's ship: `shipped`, the result of an item that shipped, or `failure`, the rundown inputs of
 // an item that failed: `status`, `reply`, `findings` and an optional `summary` block of the question. An item whose
 // judge failed is a failed item. An item that shipped with a judge score of 0 and findings gets one fix round, the
-// child run fix.js. With a score above 0 it squashes the item again with its commit message.
+// child run fix.js, which squashes the item again with a new commit message and judges it again. With a score above 0
+// the item ships with `shipped` of the fix round: its head, subject, judge result and divergence.
 async function settle(n, item, start, result) {
 	const failed = (status) => ({ failure: { status, reply: result.reply ?? "", findings: result.findings ?? [] } })
 
@@ -130,8 +131,6 @@ async function settle(n, item, start, result) {
 
 	if (result.findings.length === 0) return failed("shipped with judge score 0")
 
-	const message = await sh(["git", "log", "-1", "--format=%B"])
-
 	const fixed = await run("fix", {
 		item,
 		start,
@@ -141,18 +140,13 @@ async function settle(n, item, start, result) {
 		memory: { ...notes.ref, item: n },
 	})
 
-	if (fixed.status === "judged" && fixed.score !== 0) {
-		const { score, answers, findings } = fixed
-		const short = await squash(start, message, result.subject)
-
-		return { shipped: { ...result, head: short, score, answers, findings } }
-	}
+	if (fixed.status === "judged" && fixed.shipped.score !== 0) return { shipped: { ...result, ...fixed.shipped } }
 
 	const outcome = Object.hasOwn(FIX_FAILED, fixed.status)
 		? FIX_FAILED[fixed.status](fixed)
 		: `the fix round ended with the unknown status ${fixed.status}`
 
-	const findings = fixed.status === "judged" ? fixed.findings : []
+	const findings = fixed.status === "judged" ? fixed.shipped.findings : []
 
 	return {
 		failure: {

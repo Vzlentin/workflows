@@ -52,12 +52,11 @@ const FIX = "# Demo\n\nHello, world\n";
 /** A judge verdict with the score 0. */
 const ZERO = { answers: ["FAIL", ...Array(7).fill("PASS")], findings: ["1 FAIL: the typo stays."] };
 
-const SHIP = ["research", "plan", "handoff", "implement", "review", "judge", "commit"];
+const SHIP = ["research", "plan", "handoff", "implement", "review", "commit", "judge"];
 
 const THANKS: Commit = {
 	subject: "docs: thank the reader",
 	body: "The README ends with Thanks.",
-	divergence: "none",
 };
 
 /** The step lines of an item that ships in one round, under its item line: `stat` after implement, then the judge. */
@@ -69,9 +68,9 @@ function itemSteps(stat: string, subject: string) {
 		`    ${stat}`,
 		"  ✓ round 1/3: review",
 		"    SHIP",
+		expect.stringMatching(new RegExp(`^ {2}commit [0-9a-f]+ ${subject}$`)),
 		"  ✓ judge",
 		"    judge 0.83",
-		expect.stringMatching(new RegExp(`^ {2}commit [0-9a-f]+ ${subject}$`)),
 	];
 }
 
@@ -256,6 +255,7 @@ describe("workflows campaign", () => {
 			"split",
 			...SHIP,
 			"implement",
+			"commit",
 			"judge",
 			"judge",
 			"harvest",
@@ -271,16 +271,31 @@ describe("workflows campaign", () => {
 		const progress = progressOf(run.stderr);
 		const item = progress.indexOf("✓ item 1/1: Fix the README typo");
 		expect(progress.slice(item + 1, progress.indexOf("✓ all 1 item"))).toEqual([
-			...itemSteps("+1 -1 in 1 file", COMMIT.subject).slice(0, 6),
+			...itemSteps("+1 -1 in 1 file", COMMIT.subject).slice(0, 7),
 			"  ✓ judge",
 			"    judge 0.00",
-			expect.stringMatching(new RegExp(`^ {2}commit [0-9a-f]+ ${COMMIT.subject}$`)),
 			"  ✓ fix",
 			"    +1 -1 in 1 file",
+			expect.stringMatching(new RegExp(`^ {4}commit [0-9a-f]+ ${COMMIT.subject}$`)),
 			"    ✓ judge",
 			"      judge 0.83",
-			expect.stringMatching(new RegExp(`^ {2}commit [0-9a-f]+ ${COMMIT.subject}$`)),
 		]);
+	});
+
+	it("fixes an item whose commit message the judge fails, with no code change, and ships it as one commit", async () => {
+		const run = await workflows(["campaign", "--json", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST]], edits: [FIXED], needsBody: true, commit: [{ ...COMMIT, body: "" }, COMMIT] },
+		});
+
+		expect(run.code).toBe(0);
+		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(run.model.count("rundown")).toBe(0);
+		expect(report[1]).toEqual(itemLine(COMMIT.subject));
+		expect(result.items[0].result).toMatchObject({ status: "shipped", subject: COMMIT.subject, score: 5 / 6 });
+		const worktree = worktreeOf(run.id);
+		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("1");
+		expect(git(worktree, "log", "-1", "--format=%B").trim()).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
 	});
 
 	it("runs no fix round for a blocked item", async () => {
@@ -347,7 +362,7 @@ describe("workflows campaign", () => {
 		});
 
 		expect(resumed.code).toBe(0);
-		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "judge", "judge", "harvest"]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "commit", "judge", "judge", "harvest"]);
 		expect(JSON.parse(resumed.stdout[1] ?? "").result.items[0].result.score).toBe(5 / 6);
 		expect(await readFile(join(worktreeOf(run.id), "README.md"), "utf8")).toBe(FIX);
 	});
@@ -449,7 +464,14 @@ describe("workflows campaign", () => {
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-parse", "HEAD")).toBe(start);
 		expect(existsSync(patch)).toBe(true);
-		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "implement", "judge", "rundown"]);
+		expect(run.model.calls.map((call) => call.kind)).toEqual([
+			"split",
+			...SHIP,
+			"implement",
+			"commit",
+			"judge",
+			"rundown",
+		]);
 		const rundown = run.model.find("rundown")?.prompt;
 		expect(rundown).toContain("## status\nshipped with judge score 0, still 0 after one fix round\n");
 		expect(rundown).toContain("## findings\n1 FAIL");
@@ -664,11 +686,16 @@ describe("workflows campaign", () => {
 	});
 
 	it("adds the divergence of an item to its item line, unless it is none", async () => {
-		const diverged = { ...THANKS, divergence: "The README also thanks the team." };
+		const diverged = { ...PASSING_JUDGE, divergence: "The README also thanks the team." };
 
 		const run = await workflows(["campaign", "--json", GOAL], {
 			cwd: repo,
-			script: { items: [[FIRST, SECOND]], edits: [FIXED, THANKED], commit: [COMMIT, diverged] },
+			script: {
+				items: [[FIRST, SECOND]],
+				edits: [FIXED, THANKED],
+				commit: [COMMIT, THANKS],
+				judge: [PASSING_JUDGE, diverged],
+			},
 		});
 
 		expect(run.code).toBe(0);

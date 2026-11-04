@@ -1814,12 +1814,12 @@ return [one.reply, two.reply].join(", ")`,
 		expect(listed.code).toBe(0);
 		expect(listed.stdout).toEqual([
 			"campaign: Split a goal into work items and ship each one as a commit on one branch.",
-			"fix: Fix a work item on the judge's findings in one implement turn, and judge it again.",
+			"fix: Fix a work item on the judge's findings in one implement turn, squash it into one commit, and judge it again.",
 			"implement: Implement a plan in the current directory, and commit the change.",
 			"judge: Judge a change (the current branch, a PR, a ref or a range) against its intent with the fixed rubric.",
 			"optimize: Propose prompt, profile, skill and AGENTS.md edits from ship runs, and keep them when a blind judge prefers their diffs.",
 			"rpi: Research, plan and implement one work item, and commit it on a new branch.",
-			"ship: Ship one work item onto a new branch: research, plan, implement, review rounds, judge, and one squashed commit.",
+			"ship: Ship one work item onto a new branch: research, plan, implement, review rounds, one squashed commit, and judge.",
 			"thermoloop: Review a change (the current branch, a PR, a ref or a range), and fix it in rounds until the reviewer answers SHIP.",
 			"plain",
 		]);

@@ -85,7 +85,7 @@ The values of `result.status` for a `finished` run:
 
 | Workflow | `result.status` | Give |
 | --- | --- | --- |
-| ship | `shipped` | The branch (`result.branch`, and the report line `branch <name>`), the rounds, the judge score and `result.findings`. The change is one squashed commit. A `judge failed` score means that the judge gave no verdict: `result.judgeError` says why. |
+| ship | `shipped` | The branch (`result.branch`, and the report line `branch <name>`), the rounds, the judge score and `result.findings`. The change is one squashed commit, and the judge judged that commit and its message. A `judge failed` score means that the judge gave no verdict: `result.judgeError` says why. |
 | ship | `stopped` | The review rounds ended without SHIP. Give the worktree, the last patches and the findings of the last review. |
 | ship, rpi, thermoloop | `blocked` | A round changed nothing. Give the worktree and `result.reply`, the implementer's reason. |
 | campaign | `done` | The branch, one line for each item with its commit and score, and the findings of the campaign judge. |

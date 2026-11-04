@@ -21,13 +21,13 @@ import { SessionsDoc } from "../src/run/sessions.ts";
 import { TASK } from "../src/run/version.ts";
 import { stopAfterPost } from "./stop-entry.ts";
 import {
-	COMMIT,
 	detached,
 	escAgent,
 	FakeModel,
 	hostModel,
 	inputsOf,
 	nextResult,
+	PASSING_JUDGE,
 	piSettings,
 	postedResults,
 	repository,
@@ -1187,11 +1187,11 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 		}
 	});
 
-	it("gives the commit divergence of a ship in the text of the workflow tool", async () => {
+	it("gives the judge divergence of a ship in the text of the workflow tool", async () => {
 		await repository(join(root, "project"));
 		addProject("demo", join(root, "project"));
 		const divergence = "The commit also fixes the README title.";
-		const model = hostModel({ edits: ["# Demo\n\nHello world\n"], commit: { ...COMMIT, divergence } });
+		const model = hostModel({ edits: ["# Demo\n\nHello world\n"], judge: { ...PASSING_JUDGE, divergence } });
 		const host = await startHost("demo", model.models);
 
 		try {

@@ -17,8 +17,8 @@ calls and the progress of the run. See [Runs in the harness host](#runs-in-the-h
 workflow scripts. Every workflow script is a command: `workflows <wf>` runs `.workflows/scripts/<wf>.js` of the project or `workflows/scripts/<wf>.js` of the package, and the `meta` at
 the top of the script declares its arguments. See [Workflow scripts](#workflow-scripts). `workflows/scripts/ship.js` and
 `workflows/scripts/campaign.js` are scripts of the package. `ship` selects the repository and creates the worktree, through its
-`meta`, then runs in the worktree the child runs `workflows/scripts/rpi.js`, `workflows/scripts/thermoloop.js` and `workflows/scripts/judge.js`,
-and the squash. `campaign` does the same, runs
+`meta`, then runs in the worktree the child runs `workflows/scripts/rpi.js` and `workflows/scripts/thermoloop.js`, the commit
+message turn and the squash, and the child run `workflows/scripts/judge.js` on the squashed commit. `campaign` does the same, runs
 `workflows/scripts/ship.js` once for each work item, and `workflows/scripts/judge.js` once on the change of all the items.
 `workflows/scripts/optimize.js` runs `workflows/scripts/ship.js` once for the candidate on each work item, and again
 for a baseline that cannot be kept.
@@ -28,11 +28,13 @@ research session:   research (documents the code as it is)
 plan session:       plan (with the research)  ->  handoff
 implement session:  implement the handoff                      <- round 1, then each round after FIX
 review session:     review (SHIP or FIX)  ->  handoff (on FIX, back to implement)
-judge session:      fixed rubric, then commit message, after SHIP
+commit session:     commit message, then the squash, after SHIP
+judge session:      fixed rubric, on the squashed commit
 ```
 
 The research, plan and first implement sessions are `workflows/scripts/rpi.js`, the review sessions and the implement
-sessions after them `workflows/scripts/thermoloop.js` (at most `--rounds` reviews), and the judge session `workflows/scripts/judge.js`.
+sessions after them `workflows/scripts/thermoloop.js` (at most `--rounds` reviews), the commit session `commitAndJudge` of
+the script lib, and the judge session `workflows/scripts/judge.js`.
 Each implement session is a child run of `workflows/scripts/implement.js`, which `rpi.js` and `thermoloop.js` both run.
 
 Each box is a new session.
@@ -76,8 +78,9 @@ See [Progress](#progress) for how the steps show. A resume prints the phase line
 a turn or a Git step, and the lines after it.
 
 Each implement step logs the size of the round's change, `+<insertions> -<deletions> in <n> file(s)` or `no new
-changes`; each review step logs `SHIP` or `FIX`; the judge step logs `judge <score>`. After the squash, the run logs
-`commit <commit> <subject>`, or `nothing to commit since <commit>` when the work changed nothing since its start. See the example of [Campaign](#campaign).
+changes`; each review step logs `SHIP` or `FIX`. After the squash, the run logs `commit <commit> <subject>`, or
+`nothing to commit since <commit>` when the work changed nothing since its start. Then the judge step logs
+`judge <score>`. See the example of [Campaign](#campaign).
 
 The research session gets the work item and writes a research document: what the code that the work item touches
 does today, with `path:line` references, the patterns and tests of that area, and open questions. It documents and
@@ -135,14 +138,10 @@ rows. The harvest does not change the notes. Each lesson adds the
 report line `  lesson <cue>: <lesson> (<evidence>)`, with the whitespace runs of each field made one space, after the
 other report lines of the script and before `branch <name>`.
 
-On SHIP, the run starts the child run `judge` in the worktree, with the work item, the start commit and `commit:
-true`: see [Judge](#judge). If the judge fails or does not answer through `respond`, the command prints
-`judge failed on <subject>: <error>` on stderr.
-
-When the judge answered, the same judge session then gets the `commit` prompt, and answers through `respond` with
-`subject`, `body` and `divergence`: a commit message that follows the commit rules of the repository, and one line
-that tells how the delivered commit differs from the work item, or exactly `none`. The run squashes the work into one
-commit with the message `<subject>`, an empty line, then `<body>`:
+On SHIP, a new `implementer` session gets the `commit` prompt with the inputs `item`, `base`, the start commit, and
+`head`, the commit of `HEAD`. It reads `git log base..head` and `git diff base head`, and answers through `respond`
+with `subject` and `body`: a commit message that follows the commit rules of the repository. The run squashes the work
+into one commit with the message `<subject>`, an empty line, then `<body>`:
 
 ```text
 fix: correct the README typo
@@ -150,11 +149,14 @@ fix: correct the README typo
 The README said wrold. It now says world.
 ```
 
-The divergence is not in the commit message.
+When the body is empty, the message is `<subject>` alone. If the message turn fails or answers an empty `subject`, the
+message is the subject of the work item alone: its first non-empty line without leading `#`. A failed message turn
+prints nothing.
 
-If the judge failed, or the message turn fails or answers an empty `subject`, the message is the subject of the work
-item alone: its first non-empty line without leading `#`. A failed message turn prints nothing and does not change the
-score.
+Then the run starts the child run `judge` in the worktree, with the work item and the start commit, so the judge
+judges the squashed commit and its message: see [Judge](#judge). If the judge fails or does not answer through
+`respond`, the command prints `judge failed on <subject>: <error>` on stderr, and the run still ships the squashed
+commit.
 
 The command prints `shipped <subject> in <n> rounds, judge <score or failed>, <commit>`, then the line `branch <name>`
 of [Branch name](#branch-name), and exits 0.
@@ -163,7 +165,7 @@ The result of the run, which `--json` prints, has `status` and `rounds`; `head`,
 squashed commit, and `branch`, the branch that the worktree ends on, when shipped; `worktree`, the path of the
 directory that the run ran in, for every status; `score`, `answers`, the eight answers in question order, and `findings`, the finding
 lines of the judge, when the judge answered; `judgeError` when the judge failed; `divergence`, the divergence line of
-the commit turn with its whitespace runs made one space, when shipped and that turn answered with a non-empty subject; `reply` when blocked; `handoff`, the
+the judge with its whitespace runs made one space, when the judge answered; `reply` when blocked; `handoff`, the
 handoff that the last round used, when blocked or stopped; `memory`, the
 notes of the run memory in order as `#<k> <note>` lines, or `[]` when there are none, for every status; and `lessons`,
 the lessons of the harvest, for every status of a ship run that is not a campaign item.
@@ -230,13 +232,16 @@ workflows fix --start 1a2b3c4 item.md
 `workflows fix` is the fix round of a work item that a judge scored 0, in the current directory. It has no worktree of
 its own. Its step is `fix`. `--start`, which it needs, is the commit that the change of the item starts from, and
 `--round`, default 1, is the round of the implementer's notes. A caller, as `campaign` is, also gives `findings`, the
-judge's findings as a list of lines, `message`, the commit message of the fix, and `memory`, the `ref` of a run memory
-to go on with. It runs the child run `implement` with the work item, then `## Judge findings` with one `- <finding>`
-line for each finding, as the plan, from the commit of `HEAD`, and then the child run `judge` on the change from
-`--start`.
+judge's findings as a list of lines, `message`, the commit message of the implement turn, and `memory`, the `ref` of a
+run memory to go on with. It runs the child run `implement` with the work item, then `## Judge findings` with one
+`- <finding>` line for each finding, as the plan, from `--start`. Then a new `implementer` session writes the commit
+message of the change from `--start`, and the run squashes the change into one commit with it, as `ship` does: see
+[Ship](#ship). Then it runs the child run `judge` on the squashed commit.
 
-The result is `{ "status": "judged", "score", "answers", "findings", "reply" }`, and the command prints
-`judge <score>: <subject>` and one line `  <finding>` for each finding, and exits 0. When the implement is blocked, the
+The result is `{ "status": "judged", "shipped", "reply" }`, with `shipped` the scored result of `commitAndJudge`: `{ "head",
+"subject", "score", "answers", "findings", "divergence" }`, `head` the short squashed commit and `subject` its subject.
+The command prints
+`judge <score>: <subject>` and one line `  <finding>` for each finding, and exits 0. When the implement is blocked, because the item has no change from `--start`, the
 result is `{ "status": "blocked", "reply" }` and the command prints `blocked <subject>` and the reply. When the judge
 gives no score, the result is `{ "status": "unjudged", "judgeError", "reply" }` and the command prints `judge failed
 on <subject>: <error>`. When a child run fails, the run does not fail: the result is `{ "status": "failed", "error" }`,
@@ -331,13 +336,13 @@ not committed, it logs `uncommitted changes are not judged` and adds that line a
 `campaign` give it `start`, the commit that the change starts from, and `item`. Its step is `judge`. As a child
 run, it also takes `overlay`: see [Child runs](#child-runs).
 
-The judge session answers through `respond`: eight PASS or FAIL answers, and one finding line for each failed
-question. If question 1 (complete) or 2 (correct) fails, the score is 0. Otherwise the score is the fraction of
-questions 3 to 8 that pass. The step logs `judge <score>`. The command prints `judge <score>: <subject>`, then one
+The judge session reads the commit messages and the diff of the change, and answers through `respond`: eight PASS or
+FAIL answers, one finding line for each failed question, and the divergence. If question 1 (complete) or 2 (correct)
+fails, the score is 0. Otherwise the score is the fraction of questions 3 to 8 that pass. The step logs `judge <score>`. The command prints `judge <score>: <subject>`, then one
 line `  <finding>` for each
-finding, and exits 0. The result is `{ "status": "judged", "score", "answers", "findings" }`. With `commit: true`,
-which `ship` gives, the same session then gets the `commit` prompt, and the result has `commit`, `{ subject, body, divergence }`,
-when that turn answered with a non-empty subject.
+finding, and exits 0. The result is `{ "status": "judged", "score", "answers", "findings", "divergence" }`, with
+`divergence` the one line of the judge on how the change differs from its intent, or `none`, with its whitespace runs
+made one space.
 
 If the judge fails or does not answer through `respond`, the run logs and prints `judge failed on <subject>: <error>`,
 and exits 1. The result is `{ "status": "unjudged", "judgeError" }`.
@@ -357,8 +362,8 @@ In the step `split`, a planner session splits the goal into work items with the 
 `respond` with a `subject`, a Conventional Commit subject for the whole goal, and the work items. The step logs the
 number of items, such as `2 items`. Then each
 work item ships in turn, in one worktree on the branch `campaign/<run-id>`, or `--branch`: the research, the plan, the rounds, the
-review, the judge and the squash of `workflows/scripts/ship.js`, from the commit that the item before it made. So each shipped
-item is one commit, with the commit message that its own judge wrote, as in `ship`. No `ship/<run-id>` branch is made,
+review, the squash and the judge of `workflows/scripts/ship.js`, from the commit that the item before it made. So each shipped
+item is one commit, with the commit message that its own commit turn wrote, as in `ship`. No `ship/<run-id>` branch is made,
 and nothing is merged or pushed. Each item is a ship child run, with its own
 run ID and run directory, in the store of the campaign run: see `run` in [the script API](#the-script-api).
 
@@ -388,9 +393,9 @@ the split after it. The steps and log lines of the item's ship run are under the
     +1 -1 in 1 file
   ✓ round 1/3: review  35s
     SHIP
+  commit a1b2c3d fix: correct the README typo
   ✓ judge  19s
     judge 0.83
-  commit a1b2c3d fix: correct the README typo
 ◉ item 2/2: Add a thanks line
   ✓ research  28s
   ◉ plan
@@ -414,29 +419,29 @@ terminal and in Pi they move under the item step when it comes.
   [Branch name](#branch-name), with the `subject` of the last split, and exits 0. The score of the campaign judge does
   not change the outcome.
 
-- When an item ships with a judge score of 0 and the judge gave findings, the item gets one fix round. The run reads
-  the item's commit message, then runs the child run [`fix`](#fix) with the work item, `start` at the commit that the
-  item started from, the judge's findings, `round` at the rounds of the item plus 1, the message `fix: judge findings
-  of item <n>` and the run memory of the item. When `fix` is judged with a score above 0, the run squashes the change
-  of the item again into one commit with the item's message, logs `commit <commit> <commit subject>`, and the item
-  ships: its result is the ship result with the new `head`, `score`, `answers` and `findings`. The step `fix` comes
-  under the item step, its `judge` step under it, and the log line under the item step:
+- When an item ships with a judge score of 0 and the judge gave findings, the item gets one fix round: the child run
+  [`fix`](#fix) with the work item, `start` at the commit that the item started from, the judge's findings, `round` at
+  the rounds of the item plus 1, the message `fix: judge findings of item <n>` and the run memory of the item. `fix`
+  squashes the change of the item again into one commit with a new commit message, and logs
+  `commit <commit> <commit subject>`. When `fix` is judged with a score above 0, the item ships: its result is the ship
+  result with the `head`, `subject`, `score`, `answers`, `findings` and `divergence` of `fix`. The step `fix` comes
+  under the item step, and its log line and its `judge` step under it:
 
   ```text
   ✓ item 1/2: Fix the README typo  6m12s
     ...
+    commit a1b2c3d fix: correct the README typo
     ✓ judge  19s
       judge 0.00
-    commit a1b2c3d fix: correct the README typo
     ✓ fix  1m20s
       +1 -1 in 1 file
+      commit b2c3d4e fix: correct the README typo
       ✓ judge  18s
         judge 0.83
-    commit b2c3d4e fix: correct the README typo
   ```
 
   Otherwise the fix round fails with an outcome: `the fix round failed: <error>` when `fix` is `failed`, `the fix
-  round changed nothing` when it is `blocked`, `no judge score after one fix round` when it is `unjudged`, `still 0
+  round left no change` when it is `blocked`, `no judge score after one fix round` when it is `unjudged`, `still 0
   after one fix round` when the score is 0 again, and `the fix round ended with the unknown status <status>` for any
   other status. Then the item fails as below.
 - When an item is blocked or stopped, ships with a judge score of 0 and no fix round ships it, or ships with a judge
@@ -940,6 +945,7 @@ with. A script's own declaration of the same name takes their place.
 | `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries, and `<path>/notes.keys`, the key `<run-id>/<n>` of each note, whose line is `<k>`. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. A compression request without `nap <a>-<b>` fails with `memo asked for a compression without "nap <a>-<b>": <first line>`, and the 65th request in a row fails with `memo still asks for compressions after 64 summaries`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without its `report` and `memory` keys at any depth, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
 | `await noteLines(notes)` | The `#<k> <note>` lines of `notes.text`, without empty lines |
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
+| `commitAndJudge(item, start)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base` and `head`, squashes the change into one commit with it, then runs the child run `judge` with `item` and `start`, and returns `{ head, subject, score, answers, findings, judgeError, divergence }`, `head` the short head and `subject` the commit subject. When the turn fails or gives an empty subject, the message is the subject of `item` |
 | `writePatch(path, from)` | Writes `git diff --binary` from `from` to `HEAD` to the file `path`, and returns `path` |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 | `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |

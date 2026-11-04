@@ -194,6 +194,34 @@ declare function commitAll(message: string): Promise<void>;
  */
 declare function squash(start: string, message: string, subject: string): Promise<string>;
 
+/**
+ * Writes the commit message of the change from `start` to `HEAD` in one turn of an `implementer` session, squashes the
+ * change into one commit with it, then judges the squashed commit in the child run `judge`. Returns the short head, the
+ * commit subject and the judge's result. When the turn fails or gives an empty subject, the message is the subject of
+ * `item`.
+ */
+declare function commitAndJudge(
+	item: string,
+	start: string,
+): Promise<
+	{ head: string; subject: string } & (
+		| {
+				score: number;
+				answers: ("PASS" | "FAIL")[];
+				findings: string[];
+				divergence: string;
+				judgeError?: undefined;
+		  }
+		| {
+				judgeError: string;
+				score?: undefined;
+				answers?: undefined;
+				findings?: undefined;
+				divergence?: undefined;
+		  }
+	)
+>;
+
 /** Writes the binary diff from `from` to `HEAD` to the file `path`, and returns `path`. */
 declare function writePatch(path: string, from: string): Promise<string>;
 
