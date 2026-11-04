@@ -14,6 +14,7 @@ import {
 	SqliteStorage,
 	type SqliteValue,
 } from "@earendil-works/pi-durable/storage/sqlite";
+import { type StartedTaskIds, StartedTasks } from "@vzlentin/harness/tasks";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { ScriptInput } from "../launch/input.ts";
@@ -231,19 +232,20 @@ export async function runTasksAndLive(
 	return { runs: rootRuns(tasks), live };
 }
 
-/** The document of harness that maps each `start` key to the ID of the task that it created. */
-const STARTED = { kind: "harness.tasks", scope: { kind: "session" as const } };
-
-const STARTED_TASKS = Type.Object({ tasks: Type.Record(Type.String(), Type.Integer()) });
+/** Where harness keeps its document of the `start` keys. */
+const STARTED = { kind: StartedTasks.definition.kind, scope: { kind: StartedTasks.definition.scope } };
 
 /** The task ID of each `start` key of the host, from harness's document of the keys; empty when it has none. */
 export async function startedTasks(store: Store): Promise<Map<string, number>> {
 	const record = await store.findDocument(STARTED, "current", BACKGROUND_CONTEXT);
+	const stored = record === undefined ? undefined : await store.document(record.id, "current", BACKGROUND_CONTEXT);
 
-	const value =
-		record === undefined ? undefined : (await store.document(record.id, "current", BACKGROUND_CONTEXT))?.value;
+	if (stored?.version !== StartedTasks.definition.version) return new Map();
 
-	return Value.Check(STARTED_TASKS, value) ? new Map(Object.entries(value.tasks)) : new Map();
+	// SAFETY: harness writes this document only through `StartedTasks`, and the version is the one of that token.
+	const value = stored.value as StartedTaskIds;
+
+	return new Map(Object.entries(value.tasks));
 }
 
 const PROGRESS = Type.Object({ events: Type.Array(Type.Unknown()) });
