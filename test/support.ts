@@ -961,6 +961,16 @@ export async function postedResults(project = "main"): Promise<PostedResult[]> {
 	);
 }
 
+/** A catch-up entry of the project agent: its text and its data. */
+export type CatchUp = { readonly text: string; readonly data: unknown };
+
+/** The `harness.catchup` entries in the transcripts of the store of `project`. */
+export async function catchUps(project = "main"): Promise<CatchUp[]> {
+	return (await entriesOf(project)).flatMap((entry) =>
+		entry.kind === "harness.catchup" ? [{ text: (entry.model ?? []).map(textOf).join("\n"), data: entry.data }] : [],
+	);
+}
+
 /** Waits until the store of `project` has more than `count` results of the `workflow` tool, and gives the next one. */
 export async function nextResult(count: number, project = "main"): Promise<WorkflowResult> {
 	for (;;) {
