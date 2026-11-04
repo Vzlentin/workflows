@@ -18,15 +18,13 @@ import { JSON_VALUE } from "../tool.ts";
 import { META, render } from "../workflow/bundle.ts";
 import { CallDoc, type Calls, callKey, inputCall, memoized, pastRunsCall, type ScriptRun, shellCall } from "./calls.ts";
 import { childResult } from "./child.ts";
-import { PAST_OPTIONS, profileTexts } from "./past.ts";
+import { PAST_OPTIONS } from "./past.ts";
 import { addProgress, type PhaseLines, phaseLine, takeLines } from "./progress.ts";
 import { askTurn, ownerOf, SESSION_ARGS, sessionOf } from "./sessions.ts";
 import type { Host, Runtime } from "./version.ts";
 
 /** The sandbox functions that are not host calls, and the script lib; `cwd` is the directory of the script calls. */
 function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun, cwd: string): string {
-	const agents = profileTexts(script.bundle.agents);
-
 	return `
 const args = ${JSON.stringify(args)};
 const runId = ${JSON.stringify(script.runId)};
@@ -43,7 +41,6 @@ const Math = Object.freeze({
 const prompts = Object.fromEntries(
 	${JSON.stringify(prompts)}.map((name) => [name, (inputs) => __prompt(name, inputs)]),
 );
-const agents = Object.freeze(${JSON.stringify(agents)});
 function session(options = "default") {
 	const { as = "default", provider, model, thinking } = typeof options === "string" ? { as: options } : (options ?? {});
 	const spec = { profile: as };

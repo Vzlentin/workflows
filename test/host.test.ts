@@ -945,8 +945,8 @@ await Promise.all([...asks, Promise.reject(new Error("no"))])`,
 
 	it("gives a session the provider, model and thinking of its call, and the project agent's model without one", async () => {
 		await piSettings(root, [], { defaultProvider: "anthropic", defaultModel: "claude-haiku-5" });
-		await mkdir(join(root, ".workflows", "agents"), { recursive: true });
-		await writeFile(join(root, ".workflows", "agents", "fast.md"), "---\nthinking: low\n---\nFast profile body.\n");
+		await mkdir(join(root, ".workflows"), { recursive: true });
+		await writeFile(join(root, ".workflows", "agents.json"), JSON.stringify({ fast: { thinking: "low" } }));
 		await writeFile(
 			join(root, "x.js"),
 			`const one = await agent("Script: one", { model: "claude-haiku-5", thinking: "high" })
@@ -961,14 +961,88 @@ return [one, two, three].join(", ")`,
 			["other", "o-1", "medium"],
 			["anthropic", "claude-haiku-5", "low"],
 		]);
-		expect(run.model.calls[2]?.sections.instructions).toContain("Fast profile body.");
 
 		await writeFile(join(root, "bad.js"), 'return await agent("Script: one", { model: "nope" })');
 		const bad = await workflows(["bad.js"], { cwd: root });
 		expect([bad.code, bad.stderr.at(-2)]).toEqual([1, "failed bad: Unknown model: anthropic/nope"]);
 	});
 
+	it("gives each role the first model and thinking of the repo, user and package tables, else the Pi model", async () => {
+		await piSettings(root, [], { defaultProvider: "anthropic", defaultModel: "claude-haiku-5" });
+		await writeFile(
+			join(root, "roles.js"),
+			`await agent("Script: one")
+await agent("Script: two", { as: "summarizer" })
+return "done"`,
+		);
+		const plain = await workflows(["roles.js"], { cwd: root });
+		expect(plain.code).toBe(0);
+		expect(plain.model.calls.map((call) => [call.model, call.thinking])).toEqual([
+			["claude-haiku-5", "medium"],
+			["claude-haiku-5", "low"],
+		]);
+
+		await mkdir(join(root, ".workflows"), { recursive: true });
+		await mkdir(join(root, "config", "workflows"), { recursive: true });
+		await writeFile(
+			join(root, ".workflows", "agents.json"),
+			JSON.stringify({ a: { thinking: "low" }, "*": { model: "anthropic/claude-opus-5-5" } }),
+		);
+		await writeFile(
+			join(root, "config", "workflows", "agents.json"),
+			JSON.stringify({ "*": { thinking: "high" }, b: { model: "other/o-1", thinking: "minimal" } }),
+		);
+		await writeFile(
+			join(root, "layers.js"),
+			`await agent("Script: one", { as: "a", thinking: "medium" })
+await agent("Script: two", { as: "a" })
+await agent("Script: three", { as: "b" })
+await session().ask("Script: four")
+return "done"`,
+		);
+		const layered = await workflows(["layers.js"], { cwd: root });
+		expect(layered.code).toBe(0);
+		expect(layered.model.calls.map((call) => [call.provider, call.model, call.thinking])).toEqual([
+			["anthropic", "claude-opus-5-5", "medium"],
+			["anthropic", "claude-opus-5-5", "low"],
+			["anthropic", "claude-opus-5-5", "minimal"],
+			["anthropic", "claude-opus-5-5", "high"],
+		]);
+
+		for (const call of [...plain.model.calls, ...layered.model.calls]) {
+			expect(call.sections.instructions).toContain("You are a session of a workflows run, not the user's main agent.");
+		}
+	});
+
+	it("fails a run and a check on a bad agents table, with its file and key", async () => {
+		await writeFile(join(root, "x.js"), 'return "done"');
+		await mkdir(join(root, ".workflows"), { recursive: true });
+		const repo = join(root, ".workflows", "agents.json");
+		await writeFile(repo, JSON.stringify({ judge: { model: "opus" } }));
+
+		for (const args of [["x.js"], ["check", "x.js"]]) {
+			const run = await workflows(args, { cwd: root });
+			expect([run.code, run.stderr]).toEqual([1, [`workflows: ${repo}: judge.model must be <provider>/<id>`]]);
+		}
+
+		await rm(repo);
+		await mkdir(join(root, "config", "workflows"), { recursive: true });
+		const user = join(root, "config", "workflows", "agents.json");
+		await writeFile(user, '{ "judge": ');
+
+		for (const args of [["x.js"], ["check", "x.js"]]) {
+			const run = await workflows(args, { cwd: root });
+			expect(run.code).toBe(1);
+			expect(run.stderr.join("\n")).toContain(`workflows: ${user}: `);
+		}
+	});
+
 	it("checks the literal models of a script against the model registry", async () => {
+		await mkdir(join(root, ".workflows"), { recursive: true });
+		await writeFile(
+			join(root, ".workflows", "agents.json"),
+			JSON.stringify({ "*": { model: "anthropic/claude-opus-5-5" } }),
+		);
 		await writeFile(
 			join(root, "known.js"),
 			`const name = "x"
@@ -977,6 +1051,7 @@ const repo = { provider: "github" }
 await agent("a", { provider: "other", model: "o-1" })
 await session({ model: name }).ask("Reply like { model: 'nope' }")
 await agent("b", { ...repo, model: "nope" })
+await agent("d", { as: "nobody" })
 return await agent("c", { as: "planner", model: "claude-haiku-5", schema: { type: "object" } })`,
 		);
 		await writeFile(
@@ -997,17 +1072,19 @@ return await agent("c", { as: "planner", model: "claude-haiku-5", schema: { type
 		expect(regex.stderr).toEqual([
 			"workflows: regex uses the model anthropic/gone, which Pi's model registry does not have",
 		]);
-		await mkdir(join(root, ".workflows", "agents"), { recursive: true });
-		await writeFile(join(root, ".workflows", "agents", "old.md"), "---\nmodel: anthropic/claude-2\n---\nOld.\n");
-		await writeFile(join(root, "profile.js"), 'return await agent("a", { as: "old" })');
-		const profile = await workflows(["check", "profile.js"], { cwd: root });
-		expect(profile.stderr).toEqual([
-			"workflows: profile uses the agent profile old, whose model anthropic/claude-2 Pi's model registry does not have",
-		]);
 		const provider = await workflows(["check", "provider.js"], { cwd: root });
 		expect([provider.code, provider.stderr]).toEqual([
 			1,
 			["workflows: provider uses the model gone/claude-opus-5-5, which Pi's model registry does not have"],
+		]);
+		await writeFile(
+			join(root, ".workflows", "agents.json"),
+			JSON.stringify({ "*": { model: "anthropic/claude-opus-5-5" }, old: { model: "anthropic/claude-2" } }),
+		);
+		const table = await workflows(["check", "known.js"], { cwd: root });
+		expect([table.code, table.stderr]).toEqual([
+			1,
+			["workflows: agents.json gives old the model anthropic/claude-2, which Pi's model registry does not have"],
 		]);
 	});
 

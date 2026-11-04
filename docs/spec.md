@@ -7,7 +7,7 @@ The behaviour of the `workflows` command, the workflow scripts, runs and the `wo
 `workflows campaign` splits a goal into work items and ships them one after another onto one branch.
 `workflows rpi` researches, plans and implements one work item in one commit, `workflows thermoloop` reviews a change
 (the current branch, a PR, a ref or a range) and fixes it in rounds, and `workflows judge` judges it.
-`workflows optimize ship` proposes edits to the ship prompts, profiles, skills and `AGENTS.md` from past ship runs,
+`workflows optimize ship` proposes edits to the ship prompts, skills and `AGENTS.md` from past ship runs,
 and keeps them when a blind judge prefers the diffs they give. The run is
 headless and resumable. It runs in the [harness](https://github.com/Vzlentin/harness) host of its project, whose
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) store keeps the sessions, model calls, tool
@@ -516,9 +516,9 @@ workflows optimize --workflow ship --items items/
 workflows optimize ship --always-on-max 2000
 ```
 
-`workflows optimize ship` proposes one overlay of edits to the ship prompts, agent profiles, skills and `AGENTS.md`,
+`workflows optimize ship` proposes one overlay of edits to the ship prompts, skills and `AGENTS.md`,
 ships each work item again with it, and keeps it when a blind judge prefers its diffs. It never changes `prompts/`,
-`agents/`, the skills or `AGENTS.md`: the result is a diff to apply by hand. It is the package script `workflows/scripts/optimize.js`. The workflow to optimize,
+the skills or `AGENTS.md`: the result is a diff to apply by hand. It is the package script `workflows/scripts/optimize.js`. The workflow to optimize,
 `ship`, is one argument or `--workflow`, and defaults to `ship`.
 
 The work items and their baselines come from one of two places:
@@ -527,7 +527,7 @@ The work items and their baselines come from one of two places:
   newest `--limit` (default 8), or with `--runs` the run IDs of that comma list, in that order. A saved run keeps its
   result as its baseline when its status is `shipped` and its `head` is still a commit of its repository; its diff is
   `git diff <start> <head>`. Any other saved run runs its baseline again once, as the child run
-  `run("ship", { item, repo: repository, base: start, from: runId })`, with its saved prompts and profiles.
+  `run("ship", { item, repo: repository, base: start, from: runId })`, with its saved prompts and agents table.
 - With `--items <folder>`, relative to the current directory, from `<name>.md` files. Each file has the frontmatter
   `repo`, the path of a local Git repository, relative to the items folder unless it is absolute, and `start`, the
   commit that ship starts from. Quotes around a value are removed. The body is the work item. Each baseline is the
@@ -547,26 +547,26 @@ A workflow other than `ship`, `--items` together with `--runs`, no completed shi
 without `repo` or `start`, or a run of `--runs` that is not a completed ship run fails the run after `run <run-id>`,
 with `failed optimize: <error>`, and exits 1, because the script checks them when it runs.
 
-The texts that the run can edit are the baseline texts by path: `prompts/<name>.md` and `agents/<name>.md` of the
-saved bundle of the first past run, or with `--items` the `prompts/<name>.md` templates and the `agents/<name>.md`
-profiles of the run's bundle (so `--prompts <folder>` sets the templates), from `prompts` and `agents`. `inv`, `dom`, `compose` and `select` are not
-among them. One turn of the `inv` prompt, in a new session with the `default` agent profile, gets the texts and the
+The texts that the run can edit are the baseline texts by path: `prompts/<name>.md` of the saved bundle of the first
+past run, or with `--items` the `prompts/<name>.md` templates of the run's bundle (so `--prompts <folder>` sets the
+templates), from `prompts`. `inv`, `dom`, `compose` and `select` are not among them. One turn of the `inv` prompt, in
+a new session of the role `default`, gets the texts and the
 traces of the baselines as JSON: for each one its run ID, the work item, `status`, `rounds`, `findings`, `divergence`,
 `lessons`, and `notes`, the notes of its run memory from the `memory` field of its result. It answers
 `{ edits: [{ path, text, moment }] }`: `text` is the new text of `path`, or null to remove it, and `moment` names the
 run and the finding or note that the edit answers. No edit, a path that is not one of the texts (this includes a path
-outside `prompts/` and `agents/`), or a path twice fails the run.
+outside `prompts/`), or a path twice fails the run.
 
 The surface texts come from the repository and the start commit of the first item: `AGENTS.md` at the start, when it
 exists, each `.agents/skills/<name>/SKILL.md` and `.pi/skills/<name>/SKILL.md` at the start, and each
 `<root>/<name>/SKILL.md` file of the user skill folders, the roots `${PI_CODING_AGENT_DIR:-~/.pi/agent}/skills` and
-`~/.agents/skills`. One turn of the `dom` prompt, in a new session with the `default` agent profile, gets the surface
+`~/.agents/skills`. One turn of the `dom` prompt, in a new session of the role `default`, gets the surface
 texts, the same traces and the roots as JSON, and answers edits in the same shape; no edit is allowed. A path that is
 not `AGENTS.md`, a project skill path or `<root>/<name>/SKILL.md` fails the run with
 `dom edit <path> is not a skill or AGENTS.md path`, and a path that is also an `inv` or `dom` edit path fails it with
 `dom edit <path> comes twice`.
 
-One turn of the `compose` prompt, in a new session with the `default` agent profile, gets the `inv` and `dom` edits,
+One turn of the `compose` prompt, in a new session of the role `default`, gets the `inv` and `dom` edits,
 each with its `source`, and the baseline text of each edited path, or null for a new one, as JSON. It answers
 `{ overlay: [{ path, text }], notes: [{ verdict, edit, moment }] }`, where `verdict` is `kept`, `revised` or
 `dropped` and `edit` is the path of an edit. An overlay path that is not an edit path, or a path twice, fails the
@@ -596,7 +596,7 @@ the worktree removal fails, the worktree and the branch stay, and the report get
 the report gets the line `kept branch <branch>: <error>` before the last line. Its run directory stays. The worktrees and
 branches of the past runs stay.
 
-For each item, one turn of the `select` prompt with the `judge` agent profile gets only the work item and the two
+For each item, one turn of the `select` prompt in a session of the role `judge` gets only the work item and the two
 diffs, as `A` and `B`; an empty diff is `(no change)`. It never gets the overlay, the notes or the traces. The
 candidate is `A` when the FNV-1a hash of `<name>\n<item>` is even, where `<name>` is the saved run ID, or the item
 file name without `.md` with `--items`. So two runs over the same saved runs or the same folder show the same order,
@@ -629,15 +629,16 @@ turns and the `memo` calls of the run memory return their saved results, and the
 
 ## Sessions
 
-The research, plan, implement, review and judge sessions use the agent profiles `agents/researcher.md`,
-`agents/planner.md`, `agents/implementer.md`, `agents/reviewer.md` and `agents/judge.md`. Each uses
-`anthropic/claude-opus-5-5` with thinking `medium`. The `summarizer` sessions, which compress the notes of the run
-memory, use `agents/summarizer.md`, with thinking `low` and the model of the project agent. Every session gets the
-same tools. Their instructions say that
-the session is not the user's main agent and does not write to the user's memory or note tools, because the run keeps
-its own memory. Like every workflow script, `ship` and `campaign` read the scripts, prompts and profiles of the package
-and of the project folder `.workflows/` of the current directory, also when `--repo` selects another repository. See
-[Workflow scripts](#workflow-scripts). A project `agents/planner.md`, for example, gives the planner another model.
+The research, plan, implement, review and judge sessions use the roles `researcher`, `planner`, `implementer`,
+`reviewer` and `judge`. The `summarizer` sessions, which compress the notes of the run memory, use the role
+`summarizer`. A role takes its model and thinking level from the agents tables, else from the project agent: the Pi
+default model and thinking level. The package table gives `summarizer` the thinking level `low` and nothing else. See
+[Roles](#roles). Every session gets the same tools, and the same instructions: the session is not the user's main
+agent and does not write to the user's memory or note tools, because the run keeps its own memory. Like every
+workflow script, `ship` and `campaign` read the scripts, prompts and agents table of the package and of the project
+folder `.workflows/` of the current directory, also when `--repo` selects another repository. See
+[Workflow scripts](#workflow-scripts). `{ "planner": { "model": "openai/gpt-5" } }` in `.workflows/agents.json`, for
+example, gives the planner another model.
 
 Sessions are children of harness's children library in the harness host of the run's project, and use the host's
 providers and credentials: Pi's, from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers that Pi
@@ -683,8 +684,9 @@ argument.
 
 The project folder is `.workflows/` at the root of the current directory's Git repository, or in the current
 directory outside a repository. It has the shape of the script side of the package, `workflows/` of the package: it
-can hold `scripts/*.js`, `prompts/*.md` and `agents/*.md`. A project file adds to the package files, and replaces
-the package file of the same name in the same folder. Only the package has `lib/`.
+can hold `scripts/*.js`, `prompts/*.md` and `agents.json`. A project file adds to the package files, and replaces
+the package file of the same name in the same folder. Only the package has `lib/`. The `agents.json` tables do not
+replace each other: they merge by role name and field, as [Roles](#roles) says.
 
 `workflows` without arguments prints one line `<name>: <description>` for each script, or `<name>` for a script
 without `meta.description`.
@@ -707,8 +709,8 @@ export const meta = {
 }
 ```
 
-- `description` is one line for `workflows` and `--help`, like the `description` in the frontmatter of the profiles
-  and prompts. It is a string.
+- `description` is one line for `workflows` and `--help`, like the `description` in the frontmatter of the
+  prompts. It is a string.
 - `args` gives each argument a `type`, and optionally `default`, `required`, `positional` and `label`:
   - `string` is the value as given. `number` is a positive integer; any other value fails with
     `--<name> must be a positive integer`. `boolean` is a flag without a value, false when not given.
@@ -746,16 +748,16 @@ Before the run starts, the command scans the script for prompt calls, `prompts.<
 fails with `<name> uses prompts.<prompt>, which has no template`. Other text such as `prompts.diff` in a path is not a
 call, and a dynamic call such as `prompts[name]()` is not scanned.
 
-`workflows check <wf>` reads and checks `meta`, the scanned prompts, and the agent profiles of each literal
-`session("<profile>")` and `as: "<profile>"`. It also checks each object literal with a string `provider` or `model`,
-with the profile of its `as` (default `default`) for the field that it leaves out, against Pi's model registry: Pi's
+`workflows check <wf>` reads and checks `meta`, the scanned prompts and the agents tables. It checks each object
+literal with a string `provider` or `model`, with the role of its `as` (default `default`) in the agents table for
+the field that it leaves out, against Pi's model registry: Pi's
 `models.json` and the providers that Pi and its packages register. Only an object literal that the script passes to
 `session(...)` or `agent(...)` counts, without its inner objects. A model that the registry does not have fails with
 `<name> uses the model <provider>/<id>, which Pi's model registry does not have`. A field whose value is not a string
 literal, or an object with a spread, is checked when the session opens. A regular expression literal is skipped, so a
-quote in it hides no later field. `check` also checks the `model:` line of each agent profile that the script uses,
-by name or as `default` for a `session` or `agent` call, and fails with `<name> uses the agent profile <profile>, whose
-model <provider>/<id> Pi's model registry does not have`. `check` prints `ok <name>` and exits 0, or prints the first
+quote in it hides no later field. `check` also checks every model of the merged agents table, and fails with
+`agents.json gives <role> the model <provider>/<id>, which Pi's model registry does not have`. A role name without an
+entry passes. `check` prints `ok <name>` and exits 0, or prints the first
 problem and exits 1. It starts no run and writes nothing.
 
 ### Branch name
@@ -883,11 +885,9 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
   prompt in the child run only. A name with no prompt fails the call.
 - `args.overlay` maps paths to texts or `null`. A value of another shape fails the call with
   `run <name>: overlay is not an object of path to text or null`. `overlay` is a reserved argument name.
-  - A key `prompts/<prompt>.md` replaces that prompt, as `args.prompts` does, or removes it with `null`. A key
-    `agents/<profile>.md` replaces that agent profile, parsed as a file of `agents/`, or removes it with `null`. A key
-    for a name that the caller's bundle does not have fails the call with `run <name>: no prompt <prompt>` or
-    `run <name>: no agent profile <profile>`. A call of a removed prompt or profile fails as a call of an unknown name
-    does. When `args.prompts` and `args.overlay` replace the same prompt, the text of `overlay` wins.
+  - A key `prompts/<prompt>.md` replaces that prompt, as `args.prompts` does, or removes it with `null`. A key for a
+    prompt that the caller's bundle does not have fails the call with `run <name>: no prompt <prompt>`. A call of a
+    removed prompt fails as a call of an unknown name does. When `args.prompts` and `args.overlay` replace the same prompt, the text of `overlay` wins.
   - Every other key is a file that the sessions of the child run see in place of the disk: the run opens each session
     with these files as `overlay` in its spec of the children library, so the subagents of the session see them too.
     A string replaces the file, and `null` removes it. A relative key is relative to the session's directory, the
@@ -896,11 +896,11 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
     keys win. Keys compare as written, so a relative key and the same file as an absolute key are two keys.
   - A run without files in its overlay saves no `overlay` field, and its sessions open with no overlay.
 - `args.from` names a saved root run of the project store, of any workflow and any status. The child run gets the
-  prompts and profiles of that run's saved bundle in place of the caller's; the scripts and the lib stay the
+  prompts and agents table of that run's saved bundle in place of the caller's; the scripts and the lib stay the
   caller's. `args.prompts` and `args.overlay` apply on top of them. A run ID that is not a root run of the store, such
   as a child run ID, fails the call with `run <name>: no run <id>`, and a `from` that is not a string fails it with
   `run <name>: from is not a run ID`. `from` is a reserved argument name.
-- The child run gets the caller's saved scripts, prompts and profiles, or those of `args.from`, with the replacements
+- The child run gets the caller's saved scripts, prompts and agents table, or those of `args.from`, with the replacements
   of `args.prompts` and `args.overlay`, and the caller's file overlay. So every child run of a child run gets them too.
 
 `run()` returns the child's result, with `runId`, the child run ID, added to an object result. A failed child run
@@ -912,22 +912,21 @@ child run that ended without a result continues in a new task.
 ### The script API
 
 A script is the body of an async function: top-level `await` and `return` work. Each call below is a durable call,
-except `phase`, `log`, `args`, `cwd`, `prompts` and `agents`.
+except `phase`, `log`, `args`, `cwd` and `prompts`.
 
 | Global | Meaning |
 |---|---|
 | `args` | The argument values of `meta.args`, and `start` with `worktree: true` |
 | `runId`, `runDir` | The run ID and the run directory. A script that `run()` starts gets its own values |
 | `cwd` | The directory where `sh` and `ok` run: the run's worktree, the caller's directory, or the directory of the command |
-| `agent(prompt, { as, provider, model, thinking, schema })` | One turn in a new session of profile `as` (default `default`), with the model of [Agent profiles](#agent-profiles). Returns the reply text, or the answer with `schema` |
-| `session(profile)`, `session({ as, provider, model, thinking })` | A new session of the profile (default `default`), with the model of [Agent profiles](#agent-profiles). `.ask(prompt, { schema })` is one turn in it |
+| `agent(prompt, { as, provider, model, thinking, schema })` | One turn in a new session of the role `as` (default `default`), with the model of [Roles](#roles). Returns the reply text, or the answer with `schema` |
+| `session(name)`, `session({ as, provider, model, thinking })` | A new session of the role `name` or `as` (default `default`), with the model of [Roles](#roles). `.ask(prompt, { schema })` is one turn in it |
 | `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
 | `ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
 | `pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow` in the project store. See [Past runs](#past-runs) |
 | `input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`, or of the `workflow` tool with `resume` and `answer`. See [Input](#input) |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
-| `agents.<name>` | The text of `agents/<name>.md` that gives the profile of the run's bundle: its `model` and `thinking` frontmatter, then its body. Other frontmatter fields are not in it |
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
 | `title(text)` | Name the run `text` in `list`, `show` and the end lines, in place of the subject of its first `text` argument; the last call wins. `changeOf` calls it with the subject of the intent |
 
@@ -950,7 +949,6 @@ does not have the fields below. Each run is an object:
 | `item` | The `item` arg of the run, or `null` |
 | `repository`, `start` | The repository and the start commit of the run's worktree, or `null` |
 | `prompts` | The saved template texts, by prompt name |
-| `agents` | The text of `agents/<name>.md` that gives each saved profile: its `model` and `thinking` frontmatter, then its instructions |
 | `result` | The result of the run |
 
 `runs`, an array of run IDs, gives those runs in that order: an ID that is not a completed root run of `workflow` fails
@@ -971,7 +969,7 @@ with. A script's own declaration of the same name takes their place.
 | `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
 | `subjectOf(text)` | The first non-empty line of `text`, without leading `#` |
 | `oneLine(text)` | `text` with each whitespace run made one space, trimmed |
-| `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries, and `<path>/notes.keys`, the key `<run-id>/<n>` of each note, whose line is `<k>`. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. A compression request without `nap <a>-<b>` fails with `memo asked for a compression without "nap <a>-<b>": <first line>`, and the 65th request in a row fails with `memo still asks for compressions after 64 summaries`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without its `report` and `memory` keys at any depth, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(profile)` is a session whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the profile, and returns the text |
+| `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries, and `<path>/notes.keys`, the key `<run-id>/<n>` of each note, whose line is `<k>`. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. A compression request without `nap <a>-<b>` fails with `memo asked for a compression without "nap <a>-<b>": <first line>`, and the 65th request in a row fails with `memo still asks for compressions after 64 summaries`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without its `report` and `memory` keys at any depth, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(name)` is a session of the role `name` whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the role name, and returns the text |
 | `await noteLines(notes)` | The `#<k> <note>` lines of `notes.text`, without empty lines |
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
 | `commitAndJudge(item, start)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base` and `head`, squashes the change into one commit with it, then runs the child run `judge` with `item` and `start`, and returns `{ head, subject, score, answers, findings, judgeError, divergence }`, `head` the short head and `subject` the commit subject. When the turn fails or gives an empty subject, the message is the subject of `item` |
@@ -997,25 +995,47 @@ The script runs in the pi-codemode sandbox, with no time limit. It has no file s
 Effects go through `sh` and `ok`. `Date`, `Date.now()` and `Math.random()` throw, so that a script makes
 the same calls each time it runs.
 
-### Agent profiles
+### Roles
 
-`agents/<name>.md` is the profile of `agent(..., { as: name })`, `session(name)` and `session({ as: name })`. Its
-frontmatter gives `model` as `<provider>/<id>` and `thinking`, both optional. Its body, without frontmatter, is the
-session's instructions in its system prompt. Every profile gets the same tools as the ship sessions.
-`agents/default.md` uses `anthropic/claude-opus-5-5` with thinking `medium`.
+A role is a name: `name` of `session(name)`, or `as` of `agent(..., { as })` and `session({ as })`, `default` when
+the call gives none. Any name is a role. Three `agents.json` tables give a role its model and thinking level, in this
+order:
 
-A call can give `provider`, `model` and `thinking`. Each field that the call gives overrides the profile, and the
-profile fills the rest. A session without a provider or a model from the call or the profile takes the model of the
-project agent of harness (Pi's default model), and without a thinking level it takes the project agent's level,
-cut to the nearest level that the model has. A model that the host's model registry does not have, or a `thinking`
+1. `<repo>/.workflows/agents.json`, in the project folder.
+2. `$XDG_CONFIG_HOME/workflows/agents.json`, or `~/.config/workflows/agents.json` without `XDG_CONFIG_HOME`.
+3. `workflows/agents.json` of the package: `{ "summarizer": { "thinking": "low" } }`.
+
+```json
+{
+  "*": { "model": "anthropic/claude-opus-5-5" },
+  "judge": { "model": "openai/gpt-5", "thinking": "high" }
+}
+```
+
+A table is an object of role names, and `"*"` gives every name. Each entry has the optional fields `model`, as
+`<provider>/<id>`, and `thinking`, a non-empty string. For each field, a table gives a role the field of its own
+entry, else the field of `"*"`, and the first table that gives the field wins. So a repo `"*"` model wins over a user
+entry of the role. A missing file is an empty table. A file that is not JSON, or an entry with another field or a bad
+value, fails the command before the run starts with `<file>: <problem>`, such as
+`<repo>/.workflows/agents.json: judge.model must be <provider>/<id>`. The command reads the tables when it starts a
+run, and the run saves the merged table.
+
+A call can give `provider`, `model` and `thinking`. Each field that the call gives overrides the role, and the role
+fills the rest. A session without a provider or a model from the call or the role takes the model of the project
+agent of harness (Pi's default model), and without a thinking level it takes the project agent's level, cut to the
+nearest level that the model has. Every session gets the same tools as the ship sessions, and the same instructions in
+its system prompt: it is a session of a workflows run, not the user's main agent, and does not write to the user's
+memory or note tools. A model that the host's model registry does not have, or a `thinking`
 level that the model does not have, fails the `session` call with harness's error, such as `Unknown model:
 anthropic/nope`.
 
 ### Saved inputs and resume
 
 Before the run starts, it saves the script, every `scripts/*.js` of the package and the project, the lib, the instructions
-of every prompt, every profile, the args and the current directory. Resume and `run()` use these saved inputs, so a
-later edit of a script, prompt or profile, in the package or in `.workflows/`, changes only new runs.
+of every prompt, the merged agents table, the args and the current directory. Resume and `run()` use these saved
+inputs, so a later edit of a script, prompt or `agents.json`, in the package, the user folder or `.workflows/`,
+changes only new runs. The shared instructions of the sessions are not saved: a resume uses the text of the loaded
+code.
 
 Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
 again. A call is known by its name, its arguments and its position among identical calls. A turn that was in progress
@@ -1075,7 +1095,7 @@ with the script that the run saved. The `project` file of the run directory name
 the host of that project from any directory.
 
 Resume continues the pending work in the host. For a script, see [Saved inputs and resume](#saved-inputs-and-resume).
-For `ship`, it uses the work item, repository, start commit, `workflows/scripts/ship.js`, prompts, profiles and round limit
+For `ship`, it uses the work item, repository, start commit, `workflows/scripts/ship.js`, prompts, agents table and round limit
 that the run saved before it started. `campaign` does the same with its goal and `workflows/scripts/campaign.js`: the split,
 the splits, the shipped items, the fix rounds, the questions and the rundown are not run again. It does not read the work item file again, select or clone the
 repository again, or create another branch. Answered turns are not sent to the model again. A turn that was in
@@ -1360,8 +1380,8 @@ run <run-id> <workflow> <status> <title>
 - The mark is `◉` for `running`, `✓` for `done`, and `✗` for every other state. A `cancelled`, `cut` or `waiting` call
   shows its state in place of its duration. A session is `◉` while one of its asks is `◉`; once the task ended, it
   keeps its `✓` or `✗`.
-- The label is `<profile> conversation <id>` for a `session` that opened, with the profile and the conversation ID of
-  the session, and the profile only for a `session` that did not open. For `ask`, it is the profile of its session. For
+- The label is `<role> conversation <id>` for a `session` that opened, with the role name and the conversation ID of
+  the session, and the role name only for a `session` that did not open. For `ask`, it is the role name of its session. For
   `sh` and `ok`, it is the command on one line, cut at 80 characters. For `run`, it is the workflow name and the child
   run ID. For `input`, it is the question on one line, cut at 80 characters. The phase lines and calls of the child run
   are indented by 2 more under the `run` line.
@@ -1477,7 +1497,7 @@ workflows save <run-id> <name> [--force]
 `workflows save` writes the script of a run to `scripts/<name>.js` of the project folder, and prints the absolute
 path of the file. The folder is made when it does not exist. Then `workflows <name>` runs the script, so a script that
 started from stdin or from a file can run again by name. The file has the full text of the script that the run saved,
-with its `export const meta` header. Only the script is saved: no prompts, agent profiles or scripts of child runs.
+with its `export const meta` header. Only the script is saved: no prompts, agents table or scripts of child runs.
 
 - The name is lowercase letters, digits and `-`, and starts with a letter or a digit. Another name, not exactly one
   run ID and one name, or another flag, prints the error, then `usage: workflows save <run-id> <name> [--force]`, and
@@ -1529,7 +1549,7 @@ directory, starts the host when none runs, asks it to start the run's task, and 
   closes its sessions and their subagents. When it fails or stops, it closes only what is under its sessions, such as
   their subagents, and stops the turns of its sessions, which stay for a resume.
 - The run lists its sessions in the session-scoped document `workflows.sessions` of the project store, keyed by the
-  root run ID. Each record has `run`, `conversation`, `task` and `label`, the name of the agent profile that opened the
+  root run ID. Each record has `run`, `conversation`, `task` and `label`, the role name that opened the
   session. A record that an earlier version saved can have no `label`. This `label` is not the call label of `show`.
 - Each try of a run is a task that harness starts with the key `wf:<run-id>#<n>`, from 1. A new task of a run gets
   the highest `<n>` of the run's keys in harness's document of keys, plus 1. `stop`, and `resume` of a task that has not
@@ -1806,9 +1826,7 @@ of the handoff and implement turns. In the same way,
 answers, in question order, make the score. `judge`, `commit` and `rundown` hold their own `respond` answer rules. A run uses the
 templates as they were when it started.
 
-Workflow scripts get every template of `prompts/` as `prompts.<name>`, and the agent profiles of `agents/` as
-`agents.<name>`, from the package and the project. A run
-uses the profiles as they were when it started.
+Workflow scripts get every template of `prompts/` as `prompts.<name>`, from the package and the project.
 
 ## Source
 
@@ -1838,8 +1856,9 @@ The engine files in `src/`:
 - `run/result.ts`: the title of a run, and the status, report lines and exit code of its result.
 - `workflow/meta.ts`: read and check the `meta` of a workflow script.
 - `workflow/find.ts`: find a script, list the scripts, help and usage, usage errors, and the terminal input and output.
-- `workflow/bundle.ts`: the bundle of a run (scripts, prompt templates, agent profiles and the script lib), the
+- `workflow/bundle.ts`: the bundle of a run (scripts, prompt templates, the merged agents table and the script lib), the
   instructions of a prompt template, and the edits of the bundle for a `run()` call.
+- `workflow/roles.ts`: the `agents.json` tables, their merge, and the role of a name.
 - `cli/commands/check.ts`: the static analysis of `workflows check`.
 - `run/version.ts`: the kind and version of the script task, and the task types that the `run/` files share.
 - `run/past.ts`: the saved root runs of the project store, for the `pastRuns` call and `run(name, { from })`, the task
@@ -1858,5 +1877,5 @@ The script side in `workflows/`, published as it is:
 - `lib/`: the helpers that every workflow script gets, in themed files. They run in the sandbox. A function that
   needs only the script calls goes here; one that needs Node or the store, or that every script must have, such as
   the lockdown of `Date` and `Math.random`, stays in `src/`.
-- `prompts/` and `agents/`: the prompt templates and the agent profiles.
+- `prompts/` and `agents.json`: the prompt templates and the package agents table.
 - `script.d.ts` and `jsconfig.json`: the types of the script globals and the lib, for editors.

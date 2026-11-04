@@ -785,13 +785,12 @@ export default function ({ events }) {
 		expect(run.model.find("handoff")?.prompt).toMatch(/^Write a handoff document/);
 	});
 
-	it("uses the profiles and prompts of the project folder", async () => {
+	it("uses the agents table and prompts of the project folder", async () => {
 		const project = join(repo, ".workflows");
-		await mkdir(join(project, "agents"), { recursive: true });
-		await mkdir(join(project, "prompts"));
+		await mkdir(join(project, "prompts"), { recursive: true });
 		await writeFile(
-			join(project, "agents", "planner.md"),
-			"---\nmodel: anthropic/claude-opus-5-5\nthinking: high\n---\nProject planner.\n",
+			join(project, "agents.json"),
+			JSON.stringify({ planner: { model: "anthropic/claude-opus-5-5", thinking: "high" } }),
 		);
 		await writeFile(join(project, "prompts", "plan.md"), "---\ndescription: x\n---\nPlan this change. PROJECT\n\n$@\n");
 
@@ -800,7 +799,6 @@ export default function ({ events }) {
 		expect(run.code).toBe(0);
 		const plan = run.model.find("plan");
 		expect([plan?.kind, plan?.thinking]).toEqual(["plan", "high"]);
-		expect(plan?.sections.instructions).toContain("Project planner.");
 		expect(plan?.prompt).toMatch(/^Plan this change\. PROJECT\n\n## item\nFix the README typo\n\n## research\n/);
 	});
 
@@ -859,13 +857,8 @@ describe("pastRuns", () => {
 	it("gives the completed ship runs of the store, newest first, and a resume replays them", async () => {
 		const project = join(repo, ".workflows");
 		await mkdir(join(project, "prompts"), { recursive: true });
-		await mkdir(join(project, "agents"));
 		await mkdir(join(project, "scripts"));
 		await writeFile(join(project, "prompts", "probe.md"), "---\ndescription: x\n---\nProbe template.\n$@\n");
-		await writeFile(
-			join(project, "agents", "probe.md"),
-			"---\nmodel: anthropic/m-1\nthinking: high\n---\nProbe profile.\n",
-		);
 		await writeFile(
 			join(project, "scripts", "past.js"),
 			'export const meta = { args: { options: { type: "string", positional: true } } }\nreturn await pastRuns("ship", JSON.parse(args.options ?? "{}"))\n',
@@ -920,7 +913,6 @@ describe("pastRuns", () => {
 		expect(runs[0].result).toEqual(second.result);
 		expect(runs[1].prompts.probe).toBe("Probe template.");
 		expect(runs[1].prompts.plan).toMatch(/^Plan this change\./);
-		expect(runs[1].agents.probe).toBe("---\nmodel: anthropic/m-1\nthinking: high\n---\nProbe profile.");
 		expect(await past({ limit: 1 })).toEqual([0, [runs[0]]]);
 		expect(await past({ runs: [first.runId] })).toEqual([0, [runs[1]]]);
 		expect(await past({ runs: [failed.id] })).toEqual([1, `failed past: no completed ship run ${failed.id}`]);

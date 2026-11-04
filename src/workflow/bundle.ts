@@ -1,36 +1,26 @@
 /**
- * The bundle of a run: the scripts, prompt templates and agent profiles of the package and the project, and the script
- * lib of the package. Each Pi prompt template in `prompts/` is frontmatter, the instructions, then a last line `$@`,
- * where interactive Pi puts its arguments. The engine sends the instructions followed by its named inputs.
+ * The bundle of a run: the scripts and prompt templates of the package and the project, the merged agents tables, and
+ * the script lib of the package. Each Pi prompt template in `prompts/` is frontmatter, the instructions, then a last
+ * line `$@`, where interactive Pi puts its arguments. The engine sends the instructions followed by its named inputs.
  */
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import type { ModelRef } from "@earendil-works/pi-durable";
 import type { Overlay } from "@vzlentin/harness/overlay";
 import { git } from "../git.ts";
+import { mergeRoles, type Roles, readRoles, userTablePath } from "./roles.ts";
 
 /**
- * An agent profile from `agents/<name>.md`: its model, its thinking level and its body. A session without a model
- * from its call or its profile takes the model of the project agent.
- */
-export type Profile = {
-	readonly model?: ModelRef;
-	readonly thinking?: string;
-	readonly instructions: string;
-};
-
-/**
- * The scripts, prompt instructions and profiles of the package and the project, and the script lib of the package,
- * saved by a run before it starts.
+ * The scripts and prompt instructions of the package and the project, the merged agents tables, and the script lib of
+ * the package, saved by a run before it starts.
  */
 export type Bundle = {
 	readonly scripts: Readonly<Record<string, string>>;
 	/** The files of `workflows/lib/` in name order, which the prelude gives every script after the script calls. */
 	readonly lib: string;
 	readonly prompts: Readonly<Record<string, string>>;
-	readonly agents: Readonly<Record<string, Profile>>;
+	/** The `agents.json` tables of the project, the user and the package, merged by `mergeRoles`. */
+	readonly agents: Roles;
 };
 
 /** `T` with fields that a builder sets one by one. */
@@ -81,36 +71,22 @@ async function overrides(folder: string, templates: Record<string, string>): Pro
 	return own;
 }
 
-/** The profile of the text of `agents/<name>.md`. */
-export function profileOf(name: string, text: string): Profile {
-	const { frontmatter, body } = parseFrontmatter<{ model?: string; thinking?: string }>(text);
-	const { model, thinking } = frontmatter;
-	const profile: Writable<Profile> = { instructions: instructions(body) };
-
-	if (model !== undefined) {
-		const [provider = "", ...id] = model.split("/");
-
-		if (provider === "" || id.length === 0) throw new Error(`agents/${name}.md: model must be <provider>/<id>`);
-		profile.model = { provider, modelId: id.join("/") };
-	}
-
-	if (thinking !== undefined) profile.thinking = thinking;
-
-	return profile;
-}
-
 /**
- * The `scripts/*.js`, `prompts/*.md` and `agents/*.md` of the package and of `.workflows/` in the Git repository of
- * `cwd`, or in `cwd` outside a repository, read now, and the `lib/*.js` of the package. Without `cwd`, only the
- * package files. Each `<name>.md` of the folder `prompts` replaces the template of that name.
+ * The `scripts/*.js` and `prompts/*.md` of the package and of `.workflows/` in the Git repository of `cwd`, or in `cwd`
+ * outside a repository, read now, and the `lib/*.js` of the package. The agents table is the merge of the
+ * `agents.json` of that `.workflows/`, of the user and of the package, in that order. Without `cwd`, only the package
+ * files. Each `<name>.md` of the folder `prompts` replaces the template of that name.
  */
 export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle> {
 	const project = cwd === undefined ? PACKAGE : await projectFolder(cwd);
 
-	const [scripts, merged, profiles, lib] = await Promise.all([
+	const own = join(PACKAGE, "agents.json");
+	const tables = cwd === undefined ? [own] : [join(project, "agents.json"), userTablePath(), own];
+
+	const [scripts, merged, layers, lib] = await Promise.all([
 		loadScripts(project),
 		readMerged(project, "prompts", ".md"),
-		readMerged(project, "agents", ".md"),
+		Promise.all(tables.map(readRoles)),
 		readFolder(PACKAGE, "lib", ".js"),
 	]);
 
@@ -120,7 +96,7 @@ export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle
 		scripts,
 		lib: Object.values(lib).join("\n"),
 		prompts: Object.fromEntries(Object.entries(templates).map(([name, text]) => [name, instructions(text)])),
-		agents: Object.fromEntries(Object.entries(profiles).map(([name, text]) => [name, profileOf(name, text)])),
+		agents: mergeRoles(layers),
 	};
 }
 
@@ -157,27 +133,19 @@ export function render(body: string, inputs: Record<string, string> = {}): strin
 	return [body, ...sections].join("\n\n");
 }
 
-/** The overlay key of a bundle item, `<kind>/<name>.md`, as `prompts/<name>.md` or `agents/<name>.md`. */
-const BUNDLE_KEY = /^[^/]+\/[^/]+\.md$/;
+/** The overlay key of a prompt template, `prompts/<name>.md`. */
+const PROMPT_KEY = /^prompts\/([^/]+)\.md$/;
 
-/** A kind of bundle item that a `run()` call can replace or remove: its name in errors, the bundle's items, the setter. */
-interface BundleKind {
-	readonly label: string;
-	readonly source: RunBundle["prompts"] | RunBundle["agents"];
-	readonly set: (item: string, text: string | null) => void;
-}
-
-/** The prompts and profiles of a bundle after the edits of a `run()` call, and the overlay files of the call. */
+/** The prompts of a bundle after the edits of a `run()` call, and the overlay files of the call. */
 export type BundleEdits = {
 	readonly prompts: RunBundle["prompts"];
-	readonly agents: RunBundle["agents"];
 	readonly files: Overlay;
 };
 
 /**
- * The prompts, profiles and overlay files of the `run()` call of the script `name` with `bundle`. `prompts` replaces
- * the texts of prompts by name. `overlay` replaces or removes templates (`prompts/<name>.md`) and profiles
- * (`agents/<name>.md`), and wins over `prompts` for the same template; its other keys are files merged over `base`.
+ * The prompts and overlay files of the `run()` call of the script `name` with `bundle`. `prompts` replaces the texts
+ * of prompts by name. `overlay` replaces or removes templates (`prompts/<name>.md`), and wins over `prompts` for the
+ * same template; its other keys are files merged over `base`.
  */
 export function editBundle(
 	name: string,
@@ -187,50 +155,23 @@ export function editBundle(
 	base: Overlay | undefined,
 ): BundleEdits {
 	const replaced = { ...bundle.prompts };
-	const agents = { ...bundle.agents };
 	const files: Writable<Overlay> = { ...base };
-
-	const prompt: BundleKind = {
-		label: "prompt",
-		source: bundle.prompts,
-		set: (key: string, text: string | null) => {
-			if (text === null) delete replaced[key];
-			else replaced[key] = instructions(text);
-		},
-	};
-
-	const kinds = new Map<string, BundleKind>([
-		["prompts", prompt],
-		[
-			"agents",
-			{
-				label: "agent profile",
-				source: bundle.agents,
-				set: (key: string, text: string | null) => {
-					if (text === null) delete agents[key];
-					else agents[key] = profileOf(key, text);
-				},
-			},
-		],
-	]);
-
 	// The `prompts` edits come first, so the overlay wins for the same template.
-	const edits: { kind: BundleKind; item: string; value: string | null }[] = Object.entries(prompts).map(
-		([item, text]) => ({ kind: prompt, item, value: text }),
-	);
+	const edits: [string, string | null][] = Object.entries(prompts);
 
 	for (const [key, value] of Object.entries(overlay)) {
-		const slash = key.indexOf("/");
-		const kind = BUNDLE_KEY.test(key) ? kinds.get(key.slice(0, slash)) : undefined;
+		const item = PROMPT_KEY.exec(key)?.[1];
 
-		if (kind === undefined) files[key] = value;
-		else edits.push({ kind, item: key.slice(slash + 1, -".md".length), value });
+		if (item === undefined) files[key] = value;
+		else edits.push([item, value]);
 	}
 
-	for (const { kind, item, value } of edits) {
-		if (!Object.hasOwn(kind.source, item)) throw new Error(`run ${name}: no ${kind.label} ${item}`);
-		kind.set(item, value);
+	for (const [item, text] of edits) {
+		if (!Object.hasOwn(bundle.prompts, item)) throw new Error(`run ${name}: no prompt ${item}`);
+
+		if (text === null) delete replaced[item];
+		else replaced[item] = instructions(text);
 	}
 
-	return { prompts: replaced, agents, files };
+	return { prompts: replaced, files };
 }

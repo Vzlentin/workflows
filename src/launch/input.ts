@@ -87,7 +87,7 @@ export async function parse([word = "", ...argv]: readonly string[], io: Io): Pr
 	const meta = await readMeta(found.source, found.name);
 	const { args, prompts, repo, base, branch } = await parseValues(meta, argv, io, usageOf(found.name, meta));
 	const bundle = prompts === undefined ? found.bundle : await loadBundle(io.cwd, resolve(io.cwd, prompts));
-	const failed = problem(found.source, found.name, bundle, false);
+	const failed = problem(found.source, found.name, bundle);
 
 	if (failed !== undefined) throw new Error(failed);
 
@@ -144,7 +144,7 @@ export async function childInput(
 	const bundled = {
 		name,
 		meta,
-		bundle: { ...bundle, prompts: edited.prompts, agents: edited.agents, main: source },
+		bundle: { ...bundle, prompts: edited.prompts, main: source },
 	};
 
 	const script = Object.keys(edited.files).length === 0 ? bundled : { ...bundled, overlay: edited.files };

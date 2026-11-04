@@ -305,7 +305,7 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Split this goal into work items.", "split"],
 	["Give a rundown of the failed work item", "rundown"],
 	["Compress memories", "summarize"],
-	["Propose edits to the workflow prompts and agent profiles", "inv"],
+	["Propose edits to the workflow prompts of", "inv"],
 	["Propose edits to the practitioner skills", "dom"],
 	["Compose one candidate overlay", "compose"],
 	["Compare two diffs of one work item", "select"],

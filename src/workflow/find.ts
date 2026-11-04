@@ -52,26 +52,13 @@ export type Io = {
 const unique = (matches: Iterable<RegExpMatchArray>, group: number) =>
 	[...new Set([...matches].map((match) => match[group] ?? ""))].filter((value) => value !== "");
 
-/** The first prompt call `prompts.<name>(` of `source` without a template, or agent profile when `profiles` is set. */
-export function problem(source: string, name: string, bundle: Bundle, profiles: boolean): string | undefined {
+/** The first prompt call `prompts.<name>(` of `source` without a template. */
+export function problem(source: string, name: string, bundle: Bundle): string | undefined {
 	const prompt = unique(source.matchAll(/\bprompts\.([A-Za-z_$][\w$]*)\s*\(/g), 1).find(
 		(p) => !Object.hasOwn(bundle.prompts, p),
 	);
 
-	if (prompt !== undefined) return `${name} uses prompts.${prompt}, which has no template`;
-
-	if (!profiles) return undefined;
-	const profile = namedProfiles(source).find((p) => !Object.hasOwn(bundle.agents, p));
-
-	return profile === undefined ? undefined : `${name} uses the agent profile ${profile}, which does not exist`;
-}
-
-/** The agent profiles of each literal `session("<profile>")` and `as: "<profile>"` of `source`. */
-export function namedProfiles(source: string): string[] {
-	return [
-		...unique(source.matchAll(/\bsession\(\s*(["'`])([^"'`]+)\1/g), 2),
-		...unique(source.matchAll(/\bas:\s*(["'`])([^"'`]+)\1/g), 2),
-	];
+	return prompt === undefined ? undefined : `${name} uses prompts.${prompt}, which has no template`;
 }
 
 type Found = { readonly name: string; readonly source: string; readonly bundle: Bundle };

@@ -9,7 +9,7 @@
   `workflows judge` judges it.
 - `workflows rpi` researches, plans and implements a work item in one commit, with no review.
 - `workflows implement` implements a plan in the current directory and commits it.
-- `workflows optimize ship` proposes edits to the ship prompts, profiles, skills and `AGENTS.md` from past ship runs,
+- `workflows optimize ship` proposes edits to the ship prompts, skills and `AGENTS.md` from past ship runs,
   and keeps them when a blind judge prefers the diffs they give.
 - `workflows <script>` runs your own workflow script.
 
@@ -84,7 +84,7 @@ one line from the judge that tells how the commit differs from the work item, or
 notes, each also a report line. [docs/spec.md](docs/spec.md) describes all the commands, workflow scripts, runs, and the
 `workflow` tool.
 
-Optimize uses past completed ship runs as baselines. An INV turn edits prompts and profiles, a DOM turn edits skills and
+Optimize uses past completed ship runs as baselines. An INV turn edits prompts, a DOM turn edits skills and
 `AGENTS.md`. A Compose turn merges the edits into one candidate overlay, with one `kept`, `revised` or `dropped` note
 per edit in the report and in `notes.txt`. An invalid candidate does not roll out; the run reports each reason: a skill
 without `name` or `description`, a removed skill that `AGENTS.md` names, or an `AGENTS.md` longer than `--always-on-max`

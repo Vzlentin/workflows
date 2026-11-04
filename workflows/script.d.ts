@@ -41,19 +41,17 @@ declare const cwd: string;
 /** `prompts.<name>(inputs)`: the instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section. */
 declare const prompts: Record<string, (inputs?: Record<string, string>) => string>;
 
-/** `agents.<name>`: the text of `agents/<name>.md` that gives the profile of the run's bundle (its `model`, `thinking` and body). */
-declare const agents: { readonly [name: string]: string };
-
 /**
- * The model of a session. `as` names the agent profile `agents/<as>.md` (default `default`). `provider`, `model` and
- * `thinking` override the profile, and a field that neither gives comes from the project agent.
+ * The model of a session. `as` is the role name, any name (default `default`). The `agents.json` tables give the model
+ * and thinking of each name or of `"*"`. `provider`, `model` and `thinking` override them, and a field that none
+ * gives comes from the project agent.
  */
 type SessionOptions = { as?: string; provider?: string; model?: string; thinking?: string };
 
 /** One turn in a new session. Returns the reply text, or the answer with `schema`. */
 declare function agent(prompt: string, options?: SessionOptions & { schema?: object }): Promise<any>;
 
-/** A new session of a profile name or of `options` (default `default`). `.ask(prompt, { schema })` is one turn in it. */
+/** A new session of a role name or of `options` (default `default`). `.ask(prompt, { schema })` is one turn in it. */
 declare function session(
 	options?: string | SessionOptions,
 ): { ask(prompt: string, options?: { schema?: object }): Promise<any> };
@@ -92,8 +90,6 @@ type PastRun = {
 	readonly start: string | null;
 	/** The saved template texts, by prompt name. */
 	readonly prompts: { readonly [name: string]: string };
-	/** The text of each `agents/<name>.md` that gives the saved profile, by profile name. */
-	readonly agents: { readonly [name: string]: string };
 	/** The result of the run. */
 	readonly result: any;
 };
@@ -142,7 +138,7 @@ declare function oneLine(text: string): string;
 type RememberingSession = {
 	ask(prompt: string | Promise<string>, options?: { schema?: object }): Promise<any>;
 	/**
-	 * Asks for `{ text, notes }` with the answer rule `text is <rule>`, adds the notes under the profile at `round`, and
+	 * Asks for `{ text, notes }` with the answer rule `text is <rule>`, adds the notes under the role name at `round`, and
 	 * returns the text.
 	 */
 	noted(round: number | undefined, prompt: string | Promise<string>, rule: string): Promise<string>;
@@ -176,7 +172,7 @@ declare function memory(ref?: MemoryRef): Promise<{
 	/** Adds each note, and answers each compression that `memo` asks for with a `summarizer` turn. */
 	note(author: string, round: number | undefined, notes: readonly string[]): Promise<void>;
 	/** A session whose first prompt starts with a `## memory` section of the notes. */
-	session(profile: string): RememberingSession;
+	session(name: string): RememberingSession;
 	/** The notes, one `#<k> <note>` line each. */
 	readonly text: Promise<string>;
 }>;

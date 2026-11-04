@@ -66,6 +66,12 @@ Each arg becomes a flag of `workflows <name>`. Give only the args that the user 
   message in this conversation. Use it for a campaign, or when the user wants to go on with other work. Without it,
   the call waits until the run ends.
 
+### Models
+
+A run uses the Pi model and thinking level. `<repo>/.workflows/agents.json` and `~/.config/workflows/agents.json` set
+them for each role name (`researcher`, `planner`, `implementer`, `reviewer`, `judge`, `summarizer`) or for `"*"`, as
+`{ "judge": { "model": "<provider>/<id>", "thinking": "high" } }`. The repo table wins over the user table.
+
 ## Read the outcome
 
 The tool result is `{ runId, status, result?, report?, error? }`. Lead your report with the outcome.
