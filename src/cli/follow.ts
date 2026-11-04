@@ -3,7 +3,7 @@
 import { join } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Client } from "@vzlentin/harness/client";
+import { type Client, hostStopped } from "@vzlentin/harness/client";
 import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
 import { endMark } from "../records/steps.ts";
@@ -12,7 +12,7 @@ import { hasEnded, hasResult, type RunTask, runStatus, type TaskEnd, taskOutcome
 import type { ProgressEvent } from "../run/progress.ts";
 import { reportOf, title as titleOf } from "../run/result.ts";
 import type { OutcomeStatus } from "../tool.ts";
-import { abortRun, hostStopped, STORE_FILE } from "./host.ts";
+import { abortRun, STORE_FILE } from "./host.ts";
 import type { Terminal } from "./main.ts";
 import { display, programStatus } from "./terminal/redraw.ts";
 
