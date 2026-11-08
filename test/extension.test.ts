@@ -6,7 +6,6 @@ import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { JsonValue } from "@earendil-works/chord";
-import type { TSchema } from "@earendil-works/pi-ai";
 import type {
 	CustomEntry,
 	ExtensionCommandContext,
@@ -17,6 +16,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { DefaultPackageManager, loadSkills, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { entriesPath } from "@vzlentin/harness/entries";
+import type { TSchema } from "typebox";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import extension, { type workflowTool } from "../pi/index.ts";
 import { parseRun, RunView } from "../pi/run-view.ts";
@@ -663,7 +663,16 @@ describe("a background run of the workflow tool", () => {
 
 			if (runId !== "failed" || message === undefined) continue;
 			const render = pi.renderers.get("workflow-result");
-			const drawn = render?.({ ...message, role: "custom", timestamp: 0 }, { expanded: false, outputPad: 0 }, theme);
+
+			const options = {
+				expanded: false,
+				outputPad: 0,
+				keyText: String,
+				keyHint: (key: string, text: string) => `${key} ${text}`,
+			};
+
+			const drawn = render?.({ ...message, role: "custom", timestamp: 0 }, options, theme);
+
 			expect(drawn?.render(200).map((line) => line.trimEnd())).toEqual([
 				"✗ plan",
 				'✗ run failed failed: boom; continue it with resume: "failed"',
@@ -1166,7 +1175,7 @@ describe("the Pi package", () => {
 		]).toEqual([
 			"@vzlentin/pi-workflows",
 			undefined,
-			{ "@vzlentin/workflows": root.version, "@vzlentin/pi-agents": "^0.6.0" },
+			{ "@vzlentin/workflows": root.version, "@vzlentin/pi-agents": "^0.7.0" },
 			["./index.ts", "../pi-agents/index.ts", "./node_modules/@vzlentin/pi-agents/index.ts"],
 			["./skills", "../pi-agents/skills", "./node_modules/@vzlentin/pi-agents/skills"],
 			["pi-package"],
@@ -1174,6 +1183,13 @@ describe("the Pi package", () => {
 			root.repository.url,
 			"public",
 		]);
+
+		// pi-agents and workflows share one harness: a released harness at the range of pi-agents, or a pinned commit.
+		const harness: string = root.dependencies["@vzlentin/harness"];
+
+		if (/^[\^~]?\d+\.\d+\.\d+$/.test(harness)) expect(harness).toBe(pi.dependencies["@vzlentin/pi-agents"]);
+		else
+			expect(harness).toMatch(/^(?:github:|git\+https:\/\/github\.com\/)Vzlentin\/harness(?:\.git)?#[0-9a-f]{7,40}$/);
 
 		// release-please moves the dependency on workflows with the version.
 		expect(read("release-please-config.json").packages["."]["extra-files"]).toContainEqual({

@@ -2,9 +2,9 @@
  * The run view of the `/workflows` command: the phases, agents and child runs of one run, as `workflows show --agents
  * --json` gives them, with one selected agent.
  */
-import { type Static, Type } from "@earendil-works/pi-ai";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
+import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Output } from "../src/tool.ts";
 

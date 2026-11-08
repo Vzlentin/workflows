@@ -290,7 +290,7 @@ export default function ({ durable, ai, events }) {
 	const probe = durable.defineTool({
 		name: "probe",
 		description: "Probe",
-		parameters: ai.Type.Object({}),
+		parameters: { type: "object", properties: {} },
 		replay: "safe",
 		execute: async (_args, api) => {
 			appendFileSync(${JSON.stringify(join(root, "probe.log"))}, api.conversationId + "\\n");

@@ -824,7 +824,7 @@ return findings[0].finding`,
 		const run = await workflows(["x.js"], { cwd: root });
 		expect(run.stderr).toEqual([]);
 		expect(run.stdout).toEqual([`run ${run.id}`, "y"]);
-		expect(run.model.results[0]).toContain("must have required properties finding");
+		expect(run.model.results[0]).toContain("findings.0.finding: missing");
 		expect(run.model.calls[0]?.prompt).toBe(prompt);
 		expect(run.model.calls[0]?.sections.answer_schema).toContain(JSON.stringify(schema));
 	});
