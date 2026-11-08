@@ -121,17 +121,10 @@ async function projectOf(env: ExecutionEnv, context: Context): Promise<string> {
 
 /**
  * Runs the `workflow` call `params` of the conversation of `api`, with `PI_SESSION_ID` set to that conversation, so the
- * sessions of a new run go under it. A subagent at its depth limit is refused, as the sessions would be deeper.
+ * sessions of a new run go under it. A subagent at its depth limit is a leaf of the children library, which has no
+ * `workflow` tool.
  */
 async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<WorkflowDetails>, context: Context) {
-	const lineage = await host.children.lineage(host.place.store, String(api.conversationId), context);
-
-	if (lineage !== undefined && lineage.depth >= lineage.limit) {
-		throw new Error(
-			`a subagent at depth ${lineage.depth} cannot use workflow: the sessions of a run would be deeper than the depth limit ${lineage.limit}`,
-		);
-	}
-
 	const { cwd } = await api.agent(context);
 
 	if (api.env === undefined || cwd === undefined) throw new Error("the workflow tool needs a working directory");

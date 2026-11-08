@@ -1235,7 +1235,7 @@ return "done"`;
 		}
 	});
 
-	it("refuses a subagent of a session, at the depth limit, before it starts a run", async () => {
+	it("gives no workflow tool to a subagent of a session at the depth limit, and starts no run", async () => {
 		const call = JSON.stringify({ script: 'return "nested"' });
 		await writeFile(
 			join(root, "x.js"),
@@ -1247,7 +1247,7 @@ return "done"`;
 		const run = await pending;
 		expect([run.code, run.stdout.at(-1)]).toEqual([0, "ok"]);
 		expect(refusal).toEqual({
-			text: expect.stringContaining("a subagent at depth 2 cannot use workflow"),
+			text: expect.stringContaining("Tool workflow is not available"),
 			details: undefined,
 			isError: true,
 		});
