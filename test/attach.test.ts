@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Choose } from "../src/cli/main.ts";
@@ -143,26 +143,22 @@ describe("wait", () => {
 	});
 });
 
-describe("attach in herdr", () => {
+describe("attach in hc", () => {
 	let repo: string;
 	let id: string;
 	let worktree: string;
 
-	/** A fake herdr that logs its arguments and lists `worktrees`. */
-	const herdr = (worktrees: object[]) =>
+	/** A fake hc that logs its arguments, and gives the terminal t3 the space s1 and the tab tb1. */
+	const hc = () =>
 		fake(
-			"herdr",
-			`echo "$@" >> "${root}/herdr.log"
-case "$1 $2" in
-"worktree list") echo '${JSON.stringify({ result: { worktrees } })}' ;;
-"tab create") echo '{"result":{"root_pane":{"pane_id":"p9"}}}' ;;
-"pane split") echo '{"result":{"pane":{"pane_id":"p9"}}}' ;;
-"pane get") echo '{"result":{"pane":{"pane_id":"p1","workspace_id":"w5"}}}' ;;
-esac
+			"hc",
+			`echo "$@" >> "${root}/hc.log"
+[ "$1 $2" = "get --json" ] && echo '{"labels":{"herdr.space":"s1","herdr.tab":"tb1"}}'
+exit 0
 `,
 		);
 
-	const logged = async () => (await readFile(join(root, "herdr.log"), "utf8")).trim().split("\n");
+	const logged = async () => (await readFile(join(root, "hc.log"), "utf8")).trim().split("\n");
 
 	beforeEach(async () => {
 		repo = join(root, "repo");
@@ -174,56 +170,48 @@ esac
 		expect(run.code).toBe(0);
 		id = run.id ?? "";
 		worktree = worktreeAt(repo, id);
-		process.env.HERDR_ENV = "1";
+		// Only now: the host shares this environment, and a run started in an hc terminal starts its pick loop.
+		process.env.HC_TERMINAL_ID = "t3";
+		await hc();
 	});
 
-	it("opens the session in a new tab of the workspace that has the worktree open", async () => {
-		await herdr([{ path: await realpath(worktree), open_workspace_id: "w1" }]);
+	it("opens the session in a new tab of the space of the run when its worktree exists", async () => {
 		const conversation = await conversationOf(/Script: one/);
 		const attached = await workflows(["attach", id], { cwd: repo });
 		expect(attached.code).toBe(0);
 		const lines = await logged();
-		expect(lines).toContainEqual(expect.stringMatching(/^tab create --workspace w1 /));
-		expect(lines).toContainEqual(
-			expect.stringMatching(new RegExp(`^pane run p9 .*'attach' '--conversation' '${conversation}'$`)),
-		);
+		expect(lines).toEqual([
+			expect.stringMatching(
+				new RegExp(
+					`^run --bg --keep --no-parent .* --label herdr\\.space=${id} -- .* attach --conversation ${conversation}$`,
+				),
+			),
+		]);
 		expect(await piLog()).toBeUndefined();
 	});
 
-	it("opens the session in a new pane to the right of this pane with --side", async () => {
-		await herdr([{ path: await realpath(worktree), open_workspace_id: "w1" }]);
-		process.env.HERDR_PANE_ID = "p1";
+	it("opens the session in a new pane to the right of this terminal with --side", async () => {
 		const attached = await workflows(["attach", id, "--side"], { cwd: repo });
 		expect(attached.code).toBe(0);
 		const lines = await logged();
-		expect(lines).toContainEqual(expect.stringMatching(/^pane split p1 --direction right /));
-		expect(lines).not.toContainEqual(expect.stringMatching(/^tab create /));
+		expect(lines[0]).toBe("get --json t3");
+		expect(lines[1]).toMatch(/^run .* --label herdr\.space=s1 --label herdr\.tab=tb1 -- /);
 		expect(await piLog()).toBeUndefined();
 	});
 
-	it("opens the session in a new tab of the workspace of this pane without a worktree workspace", async () => {
-		await herdr([]);
-		process.env.HERDR_PANE_ID = "p1";
+	it("opens the session in a new tab of the space of this terminal when the worktree is gone", async () => {
+		await rm(worktree, { recursive: true, force: true });
 		const attached = await workflows(["attach", id], { cwd: repo });
 		expect(attached.code).toBe(0);
 		const lines = await logged();
-		const get = lines.findIndex((line) => line === "pane get p1");
-		const tab = lines.findIndex((line) => line.startsWith("tab create --workspace w5 "));
-		expect([get >= 0, tab > get]).toEqual([true, true]);
-		expect(lines).not.toContainEqual(expect.stringMatching(/^pane split /));
+		expect(lines[0]).toBe("get --json t3");
+		expect(lines[1]).toMatch(/^run .* --label herdr\.space=s1 -- /);
+		expect(lines[1]).not.toContain("herdr.tab");
 		expect(await piLog()).toBeUndefined();
 	});
 
-	it("opens a tab with --side outside a Herdr pane", async () => {
-		await herdr([{ path: await realpath(worktree), open_workspace_id: "w1" }]);
-		const attached = await workflows(["attach", id, "--side"], { cwd: repo });
-		expect(attached.code).toBe(0);
-		expect(await logged()).toContainEqual(expect.stringMatching(/^tab create --workspace w1 /));
-		expect(await piLog()).toBeUndefined();
-	});
-
-	it("fails when herdr fails", async () => {
-		await fake("herdr", "echo broken >&2\nexit 1\n");
+	it("fails when hc fails", async () => {
+		await fake("hc", "echo broken >&2\nexit 1\n");
 		const attached = await workflows(["attach", id], { cwd: repo });
 		expect([attached.code, attached.stderr]).toEqual([1, [expect.stringMatching(/^workflows: .*broken/)]]);
 		expect(await piLog()).toBeUndefined();

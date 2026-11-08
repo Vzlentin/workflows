@@ -31,8 +31,9 @@ export async function start(
 		// The `workflow` tool of a conversation of the host sets `PI_SESSION_ID`, so the run's sessions go under it.
 		const session = process.env.PI_SESSION_ID;
 		const parented = session ? { ...prepared, parent: session } : prepared;
-		// In Herdr, the run asks Herdr to create its worktrees, so they show in the sidebar.
-		const own = process.env.HERDR_ENV ? { ...parented, herdr: true as const } : parented;
+		// In an hc terminal, the run records it, and starts its pick loop in herdr-app.
+		const terminalId = process.env.HC_TERMINAL_ID;
+		const own = terminalId ? { ...parented, caller: terminalId } : parented;
 		// A run started in the background posts its outcome to that conversation when it ends.
 		input = background ? { ...own, notify: true } : own;
 		terminal.interrupt.throwIfAborted();

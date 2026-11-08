@@ -295,6 +295,9 @@ export function workflowTool(command: readonly string[], watcher: Watcher, tool:
 	} satisfies ToolDefinition<ToolModule["PARAMETERS"], WorkflowDetails>;
 }
 
+/** Whether a process with the environment `env` runs in an hc terminal, as `inHerdr` of harness tells. */
+type InHerdr = typeof import("@vzlentin/harness/herdr")["inHerdr"];
+
 /** The stdout line of `workflows list --json`, as far as the `/workflows` command reads it. */
 const LISTED = Type.Array(
 	Type.Object({ runId: Type.String(), workflow: Type.String(), status: Type.String(), title: Type.String() }),
@@ -309,12 +312,12 @@ const BINDINGS = {
 
 /**
  * The `/workflows` command: it lists the runs of the project with `workflows list --json`, shows the chosen run in the
- * run view, and opens the chosen agent with `workflows attach --conversation` in Herdr, or says how to attach from
- * another terminal.
+ * run view, and opens the chosen agent with `workflows attach --conversation` in herdr-app when `inHerdr` says that Pi
+ * runs in an hc terminal, or says how to attach from another terminal.
  */
-export function workflowsCommand(command: readonly string[]) {
+export function workflowsCommand(command: readonly string[], inHerdr: InHerdr) {
 	return {
-		description: "Show a workflow run of this project, and attach to one of its agents in Herdr",
+		description: "Show a workflow run of this project, and attach to one of its agents in herdr-app",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const listed = await runCli(command, ["list", "--json"], ctx.cwd, {});
 			const runs = listed.code === 0 ? JSON.parse(listed.stdout.join("\n")) : undefined;
@@ -355,8 +358,8 @@ export function workflowsCommand(command: readonly string[]) {
 			const attach = ["attach", runId, "--conversation", String(conversation)];
 			const hint = `Run in another terminal: workflows ${attach.join(" ")}`;
 
-			// `workflows attach` opens a Herdr tab only with HERDR_ENV.
-			if (!process.env.HERDR_ENV) {
+			// `workflows attach` opens a herdr-app tab only in an hc terminal.
+			if (!inHerdr(process.env)) {
 				ctx.ui.notify(hint, "info");
 
 				return;
@@ -591,15 +594,16 @@ class Watcher {
 
 /**
  * Registers the tool, the command, the watcher and the renderer that run `local.command` with the tool module
- * `local.tool`. Without `local`, they run `dist/cli.js` of the workflows package that this extension resolves, with the
- * Node of Pi, and its `dist/tool.js`, and the harness host loads the entry of that package.
+ * `local.tool` and `local.inHerdr`. Without `local`, they run `dist/cli.js` of the workflows package that this extension
+ * resolves, with the Node of Pi, its `dist/tool.js` and the `inHerdr` of its harness, and the harness host loads the
+ * entry of that package.
  */
 export default async function workflows(
 	pi: Api,
-	local?: { readonly command: readonly string[]; readonly tool: ToolModule },
+	local?: { readonly command: readonly string[]; readonly tool: ToolModule; readonly inHerdr: InHerdr },
 ): Promise<void> {
 	if (local !== undefined) {
-		register(pi, local.command, local.tool);
+		register(pi, local.command, local.tool, local.inHerdr);
 
 		return;
 	}
@@ -608,7 +612,9 @@ export default async function workflows(
 	const folder = dirname(require.resolve(`${WORKFLOWS_PACKAGE}/package.json`));
 	putWorkflowsBinLast(require);
 	await setWorkflowsEntry(folder);
-	register(pi, [process.execPath, join(folder, "dist", "cli.js")], await loadTool(folder));
+	const command = [process.execPath, join(folder, "dist", "cli.js")];
+	const { inHerdr } = await harnessModule(folder, "herdr");
+	register(pi, command, await loadTool(folder), inHerdr);
 }
 
 /**
@@ -632,9 +638,23 @@ function putWorkflowsBinLast(require: NodeJS.Require): void {
  * the harness that this package imports, so a host that the tool starts loads the entry of the same install.
  */
 async function setWorkflowsEntry(folder: string): Promise<void> {
-	const resolved = createRequire(join(folder, "package.json")).resolve("@vzlentin/harness/entries");
-	const entries: typeof import("@vzlentin/harness/entries") = await import(pathToFileURL(resolved).href);
-	entries.setEntry("workflows", join(folder, "dist", "entry.js"));
+	(await harnessModule(folder, "entries")).setEntry("workflows", join(folder, "dist", "entry.js"));
+}
+
+/** The harness modules that the extension loads from the harness of the workflows package. */
+type HarnessModules = {
+	readonly entries: typeof import("@vzlentin/harness/entries");
+	readonly herdr: typeof import("@vzlentin/harness/herdr");
+};
+
+/**
+ * The module `name` of the harness that the workflows package in `folder` imports. Another copy of harness, such as an
+ * older one of pi-agents that npm can hoist, may not have the same modules or behave the same.
+ */
+async function harnessModule<K extends keyof HarnessModules>(folder: string, name: K): Promise<HarnessModules[K]> {
+	const resolved = createRequire(join(folder, "package.json")).resolve(`@vzlentin/harness/${name}`);
+
+	return import(pathToFileURL(resolved).href);
 }
 
 /** The tool module `dist/tool.js` of the workflows package in `folder`. */
@@ -642,11 +662,11 @@ async function loadTool(folder: string): Promise<ToolModule> {
 	return import(pathToFileURL(join(folder, "dist", "tool.js")).href);
 }
 
-function register(pi: Api, command: readonly string[], tool: ToolModule): void {
+function register(pi: Api, command: readonly string[], tool: ToolModule, inHerdr: InHerdr): void {
 	const watcher = new Watcher(pi, command, tool);
 	const details = detailsOf(tool);
 	pi.registerTool(workflowTool(command, watcher, tool));
-	pi.registerCommand("workflows", workflowsCommand(command));
+	pi.registerCommand("workflows", workflowsCommand(command, inHerdr));
 	pi.on("session_start", (_event, ctx) => watcher.resume(ctx));
 	pi.on("session_shutdown", () => watcher.stop());
 	pi.registerMessageRenderer("workflow-result", (message, _options, theme) => {

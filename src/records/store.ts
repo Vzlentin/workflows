@@ -184,7 +184,7 @@ export async function reading<T>(path: string, fallback: T, read: (store: Store)
  * The string `field` of the input of a workflow task, also of an earlier version, which some versions wrapped as
  * `{ input }`.
  */
-export function inputString(input: JsonValue, field: "runId" | "name"): string | undefined {
+export function inputString(input: JsonValue, field: "runId" | "name" | "caller"): string | undefined {
 	return savedInput(Type.Object({ [field]: Type.String() }), input)?.[field];
 }
 

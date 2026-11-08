@@ -120,7 +120,7 @@ export async function setEntries(entries: Readonly<Record<string, string>> = {})
 
 /**
  * A fresh environment: home, state, configuration, Pi agent and Git configuration under a temporary directory, and a
- * fake `gh`. harness's entries list the workflows checkout, so the test hosts load its entry.
+ * fake `gh`, and a fake `hc` that logs its arguments to `hc.log` and lists no terminal. harness's entries list the workflows checkout, so the test hosts load its entry.
  */
 export async function sandbox(): Promise<string> {
 	// macOS limits a Unix socket path to 104 bytes, and the host's socket is in the state directory.
@@ -142,6 +142,15 @@ exec git clone -q "${root}/github/$source" "$4"
 `,
 	);
 	await chmod(join(bin, "gh"), 0o755);
+	await writeFile(
+		join(bin, "hc"),
+		`#!/bin/sh
+echo "$@" >> "${root}/hc.log"
+[ "$1" = ls ] && echo '{"terminals":[]}'
+exit 0
+`,
+	);
+	await chmod(join(bin, "hc"), 0o755);
 	await mkdir(join(root, "home", ".optmem"));
 	await writeFile(join(root, "home", ".optmem", "memo"), FAKE_MEMO);
 	await chmod(join(root, "home", ".optmem", "memo"), 0o755);
@@ -162,9 +171,8 @@ exec git clone -q "${root}/github/$source" "$4"
 
 	for (const name of [
 		"HARNESS_PROJECT",
-		// This would make `prune` call the real herdr.
-		"HERDR_ENV",
-		"HERDR_PANE_ID",
+		// This would make a run start its pick loop, and `attach` open herdr-app.
+		"HC_TERMINAL_ID",
 		"PI_SESSION_ID",
 		"PI_PROVIDER",
 		"PI_MODEL",

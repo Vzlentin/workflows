@@ -6,7 +6,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { closeWorkspace, herdrWorktree, typePickLoop } from "../herdr.ts";
+import { startPickLoop } from "../herdr.ts";
 import type { ScriptInput } from "../launch/input.ts";
 import { branchOf, ensureWorktree, type Renamed, renameBranch } from "../launch/worktree.ts";
 import { outcomeText, type WorkflowOutcome } from "../tool.ts";
@@ -129,8 +129,8 @@ async function runPhase(
 	const { input } = task;
 	const { worktree, runId, root } = input;
 	const cwd = worktree?.path ?? input.cwd;
-	const caller = task.owner === undefined ? undefined : await runtime.getTask(task.owner, context);
-	const parent = caller !== undefined && current(caller) ? caller.input.runId : null;
+	const owner = task.owner === undefined ? undefined : await runtime.getTask(task.owner, context);
+	const parent = owner !== undefined && current(owner) ? owner.input.runId : null;
 
 	try {
 		// A command that reaches the running task of a root run shows its progress from here, and a child run goes under
@@ -145,13 +145,10 @@ async function runPhase(
 
 		if (worktree !== undefined) {
 			const { repository, path, branch, start } = worktree;
-			// In Herdr, Herdr creates the worktree first, so it shows in the sidebar; when Herdr fails, Git creates it.
-			const make = () => herdrWorktree(repository, path, branch, start);
-			const maker = input.herdr === true ? { make, close: closeWorkspace } : undefined;
-			const workspace = await ensureWorktree(repository, path, branch, start, maker);
+			const made = await ensureWorktree(repository, path, branch, start);
 
-			// The workspace that Herdr opened on the worktree of a root run shows the agents of the run beside its steps.
-			if (parent === null && workspace !== undefined) await typePickLoop(workspace, runId);
+			// A root run started in an hc terminal shows its agents beside its steps in herdr-app, once: not on a resume.
+			if (made && parent === null && input.caller !== undefined) await startPickLoop(path, runId);
 		}
 
 		const ran = await runScript(runtime, context, cwd, host, {
@@ -165,7 +162,7 @@ async function runPhase(
 			session: input.parent,
 			answer: input.answer,
 			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },
-			herdr: input.herdr,
+			caller: input.caller,
 			definition,
 		});
 

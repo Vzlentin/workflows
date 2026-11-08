@@ -1309,167 +1309,85 @@ return { branch: await sh(["git", "branch", "--show-current"]), start: args.star
 		expect(run.stderr).toContainEqual(expect.stringContaining(`nothing to commit since ${short}`));
 	});
 
-	it("creates the worktree of a child run through herdr when the command runs in Herdr", async () => {
-		const repo = join(root, "repo");
-		const start = await repository(repo);
-		const scripts = join(repo, ".workflows", "scripts");
-		await mkdir(scripts, { recursive: true });
-		await writeFile(join(scripts, "parent.js"), 'return await run("child", { repo: "." })');
-		await writeFile(
-			join(scripts, "child.js"),
-			'export const meta = { worktree: true }\nreturn { cwd, branch: await sh(["git", "branch", "--show-current"]) }',
-		);
-		// `herdr worktree create --cwd <repo> --path <path> --branch <branch> --base <start> --no-focus`
-		await writeFile(
-			join(root, "bin", "herdr"),
-			`#!/bin/sh\necho "$@" >> "${root}/herdr.log"\nexec git -C "$4" worktree add -q -b "$8" "$6" "\${10}"\n`,
-		);
-		await chmod(join(root, "bin", "herdr"), 0o755);
-		process.env.HERDR_ENV = "1";
-
-		const run = await workflows(["parent"], { cwd: repo });
-		expect(run.code).toBe(0);
-		const child = JSON.parse(run.stdout[1] ?? "");
-		const path = worktreeAt(repo, child.runId);
-		expect(child).toEqual({ cwd: path, branch: `child/${child.runId}`, runId: child.runId });
-		expect(await readFile(join(root, "herdr.log"), "utf8")).toBe(
-			`worktree create --cwd ${await realpath(repo)} --path ${path} --branch child/${child.runId} --base ${start} --no-focus\n`,
-		);
-	});
-
-	it("types the pick loop once in the workspace that herdr opens on the worktree of a root run", async () => {
+	it("starts the pick loop once in hc on the worktree of a root run that an hc terminal started", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
 		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(join(scripts, "w.js"), 'export const meta = { worktree: true }\nawait agent("Script: one")');
+		const log = join(root, "hc.log");
+		const started = async () => (await readFile(log, "utf8")).split("\n").filter((line) => line.startsWith("run "));
 
-		/** A fake herdr whose `pane list` exits with `list`: `worktree create --cwd <repo> --path <path> --branch <branch> --base <start>`. */
-		const herdr = (list: number) =>
-			writeFile(
-				join(root, "bin", "herdr"),
-				`#!/bin/sh
-echo "$@" >> "${root}/herdr.log"
-case "$1 $2" in
-"worktree create") git -C "$4" worktree add -q -b "$8" "$6" "\${10}" && echo '{"result":{"workspace":{"workspace_id":"w7"}}}' ;;
-"pane list") echo '{"result":{"panes":[{"pane_id":"p3"},{"pane_id":"p4"}]}}'; exit ${list} ;;
-esac
-`,
-				{ mode: 0o755 },
-			);
-
-		const typed = async () =>
-			(await readFile(join(root, "herdr.log"), "utf8")).split("\n").filter((line) => line.startsWith("pane run "));
-
-		await herdr(0);
-		process.env.HERDR_ENV = "1";
+		process.env.HC_TERMINAL_ID = "t3";
 		const run = await workflows(["w"], { cwd: repo });
 		expect(run.code).toBe(0);
 		const id = run.id ?? "";
+		const path = worktreeAt(repo, id);
 		const loop = `while c=$(workflows show ${id} --pick); do workflows attach ${id} --conversation "$c" --side; done`;
-		expect(await typed()).toEqual([`pane run p3 ${loop}`]);
-		expect(await readFile(join(root, "herdr.log"), "utf8")).toContain("pane list --workspace w7\n");
+		const labels = `--label herdr.space=${id} --label herdr.tab=${id}`;
+		expect(await started()).toEqual([`run --bg --keep --no-parent --cwd ${path} ${labels} -- sh -c ${loop}`]);
 
-		// A resume finds the worktree, and types nothing again.
-		await rm(join(root, "herdr.log"));
+		// A resume finds the worktree, and starts no second loop.
+		await rm(log);
 		const stopped = await workflows(["w"], { cwd: repo, script: { interruptAt: { kind: "script", nth: 1 } } });
 		expect(stopped.code).toBe(130);
 		const resumed = await workflows(["resume", stopped.id ?? ""], { cwd: repo });
 		expect(resumed.code).toBe(0);
-		expect((await typed()).length).toBe(1);
+		expect((await started()).length).toBe(1);
 
-		// A failed `pane list` types nothing, and the run goes on.
-		await rm(join(root, "herdr.log"));
-		await herdr(1);
+		// A failed `hc run` leaves the run going.
+		await rm(log);
+		await writeFile(join(root, "bin", "hc"), `#!/bin/sh\necho "$@" >> "${log}"\nexit 1\n`, { mode: 0o755 });
 		const failed = await workflows(["w"], { cwd: repo });
-		expect([failed.code, await typed()]).toEqual([0, []]);
+		expect([failed.code, (await started()).length]).toEqual([0, 1]);
 	});
 
-	it("creates the worktree with Git when herdr fails", async () => {
+	it("records the hc terminal that started a run, in list and show", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
 		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
-		await writeFile(
-			join(scripts, "w.js"),
-			'export const meta = { worktree: true }\nreturn await sh(["git", "branch", "--show-current"])',
-		);
-		await writeFile(join(root, "bin", "herdr"), `#!/bin/sh\necho "$@" >> "${root}/herdr.log"\nexit 1\n`);
-		await chmod(join(root, "bin", "herdr"), 0o755);
-		process.env.HERDR_ENV = "1";
+		await writeFile(join(scripts, "w.js"), "return 1");
 
-		const run = await workflows(["w"], { cwd: repo });
-		expect([run.code, run.stdout.at(-1)]).toEqual([0, `w/${run.id}`]);
-		const log = await readFile(join(root, "herdr.log"), "utf8");
-		expect(log).toContain(`--path ${worktreeAt(repo, run.id)} `);
-		expect(log).not.toContain("pane run ");
-		expect(git(worktreeAt(repo, run.id), "branch", "--show-current")).toBe(`w/${run.id}`);
+		const plain = await workflows(["w"], { cwd: repo });
+		process.env.HC_TERMINAL_ID = "t3";
+		const called = await workflows(["w"], { cwd: repo });
+		delete process.env.HC_TERMINAL_ID;
+		expect([plain.code, called.code]).toEqual([0, 0]);
+
+		const listed = JSON.parse((await workflows(["list", "--json"], { cwd: repo })).stdout[0] ?? "");
+		const callers = Object.fromEntries(listed.map((row: { runId: string; caller?: string }) => [row.runId, row]));
+		expect(callers[called.id ?? ""].caller).toBe("t3");
+		expect("caller" in callers[plain.id ?? ""]).toBe(false);
+
+		for (const form of [["--json"], ["--agents", "--json"]]) {
+			const shown = JSON.parse((await workflows(["show", called.id ?? "", ...form], { cwd: repo })).stdout[0] ?? "");
+			const other = JSON.parse((await workflows(["show", plain.id ?? "", ...form], { cwd: repo })).stdout[0] ?? "");
+			expect([shown.caller, "caller" in other]).toEqual(["t3", false]);
+		}
+
+		// A run without a worktree starts no loop.
+		expect(existsSync(join(root, "hc.log"))).toBe(false);
 	});
 
-	it("creates the worktree with Git when herdr fails after it registered the worktree", async () => {
+	it("starts no pick loop for the worktree of a child run, and none without an hc terminal", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
 		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
-		await writeFile(
-			join(scripts, "w.js"),
-			'export const meta = { worktree: true }\nreturn await sh(["git", "branch", "--show-current"])',
-		);
-		await writeFile(
-			join(root, "bin", "herdr"),
-			`#!/bin/sh\necho "$@" >> "${root}/herdr.log"\ngit -C "$4" worktree add -q -b "$8" "$6" "\${10}"\nrm -rf "$6"\nexit 1\n`,
-		);
-		await chmod(join(root, "bin", "herdr"), 0o755);
-		process.env.HERDR_ENV = "1";
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", { repo: "." })');
+		await writeFile(join(scripts, "child.js"), "export const meta = { worktree: true }\nreturn cwd");
+		await writeFile(join(scripts, "w.js"), "export const meta = { worktree: true }\nreturn cwd");
 
-		const run = await workflows(["w"], { cwd: repo });
-		expect([run.code, run.stdout.at(-1)]).toEqual([0, `w/${run.id}`]);
-		expect(await readFile(join(root, "herdr.log"), "utf8")).not.toContain("pane run ");
-		expect(git(worktreeAt(repo, run.id), "branch", "--show-current")).toBe(`w/${run.id}`);
+		const plain = await workflows(["w"], { cwd: repo });
+		expect(plain.code).toBe(0);
+		process.env.HC_TERMINAL_ID = "t3";
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(0);
+		expect(existsSync(join(root, "hc.log"))).toBe(false);
 	});
 
-	it("closes the workspace that herdr opened when herdr left no worktree, and creates it with Git", async () => {
-		const repo = join(root, "repo");
-		await repository(repo);
-		const scripts = join(repo, ".workflows", "scripts");
-		await mkdir(scripts, { recursive: true });
-		await writeFile(
-			join(scripts, "w.js"),
-			'export const meta = { worktree: true }\nreturn await sh(["git", "branch", "--show-current"])',
-		);
-
-		/** A fake herdr that opens the workspace w7 with no worktree, and whose `workspace close` exits with `close`. */
-		const herdr = (close: number) =>
-			writeFile(
-				join(root, "bin", "herdr"),
-				`#!/bin/sh
-echo "$@" >> "${root}/herdr.log"
-case "$1 $2" in
-"worktree create") echo '{"result":{"workspace":{"workspace_id":"w7"}}}' ;;
-"workspace close") exit ${close} ;;
-esac
-`,
-				{ mode: 0o755 },
-			);
-
-		await herdr(0);
-		process.env.HERDR_ENV = "1";
-		const run = await workflows(["w"], { cwd: repo });
-		expect([run.code, run.stdout.at(-1)]).toEqual([0, `w/${run.id}`]);
-		const log = await readFile(join(root, "herdr.log"), "utf8");
-		expect(log).toContain("workspace close w7\n");
-		expect(log).not.toContain("pane run ");
-
-		await herdr(1);
-		const failed = await workflows(["w"], { cwd: repo });
-		expect([failed.code, failed.stderr[0]]).toEqual([
-			1,
-			"failed w: herdr workspace close w7 failed: Command failed: herdr workspace close w7",
-		]);
-		expect(existsSync(worktreeAt(repo, failed.id))).toBe(false);
-	});
-
-	it("fails a child run on a branch that another worktree has checked out, before herdr runs", async () => {
+	it("fails a child run on a branch that another worktree has checked out", async () => {
 		const repo = join(root, "repo");
 		const start = await repository(repo);
 		git(repo, "worktree", "add", "-q", "-b", "feature", join(root, "other"));
@@ -1480,10 +1398,6 @@ esac
 			`return await run("child", { start: "${start}", checkout: "feature" })`,
 		);
 		await writeFile(join(scripts, "child.js"), "return cwd");
-		await writeFile(join(root, "bin", "herdr"), `#!/bin/sh\necho "$@" >> "${root}/herdr.log"\nexit 1\n`, {
-			mode: 0o755,
-		});
-		process.env.HERDR_ENV = "1";
 
 		const run = await workflows(["parent"], { cwd: repo });
 		expect(run.code).toBe(1);
@@ -1491,7 +1405,6 @@ esac
 		expect(run.stderr[0]).toMatch(
 			new RegExp(`^failed parent: child run \\S+ failed: branch feature is checked out at ${other}$`),
 		);
-		expect(existsSync(join(root, "herdr.log"))).toBe(false);
 	});
 
 	it("gives a child run without meta.worktree its repo, base and branch args", async () => {

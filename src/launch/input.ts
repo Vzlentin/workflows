@@ -114,8 +114,8 @@ export type ScriptInput = Omit<Args, "repo" | "base" | "branch"> & {
 	readonly parent?: string;
 	/** Set by `--background`: the end of the run posts its outcome as a message to the conversation `parent`. */
 	readonly notify?: true;
-	/** Set when the CLI runs in Herdr (`HERDR_ENV`): Herdr creates the worktree; a child run has its caller's. */
-	readonly herdr?: true;
+	/** The hc terminal of the command that started the root run, from `HC_TERMINAL_ID`; a child run has its caller's. */
+	readonly caller?: string;
 	/** Set by `resume --answer`: the answer `text` to the `input` call with the document key `call`. */
 	readonly answer?: { readonly call: string; readonly text: string };
 	readonly worktree?: Worktree;

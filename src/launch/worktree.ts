@@ -176,12 +176,6 @@ async function clearWorktree(repository: string, path: string): Promise<void> {
 	await git(repository, "worktree", "prune");
 }
 
-/** What makes a worktree before Git does, such as Herdr: `make` gives an ID, such as a workspace, and `close` closes it. */
-export type WorktreeMaker = {
-	readonly make: () => Promise<string | undefined>;
-	readonly close: (id: string) => Promise<void>;
-};
-
 /** The path of the worktree of `repository` that has `branch` checked out, or undefined when none has it. */
 async function checkedOutAt(repository: string, branch: string): Promise<string | undefined> {
 	let path: string | undefined;
@@ -198,33 +192,21 @@ async function checkedOutAt(repository: string, branch: string): Promise<string 
  * A worktree at `path` on `branch`, created from `start` when the branch is new. Safe to repeat after an interruption
  * at any point: an existing worktree is kept, and each attempt starts from a clean path, with no folder and no stale
  * registration. The repository's checkout stays untouched. It throws when another worktree has `branch` checked out.
- * `maker` makes the worktree first when it is given; when it left no repository at `path`, `maker.close` closes what it
- * opened, and Git makes the worktree. It gives the ID of `maker` when its worktree is used, else undefined.
+ * It gives true when it made the worktree, and false when the worktree was already there.
  */
 export async function ensureWorktree(
 	repository: string,
 	path: string,
 	branch: string,
 	start: string,
-	maker?: WorktreeMaker,
-): Promise<string | undefined> {
-	if ((await repositoryAt(path)) !== undefined) return undefined;
+): Promise<boolean> {
+	if ((await repositoryAt(path)) !== undefined) return false;
 	await clearWorktree(repository, path);
 	const holder = await checkedOutAt(repository, branch);
 
 	if (holder !== undefined) throw new Error(`branch ${branch} is checked out at ${holder}`);
-
-	if (maker !== undefined) {
-		const made = await maker.make();
-
-		if ((await repositoryAt(path)) !== undefined) return made;
-
-		if (made !== undefined) await maker.close(made);
-		await clearWorktree(repository, path);
-	}
-
 	const exists = await gitSucceeds(repository, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`);
 	await git(repository, "worktree", "add", ...(exists ? [path, branch] : ["-b", branch, path, start]));
 
-	return undefined;
+	return true;
 }

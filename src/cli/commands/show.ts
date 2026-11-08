@@ -62,15 +62,17 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 	const shown = await readRun(await savedRun(id, SHOW), terminal, mode !== "steps" || json, "be shown");
 	const { input, title, status, head, ended, calls, progress, footer, end } = shown;
 	const now = Date.now();
+	const named = { runId: id, workflow: input.name };
+	const run = input.caller === undefined ? named : { ...named, caller: input.caller };
 
 	if (mode === "agents" && json) {
 		const agents = agentRows(calls, 0, now);
-		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ended, agents }));
+		terminal.stdout(JSON.stringify({ ...run, title, status, ended, agents }));
 	} else if (mode === "agents") {
 		for (const line of [head, ...agentLines(agentRows(calls, 0, now)), ...footer]) terminal.stdout(line);
 	} else if (json) {
 		const steps = progress.lines();
-		terminal.stdout(JSON.stringify({ runId: id, workflow: input.name, title, status, ...end, steps, calls }));
+		terminal.stdout(JSON.stringify({ ...run, title, status, ...end, steps, calls }));
 	} else if (mode === "calls") {
 		for (const line of [head, ...treeLines(calls, "", now), ...footer]) terminal.stdout(line);
 	} else {

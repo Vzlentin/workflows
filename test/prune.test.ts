@@ -205,39 +205,93 @@ describe("workflows prune", () => {
 		expect(existsSync(brokenRun)).toBe(true);
 	});
 
-	it("removes a worktree through the herdr workspace that has it open", async () => {
-		const { worktree } = await mergedRun();
-		process.env.HERDR_ENV = "1";
-		const path = await realpath(worktree);
-		const listed = JSON.stringify({ result: { worktrees: [{ path, open_workspace_id: "w1" }] } });
+	it("kills and removes the hc terminals of the run before its worktree", async () => {
+		const { id, worktree } = await mergedRun();
 		await fake(
-			"herdr",
-			`case "$2" in
-list) echo '${listed}' ;;
-remove) echo "$@" >> "${root}/herdr.log"; exec git -C "${repo}" worktree remove "${worktree}" ;;
-esac
+			"hc",
+			`echo "$@" >> "${root}/hc.log"
+[ "$1" = ls ] && echo '{"terminals":[{"address":"t5"},{"address":"m1/t6"}],"hidden_finished":0}'
+exit 0
 `,
 		);
 
 		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
 		expect(pruned.code).toBe(0);
-		expect(await readFile(join(root, "herdr.log"), "utf8")).toContain("--workspace w1");
-		expect(existsSync(worktree)).toBe(false);
-		expect(hasBranch("feat/x")).toBe(false);
+		expect((await readFile(join(root, "hc.log"), "utf8")).trim().split("\n")).toEqual([
+			`ls --all --json --label herdr.space=${id}`,
+			"kill t5",
+			"rm t5",
+			"kill m1/t6",
+			"rm m1/t6",
+		]);
+		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([false, false]);
 	});
 
-	it("keeps the worktree, and exits 1, when herdr fails", async () => {
+	it("keeps the worktree, and exits 1, when hc fails", async () => {
 		const { id, worktree } = await mergedRun();
-		process.env.HERDR_ENV = "1";
-		await fake("herdr", 'echo "herdr: no server" >&2\nexit 1\n');
+		await fake("hc", 'echo "hc: no server" >&2\nexit 1\n');
 
 		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
 		expect([pruned.code, pruned.stdout, pruned.stderr]).toEqual([
 			1,
 			[],
-			[`workflows: cannot prune ${id}: herdr: no server`],
+			[`workflows: cannot prune ${id}: hc: no server`],
 		]);
 		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([true, true]);
+		expect(existsSync(join(runsOf(root), id, "pruning"))).toBe(false);
+	});
+
+	it("takes a run whose HEAD is in origin/main as merged, with no gh call", async () => {
+		const merged = await workflows(["w"], { cwd: repo });
+		const ahead = await workflows(["w"], { cwd: repo });
+		expect([merged.code, ahead.code]).toEqual([0, 0]);
+		const worktree = worktreeAt(repo, merged.id);
+		const kept = worktreeAt(repo, ahead.id);
+		git(worktree, "branch", "-m", "feat/z");
+		git(kept, "branch", "-m", "feat/w");
+		git(kept, "commit", "-q", "--allow-empty", "-m", "more");
+		git(repo, "update-ref", "refs/remotes/origin/main", git(worktree, "rev-parse", "HEAD"));
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout]).toEqual([0, [`${merged.id} feat/z ${worktree}`]]);
+		expect([existsSync(worktree), existsSync(kept)]).toEqual([false, true]);
+		expect((await readFile(join(root, "gh.log"), "utf8")).trim().split("\n")).toEqual([
+			"pr list --head feat/w --state merged --json headRefOid",
+		]);
+	});
+
+	it("prunes only the given runs, with no merge check", async () => {
+		const other = await mergedRun();
+		const run = await workflows(["w"], { cwd: repo });
+		expect(run.code).toBe(0);
+		const id = run.id ?? "";
+		const worktree = worktreeAt(repo, id);
+		git(worktree, "branch", "-m", "feat/z");
+
+		const listed = await workflows(["prune", id], { cwd: repo });
+		expect([listed.code, listed.stdout]).toEqual([0, [`${id} feat/z ${worktree}`]]);
+		const pruned = await workflows(["prune", id, "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/z ${worktree}`]]);
+		expect([existsSync(worktree), hasBranch("feat/z")]).toEqual([false, false]);
+		expect(existsSync(other.worktree)).toBe(true);
+		expect(existsSync(join(root, "gh.log"))).toBe(false);
+	});
+
+	it("removes nothing, and exits 1, when a given run is not an ended run of the project with a worktree", async () => {
+		const { id, worktree } = await mergedRun();
+		const slow = await workflows(["slow"], { cwd: repo, script: { interruptAt: { kind: "script", nth: 1 } } });
+		expect(slow.code).toBe(130);
+
+		for (const bad of [slow.id ?? "", "20990101T000000-00000000", "../x"]) {
+			const pruned = await workflows(["prune", id, bad, "--yes"], { cwd: repo });
+			expect([pruned.code, pruned.stdout, pruned.stderr]).toEqual([
+				1,
+				[],
+				[`workflows: cannot prune ${bad}: not an ended run of this project with a worktree on a branch`],
+			]);
+		}
+
+		expect([existsSync(worktree), existsSync(worktreeAt(repo, slow.id))]).toEqual([true, true]);
 	});
 
 	it("keeps a run that has not ended, also on a merged branch", async () => {

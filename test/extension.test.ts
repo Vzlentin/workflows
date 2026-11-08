@@ -16,6 +16,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { DefaultPackageManager, loadSkills, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { entriesPath } from "@vzlentin/harness/entries";
+import { inHerdr } from "@vzlentin/harness/herdr";
 import type { TSchema } from "typebox";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import extension, { type workflowTool } from "../pi/index.ts";
@@ -229,7 +230,7 @@ function fakePi(entries: CustomEntry[] = [], command = ["/bin/sh", join(root, "w
 		},
 	};
 
-	extension(pi, { command, tool: toolModule });
+	extension(pi, { command, tool: toolModule, inHerdr });
 
 	/** Fires `event` with a context in `root` whose session has `entries`, with `ui` when given. */
 	const fire = async (event: string, ui?: ExtensionUIContext, hasUI = ui !== undefined) => {
@@ -923,11 +924,11 @@ describe("the /workflows command", () => {
 		expect((await commands()).slice(0, 2)).toEqual(["list --json", `show ${good} --agents --json`]);
 	});
 
-	it("attaches to the selected agent in Herdr, or gives the command", async () => {
-		const saved = process.env.HERDR_ENV;
+	it("attaches to the selected agent in herdr-app, or gives the command", async () => {
+		const saved = process.env.HC_TERMINAL_ID;
 
 		try {
-			process.env.HERDR_ENV = "1";
+			process.env.HC_TERMINAL_ID = "t3";
 			const fake = fakeUi();
 			const herdr = await opened(fake);
 			herdr.view.handleInput("down");
@@ -935,7 +936,7 @@ describe("the /workflows command", () => {
 			await herdr.ended;
 			expect([(await commands()).at(-1), fake.notes]).toEqual([`attach ${good} --conversation 4`, []]);
 
-			delete process.env.HERDR_ENV;
+			delete process.env.HC_TERMINAL_ID;
 			const plain = await opened(fake);
 			plain.view.handleInput("up");
 			plain.view.handleInput("confirm");
@@ -945,8 +946,8 @@ describe("the /workflows command", () => {
 			]);
 			expect(fake.notes).toEqual([[`Run in another terminal: workflows attach ${good} --conversation 2`, "info"]]);
 		} finally {
-			if (saved === undefined) delete process.env.HERDR_ENV;
-			else process.env.HERDR_ENV = saved;
+			if (saved === undefined) delete process.env.HC_TERMINAL_ID;
+			else process.env.HC_TERMINAL_ID = saved;
 		}
 	});
 
@@ -1031,12 +1032,12 @@ describe("the /workflows command", () => {
 	});
 
 	it("gives the error of an attach that fails", async () => {
-		const saved = process.env.HERDR_ENV;
+		const saved = process.env.HC_TERMINAL_ID;
 		await writeFile(join(root, "runs.json"), JSON.stringify([runs[1]]));
 		await writeFile(join(root, "show.json"), JSON.stringify({ ...shown, runId: bad }));
 
 		try {
-			process.env.HERDR_ENV = "1";
+			process.env.HC_TERMINAL_ID = "t3";
 			const fake = fakeUi();
 			const pi = fakePi();
 			fake.choose(0);
@@ -1051,8 +1052,8 @@ describe("the /workflows command", () => {
 				],
 			]);
 		} finally {
-			if (saved === undefined) delete process.env.HERDR_ENV;
-			else process.env.HERDR_ENV = saved;
+			if (saved === undefined) delete process.env.HC_TERMINAL_ID;
+			else process.env.HC_TERMINAL_ID = saved;
 		}
 	});
 });

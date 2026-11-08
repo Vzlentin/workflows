@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { resolveProject } from "@vzlentin/harness/projects";
 import { statePaths } from "@vzlentin/harness/protocol";
 import { type Mark, Progress } from "../../records/steps.ts";
-import { inputWorktree, progressEvents, reading, runTasks, type Store } from "../../records/store.ts";
+import { inputString, inputWorktree, progressEvents, reading, runTasks, type Store } from "../../records/store.ts";
 import { type RunStatus, type RunTask, runStatus, taskOf } from "../../run/past.ts";
 import { title as titleOf } from "../../run/result.ts";
 import { current } from "../../run/version.ts";
@@ -22,6 +22,8 @@ type Listed = {
 	readonly title: string;
 	readonly status: string;
 	readonly repository: string | null;
+	/** The hc terminal that started the run, when it started in one. */
+	readonly caller?: string;
 };
 
 /** A listed run, with its run status `run`, which orders it in the picker and gives its mark, and which JSON leaves out. */
@@ -66,13 +68,7 @@ export async function list(args: readonly string[], terminal: Terminal, json: bo
 		repository: null,
 	}));
 
-	const started = rows.map(({ runId, workflow, title, status, repository }) => ({
-		runId,
-		workflow,
-		title,
-		status,
-		repository,
-	}));
+	const started = rows.map(({ run: _run, ...listed }): Listed => listed);
 
 	const listed: Listed[] = [...started, ...unstarted].sort((a, b) => b.runId.localeCompare(a.runId));
 
@@ -93,14 +89,13 @@ async function listedRuns(store: Store, runs: ReadonlyMap<string, readonly RunTa
 		const run = runStatus(task);
 		const status = shownStatus(task, run);
 		const repository = inputWorktree(task.input)?.repository ?? null;
+		const caller = inputString(task.input, "caller");
 
-		if (current(task)) {
-			const title = titleOf(task.input, await progressEvents(store, id));
-			listed.push({ runId: id, workflow: task.input.name, title, status, repository, run });
-		} else {
-			const { name } = savedBy(task);
-			listed.push({ runId: id, workflow: name, title: name, status, repository, run });
-		}
+		const workflow = current(task) ? task.input.name : savedBy(task).name;
+		const title = current(task) ? titleOf(task.input, await progressEvents(store, id)) : workflow;
+		const row = { runId: id, workflow, title, status, repository, run };
+
+		listed.push(caller === undefined ? row : { ...row, caller });
 	}
 
 	return listed;

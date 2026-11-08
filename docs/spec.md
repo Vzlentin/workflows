@@ -731,17 +731,12 @@ export const meta = {
 - `worktree: true` adds `--repo` and `--base`, with the rules of [Ship](#ship), and `--branch`. The run gets a new
   worktree on the branch `--branch` or `<wf>/<run-id>`, runs the script there, and gives it `args.start`, the
   start commit. When another worktree of the repository has the branch checked out, the run fails with `branch <branch>
-  is checked out at <path>` before Herdr or Git makes anything. The worktree is `<parent>/.worktrees/<name>/<run-id>`, where `<parent>` is the folder that holds the
+  is checked out at <path>` before Git makes anything. The worktree is `<parent>/.worktrees/<name>/<run-id>`, where `<parent>` is the folder that holds the
   repository and `<name>` is the repository folder's name: `~/code/app` gets `~/code/.worktrees/app/<run-id>`, and the
-  clone of a GitHub repository gets `<run-directory>/.worktrees/repository/<run-id>`. When the command ran with
-  `HERDR_ENV` set, the run first runs `herdr worktree create --cwd <repository> --path <worktree> --branch <branch>
-  --base <start> --no-focus`, so the worktree shows in Herdr. When `herdr` fails, is missing, or makes no worktree at
-  that path, Git creates the worktree, as without Herdr. When `herdr` printed a workspace ID but made no worktree at
-  that path, the run first closes that workspace with `herdr workspace close <id>`; when that fails, the run fails with
-  `herdr workspace close <id> failed: <error>`. A child run uses Herdr when its root run does. When
-  `herdr worktree create` made the worktree of a root run and printed the workspace ID that it opened, in
-  `result.workspace.workspace_id`, the run types the pick loop in that workspace: see [Herdr](#herdr). At the end, the
-  run names the branch: see [Branch name](#branch-name).
+  clone of a GitHub repository gets `<run-directory>/.worktrees/repository/<run-id>`. Git creates the worktree with
+  `git worktree add`. When the run made the worktree of a root run that an hc terminal started, it starts the pick loop
+  in hc: see [hc and herdr-app](#hc-and-herdr-app). At the end, the run names the branch: see
+  [Branch name](#branch-name).
 - `repo: true` adds `--repo <path>`, and shows `[--repo <repository>]` in the usage line. `<path>` is relative to the
   current directory and must be the top level of a local Git repository. The run's directory is that top level in
   place of the current directory, so `sh`, `ok`, the sessions and the child runs work in that checkout, as
@@ -1254,38 +1249,39 @@ Ctrl+C detaches `wait` at once: it prints the `detached` line, or the `detached`
 on in the host. A second Ctrl+C exits and never stops the run. Bad usage prints `usage: workflows wait <run-id>
 [--json]` and exits 2.
 
-## Herdr
+## hc and herdr-app
 
-`workflows` binds no Herdr key. A Herdr key composes the commands instead, such as one that picks a run, then one of
-its agents, in a popup, and opens the agent in a new tab:
+`workflows` binds no key. A key or a shell composes the commands instead, such as one that picks a run, then one of its
+agents, and opens the agent in a new tab:
 
-```toml
-[[keys.command]]
-key = "prefix+w"
-type = "popup"
-description = "attach to an agent of a workflows run"
-command = '''
+```sh
 id=$(workflows list --pick) && c=$(workflows show "$id" --pick) && workflows attach "$id" --conversation "$c"
-'''
 ```
 
-A popup command does not get `HERDR_PANE_ID`, so `attach` opens the tab in the workspace that has the run's worktree
-open, or runs Pi in the popup when no workspace has it open.
+A run that a command started in an hc terminal, with `HC_TERMINAL_ID` set and not empty, saves that terminal ID as
+`caller` in its input, and its child runs get the same `caller`. `list --json` and `show --json` give it: see
+[List](#list) and [Show](#show).
 
-When `herdr worktree create` made the worktree of a root run, the run types the pick loop in the first pane of the new
-workspace, as `herdr pane list --workspace <id>` lists it, with `herdr pane run <pane> <loop>`:
+When such a root run makes its worktree, it starts the pick loop in a background hc terminal:
+
+```sh
+hc run --bg --keep --no-parent --cwd <worktree> --label herdr.space=<run-id> --label herdr.tab=<run-id> -- sh -c '<loop>'
+```
+
+where `<loop>` is:
 
 ```sh
 while c=$(workflows show <run-id> --pick); do workflows attach <run-id> --conversation "$c" --side; done
 ```
 
-So the shell of the workspace shows the steps of the run, and each pick opens its agent in a new pane beside the
-steps. Escape or Ctrl+C in the pick ends the loop. The loop needs `workflows` on the `PATH` of the shell. A failure of
-`herdr pane list` or `herdr pane run` types nothing, and the run goes on. A worktree that Git made gets no loop, and a
-resume, which finds the worktree, types nothing again. A child run types nothing.
+herdr-app shows the terminal in the space `<run-id>`, so the space shows the steps of the run, and each pick opens its
+agent in a new pane beside the steps. Escape or Ctrl+C in the pick ends the loop. hc gives the loop the environment of
+the hc server, so the loop needs `workflows` on the `PATH` of that server, and the same `XDG_STATE_HOME` and
+`XDG_CONFIG_HOME` as the run. A failure of `hc run` starts nothing, and the run goes on. A resume, which finds the
+worktree, starts no second loop. A child run starts no loop.
 
-`prune` and `attach` use Herdr when `HERDR_ENV` is set: see [Prune](#prune) and [Attach](#attach). A run that a
-command started with `HERDR_ENV` set asks Herdr to create its worktrees: see [The meta block](#meta).
+`attach` opens Pi in herdr-app when `HC_TERMINAL_ID` is set: see [Attach](#attach). `prune --yes` removes the hc
+terminals of a run with its worktree: see [Prune](#prune).
 
 ## JSON output
 
@@ -1334,7 +1330,8 @@ to start. A run whose task ended without a result is `aborted` (a second Ctrl+C 
 another version of workflows saved is `earlier-version` or `later-version`, with its workflow name as its title: it
 cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status", "repository" }`.
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
-without a worktree.
+without a worktree. A run that an hc terminal started also has `"caller"`, the ID of that terminal, also for a run of
+another version; other runs have no `caller` key.
 Only the runs that have a run directory with a `project` file are listed. The command writes that file before it
 prepares the run, so a run directory of the project whose run has no task is listed as `<run-id> - unstarted -`, and
 with `--json` as `{ "runId", "workflow": "-", "title": "-", "status": "unstarted", "repository": null }`: its run is
@@ -1356,11 +1353,11 @@ start the host once, such as with harness --project <project> host, and run the 
 ## Prune
 
 ```sh
-workflows prune [--yes] [--install-hook] [--json]
+workflows prune [<run-id>...] [--yes] [--install-hook] [--json]
 ```
 
 `workflows prune` prints one line `<run-id> <branch> <worktree>` for each run of the harness project of the current
-directory, newest run ID first, whose worktree is on a branch with a merged pull request. With `--json`, it prints one
+directory, newest run ID first, whose worktree is on a merged branch. With `--json`, it prints one
 JSON array of `{ "runId", "branch", "worktree" }`. A run is a candidate only when it has a run directory with a
 `project` file, its last task has ended, a task of this version or of an earlier version saved it, its saved input has a
 worktree, the worktree exists, and the worktree is on a branch. For a run of an earlier version, `prune` reads only the
@@ -1368,27 +1365,36 @@ worktree, the worktree exists, and the worktree is on a branch. For a run of an 
 worktree, and a worktree that is not a Git worktree of its own are never pruned. `prune` reads the project store file read-only, as `list` does, and does not
 start the host.
 
-For each candidate, `prune` runs `gh pr list --head <branch> --state merged --json headRefOid` in the worktree. A branch
-is merged when one pull request in the list has the commit that the worktree is on as its head. A branch name that comes
+For each candidate, `prune` first runs `git merge-base --is-ancestor HEAD origin/main` in the worktree. A branch is
+merged when that succeeds: the commit that the worktree is on is in `origin/main`, which is also true of a worktree with
+no commit of its own. Otherwise `prune` runs `gh pr list --head <branch> --state merged --json headRefOid` in the
+worktree, and a branch is merged when one pull request in the list has the commit that the worktree is on as its head. A branch name that comes
 back in a later run, with a merged pull request of an earlier commit, is not merged. `prune` runs every `gh` call before
 it removes anything: a failed `gh` call, or a missing `gh`, prints `workflows: <error>`, removes nothing and exits 1.
 
-With `--yes`, `prune` removes each merged worktree in order, and prints its line after the removal. When `HERDR_ENV` is
-set and `herdr worktree list --cwd <worktree>` shows a workspace open on the worktree, it runs `herdr worktree remove
---workspace <id>`. Otherwise, or when the herdr command is not installed, it runs `git worktree remove <worktree>` in
-the run's repository, without `--force`. A herdr command that fails otherwise fails the removal of the run. Then it deletes the branch with `git branch -D <branch>` when the branch still exists. Before
+With `--yes`, `prune` removes each merged worktree in order, and prints its line after the removal. It first runs
+`hc ls --all --json --label herdr.space=<run-id>`, and `hc kill <address>` then `hc rm <address>` for each terminal in
+its `terminals`, such as the pick loop of the run. A missing `hc` command removes no terminal; any other `hc` failure
+fails the removal of the run. Then it runs `git worktree remove <worktree>` in the run's repository, without `--force`,
+and deletes the branch with `git branch -D <branch>` when the branch still exists. Before
 it removes anything of a run, it writes the marker `runs/<run-id>/pruning`, a JSON object `{ "branch", "repository",
 "path" }`, and it deletes the marker when the worktree and the branch are gone. A run with a marker is a candidate with no
 other check and no `gh` call, so a `prune` that stopped after the worktree removal is finished by the next one. A removal
 that fails, such as of a worktree with changes, prints `workflows: cannot prune <run-id>: <error>` on stderr, leaves the
 run out of stdout and the JSON, and goes on with the next run; `prune` then exits 1. A failed worktree removal deletes the
-marker, as the worktree can get more work; a failed branch removal keeps it. The run directory and the run's records
+marker, as the worktree can get more work, and so does a failed `hc` call; a failed branch removal keeps it. The run directory and the run's records
 stay, so `list` and `show` still show the run.
 
 `prune` also prints one line `<run-id> unstarted <run directory>` for each run directory of the project whose run has
 no task (the `unstarted` runs of `list`) and whose `project` file is more than 1 hour old, after the merged runs. With
 `--json`, each is an object `{ "runId", "directory" }` in the same array. With `--yes`, after every `gh` call, `prune`
 removes these run directories.
+
+With run IDs, `prune` takes only these runs, in the given order, with no merge check and no `gh` call, and leaves the
+unstarted run directories. Each one must be a root run of the project store of the current directory that has a
+marker or is a candidate, such as a run whose branch went into another pull request. Before it removes anything,
+`prune` checks every ID: one that fails prints `workflows: cannot prune <run-id>: not an ended run of this project with
+a worktree on a branch`, removes nothing and exits 1.
 
 `--install-hook` writes the executable `post-merge` hook of the Git repository of the current directory, with the line
 `workflows prune --yes >/dev/null 2>&1 &`, and prints the hook's path. When `core.hooksPath` is set or a `post-merge`
@@ -1441,7 +1447,8 @@ run <run-id> <workflow> <status> <title>
   orphaned run with `orphaned <title>: <reason>` and the `continue with` line. Any other run ends after its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
-object with both trees: `{ "runId", "workflow", "title", "status", "report"?, "error"?, "steps", "calls" }`, where
+object with both trees: `{ "runId", "workflow", "caller"?, "title", "status", "report"?, "error"?, "steps", "calls" }`, where `caller` is the hc
+terminal that started the run, as in [List](#list), and
 `steps` has the step lines of the text, without the first line and the footer. Each call is
 `{ "kind", "runId", "label", "phase", "args", "state", "mark", "startedAt", "endedAt"?, "conversation"?, "result"?, "error"?, "calls"? }`,
 with ISO times. `runId` is the ID of the run that made the call. `conversation` is the conversation ID of a `session` that opened. The JSON `mark` of a working session
@@ -1470,8 +1477,8 @@ run <run-id> <workflow> <status> <title>
 - A phase line comes before the first agent or child run under it. Other calls, such as `sh`, are not in the tree. The
   rows of a child run are indented by 4 more under its `run` line.
 
-With `--agents --json`, the command prints one JSON object `{ "runId", "workflow", "title", "status", "ended",
-"agents" }`, where `ended` is true when the run has ended, also when it waits for an answer.
+With `--agents --json`, the command prints one JSON object `{ "runId", "workflow", "caller"?, "title", "status",
+"ended", "agents" }`, where `ended` is true when the run has ended, also when it waits for an answer.
 `agents` has one object for each line of the tree, in order: `{ "kind": "phase", "depth", "text" }`, `{ "kind": "run",
 "depth", "mark", "text" }` with the text `run <workflow> <child run-id>`, or `{ "kind": "agent", "depth", "mark", "text",
 "phase", "model", "asks", "conversation", "startedAt", "endedAt"?, "facts" }`, where `phase` is the phase line of the
@@ -1522,17 +1529,17 @@ workflows attach <run-id> [--conversation <id>] [--side]
   last session that started.
 - It connects to the host of the run's project, and starts the host when none runs. It sends `watch` for the
   conversation of the session, so an unknown conversation fails before Pi starts.
-- Outside Herdr, or in Herdr with no place to open Pi, it runs `harness --project <project> attach --conversation <id>`
+- Outside an hc terminal (`HC_TERMINAL_ID` not set), it runs `harness --project <project> attach --conversation <id>`
   in this terminal, and exits with its code. A child that a signal ends exits 1.
-- With `HERDR_ENV`, it opens Pi in Herdr and exits 0. With `--side` and `HERDR_PANE_ID`, it opens Pi in a new pane to
-  the right of that pane. Else it opens Pi in a new tab of the Herdr workspace that has the run's worktree open, as
-  `herdr worktree list` shows it. A run with no worktree, or whose worktree is gone or open in no workspace, opens the
-  tab in the workspace of the pane `HERDR_PANE_ID`, as `herdr pane get <pane>` gives it in
-  `result.pane.workspace_id`. Without `HERDR_PANE_ID` either, Pi runs in this terminal.
+- In an hc terminal, it opens Pi in a background hc terminal that herdr-app shows, with `openConversationPane` of
+  harness, and exits 0. With `--side`, the terminal gets the `herdr.space` and `herdr.tab` labels of this terminal, as
+  `hc get --json $HC_TERMINAL_ID` gives them, and herdr-app shows it in a new pane to the right. Else, when the run's
+  worktree exists, it gets the label `herdr.space=<run-id>`, a new tab of the space of the run. Else it gets the
+  `herdr.space` label of this terminal. A label that this terminal does not have fails the attach.
 
 A run with no session prints `workflows: run <run-id> has no session`. A conversation that is not a session of the run prints
 `workflows: run <run-id> has no session with conversation <id>`. An unknown run ID prints the `no run` error of `resume`, and a run
-saved by another version prints the error of `show` with `cannot be attached`. A Herdr failure prints
+saved by another version prints the error of `show` with `cannot be attached`. An hc failure prints
 `workflows: <error>`. These exit 1. Bad usage, such as no run ID or a second argument, prints `usage: workflows attach <run-id> [--conversation <id>]
 [--side]` and
 exits 2.
@@ -1697,6 +1704,8 @@ When Pi loads the extension, it resolves `@vzlentin/workflows/package.json` from
    the package imports, so a host that the tool starts loads the entry of the same install.
 3. It loads `dist/tool.js` of that package, the definition of the `workflow` tool in `src/tool.ts`, and registers the
    tool with it.
+4. It loads `inHerdr` of `@vzlentin/harness/herdr`, with the harness that the package imports, for the `/workflows`
+   command. Another copy of harness in the install, such as an older one of pi-agents, may check another variable.
 
 When `@vzlentin/workflows` does not resolve, the load fails and Pi reports the error. In a checkout, `pi/` resolves the
 checkout through the link `pi/node_modules/@vzlentin/workflows`, see the README.
@@ -1841,9 +1850,9 @@ error under the tree, above the help line, until the next good read. Before the 
 view shows `Reading the run...`, or the error of the last read in its place: the stderr of a `show` that fails, such as
 `workflows: no run <run-id>`, or `workflows show did not print the expected JSON`.
 
-Escape closes the view. Enter on an agent runs `workflows attach <run-id> --conversation <id>` when `HERDR_ENV` is set,
-which opens the agent in a Herdr tab. Only `HERDR_ENV` counts, because `workflows attach` opens a Herdr tab only with
-it. Without it, the command notifies `Run in another terminal: workflows attach <run-id> --conversation <id>`.
+Escape closes the view. Enter on an agent runs `workflows attach <run-id> --conversation <id>` when Pi runs in an hc
+terminal, as `inHerdr` of the harness of the workflows package tells from `HC_TERMINAL_ID`, which opens the agent in a
+herdr-app tab, as `workflows attach` does only there. Else, the command notifies `Run in another terminal: workflows attach <run-id> --conversation <id>`.
 When the attach fails, it notifies the error `<stderr>. Run in another terminal: workflows attach <run-id>
 --conversation <id>`.
 
@@ -1919,7 +1928,8 @@ The engine files in `src/`:
   input, and the input of a child run.
 - `launch/args.ts`: the `meta.args` values of the command line, and the texts that they name, and the args of a
   `run()` call, with one check of both against `meta.args`.
-- `launch/worktree.ts`: repository selection, the worktree of a run, made by Herdr or Git, and the name of its branch.
+- `launch/worktree.ts`: repository selection, the worktree of a run, made by Git, and the name of its branch.
+- `herdr.ts`: the hc commands: the pick loop of a run in herdr-app, and the removal of the hc terminals of a run.
 - `run/result.ts`: the title of a run, and the status, report lines and exit code of its result.
 - `workflow/meta.ts`: read and check the `meta` of a workflow script.
 - `workflow/find.ts`: find a script, list the scripts, help and usage, usage errors, and the terminal input and output.

@@ -1,6 +1,6 @@
 /**
- * `workflows prune`: removes the worktrees of the ended runs whose branch GitHub merged, and the old run directories
- * that have no task.
+ * `workflows prune`: removes the worktrees of the ended runs whose branch is merged, or of the given runs, with their hc
+ * terminals, and the old run directories that have no task.
  */
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -11,7 +11,7 @@ import { statePaths } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { failure, git, gitSucceeds, run as runCommand } from "../../git.ts";
-import { removedByHerdr } from "../../herdr.ts";
+import { removeTerminals } from "../../herdr.ts";
 import { repositoryAt } from "../../launch/worktree.ts";
 import { inputWorktree, reading, runTasks } from "../../records/store.ts";
 import { hasEnded, type RunTask, runStatus, taskOf } from "../../run/past.ts";
@@ -20,7 +20,7 @@ import { runsDirectory, STORE_FILE } from "../host.ts";
 import type { Terminal } from "../main.ts";
 import { savedBy, unstartedRuns } from "../saved.ts";
 
-export const PRUNE = "workflows prune [--yes] [--install-hook] [--json]";
+export const PRUNE = "workflows prune [<run-id>...] [--yes] [--install-hook] [--json]";
 
 /** The line of the post-merge hook that `prune --install-hook` writes. */
 const HOOK_LINE = "workflows prune --yes >/dev/null 2>&1 &";
@@ -43,19 +43,22 @@ type Prunable = {
 };
 
 /**
- * Prints the ended runs of the project of the current directory whose worktree is on a branch that GitHub merged. With
- * `--yes`, it removes their worktrees and branches. It also prints the run directories of the project whose run has no
- * task and whose `project` file is more than an hour old, and `--yes` removes them. With `--install-hook`, it writes a
- * post-merge hook that runs `prune --yes`. It reads the project store only, and runs every `gh` call before it removes
- * anything. A run whose run directory has a marker, which an interrupted `prune --yes` left, is pruned again with no `gh`
- * call. It exits 1 when the removal of a run failed, after it tried the other runs.
+ * Prints the ended runs of the project of the current directory whose worktree is on a merged branch: its HEAD is in
+ * `origin/main`, or GitHub merged a pull request at its HEAD. With `--yes`, it removes their hc terminals, worktrees and
+ * branches. It also prints the run directories of the project whose run has no task and whose `project` file is more
+ * than an hour old, and `--yes` removes them. With run IDs, it takes only these runs, with no merge check, and each one
+ * must be an ended run of the project with a worktree on a branch. With `--install-hook`, it writes a post-merge hook
+ * that runs `prune --yes`. It reads the project store only, and runs every `gh` call before it removes anything. A run
+ * whose run directory has a marker, which an interrupted `prune --yes` left, is pruned again with no merge check. It
+ * exits 1 when the removal of a run failed, after it tried the other runs.
  */
 export async function prune(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
-	const { values } = withUsage(
+	const { values, positionals } = withUsage(
 		() =>
 			parseArgs({
 				args: [...args],
 				options: { yes: { type: "boolean" }, "install-hook": { type: "boolean" } },
+				allowPositionals: true,
 				strict: true,
 			}),
 		PRUNE,
@@ -65,29 +68,17 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 	const project = await resolveProject(process.env, terminal.cwd);
 	const store = join(statePaths(project).dir, STORE_FILE);
 	const runs = await reading(store, new Map<string, RunTask[]>(), runTasks);
-	const merged: Prunable[] = [];
-
-	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
-		const marked = await markedRun(id);
-
-		if (marked !== undefined) {
-			merged.push(marked);
-
-			continue;
-		}
-
-		const found = await prunable(id, tasks);
-
-		if (found !== undefined && (await isMerged(found))) merged.push(found);
-	}
+	const given = positionals.length > 0;
+	const taken = given ? await givenRuns(positionals, runs) : await mergedRuns(runs);
 
 	// A run directory gets its task within moments of its `project` file, so a younger one may be a run that starts.
-	const stale = (await unstartedRuns(project, runs)).filter(({ since }) => Date.now() - since > UNSTARTED_GRACE_MS);
+	const unstarted = given ? [] : await unstartedRuns(project, runs);
+	const stale = unstarted.filter(({ since }) => Date.now() - since > UNSTARTED_GRACE_MS);
 	const line = ({ runId, branch, path }: Prunable) => `${runId} ${branch} ${path}`;
 	const pruned: Prunable[] = [];
 	let failed = false;
 
-	for (const found of merged) {
+	for (const found of taken) {
 		if (values.yes) {
 			try {
 				await removeWorktree(found);
@@ -117,6 +108,42 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 	}
 
 	return failed ? 1 : 0;
+}
+
+/** The runs of `runs`, newest first, that have a marker, or that are prunable on a merged branch. */
+async function mergedRuns(runs: ReadonlyMap<string, readonly RunTask[]>): Promise<Prunable[]> {
+	const merged: Prunable[] = [];
+
+	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
+		const marked = await markedRun(id);
+		const found = marked ?? (await prunable(id, tasks));
+
+		if (found !== undefined && (marked !== undefined || (await isMerged(found)))) merged.push(found);
+	}
+
+	return merged;
+}
+
+/**
+ * The runs `ids`, in their order, each a root run of `runs` with a marker, or prunable. It throws for the first ID that
+ * is neither, before anything is removed. It checks an ID against `runs` before it reads a marker, so an ID that is a
+ * path reads no file.
+ */
+async function givenRuns(ids: readonly string[], runs: ReadonlyMap<string, readonly RunTask[]>): Promise<Prunable[]> {
+	const found: Prunable[] = [];
+
+	for (const id of new Set(ids)) {
+		const tasks = runs.get(id);
+		const run = tasks === undefined ? undefined : ((await markedRun(id)) ?? (await prunable(id, tasks)));
+
+		if (run === undefined) {
+			throw new Error(`cannot prune ${id}: not an ended run of this project with a worktree on a branch`);
+		}
+
+		found.push(run);
+	}
+
+	return found;
 }
 
 /**
@@ -156,10 +183,12 @@ async function prunable(id: string, tasks: readonly RunTask[]): Promise<Prunable
 const MERGED = Type.Array(Type.Object({ headRefOid: Type.String() }));
 
 /**
- * Whether GitHub merged a pull request from the branch of `found` at the commit that the branch is on now. A branch name
- * can come back in a later run, so a merged pull request of an earlier commit does not count.
+ * Whether the branch of `found` is merged: the commit that it is on now is in `origin/main`, or GitHub merged a pull
+ * request from the branch at that commit. It calls `gh` only when the commit is not in `origin/main`. A branch name can
+ * come back in a later run, so a merged pull request of an earlier commit does not count.
  */
 async function isMerged({ branch, path }: Prunable): Promise<boolean> {
+	if (await gitSucceeds(path, "merge-base", "--is-ancestor", "HEAD", "origin/main")) return true;
 	const argv = ["pr", "list", "--head", branch, "--state", "merged", "--json", "headRefOid"];
 	const result = await runCommand("gh", argv, path);
 
@@ -173,9 +202,9 @@ async function isMerged({ branch, path }: Prunable): Promise<boolean> {
 }
 
 /**
- * Removes the worktree of `found`, through herdr when a herdr workspace has it open, and then its branch. It first writes
- * the marker, so a later `prune` finishes the work when this one stops after the worktree removal. A failed worktree
- * removal drops the marker, as the worktree stays and may get more work; a failed branch removal keeps it.
+ * Removes the hc terminals of `found`, its worktree, and then its branch. It first writes the marker, so a later `prune`
+ * finishes the work when this one stops after the worktree removal. A failed terminal or worktree removal drops the
+ * marker, as the worktree stays and may get more work; a failed branch removal keeps it.
  */
 async function removeWorktree(found: Prunable): Promise<void> {
 	const { runId, branch, repository, path } = found;
@@ -183,9 +212,9 @@ async function removeWorktree(found: Prunable): Promise<void> {
 	await writeFile(marker, `${JSON.stringify({ branch, repository, path })}\n`);
 
 	try {
-		if ((await repositoryAt(path)) !== undefined && !(await removedByHerdr(path))) {
-			await git(repository, "worktree", "remove", path);
-		}
+		await removeTerminals(runId);
+
+		if ((await repositoryAt(path)) !== undefined) await git(repository, "worktree", "remove", path);
 	} catch (error) {
 		await rm(marker, { force: true });
 
