@@ -191,32 +191,42 @@ declare function commitAll(message: string): Promise<void>;
 declare function squash(start: string, message: string, subject: string): Promise<string>;
 
 /**
- * Writes the commit message of the change from `start` to `HEAD` in one turn of an `implementer` session, squashes the
- * change into one commit with it, then judges the squashed commit in the child run `judge`. Returns the short head, the
- * commit subject and the judge's result. When the turn fails or gives an empty subject, the message is the subject of
- * `item`.
+ * Writes the commit message of the change from `start` to `HEAD` in one turn of an `implementer` session, with the
+ * judge's `findings` lines when there are some, and squashes the change into one commit with it. Returns the short head
+ * and the commit subject. When the turn fails or gives an empty subject, the message is the subject of `item`.
  */
-declare function commitAndJudge(
+declare function commitChange(
 	item: string,
 	start: string,
-): Promise<
-	{ head: string; subject: string } & (
-		| {
-				score: number;
-				answers: ("PASS" | "FAIL")[];
-				findings: string[];
-				divergence: string;
-				judgeError?: undefined;
-		  }
-		| {
-				judgeError: string;
-				score?: undefined;
-				answers?: undefined;
-				findings?: undefined;
-				divergence?: undefined;
-		  }
-	)
->;
+	findings?: readonly string[],
+): Promise<{ head: string; subject: string }>;
+
+/** The judge fields of `judgeCommit`: a score, or the error of the judge. */
+type JudgeFields =
+	| {
+			score: number;
+			answers: ("PASS" | "FAIL")[];
+			findings: string[];
+			divergence: string;
+			judgeError?: undefined;
+	  }
+	| {
+			judgeError: string;
+			score?: undefined;
+			answers?: undefined;
+			findings?: undefined;
+			divergence?: undefined;
+	  };
+
+/** The child run `judge` on the squashed commit from `start`. Returns `committed` with the judge fields. */
+declare function judgeCommit<T extends { head: string; subject: string }>(
+	item: string,
+	start: string,
+	committed: T,
+): Promise<Omit<T, keyof JudgeFields> & JudgeFields>;
+
+/** `commitChange`, then `judgeCommit`. */
+declare function commitAndJudge(item: string, start: string): Promise<{ head: string; subject: string } & JudgeFields>;
 
 /** Writes the binary diff from `from` to `HEAD` to the file `path`, and returns `path`. */
 declare function writePatch(path: string, from: string): Promise<string>;

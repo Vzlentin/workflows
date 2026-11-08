@@ -121,7 +121,9 @@ export const GUIDELINES = [
 		"when the store opened here), and `.session(name)`, whose first `.ask` starts with the notes and whose " +
 		"`.noted(round, prompt, rule)` asks for `{ text, notes }` and keeps the notes. `noteLines(notes)` gives the `#<k> <note>` lines of `notes.text`, without empty lines. `commitAll(message)` stages and commits every change, " +
 		"`squash(start, message, subject)` squashes the commits since `start` into one (no commit when nothing changed), logs it and gives the short head, " +
-		"`commitAndJudge(item, start)` writes the commit message of the change since `start` in an `implementer` turn, squashes the change with it, runs the child run `judge` and gives `{ head, subject, score, answers, findings, judgeError, divergence }`, " +
+		"`commitChange(item, start, findings)` writes the commit message of the change since `start` in an `implementer` turn, with the judge's `findings` lines, squashes the change with it and gives `{ head, subject }`, " +
+		"`judgeCommit(item, start, committed)` runs the child run `judge` and gives `committed`, the result of `commitChange`, with `score, answers, findings, judgeError, divergence`, " +
+		"`commitAndJudge(item, start)` runs `commitChange`, then `judgeCommit`, " +
 		"`writePatch(path, from)` writes the diff from `from` to `HEAD` to `path` and gives `path`, " +
 		"`diffStat(from, to)` gives `+12 -3 in 2 files`, `assertClean()` throws on changes that are not committed, " +
 		"`changeOf(args, { wip })` gives `{ start, intent, checkout, dirty }` of `args.start` and `args.item`, or else of " +

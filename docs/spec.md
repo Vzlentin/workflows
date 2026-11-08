@@ -139,7 +139,7 @@ report line `  lesson <cue>: <lesson> (<evidence>)`, with the whitespace runs of
 other report lines of the script and before `branch <name>`.
 
 On SHIP, a new `implementer` session gets the `commit` prompt with the inputs `item`, `base`, the start commit, and
-`head`, the commit of `HEAD`. It reads `git log base..head` and `git diff base head`, and answers through `respond`
+`head`, the commit of `HEAD`, and no `findings` input, which only a fix round gives (see [Fix](#fix)). It reads `git log base..head` and `git diff base head`, and answers through `respond`
 with `subject` and `body`: a commit message that follows the commit rules of the repository. The run squashes the work
 into one commit with the message `<subject>`, an empty line, then `<body>`:
 
@@ -236,15 +236,18 @@ judge's findings as a list of lines, `message`, the commit message of the implem
 run memory to go on with. It runs the child run `implement` with the work item, then `## Judge findings` with one
 `- <finding>` line for each finding, as the plan, from `--start`. Then a new `implementer` session writes the commit
 message of the change from `--start`, and the run squashes the change into one commit with it, as `ship` does: see
-[Ship](#ship). Then it runs the child run `judge` on the squashed commit.
+[Ship](#ship). The `commit` prompt also gets the input `findings`, the findings joined with newlines, and asks for a
+message that fixes the findings about the commit message. When the squashed commit has the same tree and the same
+message (`%B`) as `HEAD` before the implement, the round is blocked: the run resets `HEAD` back to that commit with
+`git reset --soft` and runs no judge. Else it runs the child run `judge` on the squashed commit.
 
-The result is `{ "status": "judged", "shipped", "reply" }`, with `shipped` the scored result of `commitAndJudge`: `{ "head",
+The result is `{ "status": "judged", "shipped", "reply" }`, with `shipped` the result of `judgeCommit`: `{ "head",
 "subject", "score", "answers", "findings", "divergence" }`, `head` the short squashed commit and `subject` its subject.
 The command prints
-`judge <score>: <subject>` and one line `  <finding>` for each finding, and exits 0. When the implement is blocked, because the item has no change from `--start`, the
-result is `{ "status": "blocked", "reply" }` and the command prints `blocked <subject>` and the reply. When the judge
+`judge <score>: <subject>` and one line `  <finding>` for each finding, and exits 0. When the implement is blocked, because the item has no change from `--start`, or the
+round left the same tree and message as `HEAD` before it, the result is `{ "status": "blocked", "reply" }` and the command prints `blocked <subject>` and the reply. When the judge
 gives no score, the result is `{ "status": "unjudged", "judgeError", "shipped", "reply" }`, with `shipped` the result
-of `commitAndJudge` with its `head` and `subject`, and the command prints `judge failed
+of `judgeCommit`, with its `head` and `subject`, and the command prints `judge failed
 on <subject>: <error>`. When a child run fails, the run does not fail: the result is `{ "status": "failed", "error" }`,
 with `reply` when the implement ended, and the command prints `fix failed on <subject>: <error>`. So a caller saves the
 result, and a resume does not run the fix round again. These three exit 1. A child run that was stopped, whose error
@@ -975,7 +978,9 @@ with. A script's own declaration of the same name takes their place.
 | `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries, and `<path>/notes.keys`, the key `<run-id>/<n>` of each note, whose line is `<k>`. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. A compression request without `nap <a>-<b>` fails with `memo asked for a compression without "nap <a>-<b>": <first line>`, and the 65th request in a row fails with `memo still asks for compressions after 64 summaries`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without its `report` and `memory` keys at any depth, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(name)` is a session of the role `name` whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the role name, and returns the text |
 | `await noteLines(notes)` | The `#<k> <note>` lines of `notes.text`, without empty lines |
 | `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
-| `commitAndJudge(item, start)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base` and `head`, squashes the change into one commit with it, then runs the child run `judge` with `item` and `start`, and returns `{ head, subject, score, answers, findings, judgeError, divergence }`, `head` the short head and `subject` the commit subject. When the turn fails or gives an empty subject, the message is the subject of `item` |
+| `commitChange(item, start, findings)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base`, `head` and `findings`, the lines of `findings` (default `[]`) joined with newlines, squashes the change into one commit with it, and returns `{ head, subject }`, `head` the short head and `subject` the commit subject. When the turn fails or gives an empty subject, the message is the subject of `item` |
+| `judgeCommit(item, start, committed)` | Runs the child run `judge` with `item` and `start`, and returns `committed`, the result of `commitChange`, with the judge fields `score`, `answers`, `findings`, `judgeError` and `divergence` |
+| `commitAndJudge(item, start)` | Runs `commitChange(item, start)`, then `judgeCommit`, and returns `{ head, subject, score, answers, findings, judgeError, divergence }` |
 | `writePatch(path, from)` | Writes `git diff --binary` from `from` to `HEAD` to the file `path`, and returns `path` |
 | `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
 | `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |

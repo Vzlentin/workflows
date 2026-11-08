@@ -1,5 +1,7 @@
-// The fix round of a work item that a judge scored 0: one implement turn on the judge's findings, then
-// `commitAndJudge`: the commit message turn, the squash of the item from `start`, and a new judge of the squashed commit.
+// The fix round of a work item that a judge scored 0: one implement turn on the judge's findings, then `commitChange`:
+// the commit message turn on the judge's findings and the squash of the item from `start`. When the squashed commit has
+// the same tree and message as `HEAD` before the round, the round is `blocked`: `HEAD` goes back and no judge runs.
+// Else `judgeCommit` runs a new judge on the squashed commit.
 // `campaign.js` runs it in its worktree. A caller gives `start`, the commit that the item started from, `findings`, the
 // judge's findings as an array of lines, `message`, the commit message of the implement turn before the squash,
 // `round`, the round of the implementer's notes, and may give `memory`, the `ref` of a run memory to go on with. A
@@ -32,12 +34,23 @@ if (args.message !== undefined) implement.message = args.message
 let reply
 
 try {
+	const before = await sh(["git", "rev-parse", "HEAD"])
 	const fixed = await run("implement", implement)
 	reply = fixed.reply
 
 	if (fixed.status !== "implemented") return { status: fixed.status, reply, report: [`${fixed.status} ${subject}`, reply] }
 
-	const shipped = await commitAndJudge(item, start)
+	const committed = await commitChange(item, start, findings)
+	const messageOf = (commit) => sh(["git", "log", "-1", "--format=%B", commit])
+	const sameTree = await ok(["git", "diff", "--quiet", before, "HEAD"])
+
+	if (sameTree && (await messageOf(before)) === (await messageOf("HEAD"))) {
+		await sh(["git", "reset", "-q", "--soft", before])
+
+		return { status: "blocked", reply, report: [`blocked ${subject}`, reply] }
+	}
+
+	const shipped = await judgeCommit(item, start, committed)
 	const { score, judgeError } = shipped
 
 	if (score === undefined) {

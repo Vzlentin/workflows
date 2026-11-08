@@ -48,6 +48,7 @@ const THIRD = "# Thank the reader\n\nEnd the README with Thanks.";
 
 /** The README of the fix round, different from `FIXED`. */
 const FIX = "# Demo\n\nHello, world\n";
+const COMMA = "# Demo\n\nHello, world!\n";
 
 /** A judge verdict with the score 0. */
 const ZERO = { answers: ["FAIL", ...Array(7).fill("PASS")], findings: ["1 FAIL: the typo stays."] };
@@ -271,6 +272,8 @@ describe("workflows campaign", () => {
 			"harvest",
 		]);
 		expect(run.model.find("implement", 1)?.prompt).toContain("## Judge findings\n\n- 1 FAIL: the typo stays.");
+		expect(run.model.find("commit", 0)?.prompt).not.toContain("## findings");
+		expect(run.model.find("commit", 1)?.prompt).toContain("## findings\n1 FAIL: the typo stays.");
 		expect(run.model.count("rundown")).toBe(0);
 		expect(report[1]).toEqual(itemLine(COMMIT.subject));
 		expect(result.items[0].result).toMatchObject({ status: "shipped", score: 5 / 6, findings: PASSING_JUDGE.findings });
@@ -306,6 +309,19 @@ describe("workflows campaign", () => {
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("1");
 		expect(git(worktree, "log", "-1", "--format=%B").trim()).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
+	});
+
+	it("gives a rundown with no second judge when the fix round leaves the same commit", async () => {
+		const run = await workflows(["campaign", GOAL], {
+			cwd: repo,
+			script: { items: [[FIRST]], edits: [FIXED], judge: [ZERO] },
+		});
+
+		expect(run.code).toBe(3);
+		expect(run.stdout.join("\n")).toContain("Fix round: the fix round left no change");
+		expect(run.model.count("judge")).toBe(1);
+		expect(run.model.count("rundown")).toBe(1);
+		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
 	});
 
 	it("runs no fix round for a blocked item", async () => {
@@ -465,7 +481,7 @@ describe("workflows campaign", () => {
 	it("asks about an item that the fix round keeps at 0, ships it on keep, and repeats no call", async () => {
 		const run = await workflows(["campaign", GOAL], {
 			cwd: repo,
-			script: { items: [[FIRST, SECOND]], edits: [FIXED], judge: [ZERO, ZERO] },
+			script: { items: [[FIRST, SECOND]], edits: [FIXED, FIX], judge: [ZERO, ZERO] },
 		});
 
 		expect(run.code).toBe(3);
@@ -497,7 +513,7 @@ describe("workflows campaign", () => {
 	it("runs a fix round on the words of the user's answer, and ships the item", async () => {
 		const run = await workflows(["campaign", GOAL], {
 			cwd: repo,
-			script: { items: [[FIRST]], edits: [FIXED], judge: [ZERO, ZERO] },
+			script: { items: [[FIRST]], edits: [FIXED, FIX], judge: [ZERO, ZERO] },
 		});
 
 		expect(run.code).toBe(3);
@@ -507,7 +523,7 @@ describe("workflows campaign", () => {
 
 		const fixed = await workflows(["resume", run.id ?? "", "--answer", "fix: Put a comma after Hello", "--json"], {
 			cwd: root,
-			script: { edits: [FIX], commit: [COMMIT] },
+			script: { edits: [COMMA], commit: [COMMIT] },
 		});
 
 		expect(fixed.code).toBe(0);
@@ -516,13 +532,13 @@ describe("workflows campaign", () => {
 		const { result } = JSON.parse(fixed.stdout[1] ?? "");
 		expect(result.items[0].result.score).toBe(5 / 6);
 		expect(result.items[0]).not.toHaveProperty("kept");
-		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(FIX);
+		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(COMMA);
 		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("1");
-		// The first fix round made no change, so the fix round of the answer makes the only fix commit.
+		// Each of the two fix rounds makes one fix commit before its squash.
 		const reflog = git(worktree, "reflog", "--format=%gs");
 		expect(reflog.endsWith(before)).toBe(true);
 		const fixes = reflog.split("\n").filter((line) => line === "commit: fix: judge findings of item 1");
-		expect(fixes).toHaveLength(1);
+		expect(fixes).toHaveLength(2);
 	});
 
 	it("keeps an item whose fix round judge failed, and ships the next item on top of it", async () => {
@@ -559,7 +575,7 @@ describe("workflows campaign", () => {
 	it("asks again on an unknown answer about an item still at 0", async () => {
 		const run = await workflows(["campaign", GOAL], {
 			cwd: repo,
-			script: { items: [[FIRST]], edits: [FIXED], judge: [ZERO, ZERO] },
+			script: { items: [[FIRST]], edits: [FIXED, FIX], judge: [ZERO, ZERO] },
 		});
 
 		expect(run.code).toBe(3);
@@ -725,7 +741,7 @@ describe("workflows campaign", () => {
 
 		const run = await workflows(["campaign", GOAL], {
 			cwd: repo,
-			script: { items: [[FIRST, SECOND]], edits: [FIXED], judge },
+			script: { items: [[FIRST, SECOND]], edits: [FIXED, FIX], judge },
 		});
 
 		expect(run.code).toBe(3);
