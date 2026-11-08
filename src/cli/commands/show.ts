@@ -1,5 +1,6 @@
 /** `workflows show <run-id>`: the steps, the calls or the agents of a run. */
 import { parseArgs } from "node:util";
+import { Value } from "typebox/value";
 import type { ScriptInput } from "../../launch/input.ts";
 import { endMark, Progress } from "../../records/steps.ts";
 import { callRecords, progressEvents, reading, runTasksAndLive } from "../../records/store.ts";
@@ -13,8 +14,9 @@ import {
 	treeLines,
 } from "../../records/tree.ts";
 import type { SavedCall } from "../../run/calls.ts";
-import { hasEnded, hasResult, runStatus, taskOf, taskOutcome } from "../../run/past.ts";
+import { hasEnded, hasResult, type RunStatus, runStatus, taskOf, taskOutcome } from "../../run/past.ts";
 import { reportOf, title as titleOf } from "../../run/result.ts";
+import { WAITING } from "../../tool.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin, endOf } from "../follow.ts";
 import type { Choose, Terminal } from "../main.ts";
@@ -59,7 +61,7 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 	}
 
 	const mode = values.agents ? "agents" : values.calls ? "calls" : "steps";
-	const shown = await readRun(await savedRun(id, SHOW), terminal, mode !== "steps" || json, "be shown");
+	const shown = await readRun(await savedRun(id, SHOW), mode !== "steps" || json, "be shown");
 	const { input, title, status, head, ended, calls, progress, footer, end } = shown;
 	const now = Date.now();
 	const named = { runId: id, workflow: input.name };
@@ -82,17 +84,22 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 	return 0;
 }
 
-/** A saved run as `show` prints it. `end` has the report lines or the error of a run that ended. */
+/**
+ * A saved run as `show` prints it. `run` is its run status, `end` has the report lines or the error of a run that
+ * ended, and `question` is the question of a run that waits for an answer.
+ */
 type ShownRun = {
 	readonly input: ScriptInput;
 	readonly title: string;
 	readonly status: string;
+	readonly run: RunStatus;
 	readonly head: string;
 	readonly ended: boolean;
 	readonly calls: Shown[];
 	readonly progress: Progress;
 	readonly footer: readonly string[];
 	readonly end: { report: string[] } | { error: string } | undefined;
+	readonly question: string | undefined;
 };
 
 /**
@@ -100,7 +107,7 @@ type ShownRun = {
  * reads the call records `withCalls`, or when the run has no steps. `verb` completes the error for a run that cannot
  * be read, as in `cannot <verb>`.
  */
-export async function readRun(run: SavedRun, terminal: Terminal, withCalls: boolean, verb: string): Promise<ShownRun> {
+export async function readRun(run: SavedRun, withCalls: boolean, verb: string): Promise<ShownRun> {
 	const { id } = run;
 
 	const empty = {
@@ -128,11 +135,12 @@ export async function readRun(run: SavedRun, terminal: Terminal, withCalls: bool
 	const completed = hasResult(known);
 	const ended = hasEnded(known);
 	const title = titleOf(input, events);
+	const result = taskOutcome(checkedTask)?.result ?? null;
 	const footer: string[] = [];
 	let end: { report: string[] } | { error: string } | undefined;
 
 	if (completed) {
-		footer.push(...reportOf(input, taskOutcome(checkedTask)?.result ?? null).lines);
+		footer.push(...reportOf(input, result).lines);
 		end = { report: footer };
 	} else if (ended) {
 		const shown = endOf(checkedTask, title, id);
@@ -146,8 +154,9 @@ export async function readRun(run: SavedRun, terminal: Terminal, withCalls: bool
 	if (ended) progress.stop(endMark(known));
 	const head = `run ${id} ${input.name} ${status} ${title}`;
 	const calls = callTree(saved, id, { ended, waiting: known === "waiting", live });
+	const question = known === "waiting" && Value.Check(WAITING, result) ? result.question : undefined;
 
-	return { input, title, status, head, ended, calls, progress, footer, end };
+	return { input, title, status, run: known, head, ended, calls, progress, footer, end, question };
 }
 
 /** The lines of `show` of `read`, each with its agent: the head line, the lines of `showEntries`, then the footer. */
@@ -166,11 +175,11 @@ function shownEntries(read: ShownRun, now: number): TreeEntry[] {
  */
 async function pickAgent(run: SavedRun, terminal: Terminal, choose: Choose): Promise<number> {
 	for (;;) {
-		const read = await readRun(run, terminal, true, "be shown");
+		const read = await readRun(run, true, "be shown");
 		const entries = shownEntries(read, Date.now());
 
 		if (entries.some((entry) => entry.conversation !== undefined)) {
-			const refresh = async () => agentItems(shownEntries(await readRun(run, terminal, true, "be shown"), Date.now()));
+			const refresh = async () => agentItems(shownEntries(await readRun(run, true, "be shown"), Date.now()));
 			const conversation = await choose("Pick an agent:", agentItems(entries), refresh);
 
 			if (conversation === undefined) return 130;

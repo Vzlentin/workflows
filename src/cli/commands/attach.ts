@@ -42,7 +42,7 @@ export async function attach(args: readonly string[], terminal: Terminal): Promi
 	const conversation = wanted === undefined ? undefined : Number(wanted);
 
 	const run = await savedRun(id, ATTACH);
-	const { input, calls } = await readRun(run, terminal, true, "be attached");
+	const { input, calls } = await readRun(run, true, "be attached");
 
 	const list = agentRows(calls, 0, Date.now())
 		.flatMap((row) => (row.kind === "agent" ? [row] : []))

@@ -222,7 +222,7 @@ export function savedOutcome(output: Output, runId: string): Saved {
 }
 
 /** The result of a run that waits on `input(question)`. */
-const WAITING = Type.Object({ status: Type.Literal("waiting"), question: Type.String() });
+export const WAITING = Type.Object({ status: Type.Literal("waiting"), question: Type.String() });
 
 export function summary(outcome: WorkflowOutcome): string {
 	switch (outcome.status) {

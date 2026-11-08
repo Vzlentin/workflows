@@ -4,8 +4,9 @@
  * <run-id>` follows one to its outcome, `workflows stop <run-id>` stops one, `workflows list` prints the runs of the
  * project, `workflows show <run-id>` prints the steps or the calls of one run, `workflows attach <run-id>` opens a
  * session of one run in Pi, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow;
- * `workflows prune` removes the worktrees of the ended runs whose branch is merged. The project store holds the runs; a run directory
- * holds the run's `project` file and whatever the workflow writes there.
+ * `workflows prune` removes the worktrees of the ended runs whose branch is merged, and `workflows web` serves a web page
+ * of the runs and their agents. The project store holds the runs; a run directory holds the run's `project` file and
+ * whatever the workflow writes there.
  */
 import { readFile } from "node:fs/promises";
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -24,6 +25,7 @@ import { type CommandName, SAVE, save } from "./commands/save.ts";
 import { SHOW, show } from "./commands/show.ts";
 import { start } from "./commands/start.ts";
 import { STOP, stop } from "./commands/stop.ts";
+import { WEB, web } from "./commands/web.ts";
 import { GoneRun } from "./saved.ts";
 import type { PickItem } from "./terminal/pick.ts";
 
@@ -87,6 +89,7 @@ const COMMANDS = new Map<string, Command>(
 		save,
 		prune,
 		check,
+		web,
 	} satisfies Record<CommandName, Command>),
 );
 
@@ -107,6 +110,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		SAVE,
 		PRUNE,
 		CHECK,
+		WEB,
 		"workflows --version",
 		"workflows",
 	]

@@ -19,6 +19,11 @@ const ENTRY = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../entry.
 /** The file name of the project store in the state folder of a project. */
 export const STORE_FILE = "durable.sqlite";
 
+/** Sets the entry of workflows in harness's `entries.json`, so that a host that starts from here loads it. */
+export function setWorkflowsEntry(): void {
+	setEntry("workflows", ENTRY);
+}
+
 /**
  * A connection to the host of `project`. With `start`, it starts the host when none runs; without, it is undefined
  * then.
@@ -27,7 +32,7 @@ export async function connectTo(terminal: Terminal, project: string, start: true
 export async function connectTo(terminal: Terminal, project: string, start: boolean): Promise<Client | undefined>;
 export async function connectTo(terminal: Terminal, project: string, start: boolean): Promise<Client | undefined> {
 	// A host that starts from here loads this entry. A host that runs already loads it only after it starts again.
-	if (start) setEntry("workflows", ENTRY);
+	if (start) setWorkflowsEntry();
 
 	const connected =
 		terminal.connect === undefined ? await connect({ project, start }) : await terminal.connect(project, start);
