@@ -250,10 +250,10 @@ export function shellCall(calls: Calls, cwd: string, cmd: string | string[], che
 /**
  * The `input` call with `question`: the saved answer, or the answer of `resume --answer` to this call. Without one, the
  * first such call stops the script with `stop` and leaves its record open, so `resume --answer` finds its key. A second
- * call that would wait rejects, so the answer has one call, and fails the run when the script ends, also when the
- * script caught the error.
+ * call that would wait before the script stops rejects, so the answer has one call, and fails the run when the script
+ * ends, also when the script caught the error.
  */
-export async function inputCall(calls: Calls, question: string, stop: AbortController): Promise<JsonValue> {
+export async function inputCall(calls: Calls, question: string, stop: () => void): Promise<JsonValue> {
 	const args = { question };
 	const key = callKey(calls, "input", args);
 	const start = { kind: "input", args } as const;
@@ -281,7 +281,7 @@ export async function inputCall(calls: Calls, question: string, stop: AbortContr
 	// The effect never resolves: it stops the script, and throws once the end of the script cancels the calls, so the
 	// call records no error and its record stays open.
 	return memoized(calls, key, start, async () => {
-		stop.abort();
+		stop();
 		const signal = calls.context.abortSignal;
 
 		if (signal !== undefined && !signal.aborted) await once(signal, "abort");

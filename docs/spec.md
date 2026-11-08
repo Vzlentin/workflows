@@ -1084,7 +1084,8 @@ stop cut records nothing more.
 ### Input
 
 `input(question)` asks the user a question. The first time the script reaches it, the call records its start, the
-script stops, and the run's task completes with the result `{ "status": "waiting", "question", "report": [question] }`.
+script stops once the code that called `input` reaches its next `await`, and the run's task completes with the result
+`{ "status": "waiting", "question", "report": [question] }`.
 The command prints the question as the report line and exits 3, also with `wait` and with a resume without
 `--answer`, when it cannot ask. A command can ask when stdin and stderr are terminals, without `--json` or
 `--background`, and not after a Ctrl+C; `wait` never asks. Then the command reads one line on the terminal, with its
@@ -1096,7 +1097,8 @@ as its label and the word `waiting`. A waiting run keeps its sessions, as a fail
 
 `workflows resume <run-id> --answer <text>` starts a new task of the run with the answer to the open `input` call: the
 last one that started and did not end. The script runs again from the top, and that call returns `<text>`. A later
-`input` call waits again in the same way. While one `input` call waits, a second one that would wait fails the run with
+`input` call waits again in the same way. While one `input` call waits, a second one that would wait, made before the
+script stops, fails the run with
 `the run waits for an answer to: <question>`, the question of the first; the script cannot catch it. A run without an open `input` call fails with `workflows: run <run-id> has no
 open input call` and exits 1. When the script returns or waits again without the `input` call of the answer, such as
 after a call that failed before now succeeds, the run fails with `resume --answer answered "<question>", which the run

@@ -325,6 +325,16 @@ describe("input", () => {
 		}
 	});
 
+	it("fails a run whose script catches a second input call that comes late in the same turn", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'input("A?")\nfor (let i = 0; i < 3e7; i++);\ntry { await input("B?") } catch { return "caught" }',
+		);
+
+		const run = await workflows(["x.js"], { cwd: root });
+		expect([run.code, run.stderr[0]]).toEqual([1, "failed x: the run waits for an answer to: A?"]);
+	});
+
 	it("reads one committed state of the store in each reading callback", async () => {
 		await writeFile(join(root, "x.js"), 'return "done"');
 		const run = await workflows(["x.js"], { cwd: root });
