@@ -128,6 +128,9 @@ commit).
   The branch is `<workflow>/<runId>` until a shipped run renames it from its commit subject.
 - The run directory is `${XDG_STATE_HOME:-$HOME/.local/state}/workflows/runs/<runId>`. It holds the patches of each
   review, `round-<n>.patch` and `round-<n>-fix.patch`, and for a campaign `item-<n>/`.
+- After a run's branch is merged or fast-forwarded onto `origin/main`, run `workflows prune --yes` (or
+  `workflows prune <runId>... --yes` for a branch that went into another pull request) to remove its worktree, its
+  local branch, and its `hc` space terminals.
 
 ## /skill:workflows
 
