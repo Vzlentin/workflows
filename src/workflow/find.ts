@@ -7,7 +7,7 @@ import { basename, resolve } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { type Bundle, loadBundle } from "./bundle.ts";
-import { type ArgSpec, type Meta, readMeta } from "./meta.ts";
+import { type ArgSpec, type Meta, PLACEMENT_OPTIONS, type PlacementOption, readMeta } from "./meta.ts";
 
 /** Bad command-line usage: the command prints `usage`, or its own usage, and exits 2. */
 export class UsageError extends Error {
@@ -101,6 +101,13 @@ function flagUsage(name: string, spec: ArgSpec): string {
 	return spec.required ? flag : `[${flag}]`;
 }
 
+/** The usage word of each option that a placement adds. */
+const PLACEMENT_USAGE: Readonly<Record<PlacementOption, string>> = {
+	repo: "[--repo <repository>]",
+	base: "[--base <branch>]",
+	branch: "[--branch <name>]",
+};
+
 /** The usage line of the script `name`. */
 export function usageOf(name: string, meta: Meta): string {
 	const entries = Object.entries(meta.args);
@@ -108,7 +115,7 @@ export function usageOf(name: string, meta: Meta): string {
 
 	for (const [arg, spec] of entries) if (!spec.positional) words.push(flagUsage(arg, spec));
 
-	if (meta.worktree) words.push("[--repo <repository>]", "[--base <branch>]", "[--branch <name>]");
+	for (const option of PLACEMENT_OPTIONS[meta.placement]) words.push(PLACEMENT_USAGE[option]);
 	words.push("[--prompts <folder>]", "[--agents <name>=<provider/id>:<thinking>,...]");
 
 	for (const [arg, spec] of entries) {

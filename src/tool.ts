@@ -85,7 +85,9 @@ export const DESCRIPTION =
 	"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
 	"`base`, `rounds` and `prompts`. For `optimize`, which proposes edits to the ship prompts, skills " +
 	"and `AGENTS.md` from past ship runs and keeps them when a blind judge prefers their diffs: `workflow` " +
-	"(`ship`), and optional `runs`, `limit`, `items` and `always-on-max` (the most characters of `AGENTS.md`). " +
+	"(`ship`), and optional `runs`, `limit`, `items` and `always-on-max` (the most characters of `AGENTS.md`). For " +
+	"`thermoloop`, which reviews a change and fixes it in rounds, and `judge`, which scores a change: optional " +
+	"`change`, `item`, `base`, `rounds` (thermoloop only), and `repo`, the path of a local repository to run in. " +
 	"Each `run()` call of a " +
 	"script starts a child run, which a resume of its caller continues. A run goes on in the harness host of the " +
 	"project: Esc detaches from it, and `resume` follows it again. A failed or stopped run stays resumable. With " +
@@ -99,22 +101,23 @@ export const GUIDELINES = [
 	"A `workflow` `script` is the body of an async function, so top-level `await` and `return` work. An optional " +
 		'`export const meta = { args: { <name>: { type: "string" | "number" | "boolean" | "text" } } }` at ' +
 		"the top declares the args, which the tool's `args` fill and the script reads as `args.<name>`.",
-	"Script globals: `agent(prompt, { as, provider, model, thinking, schema })` is one turn in a new session and " +
-		"returns the reply, or the checked answer with a JSON Schema. `session(name)` or " +
-		"`session({ as, provider, model, thinking })` gives a session that keeps its history, and its " +
-		"`.ask(prompt, { schema })` is one turn. `as` is a role name (default `default`): `<repo>/.workflows/agents.json` " +
+	"Script globals are async: a call that runs something returns a promise, so write `await` before it, as in " +
+		"`JSON.parse(await sh(cmd))`. `await agent(prompt, { as, provider, model, thinking, schema })` is one turn in a " +
+		"new session and returns the reply, or the checked answer with a JSON Schema. `session(name)` or " +
+		"`session({ as, provider, model, thinking })` returns at once a session that keeps its history, and " +
+		"`await <session>.ask(prompt, { schema })` is one turn in it. `as` is a role name (default `default`): `<repo>/.workflows/agents.json` " +
 		'and `~/.config/workflows/agents.json` give a name or `"*"` a `model` and `thinking`, else the Pi model; the ' +
-		"run's `agents` arg comes before the tables, and `provider`, `model` and `thinking` override them all. `sh(cmd)` returns stdout and throws on a nonzero exit, `ok(cmd)` returns true on exit 0. " +
-		"`run(name, args)` runs a named workflow as a child run, and `from: <run-id>` in `args` gives it the prompts and " +
-		"agents table of that saved run. `pastRuns(workflow, { runs, limit })` gives the completed root runs of a workflow, " +
-		"newest first, with their item, repository, start, prompts and result. " +
-		"`input(question)` stops the run, and the tool gives a " +
+		"run's `agents` arg comes before the tables, and `provider`, `model` and `thinking` override them all. `await sh(cmd)` returns stdout and throws on a nonzero exit, `await ok(cmd)` returns true on exit 0. " +
+		"`await run(name, args)` runs a named workflow as a child run, and `from: <run-id>` in `args` gives it the prompts " +
+		"and agents table of that saved run. `await pastRuns(workflow, { runs, limit })` gives the completed root runs of a " +
+		"workflow, newest first, with their item, repository, start, prompts and result. " +
+		"`await input(question)` stops the run, and the tool gives a " +
 		"`waiting` result with the question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` " +
-		"then returns the answer. `parallel([() => ...])` and " +
-		"`pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. " +
-		"`phase(title)` and `log(text)` write progress lines, and `title(text)` names the run. `args`, `runId`, `runDir` and `cwd`, the " +
-		"directory of `sh`, are values.",
-	"Script lib: `subjectOf(text)` gives the first non-empty line without leading `#`. `oneLine(text)` gives the text with each whitespace run made one space, trimmed. `memory(path, item)` gives a promise of a run memory in an " +
+		"then returns the answer. `await parallel([() => ...])` and " +
+		"`await pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. " +
+		"`phase(title)` and `log(text)` write progress lines, and `title(text)` names the run; these three need no `await`. " +
+		"`args`, `runId`, `runDir` and `cwd`, the directory of `sh`, are values.",
+	"Script lib: its helpers that run calls return promises, so write `await` before them too. `subjectOf(text)` gives the first non-empty line without leading `#`. `oneLine(text)` gives the text with each whitespace run made one space, trimmed. `memory(path, item)` gives a promise of a run memory in an " +
 		"OptMem store, `<runDir>/memory` without `path`: `.path` and `.item` to pass to a child run, `.note(author, round, notes)`, " +
 		"`.text` (a promise of the notes), `.finish(item, result)` (the result with `lessons`, 0 to 3 " +
 		"`{ cue, lesson, evidence }` of the notes, `[]` with no turn when there are none, and a report line for each one, " +

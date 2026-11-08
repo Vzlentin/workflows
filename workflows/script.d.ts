@@ -22,6 +22,11 @@ type Meta = {
 	 * result with a `subject` renames `<wf>/<run-id>` to the name of `subject`.
 	 */
 	worktree?: boolean;
+	/**
+	 * Adds `--repo`, the top level of a local Git repository, and runs the script in that checkout. `run(name, { repo })`
+	 * does the same for a child run. A script with `worktree` cannot have it.
+	 */
+	repo?: boolean;
 	/** The exit code of each `result.status`. Any other status exits 1, and a result without a status exits 0. */
 	exit?: Record<string, number>;
 };
@@ -35,7 +40,10 @@ declare const runId: string;
 /** The run directory. A script that `run()` starts gets its own value. */
 declare const runDir: string;
 
-/** The directory of `sh` and `ok`: the run's worktree, the caller's directory, or the directory of the command. */
+/**
+ * The directory of `sh` and `ok`: the run's worktree, the repository of `--repo`, the caller's directory, or the
+ * directory of the command.
+ */
 declare const cwd: string;
 
 /** `prompts.<name>(inputs)`: the instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section. */

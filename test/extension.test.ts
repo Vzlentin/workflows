@@ -597,7 +597,7 @@ describe("the workflow tool", () => {
 		expect(globals.length).toBeGreaterThan(10);
 		const guidelines = (tool.promptGuidelines ?? []).join("\n");
 
-		for (const name of globals) expect(guidelines, name).toContain(`\`${name}`);
+		for (const name of globals) expect(guidelines, name).toMatch(new RegExp(`\`(await )?${name}\\b`));
 	});
 
 	it("has the description, parameters and output schema of the tool of the harness host", () => {

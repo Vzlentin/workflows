@@ -51,12 +51,14 @@ Each arg becomes a flag of `workflows <name>`. Give only the args that the user 
 { name: "ship", args: { item: "<absolute path of the work item>", rounds?: 3, base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
 { name: "campaign", args: { goal: "<absolute path of the goal>", rounds?: 3, base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
 { name: "rpi", args: { item: "<absolute path of the work item>", base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
-{ name: "thermoloop", args: { change?: "<change>", item?: "<work item>", base?: "main", rounds?: 3 } }
-{ name: "judge", args: { change?: "<change>", item?: "<work item>", base?: "main" } }
+{ name: "thermoloop", args: { change?: "<change>", item?: "<work item>", base?: "main", rounds?: 3, repo?: "<absolute path of a local repository>" } }
+{ name: "judge", args: { change?: "<change>", item?: "<work item>", base?: "main", repo?: "<absolute path of a local repository>" } }
 ```
 
 - `repo`: without it, the run uses the Git repository of the current directory. A local path uses that repository.
-  Any other value, such as `owner/name`, is cloned with `gh` into the run directory.
+  Write the path in full, with no `~`: the tool does not expand it. For ship, campaign and rpi only, any other value,
+  such as `owner/name`, is cloned with `gh` into the run directory. For thermoloop and judge, `repo` is the top
+  level of a local repository, and the run works in its checkout.
 - `base` defaults to `main`. `rounds` defaults to 3: it is the maximum number of review rounds.
 - `change`, for thermoloop and judge: nothing for the current branch against `base`, a number for that pull request,
   `A..B` for a range, or a ref such as `HEAD~1`. Without `item`, the intent is the pull request, or else the commit

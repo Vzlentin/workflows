@@ -1,7 +1,7 @@
 /**
  * The `meta` of a workflow script. `export const meta = { ... }` at the top of the script declares its arguments,
- * whether it runs in a new worktree, and the exit code of each result status. The meta reader evaluates only that
- * literal, in the sandbox, and never runs the script.
+ * whether it runs in a new worktree or in the repository of `--repo`, and the exit code of each result status. The meta
+ * reader evaluates only that literal, in the sandbox, and never runs the script.
  */
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { type Static, Type } from "typebox";
@@ -24,30 +24,51 @@ export type ArgSpec = {
 	readonly label?: string;
 };
 
+/**
+ * Where a run of a script runs. `here`: in the directory of the command or of the caller. `repo` (`repo: true`): the
+ * run gets `--repo`, the top level of a local Git repository, and runs in that checkout in place of the current
+ * directory. `worktree` (`worktree: true`): the run gets `--repo`, `--base` and `--branch`, a worktree on `--branch` or
+ * `<wf>/<run-id>`, and `args.start`; a result with a `subject` renames `<wf>/<run-id>`.
+ */
+export type Placement = "here" | "repo" | "worktree";
+
+/** A command-line option that a placement adds. */
+export type PlacementOption = "repo" | "base" | "branch";
+
+/** The command-line options that each placement adds, in the order of the usage line. */
+export const PLACEMENT_OPTIONS: Readonly<Record<Placement, readonly PlacementOption[]>> = {
+	here: [],
+	repo: ["repo"],
+	worktree: ["repo", "base", "branch"],
+};
+
 export type Meta = {
 	/** One line for `workflows` and `--help`; empty when the script has none. */
 	readonly description: string;
 	readonly args: Readonly<Record<string, ArgSpec>>;
-	/**
-	 * The run gets `--repo`, `--base` and `--branch`, a worktree on `--branch` or `<wf>/<run-id>`, and `args.start`. A
-	 * result with a `subject` renames `<wf>/<run-id>`.
-	 */
-	readonly worktree: boolean;
+	readonly placement: Placement;
 	/** The exit code of each `result.status`; any other status exits 1, and a result without a status exits 0. */
 	readonly exit: Readonly<Record<string, number>>;
 };
 
-const META_KEYS = new Set(["description", "args", "worktree", "exit"]);
+/** `meta` as a script writes it: the `Meta` of `workflows/script.d.ts`. */
+type Literal = {
+	readonly description?: string;
+	readonly args?: Readonly<Record<string, ArgSpec>>;
+	readonly worktree?: boolean;
+	readonly repo?: boolean;
+	readonly exit?: Readonly<Record<string, number>>;
+};
+
+const META_KEYS = new Set(["description", "args", "worktree", "repo", "exit"]);
 const SPEC_KEYS = new Set(["type", "default", "required", "positional", "label"]);
 export const OBJECT = Type.Object({});
 const DESCRIPTION = Type.Object({ description: Type.Optional(Type.String()) });
 const ARGS = Type.Object({ args: Type.Optional(Type.Record(Type.String(), Type.Unknown())) });
 const WORKTREE = Type.Object({ worktree: Type.Optional(Type.Boolean()) });
+const REPO = Type.Object({ repo: Type.Optional(Type.Boolean()) });
 const EXIT = Type.Object({ exit: Type.Optional(Type.Record(Type.String(), Type.Integer())) });
 const SPEC_TYPE = Type.Object({ type: ARG_TYPE });
-
-/** The arguments that `meta.worktree` gives a script. */
-const WORKTREE_ARGS = ["repo", "base", "branch", "start"];
 
 const SPEC_FLAGS = Type.Object({
 	required: Type.Optional(Type.Boolean()),
@@ -71,8 +92,15 @@ const DEFAULTS = {
 	text: Type.Object({ default: Type.Optional(ARG_VALUES.text.schema) }),
 };
 
+/** The placement of a checked `meta` literal, which never has both `worktree` and `repo`. */
+function placementOf({ worktree, repo }: Pick<Literal, "worktree" | "repo">): Placement {
+	if (worktree === true) return "worktree";
+
+	return repo === true ? "repo" : "here";
+}
+
 /** Throws the first problem of `value` as the `meta` of the script `name`. */
-function checkMeta(value: unknown, name: string): asserts value is Partial<Meta> {
+function checkMeta(value: unknown, name: string): asserts value is Literal {
 	const fail = (problem: string) => new Error(`${name}: ${problem}`);
 
 	if (!Value.Check(OBJECT, value)) throw fail("meta is not an object");
@@ -86,9 +114,17 @@ function checkMeta(value: unknown, name: string): asserts value is Partial<Meta>
 
 	if (!Value.Check(WORKTREE, value)) throw fail("meta.worktree is not a boolean");
 
+	if (!Value.Check(REPO, value)) throw fail("meta.repo is not a boolean");
+
+	if (value.repo === true && value.worktree === true) throw fail("meta.repo is for a script without meta.worktree");
+
 	if (!Value.Check(EXIT, value)) throw fail("meta.exit does not map statuses to integer exit codes");
-	const worktreeArgs = value.worktree === true ? WORKTREE_ARGS : [];
-	const reserved = new Set(["prompts", "agents", "overlay", "checkout", "from", "help", "json", ...worktreeArgs]);
+	const placement = placementOf(value);
+	const reserved = new Set(["prompts", "agents", "overlay", "checkout", "from", "help", "json"]);
+
+	for (const option of PLACEMENT_OPTIONS[placement]) reserved.add(option);
+
+	if (placement === "worktree") reserved.add("start");
 	let positionals = 0;
 
 	for (const [arg, spec] of Object.entries(value.args ?? {})) {
@@ -123,7 +159,7 @@ function checkMeta(value: unknown, name: string): asserts value is Partial<Meta>
 export async function readMeta(source: string, name: string): Promise<Meta> {
 	const found = META.exec(source);
 
-	if (found === null) return { description: "", args: {}, worktree: false, exit: {} };
+	if (found === null) return { description: "", args: {}, placement: "here", exit: {} };
 	const from = found[0].length;
 	let literal: string | undefined;
 
@@ -149,9 +185,9 @@ export async function readMeta(source: string, name: string): Promise<Meta> {
 		if (!result.ok) throw new Error(`${name}: meta: ${result.error.message}`);
 		const { value } = result;
 		checkMeta(value, name);
-		const { description = "", args = {}, worktree = false, exit = {} } = value;
+		const { description = "", args = {}, exit = {} } = value;
 
-		return { description, args, worktree, exit };
+		return { description, args, placement: placementOf(value), exit };
 	} finally {
 		await sandbox.close();
 	}

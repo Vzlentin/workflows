@@ -9,11 +9,11 @@ import type { Overlay } from "@vzlentin/harness/overlay";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { editBundle, loadBundle, type RunBundle } from "../workflow/bundle.ts";
-import { findScript, type Io, problem, usageOf } from "../workflow/find.ts";
+import { findScript, type Io, problem, UsageError, usageOf } from "../workflow/find.ts";
 import { type Meta, OBJECT, readMeta } from "../workflow/meta.ts";
 import { mergeRoles, type Roles } from "../workflow/roles.ts";
 import { checkArgs, parseValues, runArgs } from "./args.ts";
-import { checkoutWorktree, prepareWorktree, type Worktree } from "./worktree.ts";
+import { checkoutWorktree, prepareWorktree, repositoryAt, type Worktree } from "./worktree.ts";
 
 /** A run ID, `<UTC timestamp>-<8 hex>`, so a sort by name is a sort by start time. */
 export function newRunId(): string {
@@ -33,19 +33,50 @@ export function subject(item: string): string {
 }
 
 /** The args that place a `meta.worktree` child run, and its `start`. */
-const PLACEMENT: Meta["args"] = {
+const WORKTREE_PLACEMENT: Meta["args"] = {
 	repo: { type: "string" },
 	base: { type: "string" },
 	branch: { type: "string" },
 	start: { type: "string" },
 };
 
-/** The values that `PLACEMENT` lets through. */
-type Placement = { readonly repo?: string; readonly base?: string; readonly branch?: string; readonly start?: string };
+/** The values that `WORKTREE_PLACEMENT` lets through. */
+type WorktreePlacement = {
+	readonly repo?: string;
+	readonly base?: string;
+	readonly branch?: string;
+	readonly start?: string;
+};
 
-/** Throws as `checkArgs` when a key of `PLACEMENT` in `given` is not a string. */
-function checkPlacement(name: string, given: JsonObject): asserts given is JsonObject & Placement {
-	checkArgs(name, PLACEMENT, given);
+/** Throws as `checkArgs` when a key of `WORKTREE_PLACEMENT` in `given` is not a string. */
+function checkWorktreePlacement(name: string, given: JsonObject): asserts given is JsonObject & WorktreePlacement {
+	checkArgs(name, WORKTREE_PLACEMENT, given);
+}
+
+/** The arg that places a `meta.repo` child run. */
+const REPO: Meta["args"] = { repo: { type: "string" } };
+
+/** Throws as `checkArgs` when `repo` in `given` is not a string. */
+function checkRepo(name: string, given: JsonObject): asserts given is JsonObject & { readonly repo?: string } {
+	checkArgs(name, REPO, given);
+}
+
+/**
+ * The directory and the args of a child run of the script `name` without `meta.worktree`. With `meta.repo`, `repo` is
+ * not an arg: it places the child at the top level of that local repository, resolved from the caller's `cwd`. Without
+ * `repo`, or without `meta.repo`, the child runs in the caller's `cwd`.
+ */
+async function placeChild(name: string, meta: Meta, given: JsonObject, cwd: string) {
+	if (meta.placement !== "repo") return { args: given, cwd };
+	checkRepo(name, given);
+	const { repo, ...args } = given;
+
+	if (repo === undefined) return { args, cwd };
+	const top = await repositoryAt(resolve(cwd, repo));
+
+	if (top === undefined) throw new Error(`run ${name}: repo ${repo} is not the top level of a Git repository`);
+
+	return { args, cwd: top };
 }
 
 const OVERLAY = Type.Record(Type.String(), Type.Union([Type.String(), Type.Null()]));
@@ -59,6 +90,10 @@ type Args = {
 	readonly agents: Roles;
 	/** The files that the run's sessions see in place of the disk, by path: see `Spec.overlay` of the children library. */
 	readonly overlay?: Overlay;
+	/**
+	 * `--repo`: with `meta.worktree`, the repository of the new worktree; with `meta.repo`, the run's directory; undefined
+	 * for any other script.
+	 */
 	readonly repo: string | undefined;
 	readonly base: string;
 	readonly branch: string | undefined;
@@ -70,6 +105,10 @@ export type ScriptInput = Omit<Args, "repo" | "base" | "branch"> & {
 	/** The run ID of the root run: the run itself, or the root run of the caller of a child run. */
 	readonly root: string;
 	readonly runDir: string;
+	/**
+	 * The directory of the run: the directory of the command or of the caller, or the top level of the repository of
+	 * `--repo` or of `repo` with `meta.repo`. A run with `worktree` runs in the worktree in its place.
+	 */
 	readonly cwd: string;
 	/** The conversation whose `workflow` tool started the run, from `PI_SESSION_ID`; a child run has its caller's. */
 	readonly parent?: string;
@@ -99,28 +138,53 @@ export async function parse([word = "", ...argv]: readonly string[], io: Io): Pr
 	return { name: found.name, args, meta, bundle: resolved, agents, repo, base, branch };
 }
 
-/** The input saved before execution starts; with `meta.worktree`, it selects the repository of the new worktree. */
+/**
+ * The input saved before execution starts. With `meta.worktree`, it selects the repository of the new worktree. With
+ * `meta.repo` and `repo`, the run's directory is the top level of the local repository `repo`, resolved from
+ * `run.cwd`; any other `repo` throws `UsageError` with the usage of the script.
+ */
 export async function prepare(
 	{ repo, base, branch, ...args }: Args,
 	run: Run & { readonly root?: string },
 ): Promise<ScriptInput> {
 	const own = { ...args, runId: run.id, root: run.root ?? run.id, runDir: run.directory, cwd: run.cwd };
 
-	if (!args.meta.worktree) return own;
-	const clone = join(run.directory, "repository");
+	switch (args.meta.placement) {
+		case "here":
+			return own;
 
-	return { ...own, worktree: await prepareWorktree(args.name, { repo, base, branch }, run.id, run.cwd, clone) };
+		case "repo": {
+			if (repo === undefined) return own;
+			const top = await repositoryAt(resolve(run.cwd, repo));
+
+			if (top === undefined) {
+				const usage = usageOf(args.name, args.meta);
+
+				throw new UsageError(`--repo ${repo} is not the top level of a Git repository`, usage);
+			}
+
+			return { ...own, cwd: top };
+		}
+
+		case "worktree": {
+			const clone = join(run.directory, "repository");
+			const worktree = await prepareWorktree(args.name, { repo, base, branch }, run.id, run.cwd, clone);
+
+			return { ...own, worktree };
+		}
+	}
 }
 
 /**
  * The input of the child run `run` of a `run(name, args)` call: the script `name` of the caller's `bundle`, with the
  * `meta` defaults and the given args. With `meta.worktree`, `repo`, `base` and `branch` are not args: with `repo`, the
  * child gets its own worktree from `repo` and `base`, and otherwise it runs in the caller's directory, as a script
- * without `meta.worktree` does. A script without `meta.worktree` gets with `checkout` a worktree on that existing branch
- * of the caller's repository, and then needs `start` as a string. `runArgs` checks the declared args against `meta`
- * before any worktree exists. With `meta.worktree`, `checkArgs` first checks `repo`, `base`, `branch` and `start` as
- * optional strings, with the same wording. `prompts` and `overlay` edit the bundle as `editBundle` says. The child
- * keeps `agents`, the caller's run layer.
+ * without `meta.worktree` does. With `meta.repo`, `repo` is not an arg either: it places the child as `placeChild` says.
+ * A script without `meta.worktree` gets with `checkout` a worktree on that existing branch of the repository of its
+ * directory, and then needs `start` as a string. `runArgs` checks the declared args against `meta` before any worktree
+ * exists. With `meta.worktree`, `checkArgs` first checks `repo`, `base`, `branch` and `start` as optional strings, with
+ * the same wording. `prompts` and `overlay` edit the bundle as `editBundle` says. The child keeps `agents`, the caller's
+ * run layer.
  */
 export async function childInput(
 	request: {
@@ -163,20 +227,21 @@ export async function childInput(
 		throw new Error(`run ${name}: checkout is not a branch name`);
 	}
 
-	if (!meta.worktree) {
-		const input = { ...script, args: runArgs(name, meta, given), ...here };
+	if (meta.placement !== "worktree") {
+		const placed = await placeChild(name, meta, given, run.cwd);
+		const input = { ...script, args: runArgs(name, meta, placed.args), ...here, cwd: placed.cwd };
 
 		if (checkout === undefined) return input;
 
 		if (!Value.Check(Type.String(), given.start)) throw new Error(`run ${name}: checkout needs start as a string`);
 
-		return { ...input, worktree: await checkoutWorktree(name, checkout, given.start, run.id, run.cwd) };
+		return { ...input, worktree: await checkoutWorktree(name, checkout, given.start, run.id, placed.cwd) };
 	}
 
 	if (checkout !== undefined) throw new Error(`run ${name}: checkout is for a script without meta.worktree`);
 
 	// `repo`, `base` and `branch` place a `meta.worktree` run; any other script gets them as args.
-	checkPlacement(name, given);
+	checkWorktreePlacement(name, given);
 	const { repo, base = "main", branch, ...own } = given;
 	const input = { ...script, args: runArgs(name, meta, own) };
 

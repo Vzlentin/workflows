@@ -104,6 +104,18 @@ describe("workflows thermoloop", () => {
 		expect(await readFile(join(repo, "README.md"), "utf8")).toBe(THANKED);
 	});
 
+	it("reviews and fixes the branch of the repository of --repo from another directory", async () => {
+		const run = await workflows(["thermoloop", "--repo", "repo", "--item", ITEM], {
+			cwd: root,
+			script: { edits: [THANKED], verdicts: ["FIX", "SHIP"] },
+		});
+
+		expect(run.code).toBe(0);
+		expect(run.stdout[1]).toBe(`approved ${ITEM} in 2 rounds, ${git(repo, "rev-parse", "--short", "HEAD")}`);
+		expect(git(repo, "log", "--format=%s", `${start}..HEAD`)).toBe("round 2\nfix the typo");
+		expect(await readFile(join(repo, "README.md"), "utf8")).toBe(THANKED);
+	});
+
 	it("makes no harvest turn and gives no lessons when a SHIP leaves the memory empty", async () => {
 		const run = await workflows(["thermoloop", "--json", "--item", ITEM], {
 			cwd: repo,

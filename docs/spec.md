@@ -260,6 +260,7 @@ workflows thermoloop
 workflows thermoloop 74
 workflows thermoloop HEAD~1 --item "Fix the README typo"
 workflows thermoloop main..feature --rounds 2
+workflows thermoloop --repo ../calibre --item item.md
 ```
 
 `workflows thermoloop [<change>]`, the review loop, reviews a change and fixes it in rounds until the reviewer
@@ -294,6 +295,9 @@ checked out at <path>; run there`, and a change that does not end on a branch, s
 `<end> is not a branch, and the fixes need one`. A change with no change from its start fails with `no change from
 <from>`, where `<from>` is `--base`, the base branch of the pull request, or `A` of the range or the ref, before any
 session.
+
+`--repo <path>` runs the thermoloop in the checkout of a local repository, with the rules of `repo: true` in
+[`meta`](#meta). The change, the `wip` commit and the round commits are those of that checkout.
 
 Each round reviews the change, and on FIX the reviewer's handoff is implemented as the next round. So each round
 has the step `round <n>/<rounds>: review`, after `round <n>/<rounds>: implement` from round 2.
@@ -334,7 +338,7 @@ workflows judge main..feature --item item.md
 ```
 
 `workflows judge [<change>]` judges a change against its intent with the fixed rubric of `prompts/judge.md`. The
-change, `--base`, `--item`, the intent and the worktree of a change on another branch are as in
+change, `--base`, `--repo`, `--item`, the intent and the worktree of a change on another branch are as in
 [Thermoloop](#thermoloop). The judge changes nothing: it commits no `wip`, and when the checkout has changes that are
 not committed, it logs `uncommitted changes are not judged` and adds that line at the end of its report. `ship`, `fix` and
 `campaign` give it `start`, the commit that the change starts from, and `item`. Its step is `judge`. As a child
@@ -738,6 +742,15 @@ export const meta = {
   `herdr worktree create` made the worktree of a root run and printed the workspace ID that it opened, in
   `result.workspace.workspace_id`, the run types the pick loop in that workspace: see [Herdr](#herdr). At the end, the
   run names the branch: see [Branch name](#branch-name).
+- `repo: true` adds `--repo <path>`, and shows `[--repo <repository>]` in the usage line. `<path>` is relative to the
+  current directory and must be the top level of a local Git repository. The run's directory is that top level in
+  place of the current directory, so `sh`, `ok`, the sessions and the child runs work in that checkout, as
+  `cd <path> && workflows <wf>` would. There is no clone and no new worktree. Any other value fails with
+  `--repo <value> is not the top level of a Git repository` and the usage line of the script, and exits 2, before the
+  run starts. The project folder `.workflows/`, the files of the arguments, `--prompts` and the harness project stay
+  those of the current directory. `judge` and `thermoloop` have it. `repo` is then a reserved argument name. A `repo`
+  that is not a boolean fails with `meta.repo is not a boolean`, and `repo: true` with `worktree: true` fails with
+  `meta.repo is for a script without meta.worktree`.
 - `exit` maps `result.status` to the exit code. A script declares each status that it returns, also the ones that exit
   0. A status that `exit` does not declare exits 1, and a result without `status` exits 0. The status `waiting` always
   exits 3, whatever `exit` says. See [Input](#input).
@@ -866,25 +879,31 @@ continues it. It runs in the same host, and its `phase` and `log` lines go to th
 current step: see [Progress](#progress). It prints no `run` or report line. Its sessions belong to the child run, and
 its end ends them as the end of a run does: see [Runs in the harness host](#runs-in-the-harness-host).
 
-- The child's args are the defaults of its `meta.args`, then `args`, without `prompts`, `overlay`, `from` and `checkout`, and with `meta.worktree` also
-  without `repo`, `base` and `branch`. Before any worktree or child task exists, the declared args are checked against
-  `meta.args` in declaration order, and the first problem fails the call with `run <name>: <arg> <problem>`: a
-  `required` arg without a value `is missing`, and a value of the wrong type (`null` included) `must be a positive
-  integer`, `must be a string` or `must be a boolean`. A `boolean` that is not given gets no `false`. An undeclared
-  arg is not checked and reaches the script.
+- The child's args are the defaults of its `meta.args`, then `args`, without `prompts`, `overlay`, `from` and
+  `checkout`, with `meta.worktree` also without `repo`, `base` and `branch`, and with `meta.repo` also without `repo`.
+  Before any worktree or child task exists, the declared args are checked against `meta.args` in declaration order,
+  and the first problem fails the call with `run <name>: <arg> <problem>`: a `required` arg without a value
+  `is missing`, and a value of the wrong type (`null` included) `must be a positive integer`, `must be a string` or
+  `must be a boolean`. A `boolean` that is not given gets no `false`. An undeclared arg is not checked and reaches the
+  script.
 - With `meta.worktree` and `args.repo`, the child gets a new worktree on `<name>/<child-id>`, next to the repository as
   for `meta.worktree`, in
   the repository of `args.repo` from the caller's directory, at `args.base` (default `main`), and `args.start`.
-  `args.branch` works as `--branch`. Without `args.repo`, or without `meta.worktree`, the child runs in the caller's
-  directory, and `start` is an ordinary arg.
+  `args.branch` works as `--branch`. Without `args.repo`, or without `meta.worktree` and `meta.repo`, the child runs
+  in the caller's directory, and `start` is an ordinary arg.
   With `meta.worktree`, a `repo`, `base`, `branch` or `start` that is not a string fails the call with
   `run <name>: <key> must be a string`.
-- Without `meta.worktree`, `args.checkout` names an existing branch of the repository of the caller's directory. It is
-  not an arg: the child runs in a new worktree on that branch, next to the repository as for `meta.worktree`, and
-  `start` stays an ordinary arg. `checkout` needs `start`, the commit that the change on the branch starts from: a
-  `start` that is not a string fails the call with `run <name>: checkout needs start as a string`. A branch that does
-  not exist fails the call with `run <name>: no branch <branch>`, and `checkout` fails the call for a script with
-  `meta.worktree`. `checkout` is a reserved argument name.
+- With `meta.repo` and `args.repo`, the child runs at the top level of the local repository of `args.repo`, resolved
+  from the caller's directory, as `--repo` places a root run. A `repo` that is not a string fails the call with
+  `run <name>: repo must be a string`, and a path that is not the top level of a Git repository fails it with
+  `run <name>: repo <value> is not the top level of a Git repository`.
+- Without `meta.worktree`, `args.checkout` names an existing branch of the repository of the child's directory: the
+  caller's directory, or the repository of `args.repo` with `meta.repo`. It is not an arg: the child runs in a new
+  worktree on that branch, next to the repository as for `meta.worktree`, and `start` stays an ordinary arg.
+  `checkout` needs `start`, the commit that the change on the branch starts from: a `start` that is not a string fails
+  the call with `run <name>: checkout needs start as a string`. A branch that does not exist fails the call with
+  `run <name>: no branch <branch>`, and `checkout` fails the call for a script with `meta.worktree`. `checkout` is a
+  reserved argument name.
 - `args.prompts` maps prompt names to template texts. Each text, without frontmatter and the last `$@`, replaces that
   prompt in the child run only. A name with no prompt fails the call.
 - `args.overlay` maps paths to texts or `null`. A value of another shape fails the call with
@@ -918,20 +937,22 @@ child run that ended without a result continues in a new task.
 ### The script API
 
 A script is the body of an async function: top-level `await` and `return` work. Each call below is a durable call,
-except `phase`, `log`, `args`, `cwd` and `prompts`.
+except `phase`, `log`, `args`, `cwd` and `prompts`. The calls are async: a call that runs something returns a promise,
+so a script writes `await` before it, as in `JSON.parse(await sh(cmd))`. `session(name)` returns its session at once,
+and `phase`, `log` and `title` need no `await`.
 
 | Global | Meaning |
 |---|---|
 | `args` | The argument values of `meta.args`, and `start` with `worktree: true` |
 | `runId`, `runDir` | The run ID and the run directory. A script that `run()` starts gets its own values |
-| `cwd` | The directory where `sh` and `ok` run: the run's worktree, the caller's directory, or the directory of the command |
-| `agent(prompt, { as, provider, model, thinking, schema })` | One turn in a new session of the role `as` (default `default`), with the model of [Roles](#roles). Returns the reply text, or the answer with `schema` |
-| `session(name)`, `session({ as, provider, model, thinking })` | A new session of the role `name` or `as` (default `default`), with the model of [Roles](#roles). `.ask(prompt, { schema })` is one turn in it |
-| `sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
-| `ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
-| `run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
-| `pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow` in the project store. See [Past runs](#past-runs) |
-| `input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`, or of the `workflow` tool with `resume` and `answer`. See [Input](#input) |
+| `cwd` | The directory where `sh` and `ok` run: the run's worktree, the repository of `--repo`, the caller's directory, or the directory of the command |
+| `await agent(prompt, { as, provider, model, thinking, schema })` | One turn in a new session of the role `as` (default `default`), with the model of [Roles](#roles). Returns the reply text, or the answer with `schema` |
+| `session(name)`, `session({ as, provider, model, thinking })` | A new session of the role `name` or `as` (default `default`), with the model of [Roles](#roles), returned at once. `await <session>.ask(prompt, { schema })` is one turn in it |
+| `await sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
+| `await ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
+| `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
+| `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow` in the project store. See [Past runs](#past-runs) |
+| `await input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`, or of the `workflow` tool with `resume` and `answer`. See [Input](#input) |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
 | `title(text)` | Name the run `text` in `list`, `show` and the end lines, in place of the subject of its first `text` argument; the last call wins. `changeOf` calls it with the subject of the intent |
@@ -971,21 +992,21 @@ with. A script's own declaration of the same name takes their place.
 
 | Global | Meaning |
 |---|---|
-| `parallel(thunks)` | Runs the functions at once and returns their results |
-| `pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
+| `await parallel(thunks)` | Runs the functions at once and returns their results |
+| `await pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
 | `subjectOf(text)` | The first non-empty line of `text`, without leading `#` |
 | `oneLine(text)` | `text` with each whitespace run made one space, trimmed |
 | `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries, and `<path>/notes.keys`, the key `<run-id>/<n>` of each note, whose line is `<k>`. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. A compression request without `nap <a>-<b>` fails with `memo asked for a compression without "nap <a>-<b>": <first line>`, and the 65th request in a row fails with `memo still asks for compressions after 64 summaries`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without its `report` and `memory` keys at any depth, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(name)` is a session of the role `name` whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the role name, and returns the text |
 | `await noteLines(notes)` | The `#<k> <note>` lines of `notes.text`, without empty lines |
-| `commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
-| `commitChange(item, start, findings)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base`, `head` and `findings`, the lines of `findings` (default `[]`) joined with newlines, squashes the change into one commit with it, and returns `{ head, subject }`, `head` the short head and `subject` the commit subject. When the turn fails or gives an empty subject, the message is the subject of `item` |
-| `judgeCommit(item, start, committed)` | Runs the child run `judge` with `item` and `start`, and returns `committed`, the result of `commitChange`, with the judge fields `score`, `answers`, `findings`, `judgeError` and `divergence` |
-| `commitAndJudge(item, start)` | Runs `commitChange(item, start)`, then `judgeCommit`, and returns `{ head, subject, score, answers, findings, judgeError, divergence }` |
-| `writePatch(path, from)` | Writes `git diff --binary` from `from` to `HEAD` to the file `path`, and returns `path` |
-| `diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
-| `assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |
-| `changeOf(args, { wip })` | `{ start, intent, checkout, dirty }` of the change of a script's `args`. With `args.start`, it is `args.start` and `args.item`, not dirty, with no Git step. Else it is the change that `args.change` points at from `args.base`, with the rules of [Thermoloop](#thermoloop), and it calls `title` with the subject of the intent: `start` is the start commit, `intent` is `args.item` or the pull request or the commit messages, `checkout` is the branch of a change that must run in a worktree of its own, and `dirty` says that the checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip` |
-| `inCheckout(name, change, args)` | Runs the script `name` again as a child run with `args`, the `item` and `start` of the change, and `checkout`, the branch of the change, and returns its result with the last report line `worktree <path>`, the worktree that has the branch |
+| `await commitAll(message)` | Stages every change, and commits it as `message` when something is staged |
+| `await commitChange(item, start, findings)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base`, `head` and `findings`, the lines of `findings` (default `[]`) joined with newlines, squashes the change into one commit with it, and returns `{ head, subject }`, `head` the short head and `subject` the commit subject. When the turn fails or gives an empty subject, the message is the subject of `item` |
+| `await judgeCommit(item, start, committed)` | Runs the child run `judge` with `item` and `start`, and returns `committed`, the result of `commitChange`, with the judge fields `score`, `answers`, `findings`, `judgeError` and `divergence` |
+| `await commitAndJudge(item, start)` | Runs `commitChange(item, start)`, then `judgeCommit`, and returns `{ head, subject, score, answers, findings, judgeError, divergence }` |
+| `await writePatch(path, from)` | Writes `git diff --binary` from `from` to `HEAD` to the file `path`, and returns `path` |
+| `await diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
+| `await assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |
+| `await changeOf(args, { wip })` | `{ start, intent, checkout, dirty }` of the change of a script's `args`. With `args.start`, it is `args.start` and `args.item`, not dirty, with no Git step. Else it is the change that `args.change` points at from `args.base`, with the rules of [Thermoloop](#thermoloop), and it calls `title` with the subject of the intent: `start` is the start commit, `intent` is `args.item` or the pull request or the commit messages, `checkout` is the branch of a change that must run in a worktree of its own, and `dirty` says that the checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip` |
+| `await inCheckout(name, change, args)` | Runs the script `name` again as a child run with `args`, the `item` and `start` of the change, and `checkout`, the branch of the change, and returns its result with the last report line `worktree <path>`, the worktree that has the branch |
 
 `workflows/script.d.ts` declares these globals for editors. A project gets the same completion when it copies
 `script.d.ts` and `jsconfig.json` into `.workflows/`, and copies them again after an upgrade of the package.
@@ -1057,7 +1078,8 @@ anthropic/nope`.
 
 Before the run starts, it saves the script, every `scripts/*.js` of the package and the project, the lib, the instructions
 of every prompt, the merged agents table, the run layer of `--agents` apart from it (`agents`, `{}` without the
-option), the args and the current directory. Resume and `run()` use these saved
+option), the args and the directory of the run: the current directory, or the repository of `--repo` with
+`repo: true`. Resume and `run()` use these saved
 inputs, so a later edit of a script, prompt or `agents.json`, in the package, the user folder or `.workflows/`,
 changes only new runs. The shared instructions of the sessions are not saved: a resume uses the text of the loaded
 code.

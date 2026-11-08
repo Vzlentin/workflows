@@ -1511,6 +1511,46 @@ return args`,
 		expect(JSON.parse(run.stdout[1] ?? "")).toEqual({ repo: "r", base: "dev", branch: "b", runId: expect.any(String) });
 	});
 
+	it("runs a meta.repo script and its child run in the repository of repo", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const top = await realpath(repo);
+		const scripts = join(root, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "here.js"), "export const meta = { repo: true }\nreturn cwd");
+
+		const own = await workflows(["here", "--repo", "repo"], { cwd: root });
+		expect([own.code, own.stdout.at(-1)]).toEqual([0, top]);
+
+		const parent = (value: string) =>
+			writeFile(join(scripts, "parent.js"), `return await run("here", { repo: ${value} })`);
+
+		await parent('"repo"');
+		const child = await workflows(["parent"], { cwd: root });
+		expect([child.code, child.stdout.at(-1)]).toEqual([0, top]);
+
+		await parent("1");
+		const number = await workflows(["parent"], { cwd: root });
+		expect([number.code, number.stderr[0]]).toEqual([1, "failed parent: run here: repo must be a string"]);
+
+		await parent('"nowhere"');
+		const nowhere = await workflows(["parent"], { cwd: root });
+		expect([nowhere.code, nowhere.stderr[0]]).toEqual([
+			1,
+			"failed parent: run here: repo nowhere is not the top level of a Git repository",
+		]);
+
+		for (const [meta, problem] of [
+			["{ repo: true, worktree: true }", "meta.repo is for a script without meta.worktree"],
+			['{ repo: "yes" }', "meta.repo is not a boolean"],
+			['{ repo: true, args: { repo: { type: "string" } } }', "meta.args.repo is a reserved name"],
+		]) {
+			await writeFile(join(scripts, "here.js"), `export const meta = ${meta}\nreturn cwd`);
+			const bad = await workflows(["here"], { cwd: root });
+			expect([bad.code, bad.stderr[0]], meta).toEqual([1, `workflows: here: ${problem}`]);
+		}
+	});
+
 	it("runs a child run with checkout in a worktree on that existing branch, with the start of its caller", async () => {
 		const repo = join(root, "repo");
 		const start = await repository(repo);

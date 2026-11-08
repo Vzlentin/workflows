@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { type Io, labelOf, UsageError, withUsage } from "../workflow/find.ts";
-import { ARG_VALUES, type ArgSpec, type Meta } from "../workflow/meta.ts";
+import { ARG_VALUES, type ArgSpec, type Meta, PLACEMENT_OPTIONS, type PlacementOption } from "../workflow/meta.ts";
 import { parseRoles, type Roles } from "../workflow/roles.ts";
 
 /**
@@ -95,9 +95,13 @@ export function runArgs(name: string, meta: Meta, given: JsonObject): JsonObject
 	return args;
 }
 
-/** The checked `meta.args` values of `argv`; texts are read after every other value is checked. */
+/**
+ * The checked `meta.args` values of `argv`; texts are read after every other value is checked. `repo`, `base` and
+ * `branch` are the options that the placement of `meta` adds, and are undefined without them; `base` is `main` then.
+ */
 export async function parseValues(meta: Meta, argv: readonly string[], io: Io, usage: string) {
 	const entries = Object.entries(meta.args);
+	const placed = PLACEMENT_OPTIONS[meta.placement];
 
 	const options: Record<string, { type: "string" | "boolean" }> = {};
 	options.prompts = { type: "string" };
@@ -105,11 +109,7 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 	options.help = { type: "boolean" };
 	options.json = { type: "boolean" };
 
-	if (meta.worktree) {
-		options.repo = { type: "string" };
-		options.base = { type: "string" };
-		options.branch = { type: "string" };
-	}
+	for (const option of placed) options[option] = { type: "string" };
 
 	for (const [arg, spec] of entries) options[arg] = { type: spec.type === "boolean" ? "boolean" : "string" };
 	const positional = entries.find(([, spec]) => spec.positional);
@@ -176,13 +176,16 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 
 	if (missing !== undefined) throw new UsageError(`missing ${labelOf(...missing)}`);
 
+	const placedOption = (option: PlacementOption) =>
+		placed.includes(option) ? stringOption(values[option]) : undefined;
+
 	return {
 		args,
 		prompts: stringOption(values.prompts),
 		agents,
-		repo: stringOption(values.repo),
-		base: stringOption(values.base) ?? "main",
-		branch: stringOption(values.branch),
+		repo: placedOption("repo"),
+		base: placedOption("base") ?? "main",
+		branch: placedOption("branch"),
 	};
 }
 
