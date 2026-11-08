@@ -2,7 +2,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Client, connect } from "@vzlentin/harness/client";
+import { type Client, connect, hostStopped } from "@vzlentin/harness/client";
 import { setEntry } from "@vzlentin/harness/entries";
 import type { TaskInfo } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
@@ -98,12 +98,6 @@ export function checkVersion(client: Client, project: string, info: TaskInfo): v
 		`This host ran version ${info.version} of ${TASK.name}, not ${TASK.version}: stop the host so it starts again with the installed version (${hostOf(client, project)})`,
 	);
 }
-
-/** The error of harness's client when the host closes the connection, such as when it stops. */
-const HOST_CLOSED = "The harness host closed the connection";
-
-/** True for the error of a request whose host stopped: its connection closed. */
-export const hostStopped = (cause: unknown) => cause instanceof Error && cause.message === HOST_CLOSED;
 
 /**
  * Aborts the task of `key` in the host of `project`, and gives its end once it ended. The host commits the abort before

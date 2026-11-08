@@ -53,7 +53,11 @@ function session(options = "default") {
 const agent = (prompt, { schema, ...options } = {}) => session(options).ask(prompt, { schema });
 const sh = async (cmd) => (await __sh(cmd)).stdout.replace(/\\n$/, "");
 const ok = async (cmd) => (await __ok(cmd)).code === 0;
-const input = (question) => __input(question);
+const input = (question) => {
+	const answer = __input(question);
+	Promise.resolve().then(() => __turnEnd());
+	return answer;
+};
 const pastRuns = (workflow, options) => __pastRuns(workflow, options ?? {});
 const run = async (name, args = {}) => {
 	const { runId: id, result } = await __run(name, args);
@@ -123,6 +127,9 @@ export async function runScript(
 
 	const running = new Set<Promise<unknown>>();
 	const stop = new AbortController();
+	// Resolves when the code that called `input` reaches its next `await`, so that the `input` calls of that code reach
+	// the host before a waiting call stops the script, which drops the messages that come later.
+	let turnEnd = Promise.withResolvers<void>();
 
 	const global = <T extends TSchema>(
 		name: string,
@@ -175,7 +182,15 @@ export async function runScript(
 					childResult(calls, cwd, key, name, values),
 				);
 			}),
-			global("__input", INPUT_ARGS, ([question]) => inputCall(calls, question, stop)),
+			global("__input", INPUT_ARGS, ([question]) => {
+				const turn = turnEnd.promise;
+
+				return inputCall(calls, question, () => void turn.then(() => stop.abort()));
+			}),
+			global("__turnEnd", Type.Tuple([]), () => {
+				turnEnd.resolve();
+				turnEnd = Promise.withResolvers<void>();
+			}),
 			global("__pastRuns", PAST_ARGS, ([workflow, options]) => pastRunsCall(calls, workflow, options)),
 			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
 			global("log", LINE_ARGS, ([line]) => progress.lines.push({ kind: "log", text: String(line), at: Date.now() })),

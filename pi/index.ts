@@ -11,7 +11,6 @@ import { basename, delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { type Static, Type } from "@earendil-works/pi-ai";
 import type {
 	AgentToolResult,
 	ExtensionAPI,
@@ -23,6 +22,7 @@ import type {
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Output, Saved, WorkflowCall, WorkflowOutcome } from "../src/tool.ts";
 import { MARKS, parseRun, RunView } from "./run-view.ts";

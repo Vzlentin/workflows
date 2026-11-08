@@ -16,12 +16,12 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId, EntryRecord, JsonObject } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { REMINDER } from "@vzlentin/harness/answer";
 import { connect } from "@vzlentin/harness/client";
 import { entriesPath } from "@vzlentin/harness/entries";
 import { type Host, runHost } from "@vzlentin/harness/host";
 import { projectDir } from "@vzlentin/harness/projects";
 import { AGENT_HANDLE, type Request, statePaths } from "@vzlentin/harness/protocol";
+import { REMINDER } from "@vzlentin/harness/respond";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { CtrlC } from "../src/cli/follow.ts";
@@ -890,7 +890,7 @@ export async function workflows(
 
 /** A harness host of `project` in this process, with `models`. */
 export async function startHost(project = "main", models = createModels()): Promise<Host> {
-	const host = await runHost({ stateDir: statePaths(project).dir, project, cwd: projectDir(project), models });
+	const host = await runHost({ project, cwd: projectDir(project), models });
 
 	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
 
@@ -986,6 +986,16 @@ export async function postedResults(project = "main"): Promise<PostedResult[]> {
 		entry.kind === "workflows.result"
 			? [{ text: (entry.model ?? []).map(textOf).join("\n"), data: entry.data, conversation: entry.conversationId }]
 			: [],
+	);
+}
+
+/** A catch-up entry of the project agent: its text and its data. */
+export type CatchUp = { readonly text: string; readonly data: unknown };
+
+/** The `harness.catchup` entries in the transcripts of the store of `project`. */
+export async function catchUps(project = "main"): Promise<CatchUp[]> {
+	return (await entriesOf(project)).flatMap((entry) =>
+		entry.kind === "harness.catchup" ? [{ text: (entry.model ?? []).map(textOf).join("\n"), data: entry.data }] : [],
 	);
 }
 

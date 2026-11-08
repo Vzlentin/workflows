@@ -5,7 +5,7 @@
  */
 import { once } from "node:events";
 import type { Context } from "@earendil-works/chord";
-import type { ConversationHandle } from "@earendil-works/pi-durable";
+import type { ConversationHandle, Submission, SubmissionDraft, SubmissionId, Tx } from "@earendil-works/pi-durable";
 import type { Host as HarnessHost } from "@vzlentin/harness/host";
 import workflowsEntry from "../src/entry.ts";
 import type { Host, Runtime } from "../src/run/version.ts";
@@ -42,18 +42,36 @@ async function stop(signal: AbortSignal): Promise<void> {
 	if (!signal.aborted) await once(signal, "abort");
 }
 
+/**
+ * `handle.submit`, which stops the host after a submission with a context. A submission inside a commit `tx` goes to
+ * `handle` as it is.
+ */
+function stoppingSubmit(handle: ConversationHandle, signal: AbortSignal): ConversationHandle["submit"] {
+	function submit(submission: SubmissionDraft, at: Context): Promise<Submission>;
+	function submit(tx: Tx, submission: SubmissionDraft): Promise<SubmissionId>;
+	async function submit(first: SubmissionDraft | Tx, second: Context | SubmissionDraft) {
+		if (!("type" in first)) {
+			// SAFETY: the overloads pair a `Tx`, which has no `type`, with a draft.
+			return handle.submit(first, second as SubmissionDraft);
+		}
+
+		// SAFETY: the overloads pair a draft, which has a `type`, with a context.
+		const submitted = await handle.submit(first, second as Context);
+		await stop(signal);
+
+		return submitted;
+	}
+
+	return submit;
+}
+
 /** The conversation `id` of `runtime`, whose `submit` stops the host after the submission. */
 async function conversationOf(runtime: Runtime, id: ConversationId, context: Context) {
 	const handle = await runtime.conversation(id, context);
 
 	if (handle === undefined) return undefined;
 
-	return withMethod(handle, "submit", async (submission, at) => {
-		const submitted = await handle.submit(submission, at);
-		await stop(runtime.signal);
-
-		return submitted;
-	});
+	return withMethod(handle, "submit", stoppingSubmit(handle, runtime.signal));
 }
 
 export default function stopEntry(host: Host) {

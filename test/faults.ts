@@ -1,5 +1,5 @@
 /** Faults that a test puts on the requests of the command to its host, as when the connection closes at a bad time. */
-import type { Client } from "@vzlentin/harness/client";
+import { type Client, HOST_CLOSED } from "@vzlentin/harness/client";
 import type { Replies, Request } from "@vzlentin/harness/protocol";
 
 /** The faults of the requests of one command. */
@@ -29,7 +29,7 @@ export function faultState(faults: Faults): FaultState {
 }
 
 /** The error of harness's client when the host closes the connection. */
-const closed = () => new Error("The harness host closed the connection");
+const closed = () => new Error(HOST_CLOSED);
 
 /** Puts the faults of `faults` on the requests of `client`, a connection of the command whose fault state is `state`. */
 export function addFaults(client: Client, faults: Faults, state: FaultState): void {

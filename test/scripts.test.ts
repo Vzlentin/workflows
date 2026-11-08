@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { REMINDER } from "@vzlentin/harness/answer";
+import { REMINDER } from "@vzlentin/harness/respond";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AGENTS } from "../pi/run-view.ts";
@@ -323,6 +323,16 @@ describe("input", () => {
 		} finally {
 			await host.close();
 		}
+	});
+
+	it("fails a run whose script catches a second input call that comes late in the same turn", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'input("A?")\nfor (let i = 0; i < 3e7; i++);\ntry { await input("B?") } catch { return "caught" }',
+		);
+
+		const run = await workflows(["x.js"], { cwd: root });
+		expect([run.code, run.stderr[0]]).toEqual([1, "failed x: the run waits for an answer to: A?"]);
 	});
 
 	it("reads one committed state of the store in each reading callback", async () => {
@@ -814,7 +824,7 @@ return findings[0].finding`,
 		const run = await workflows(["x.js"], { cwd: root });
 		expect(run.stderr).toEqual([]);
 		expect(run.stdout).toEqual([`run ${run.id}`, "y"]);
-		expect(run.model.results[0]).toContain("must have required properties finding");
+		expect(run.model.results[0]).toContain("findings.0.finding: missing");
 		expect(run.model.calls[0]?.prompt).toBe(prompt);
 		expect(run.model.calls[0]?.sections.answer_schema).toContain(JSON.stringify(schema));
 	});
