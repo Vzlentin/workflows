@@ -305,7 +305,7 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Split this goal into work items.", "split"],
 	["Give a rundown of the failed work item", "rundown"],
 	["Compress memories", "summarize"],
-	["Propose edits to the workflow prompts and agent profiles", "inv"],
+	["Propose edits to the workflow prompts of", "inv"],
 	["Propose edits to the practitioner skills", "dom"],
 	["Compose one candidate overlay", "compose"],
 	["Compare two diffs of one work item", "select"],
@@ -337,6 +337,8 @@ export type Script = {
 	readonly judge?: Verdict | string | readonly (Verdict | string)[];
 	/** The `respond` answer of the commit message turn; a list gives one for each commit call. */
 	readonly commit?: Commit | readonly Commit[];
+	/** The judge fails question 1 when the commit at HEAD of its directory has no message body. */
+	readonly needsBody?: boolean;
 	/** The work items of each split answer; a missing answer repeats the last one. */
 	readonly items?: readonly (readonly string[])[];
 	/** The subject of each split answer, `docs: readme` by default. */
@@ -384,7 +386,11 @@ export type Compose = {
 	}[];
 };
 
-export type Verdict = { readonly answers: readonly ("PASS" | "FAIL")[]; readonly findings: readonly string[] };
+export type Verdict = {
+	readonly answers: readonly ("PASS" | "FAIL")[];
+	readonly findings: readonly string[];
+	readonly divergence?: string;
+};
 
 export const PASSING_JUDGE: Verdict = {
 	answers: ["PASS", "PASS", "PASS", "FAIL", "PASS", "PASS", "PASS", "PASS"],
@@ -408,12 +414,17 @@ export const LESSONED: Lesson = {
 
 export const LESSON_LINE = "  lesson When a typo fix: grep the whole repository instead of one file. (run:x #1)";
 
-export type Commit = { readonly subject: string; readonly body: string; readonly divergence: string };
+export type Commit = { readonly subject: string; readonly body: string };
 
 export const COMMIT: Commit = {
 	subject: "fix: correct the README typo",
 	body: "The README said wrold. It now says world.",
-	divergence: "none",
+};
+
+/** The judge's answer to a commit with no message body, for `needsBody`. */
+const NO_BODY: Verdict = {
+	answers: ["FAIL", "PASS", "PASS", "PASS", "PASS", "PASS", "PASS", "PASS"],
+	findings: ["1 FAIL: the commit message has no body"],
 };
 
 /**
@@ -462,6 +473,12 @@ export class FakeModel {
 	readonly #respond: FauxResponseFactory = async (context, options, _state, model) => {
 		const messages = context.messages;
 		const system = messages.flatMap((message) => (message.role === "system" ? [message] : []));
+
+		const sections: Record<string, string | null> = Object.assign(
+			{},
+			...system.map((message) => message.sections ?? {}),
+		);
+
 		const tools: string[] = [];
 
 		for (const message of system) {
@@ -488,7 +505,7 @@ export class FakeModel {
 
 			if (scripted !== undefined) return scripted;
 
-			if (kind === "judge") return this.#judge();
+			if (kind === "judge") return this.#judge(sections.cwd);
 
 			if (kind === "review") return this.#review();
 
@@ -530,7 +547,7 @@ export class FakeModel {
 			model: model.id,
 			thinking: options?.reasoning,
 			tools,
-			sections: Object.assign({}, ...system.map((message) => message.sections ?? {})),
+			sections,
 			prompt: lastUser === undefined ? "" : textOf(lastUser),
 		});
 		const probe = fauxToolCall("probe", {});
@@ -570,7 +587,7 @@ export class FakeModel {
 			case "review":
 				return this.#review();
 			case "judge":
-				return this.#judge();
+				return this.#judge(sections.cwd);
 			case "commit":
 				return this.#commit();
 			case "split":
@@ -631,11 +648,22 @@ export class FakeModel {
 		}
 	};
 
-	#judge(): AssistantMessage {
+	/** The scripted verdict of the nth judge, or `NO_BODY` with `needsBody` when the commit in its directory has no body. */
+	#judge(cwd: string | null | undefined): AssistantMessage {
 		const { judge: scripted = PASSING_JUDGE } = this.#script;
 		const judge = Array.isArray(scripted) ? (scripted[this.count("judge") - 1] ?? PASSING_JUDGE) : scripted;
 
-		return Value.Check(Type.String(), judge) ? fauxAssistantMessage(judge) : respond(judge);
+		if (Value.Check(Type.String(), judge)) return fauxAssistantMessage(judge);
+
+		if (this.#script.needsBody) {
+			const dir = /^<cwd>\n(.*)\n<\/cwd>$/s.exec(cwd ?? "")?.[1];
+
+			if (dir === undefined) throw new Error("the judge has no cwd section");
+
+			if (git(dir, "log", "-1", "--format=%b") === "") return respond({ divergence: "none", ...NO_BODY });
+		}
+
+		return respond({ divergence: "none", ...judge });
 	}
 
 	/** The findings of the nth review, then its scripted verdict through `respond`. */

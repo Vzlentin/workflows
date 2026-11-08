@@ -11,6 +11,7 @@ import { Value } from "typebox/value";
 import { editBundle, loadBundle, type RunBundle } from "../workflow/bundle.ts";
 import { findScript, type Io, problem, usageOf } from "../workflow/find.ts";
 import { type Meta, OBJECT, readMeta } from "../workflow/meta.ts";
+import { mergeRoles, type Roles } from "../workflow/roles.ts";
 import { checkArgs, parseValues, runArgs } from "./args.ts";
 import { checkoutWorktree, prepareWorktree, type Worktree } from "./worktree.ts";
 
@@ -54,6 +55,8 @@ type Args = {
 	readonly args: JsonObject;
 	readonly meta: Meta;
 	readonly bundle: RunBundle;
+	/** The run layer of the roles, from `--agents`, which `bundle.agents` already has above the tables. */
+	readonly agents: Roles;
 	/** The files that the run's sessions see in place of the disk, by path: see `Spec.overlay` of the children library. */
 	readonly overlay?: Overlay;
 	readonly repo: string | undefined;
@@ -85,13 +88,15 @@ export const USAGE = "workflows <workflow | file.js | -> [<text>] [--<arg> <valu
 export async function parse([word = "", ...argv]: readonly string[], io: Io): Promise<Args> {
 	const found = await findScript(word, io);
 	const meta = await readMeta(found.source, found.name);
-	const { args, prompts, repo, base, branch } = await parseValues(meta, argv, io, usageOf(found.name, meta));
+	const { args, prompts, agents, repo, base, branch } = await parseValues(meta, argv, io, usageOf(found.name, meta));
 	const bundle = prompts === undefined ? found.bundle : await loadBundle(io.cwd, resolve(io.cwd, prompts));
-	const failed = problem(found.source, found.name, bundle, false);
+	const failed = problem(found.source, found.name, bundle);
 
 	if (failed !== undefined) throw new Error(failed);
 
-	return { name: found.name, args, meta, bundle: { ...bundle, main: found.source }, repo, base, branch };
+	const resolved = { ...bundle, agents: mergeRoles([agents, bundle.agents]), main: found.source };
+
+	return { name: found.name, args, meta, bundle: resolved, agents, repo, base, branch };
 }
 
 /** The input saved before execution starts; with `meta.worktree`, it selects the repository of the new worktree. */
@@ -114,18 +119,20 @@ export async function prepare(
  * without `meta.worktree` does. A script without `meta.worktree` gets with `checkout` a worktree on that existing branch
  * of the caller's repository, and then needs `start` as a string. `runArgs` checks the declared args against `meta`
  * before any worktree exists. With `meta.worktree`, `checkArgs` first checks `repo`, `base`, `branch` and `start` as
- * optional strings, with the same wording. `prompts` and `overlay` edit the bundle as `editBundle` says.
+ * optional strings, with the same wording. `prompts` and `overlay` edit the bundle as `editBundle` says. The child
+ * keeps `agents`, the caller's run layer.
  */
 export async function childInput(
 	request: {
 		readonly name: string;
 		readonly args: JsonObject;
 		readonly bundle: RunBundle;
+		readonly agents: Roles;
 		readonly overlay?: Overlay | undefined;
 	},
 	run: Run & { readonly root: string },
 ): Promise<ScriptInput> {
-	const { name, bundle } = request;
+	const { name, bundle, agents } = request;
 	const source = Object.hasOwn(bundle.scripts, name) ? bundle.scripts[name] : undefined;
 
 	if (source === undefined) throw new Error(`no workflow ${name}`);
@@ -144,7 +151,8 @@ export async function childInput(
 	const bundled = {
 		name,
 		meta,
-		bundle: { ...bundle, prompts: edited.prompts, agents: edited.agents, main: source },
+		bundle: { ...bundle, prompts: edited.prompts, main: source },
+		agents,
 	};
 
 	const script = Object.keys(edited.files).length === 0 ? bundled : { ...bundled, overlay: edited.files };

@@ -88,7 +88,7 @@ function checkMeta(value: unknown, name: string): asserts value is Partial<Meta>
 
 	if (!Value.Check(EXIT, value)) throw fail("meta.exit does not map statuses to integer exit codes");
 	const worktreeArgs = value.worktree === true ? WORKTREE_ARGS : [];
-	const reserved = new Set(["prompts", "overlay", "checkout", "from", "help", "json", ...worktreeArgs]);
+	const reserved = new Set(["prompts", "agents", "overlay", "checkout", "from", "help", "json", ...worktreeArgs]);
 	let positionals = 0;
 
 	for (const [arg, spec] of Object.entries(value.args ?? {})) {

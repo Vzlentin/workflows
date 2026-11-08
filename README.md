@@ -2,14 +2,14 @@
 
 `workflows` runs durable, resumable coding workflows on [Pi](https://github.com/earendil-works/pi) sessions:
 
-- `workflows ship` ships one work item onto a new Git branch: research, plan, implement, review, judge.
+- `workflows ship` ships one work item onto a new Git branch: research, plan, implement, review, one squashed commit, judge.
 - `workflows campaign` splits a goal into work items and ships them one after another onto one branch, then judges
-  the whole branch.
+  the whole branch. It asks you about an item that is still at judge 0 after its fix round.
 - `workflows thermoloop` reviews a change (your current branch, a PR, a ref or a range) and fixes it in rounds;
   `workflows judge` judges it.
 - `workflows rpi` researches, plans and implements a work item in one commit, with no review.
 - `workflows implement` implements a plan in the current directory and commits it.
-- `workflows optimize ship` proposes edits to the ship prompts, profiles, skills and `AGENTS.md` from past ship runs,
+- `workflows optimize ship` proposes edits to the ship prompts, skills and `AGENTS.md` from past ship runs,
   and keeps them when a blind judge prefers the diffs they give.
 - `workflows <script>` runs your own workflow script.
 
@@ -65,6 +65,7 @@ harness host that runs keeps the old version until it stops. It stops by itself 
 workflows ship plan.md                     # ship the work item in plan.md
 workflows ship "Fix the README typo"
 workflows campaign goal.md
+workflows ship plan.md --agents '*=anthropic/claude-opus-5-5:high,judge=:low'   # the models of the run's roles
 workflows thermoloop                       # review and fix the current branch against main
 workflows thermoloop 74                    # review and fix PR 74 in a worktree of its own
 workflows optimize ship --limit 4          # propose and test surface edits from past ship runs
@@ -79,12 +80,12 @@ workflows ship --help
 ```
 
 A ship run works on the branch `ship/<run-id>` in its own worktree, and renames the branch at the end. It does not push
-and does not open a pull request. Its result gives the divergence: one line that tells how the commit differs from the
-work item, or `none`. A ship that is not a campaign item, and a campaign, also give `lessons`: up to 3 lessons of its
+and does not open a pull request. The judge judges the squashed commit and its message. Its result gives the divergence:
+one line from the judge that tells how the commit differs from the work item, or `none`. A ship that is not a campaign item, and a campaign, also give `lessons`: up to 3 lessons of its
 notes, each also a report line. [docs/spec.md](docs/spec.md) describes all the commands, workflow scripts, runs, and the
 `workflow` tool.
 
-Optimize uses past completed ship runs as baselines. An INV turn edits prompts and profiles, a DOM turn edits skills and
+Optimize uses past completed ship runs as baselines. An INV turn edits prompts, a DOM turn edits skills and
 `AGENTS.md`. A Compose turn merges the edits into one candidate overlay, with one `kept`, `revised` or `dropped` note
 per edit in the report and in `notes.txt`. An invalid candidate does not roll out; the run reports each reason: a skill
 without `name` or `description`, a removed skill that `AGENTS.md` names, or an `AGENTS.md` longer than `--always-on-max`

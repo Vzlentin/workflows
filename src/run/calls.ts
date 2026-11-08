@@ -12,6 +12,7 @@ import { type Static, Type } from "typebox";
 import { failure, run } from "../git.ts";
 import { JSON_VALUE } from "../tool.ts";
 import type { RunBundle } from "../workflow/bundle.ts";
+import type { Roles } from "../workflow/roles.ts";
 import { type PastOptions, pastRuns, scanRuns } from "./past.ts";
 import { addProgress, checkpointWhen, type PhaseLines, takeLines } from "./progress.ts";
 import type { Host, Runtime, ScriptTask } from "./version.ts";
@@ -28,6 +29,8 @@ export type ScriptRun = {
 	readonly root: string;
 	readonly runDir: string;
 	readonly bundle: RunBundle;
+	/** The run layer of the roles, from `--agents`, which its child runs keep. */
+	readonly agents: Roles;
 	readonly args: JsonObject;
 	/** The files that the sessions of the run see in place of the disk, from the saved input. */
 	readonly overlay: Overlay | undefined;

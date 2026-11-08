@@ -294,8 +294,8 @@ function works(call: Shown, siblings: readonly Shown[]): boolean {
 }
 
 /**
- * The profile and conversation of a session, the profile of the session for an ask, the command on one line for `sh` and
- * `ok`, the workflow and child run ID for `run`, and the question on one line for `input`.
+ * The role name and conversation of a session, the role name of the session for an ask, the command on one line for
+ * `sh` and `ok`, the workflow and child run ID for `run`, and the question on one line for `input`.
  */
 function labelOf(
 	{ kind, args, conversation }: Pick<SavedCall, "kind" | "args" | "conversation">,

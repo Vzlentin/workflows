@@ -6,6 +6,7 @@ import type { JsonObject, TaskId } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { childInput, newRunId, type ScriptInput } from "../launch/input.ts";
+import { mergeRoles, type Roles } from "../workflow/roles.ts";
 import { CallDoc, type Calls, type Child, type ScriptRun } from "./calls.ts";
 import { hasEnded, hasResult, runStatus, savedBundle, scanRuns } from "./past.ts";
 import { current, type Runtime, type ScriptTask, TASK } from "./version.ts";
@@ -19,12 +20,15 @@ async function savedChild(runtime: Runtime, key: string, context: Context): Prom
 	return child;
 }
 
-/** `bundle` with the prompts and profiles of the saved root run `from`, the arg of the `run` call of `name`. */
+/**
+ * `bundle` with the prompts and agents table of the saved root run `from`, the arg of the `run` call of `name`, and
+ * the run layer `agents` above that table.
+ */
 async function bundleFrom(
 	runtime: Runtime,
 	context: Context,
 	name: string,
-	bundle: ScriptInput["bundle"],
+	{ bundle, agents }: { readonly bundle: ScriptInput["bundle"]; readonly agents: Roles },
 	from: JsonValue | undefined,
 ): Promise<ScriptInput["bundle"]> {
 	if (from === undefined) return bundle;
@@ -34,14 +38,15 @@ async function bundleFrom(
 
 	if (saved === undefined) throw new Error(`run ${name}: no run ${from}`);
 
-	return { ...bundle, prompts: saved.prompts, agents: saved.agents };
+	return { ...bundle, prompts: saved.prompts, agents: mergeRoles([agents, saved.agents]) };
 }
 
 /**
  * A new child task of the `run` call `key` of the task of `runtime`, in a new run directory next to `script.runDir`,
  * whose calls run in `cwd`. The record of the call saves the child's run ID before its run directory exists, so a
  * rerun after a crash reuses the ID and its directory. The commit that creates the task also saves it in the record
- * of the call. With `from`, the child gets the prompts and profiles of that saved root run in place of the caller's.
+ * of the call. With `from`, the child gets the prompts and agents table of that saved root run in place of the
+ * caller's, with the caller's run layer above that table.
  */
 async function startChild(
 	runtime: Runtime,
@@ -52,7 +57,7 @@ async function startChild(
 	name: string,
 	{ from, ...args }: JsonObject,
 ): Promise<Child> {
-	const bundle = await bundleFrom(runtime, context, name, script.bundle, from);
+	const bundle = await bundleFrom(runtime, context, name, script, from);
 	const id = await childRunId(runtime, context, key);
 	const directory = join(dirname(script.runDir), id);
 	// A crash can leave the directory of an earlier try, with part of its clone.
@@ -61,7 +66,7 @@ async function startChild(
 
 	try {
 		const run = { id, directory, cwd, root: script.root };
-		const own = await childInput({ name, args, bundle, overlay: script.overlay }, run);
+		const own = await childInput({ name, args, bundle, agents: script.agents, overlay: script.overlay }, run);
 		const { session: parent, herdr, definition } = script;
 		const parented = parent === undefined ? own : { ...own, parent };
 		const input = herdr === undefined ? parented : { ...parented, herdr };

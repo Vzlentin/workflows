@@ -27,7 +27,7 @@ describe("workflows judge", () => {
 		expect(run.code).toBe(0);
 		const { result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(report).toEqual([`judge 0.83: ${ITEM}`, `  ${PASSING_JUDGE.findings[0]}`]);
-		expect(result).toMatchObject({ status: "judged", score: 5 / 6, ...PASSING_JUDGE });
+		expect(result).toMatchObject({ status: "judged", score: 5 / 6, ...PASSING_JUDGE, divergence: "none" });
 		expect(result).not.toHaveProperty("commit");
 		expect(progressOf(run.stderr)).toEqual(["✓ judge", "  judge 0.83"]);
 		expect(run.model.calls.map((call) => call.kind)).toEqual(["judge"]);
