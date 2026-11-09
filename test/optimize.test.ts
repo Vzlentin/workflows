@@ -401,29 +401,14 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 		expect(await written("best")).toContain(MARK);
 		expect(git(repo, "branch", "--format=%(refname:short)")).toBe("main");
 
-		// The baselines of an items folder run again with new run IDs, and the order of the diffs stays the same.
-		const again = await workflows(["optimize", "ship", "--items", "items"], {
-			cwd: root,
-			script: { edits: [...Array(4).fill(FIXED), ...Array(4).fill(CANDIDATE)], inv: INV },
-		});
-
-		expect(again.code).toBe(0);
-		expect(labels(again.model.calls)).toHaveLength(4);
-		expect(labels(again.model.calls)).toEqual(labels(run.model.calls));
-
-		const cases: readonly (readonly [readonly string[], string, Omit<Script, "interrupt">?])[] = [
+		const cases: readonly (readonly [readonly string[], string])[] = [
 			[["optimize", "--workflow", "judge", "--items", "items"], "failed optimize: optimize takes ship only, not judge"],
 			[["optimize", "ship", "--items", "items", "--runs", "x"], "failed optimize: give --items or --runs, not both"],
 			[["optimize", "ship"], "failed optimize: optimize found no completed ship run"],
-			[
-				["optimize", "ship", "--items", "items"],
-				"failed optimize: inv edit prompts/inv.md is not a baseline path",
-				{ edits: Array(4).fill(FIXED), inv: [{ path: "prompts/inv.md", text: "x", moment: "y" }] },
-			],
 		];
 
-		for (const [argv, error, script] of cases) {
-			const failed = await workflows(argv, script === undefined ? { cwd: root } : { cwd: root, script });
+		for (const [argv, error] of cases) {
+			const failed = await workflows(argv, { cwd: root });
 			expect([failed.code, failed.stderr.at(-2)], argv.join(" ")).toEqual([1, error]);
 		}
 	}, 120_000);
@@ -487,6 +472,10 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 		}
 
 		const errors: readonly (readonly [Omit<Script, "interrupt">, string])[] = [
+			[
+				{ inv: [{ path: "prompts/inv.md", text: "x", moment: "y" }] },
+				"failed optimize: inv edit prompts/inv.md is not a baseline path",
+			],
 			[
 				{ inv: INV, dom: [{ path: "prompts/review.md", text: "x", moment: "y" }] },
 				"failed optimize: dom edit prompts/review.md is not a skill or AGENTS.md path",

@@ -901,8 +901,7 @@ describe("workflows campaign", () => {
 	});
 
 	it("runs the rename step again on resume after the rename was done", async () => {
-		const gate = join(root, "gate");
-		await gateGit(root, "branch -m docs/readme", gate);
+		const gate = await gateGit(root, "branch -m docs/readme");
 		const interrupt = new AbortController();
 
 		const pending = workflows(["campaign", GOAL], {
@@ -911,15 +910,14 @@ describe("workflows campaign", () => {
 			script: { items: [[FIRST]], edits: [FIXED] },
 		});
 
-		while (!existsSync(`${gate}.reached`)) await new Promise((resolve) => setTimeout(resolve, 10));
+		await gate.reached();
 		interrupt.abort();
 		const first = await pending;
-		await writeFile(`${gate}.open`, "");
+		await gate.open();
 		expect(first.code).toBe(130);
 		const worktree = worktreeOf(first.id);
 		expect(git(worktree, "branch", "--show-current")).toBe("docs/readme");
 
-		await rm(join(root, "bin", "git"));
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: repo });
 		expect(resumed.code).toBe(0);
 		expect(resumed.model.calls).toEqual([]);

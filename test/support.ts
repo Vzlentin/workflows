@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -73,12 +73,16 @@ export async function fake(root: string, name: string, body: string): Promise<vo
 }
 
 /**
- * Writes `bin/git` of the sandbox `root`, which runs Git. After `git <command>` succeeds, it creates `<gate>.reached`
- * and waits until `<gate>.open` exists, or until the sandbox is gone. The wait does not depend on the hooks that a
- * version of Git calls.
+ * Writes `bin/git` of the sandbox `root`, which runs Git. After `git <command>` succeeds, it waits until the gate opens
+ * or the sandbox is gone. `reached` waits until Git waits at the gate, and `open` opens it. The wait does not depend on
+ * the hooks that a version of Git calls.
  */
-export async function gateGit(root: string, command: string, gate: string): Promise<void> {
+export async function gateGit(
+	root: string,
+	command: string,
+): Promise<{ reached: () => Promise<void>; open: () => Promise<void> }> {
 	const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8", env: ENVIRONMENT }).trim();
+	const gate = join(root, "gate");
 
 	await fake(
 		root,
@@ -89,6 +93,13 @@ touch "${gate}.reached"
 while [ ! -f "${gate}.open" ]; do [ -d "${root}" ] || exit 1; sleep 0.02; done
 `,
 	);
+
+	return {
+		reached: async () => {
+			while (!existsSync(`${gate}.reached`)) await new Promise((resolve) => setTimeout(resolve, 10));
+		},
+		open: () => writeFile(`${gate}.open`, ""),
+	};
 }
 
 /** The worktree of the run `id` on the repository `repository`: `.worktrees/<name>/<id>` next to it. */
