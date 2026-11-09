@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { actionOf } from "../src/cli/terminal/keys.ts";
 import { keepPick, matching, press, render, startPick } from "../src/cli/terminal/pick.ts";
 

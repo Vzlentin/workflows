@@ -296,7 +296,7 @@ export function workflowTool(command: readonly string[], watcher: Watcher, tool:
 }
 
 /** Whether a process with the environment `env` runs in an hc terminal, as `inHerdr` of harness tells. */
-type InHerdr = typeof import("@vzlentin/harness/herdr")["inHerdr"];
+type InHerdr = (typeof import("@vzlentin/harness/herdr"))["inHerdr"];
 
 /** The stdout line of `workflows list --json`, as far as the `/workflows` command reads it. */
 const LISTED = Type.Array(

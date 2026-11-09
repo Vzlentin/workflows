@@ -47,7 +47,7 @@ declare const runDir: string;
 declare const cwd: string;
 
 /** `prompts.<name>(inputs)`: the instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section. */
-declare const prompts: Record<string, (inputs?: Record<string, string>) => string>;
+declare const prompts: Record<string, (inputs?: Record<string, string>) => Promise<string>>;
 
 /**
  * The model of a session. `as` is the role name, any name (default `default`). The run's `--agents`, then the
@@ -57,12 +57,12 @@ declare const prompts: Record<string, (inputs?: Record<string, string>) => strin
 type SessionOptions = { as?: string; provider?: string; model?: string; thinking?: string };
 
 /** One turn in a new session. Returns the reply text, or the answer with `schema`. */
-declare function agent(prompt: string, options?: SessionOptions & { schema?: object }): Promise<any>;
+declare function agent(prompt: string | Promise<string>, options?: SessionOptions & { schema?: object }): Promise<any>;
 
 /** A new session of a role name or of `options` (default `default`). `.ask(prompt, { schema })` is one turn in it. */
 declare function session(
 	options?: string | SessionOptions,
-): { ask(prompt: string, options?: { schema?: object }): Promise<any> };
+): { ask(prompt: string | Promise<string>, options?: { schema?: object }): Promise<any> };
 
 /**
  * Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a

@@ -7,7 +7,7 @@ import { createRegistry, defineDoc, Harness, ROOT_CONVERSATION_ID, type TaskId }
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { request } from "@vzlentin/harness/client";
 import { StartedTasks } from "@vzlentin/harness/tasks";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { TASK } from "../src/run/version.ts";
 import { catchUps, hostModel, piSettings, sandbox, startHost, storeOf, tellAgent, workflows } from "./support.ts";
 

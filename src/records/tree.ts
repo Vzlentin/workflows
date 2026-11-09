@@ -315,7 +315,7 @@ function labelOf(
 	if (kind === "pastRuns") return String(args.workflow);
 
 	if (kind === "session") {
-		return conversation === undefined ? String(args.profile) : `${args.profile} conversation ${conversation}`;
+		return conversation === undefined ? String(args.profile) : `${String(args.profile)} conversation ${conversation}`;
 	}
 
 	// A linear scan for each ask; an index by conversation if runs get thousands of calls.

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { programStatus, terminalRedraw } from "../src/cli/terminal/redraw.ts";
 import { Progress } from "../src/records/steps.ts";
 

@@ -19,7 +19,7 @@ import { DefaultPackageManager, loadSkills, SettingsManager } from "@earendil-wo
 import { entriesPath } from "@vzlentin/harness/entries";
 import { inHerdr } from "@vzlentin/harness/herdr";
 import type { TSchema } from "typebox";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import extension, { type workflowTool } from "../pi/index.ts";
 import { parseRun, RunView } from "../pi/run-view.ts";
 import workflowsEntry from "../src/entry.ts";
@@ -232,7 +232,7 @@ function fakePi(entries: CustomEntry[] = [], command = ["/bin/sh", join(root, "w
 		},
 	};
 
-	extension(pi, { command, tool: toolModule, inHerdr });
+	void extension(pi, { command, tool: toolModule, inHerdr });
 
 	/** Fires `event` with a context in `root` whose session has `entries`, with `ui` when given. */
 	const fire = async (event: string, ui?: ExtensionUIContext, hasUI = ui !== undefined) => {
@@ -1099,8 +1099,8 @@ describe("the installed extension", () => {
 		modules = join(realpathSync(await mkdtemp(join(tmpdir(), "workflows-install-"))), "node_modules");
 		const workflows = join(modules, "@vzlentin", "workflows");
 		const piWorkflows = join(modules, "@vzlentin", "pi-workflows");
-		const tsc = join(repo, "node_modules", "typescript", "bin", "tsc");
-		await run(process.execPath, [tsc, "-p", "tsconfig.build.json", "--outDir", join(workflows, "dist")], { cwd: repo });
+		const vp = join(repo, "node_modules", "vite-plus", "bin", "vp");
+		await run(process.execPath, [vp, "pack", "--out-dir", join(workflows, "dist")], { cwd: repo });
 		await copyFile(join(repo, "package.json"), join(workflows, "package.json"));
 		await symlink(join(repo, "workflows"), join(workflows, "workflows"));
 		await symlink(join(repo, "node_modules"), join(workflows, "node_modules"));

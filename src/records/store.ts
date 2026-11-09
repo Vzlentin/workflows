@@ -26,6 +26,7 @@ import { TASK } from "../run/version.ts";
 // Node warns once that `node:sqlite` is experimental, as the module loads. The warning tells a user of the command
 // nothing, so the load mutes warnings, and only for its own duration. This works only while this module is the first
 // of the command to load `node:sqlite`.
+// oxlint-disable-next-line typescript/unbound-method -- the load puts this same function back on `process`.
 const emitWarning = process.emitWarning;
 
 process.emitWarning = () => {};

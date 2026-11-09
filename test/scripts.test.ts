@@ -11,13 +11,13 @@ import { createRegistry, defineExtension, defineTask, Harness, type TaskId } fro
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { REMINDER } from "@vzlentin/harness/respond";
 import { Value } from "typebox/value";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { AGENTS } from "../pi/run-view.ts";
 import type { Choose } from "../src/cli/main.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { branchOf, renameBranch } from "../src/launch/worktree.ts";
 import { callRecords, reading, runTasks } from "../src/records/store.ts";
-import { CallDoc } from "../src/run/calls.ts";
+import { CallDoc, type SavedCall } from "../src/run/calls.ts";
 import { TASK } from "../src/run/version.ts";
 import {
 	childTasks,
@@ -1564,7 +1564,7 @@ return [args.n, args.t, args.other].join(" ")`,
 		const first = await workflows(["parent"], { cwd: root });
 		const id = first.id ?? "";
 		expect(first.code).toBe(1);
-		const records = await reading(storeOf(), new Map(), (store) => callRecords(store, id));
+		const records = await reading(storeOf(), new Map<string, SavedCall>(), (store) => callRecords(store, id));
 		const child = [...records.values()].find((record) => record.kind === "run")?.childRun ?? "";
 		expect(child).not.toBe("");
 		// A crash after the directory existed and before the child task, such as with part of a clone in it.
@@ -1617,7 +1617,7 @@ return [one.reply, two.reply].join(", ")`,
 		const own = await workflows(["resume", child ?? ""], { cwd: root });
 		expect([own.code, own.stderr[0]]).toEqual([4, `workflows: no run ${child} in ${runs()}`]);
 		const directories = await readdir(runs());
-		expect(directories).toEqual([run.id, child].toSorted());
+		expect(directories).toEqual([run.id ?? "", child ?? ""].toSorted());
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${run.id}`, "Reply to one"]]);
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: one"]);

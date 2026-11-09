@@ -17,7 +17,7 @@ export async function start(
 	const parsed = await parse(args, terminal);
 	const id = newRunId();
 	const directory = join(runsDirectory(), id);
-	const project = await resolveProject(process.env, terminal.cwd);
+	const project = resolveProject(process.env, terminal.cwd);
 	const key = taskKey(id, 1);
 	await mkdir(directory, { recursive: true });
 	// A run directory whose `project` names no task is an unstarted run, which `list` shows and `prune` removes.

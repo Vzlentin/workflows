@@ -1,6 +1,6 @@
 import { realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { git, PASSING_JUDGE, progressOf, repository, sandbox, workflows, worktreeAt } from "./support.ts";
 
 let root: string;

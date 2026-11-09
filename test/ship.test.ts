@@ -6,7 +6,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { entriesPath } from "@vzlentin/harness/entries";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { TASK } from "../src/run/version.ts";
 import {
 	COMMIT,

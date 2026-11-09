@@ -50,7 +50,7 @@ export async function list(args: readonly string[], terminal: Terminal, json: bo
 		return 0;
 	}
 
-	const runs = await projectRuns(await resolveProject(process.env, terminal.cwd));
+	const runs = await projectRuns(resolveProject(process.env, terminal.cwd));
 	const listed = runs.map(({ run: _run, ...shown }): Listed => shown);
 
 	if (json) terminal.stdout(JSON.stringify(listed));
@@ -74,16 +74,14 @@ export async function projectRuns(project: string): Promise<ListedRun[]> {
 		},
 	);
 
-	const unstarted = (await unstartedRuns(project, runs)).map(
-		({ runId }): ListedRun => ({
-			runId,
-			workflow: "-",
-			title: "-",
-			status: "unstarted",
-			repository: null,
-			run: "unstarted",
-		}),
-	);
+	const unstarted = (await unstartedRuns(project, runs)).map(({ runId }): ListedRun => ({
+		runId,
+		workflow: "-",
+		title: "-",
+		status: "unstarted",
+		repository: null,
+		run: "unstarted",
+	}));
 
 	return [...rows, ...unstarted].sort((a, b) => b.runId.localeCompare(a.runId));
 }
@@ -131,7 +129,7 @@ async function runItems(terminal: Terminal): Promise<PickItem<string>[]> {
 	const empty = { runs: [], steps: new Map<string, string>() };
 
 	const { runs, steps } = await reading(
-		join(statePaths(await resolveProject(process.env, terminal.cwd)).dir, STORE_FILE),
+		join(statePaths(resolveProject(process.env, terminal.cwd)).dir, STORE_FILE),
 		empty,
 		async (store) => {
 			const live = ({ run }: Row) => run === "running" || run === "waiting";

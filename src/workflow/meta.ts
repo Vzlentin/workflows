@@ -168,6 +168,7 @@ export async function readMeta(source: string, name: string): Promise<Meta> {
 			const slice = source.slice(from, at + 1);
 
 			try {
+				// oxlint-disable-next-line typescript/no-implied-eval -- it only parses the slice, and never calls it.
 				new Function(`return (${slice})`);
 				literal = slice;
 			} catch {

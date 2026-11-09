@@ -65,7 +65,7 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 	);
 
 	if (values["install-hook"]) return installHook(terminal);
-	const project = await resolveProject(process.env, terminal.cwd);
+	const project = resolveProject(process.env, terminal.cwd);
 	const store = join(statePaths(project).dir, STORE_FILE);
 	const runs = await reading(store, new Map<string, RunTask[]>(), runTasks);
 	const given = positionals.length > 0;

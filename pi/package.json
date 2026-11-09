@@ -10,17 +10,8 @@
 		"url": "git+https://github.com/Vzlentin/workflows.git"
 	},
 	"type": "module",
-	"pi": {
-		"extensions": [
-			"./index.ts",
-			"../pi-agents/index.ts",
-			"./node_modules/@vzlentin/pi-agents/index.ts"
-		],
-		"skills": [
-			"./skills",
-			"../pi-agents/skills",
-			"./node_modules/@vzlentin/pi-agents/skills"
-		]
+	"publishConfig": {
+		"access": "public"
 	},
 	"dependencies": {
 		"@vzlentin/pi-agents": "^0.7.0",
@@ -32,7 +23,16 @@
 		"@earendil-works/pi-tui": "*",
 		"typebox": "*"
 	},
-	"publishConfig": {
-		"access": "public"
+	"pi": {
+		"extensions": [
+			"./index.ts",
+			"../pi-agents/index.ts",
+			"./node_modules/@vzlentin/pi-agents/index.ts"
+		],
+		"skills": [
+			"./skills",
+			"../pi-agents/skills",
+			"./node_modules/@vzlentin/pi-agents/skills"
+		]
 	}
 }

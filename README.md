@@ -97,7 +97,7 @@ harvest gives lessons only when the overlay changes one file. See [docs/spec.md]
 
 ```sh
 npm ci
-npm run check                              # Biome, oxlint, the build, TypeScript, Vitest
+npm run check                              # vp check (Oxfmt, Oxlint), the build, TypeScript, vp test
 XDG_STATE_HOME=/tmp/wf-dev/state XDG_CONFIG_HOME=/tmp/wf-dev/config node src/cli.ts list
 ```
 

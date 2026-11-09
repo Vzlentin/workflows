@@ -13,7 +13,7 @@ import { request } from "@vzlentin/harness/client";
 import { addProject } from "@vzlentin/harness/projects";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { CtrlC } from "../src/cli/follow.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { newRunId } from "../src/launch/input.ts";

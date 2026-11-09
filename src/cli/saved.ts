@@ -64,7 +64,7 @@ export async function unstartedRuns(project: string, runs: ReadonlyMap<string, u
 	const root = runsDirectory();
 	const found: Unstarted[] = [];
 
-	for (const id of (await readdir(root).catch(() => [])).sort().reverse()) {
+	for (const id of (await readdir(root).catch((): string[] => [])).sort().reverse()) {
 		if (runs.has(id)) continue;
 		const file = join(root, id, "project");
 		const named = await readFile(file, "utf8").catch(() => undefined);

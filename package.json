@@ -6,10 +6,14 @@
 		"type": "git",
 		"url": "git+https://github.com/Vzlentin/workflows.git"
 	},
-	"type": "module",
 	"bin": {
 		"workflows": "dist/cli.js"
 	},
+	"files": [
+		"dist",
+		"workflows"
+	],
+	"type": "module",
 	"exports": {
 		"./runs": {
 			"types": "./dist/runs.d.ts",
@@ -21,22 +25,15 @@
 		},
 		"./package.json": "./package.json"
 	},
-	"files": [
-		"dist",
-		"workflows"
-	],
-	"engines": {
-		"node": ">=22.19.0"
-	},
 	"publishConfig": {
 		"access": "public"
 	},
 	"scripts": {
-		"build": "rm -rf dist && tsc -p tsconfig.build.json",
+		"build": "vp pack",
 		"prepare": "npm run build",
 		"prepack": "npm run build",
-		"check": "biome check . && oxlint --deny-warnings && npm run build && tsc -p tsconfig.json && tsc -p workflows/jsconfig.json && vitest --run",
-		"test": "vitest --run"
+		"check": "vp check --deny-warnings && npm run build && tsc -p tsconfig.json && tsc -p workflows/jsconfig.json && vp test",
+		"test": "vp test"
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.5.0",
@@ -49,11 +46,11 @@
 		"typebox": "1.3.27"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.15",
-		"@oxlint/plugins": "1.88.0",
 		"@types/node": "26.6.4",
-		"oxlint": "1.88.0",
 		"typescript": "7.0.2",
-		"vitest": "5.0.3"
+		"vite-plus": "1.5.0"
+	},
+	"engines": {
+		"node": ">=22.19.0"
 	}
 }

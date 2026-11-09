@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
 	type Call,
 	childTasks,
@@ -307,7 +307,7 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 		expect(first).toBeDefined();
 		expect(first).not.toBe(branch);
 		const branches = git(repo, "branch", "--format=%(refname:short)").split("\n").toSorted();
-		expect(branches).toEqual(["main", branch, first].toSorted());
+		expect(branches).toEqual(["main", branch, first ?? ""].toSorted());
 	}, 60_000);
 
 	it("harvests the lessons of a one-file overlay, and resumes an interrupted run to the same result", async () => {
