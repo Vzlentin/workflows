@@ -11,7 +11,7 @@ import { createRegistry, defineExtension, defineTask, Harness, type TaskId } fro
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { REMINDER } from "@vzlentin/harness/respond";
 import { Value } from "typebox/value";
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { AGENTS } from "../pi/run-view.ts";
 import type { Choose } from "../src/cli/main.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
@@ -19,6 +19,7 @@ import { branchOf, renameBranch } from "../src/launch/worktree.ts";
 import { callRecords, reading, runTasks } from "../src/records/store.ts";
 import { CallDoc, type SavedCall } from "../src/run/calls.ts";
 import { TASK } from "../src/run/version.ts";
+import { readMeta } from "../src/workflow/meta.ts";
 import {
 	childTasks,
 	conversationOf,
@@ -1941,5 +1942,27 @@ describe("renameBranch", () => {
 		expect(await renameBranch(repo, "wf/1", "feat/x", signal)).toEqual({ kind: "refused", name: "feat/x" });
 		git(repo, "checkout", "-q", "--detach", start);
 		expect(await renameBranch(repo, "wf/1", "fix/y", signal)).toEqual({ kind: "detached" });
+	});
+});
+
+describe("readMeta", () => {
+	it("reads a meta while the timers of a busy thread are late", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const read = readMeta('export const meta = { description: "Count words." }\nreturn 1', "x");
+		// This fires every timer of the read at once, as a thread that was busy for a minute fires them late.
+		vi.advanceTimersByTime(60_000);
+		vi.useRealTimers();
+
+		expect(await read).toEqual({ description: "Count words.", args: {}, placement: "here", exit: {} });
+	});
+
+	it("stops a meta that computes without end", async () => {
+		await writeFile(join(root, "x.js"), "export const meta = { description: (() => { for (;;) {} })() }\nreturn 1");
+		const run = await workflows(["x.js"], { cwd: root });
+
+		expect([run.code, run.stderr]).toEqual([
+			1,
+			["workflows: x: meta: Execution exceeded its interrupt budget of 1000"],
+		]);
 	});
 });

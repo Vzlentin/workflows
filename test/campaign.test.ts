@@ -8,6 +8,7 @@ import {
 	COMMIT,
 	type Commit,
 	conversationOf,
+	gateGit,
 	git,
 	hostModel,
 	LESSON,
@@ -900,20 +901,8 @@ describe("workflows campaign", () => {
 	});
 
 	it("runs the rename step again on resume after the rename was done", async () => {
-		const hook = join(repo, ".git", "hooks", "reference-transaction");
 		const gate = join(root, "gate");
-		// The rename moves the branch, then points HEAD at it: the gate stops after the HEAD update.
-		await writeFile(
-			hook,
-			`#!/bin/sh
-refs=$(cat)
-[ "$1" = committed ] || exit 0
-case "$refs" in *refs/heads/docs/readme*) ;; *) exit 0 ;; esac
-touch "${gate}.reached"
-while [ ! -f "${gate}.open" ]; do sleep 0.02; done
-`,
-		);
-		await chmod(hook, 0o755);
+		await gateGit(root, "branch -m docs/readme", gate);
 		const interrupt = new AbortController();
 
 		const pending = workflows(["campaign", GOAL], {
@@ -930,7 +919,7 @@ while [ ! -f "${gate}.open" ]; do sleep 0.02; done
 		const worktree = worktreeOf(first.id);
 		expect(git(worktree, "branch", "--show-current")).toBe("docs/readme");
 
-		await rm(hook);
+		await rm(join(root, "bin", "git"));
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: repo });
 		expect(resumed.code).toBe(0);
 		expect(resumed.model.calls).toEqual([]);

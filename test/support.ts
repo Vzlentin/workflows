@@ -47,6 +47,21 @@ export function git(cwd: string, ...args: string[]): string {
 
 const ENVIRONMENT = { ...process.env };
 
+/**
+ * Makes `next` the environment of this process. It edits `process.env` in place: Node 26 gives the child processes and
+ * `os.homedir()` the environment of the process, not an object that a test assigns to `process.env`.
+ */
+function setEnvironment(next: NodeJS.ProcessEnv): void {
+	for (const name of Object.keys(process.env)) {
+		if (!(name in next)) delete process.env[name];
+	}
+
+	Object.assign(process.env, next);
+}
+
+/** Puts back the environment that this process had when it loaded this module. */
+export const restoreEnvironment = () => setEnvironment(ENVIRONMENT);
+
 /** The run directories of the sandbox `root`. */
 export const runsOf = (root: string) => join(root, "state", "workflows", "runs");
 
@@ -55,6 +70,25 @@ export async function fake(root: string, name: string, body: string): Promise<vo
 	const file = join(root, "bin", name);
 	await writeFile(file, `#!/bin/sh\n${body}`);
 	await chmod(file, 0o755);
+}
+
+/**
+ * Writes `bin/git` of the sandbox `root`, which runs Git. After `git <command>` succeeds, it creates `<gate>.reached`
+ * and waits until `<gate>.open` exists, or until the sandbox is gone. The wait does not depend on the hooks that a
+ * version of Git calls.
+ */
+export async function gateGit(root: string, command: string, gate: string): Promise<void> {
+	const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8", env: ENVIRONMENT }).trim();
+
+	await fake(
+		root,
+		"git",
+		`"${real}" "$@" || exit
+[ "$*" = "${command}" ] || exit 0
+touch "${gate}.reached"
+while [ ! -f "${gate}.open" ]; do [ -d "${root}" ] || exit 1; sleep 0.02; done
+`,
+	);
 }
 
 /** The worktree of the run `id` on the repository `repository`: `.worktrees/<name>/<id>` next to it. */
@@ -235,7 +269,8 @@ exit 0
 	await mkdir(join(root, "home", ".optmem"));
 	await writeFile(join(root, "home", ".optmem", "memo"), FAKE_MEMO);
 	await chmod(join(root, "home", ".optmem", "memo"), 0o755);
-	process.env = {
+
+	const environment: NodeJS.ProcessEnv = {
 		...ENVIRONMENT,
 		HOME: join(root, "home"),
 		XDG_STATE_HOME: join(root, "state"),
@@ -262,9 +297,10 @@ exit 0
 		"FORCE_COLOR",
 		"NO_COLOR",
 	]) {
-		delete process.env[name];
+		delete environment[name];
 	}
 
+	setEnvironment(environment);
 	await setEntries();
 
 	return root;

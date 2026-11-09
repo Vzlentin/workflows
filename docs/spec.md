@@ -702,6 +702,8 @@ without `meta.description`.
 
 A script declares its command line in `export const meta = { ... }`, after its leading comments and before any other
 code. `meta` is an object literal. The command evaluates it alone, in the sandbox, and does not run the script. The
+evaluation has no time limit, but it stops after 1,000 interrupt polls of the sandbox, so a `meta` that computes
+without end fails with `workflows: <name>: meta: Execution exceeded its interrupt budget of 1000`. The
 script runs without `export`, so it can read `meta`. A script without `meta` takes no arguments.
 
 ```js

@@ -3,7 +3,7 @@
  * whether it runs in a new worktree or in the repository of `--repo`, and the exit code of each result status. The meta
  * reader evaluates only that literal, in the sandbox, and never runs the script.
  */
-import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { InlineCodemodeSandbox, loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { META } from "./bundle.ts";
@@ -178,7 +178,14 @@ export async function readMeta(source: string, name: string): Promise<Meta> {
 	}
 
 	if (literal === undefined) throw new Error(`${name}: meta is not an object literal`);
-	const sandbox = new CodemodeSandbox({ timeoutMs: 5000 });
+
+	// The literal runs on this thread with a budget of interrupt polls and no deadline: a clock fails a short literal
+	// when the machine is busy, and the budget stops a literal that computes without end in a fraction of a second.
+	const sandbox = new InlineCodemodeSandbox({
+		wasm: loadQuickJSWasm(),
+		interruptBudget: 1_000,
+		timeoutMs: Number.POSITIVE_INFINITY,
+	});
 
 	try {
 		const result = await sandbox.execute(`return (${literal})`);

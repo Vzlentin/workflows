@@ -26,7 +26,7 @@ import workflowsEntry from "../src/entry.ts";
 import type { Host } from "../src/run/version.ts";
 import type * as runsModule from "../src/runs.ts";
 import * as toolModule from "../src/tool.ts";
-import { hostModel, sandbox, startHost } from "./support.ts";
+import { hostModel, restoreEnvironment, sandbox, startHost } from "./support.ts";
 
 const run = promisify(execFile);
 
@@ -539,7 +539,6 @@ describe("the workflow tool", () => {
 	});
 
 	it("gives the question of a waiting run, and continues the run with the answer", async () => {
-		const saved = process.env;
 		const cwd = await sandbox();
 		// The command runs as a child process, which finds the host of this process through HARNESS_PROJECT.
 		process.env.HARNESS_PROJECT = "main";
@@ -570,7 +569,7 @@ describe("the workflow tool", () => {
 			expect(answered.structuredContent).toEqual({ runId: id, status: "finished", result: "yes", report: ["yes"] });
 		} finally {
 			await host.close();
-			process.env = saved;
+			restoreEnvironment();
 			await rm(cwd, { recursive: true, force: true });
 		}
 	});
@@ -1092,7 +1091,6 @@ async function load(): Promise<Tool> {
 
 describe("the installed extension", () => {
 	const repo = join(import.meta.dirname, "..");
-	let saved: NodeJS.ProcessEnv;
 	let home: string;
 
 	beforeAll(async () => {
@@ -1119,12 +1117,11 @@ describe("the installed extension", () => {
 	afterAll(() => rm(dirname(modules), { recursive: true, force: true }));
 
 	beforeEach(async () => {
-		saved = process.env;
 		home = await sandbox();
 	});
 
 	afterEach(async () => {
-		process.env = saved;
+		restoreEnvironment();
 		await rm(home, { recursive: true, force: true });
 	});
 
@@ -1227,17 +1224,15 @@ async function skillsOf(root: string, packages: string[]) {
 
 describe("the skills of the Pi package", () => {
 	const repo = join(import.meta.dirname, "..");
-	let saved: NodeJS.ProcessEnv;
 	let home: string;
 
 	beforeEach(async () => {
-		saved = process.env;
 		// The sandbox's HOME keeps the user's own skills out of Pi's resolve.
 		home = realpathSync(await sandbox());
 	});
 
 	afterEach(async () => {
-		process.env = saved;
+		restoreEnvironment();
 		await rm(home, { recursive: true, force: true });
 	});
 
