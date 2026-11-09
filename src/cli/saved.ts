@@ -10,9 +10,9 @@ import type { TaskId, TaskRecord } from "@earendil-works/pi-durable";
 import { statePaths } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
 import { inputString, progressEvents, reading, runTasks, startedTasks } from "../records/store.ts";
-import { type RunStatus, type RunTask, savedLater, taskOutcome } from "../run/past.ts";
+import { hasEnded, type RunStatus, type RunTask, runStatus, savedInput, savedLater, taskOutcome } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
-import { statusOf } from "../run/result.ts";
+import { SHOWN_INPUT, type ShownInput, statusOf } from "../run/result.ts";
 import { current } from "../run/version.ts";
 import { UsageError } from "../workflow/find.ts";
 import { keyNumber, runsDirectory, STORE_FILE, taskKey } from "./host.ts";
@@ -136,7 +136,10 @@ export function progressOf(run: SavedRun): Promise<readonly ProgressEvent[]> {
 
 const PREFIX = "workflows.";
 
-/** The task `latest` of the run `id`. It throws `GoneRun` when there is none, and an error when another version saved it. */
+/** The error of a command on a saved run whose task another version saved, and that the command cannot read or continue. */
+export class OtherVersion extends Error {}
+
+/** The task `latest` of the run `id`. It throws `GoneRun` when there is none, and `OtherVersion` when another version saved it. */
 export function checked(
 	latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined,
 	id: string,
@@ -145,13 +148,41 @@ export function checked(
 	if (latest === undefined) throw new GoneRun(`run ${id} has no workflow`);
 
 	if (current(latest)) return latest;
-	const { name, later } = savedBy(latest);
-	throw new Error(`run ${id} was saved by ${later ? "a later" : "an earlier"} version of ${name} and cannot ${verb}`);
+	throw otherVersion(latest, id, verb);
 }
 
-/** The workflow of the task `latest` that another version saved, and whether that version is later. */
+/**
+ * A task that `show` can read, with the fields of its input that it reads. `thisVersion` is true for a task of this
+ * version, which `resume` can continue.
+ */
+export type ReadableTask = { readonly task: RunTask; readonly input: ShownInput; readonly thisVersion: boolean };
+
+/**
+ * The task `latest` of the run `id`, with the fields of its input that `show` reads: a task of this version, or a task
+ * of another version that ended and whose input has these fields. It throws `GoneRun` when there is no task, and
+ * `OtherVersion` for another task of another version.
+ */
+export function readable(latest: RunTask | undefined, id: string, verb: string): ReadableTask {
+	if (latest === undefined) throw new GoneRun(`run ${id} has no workflow`);
+
+	if (current(latest)) return { task: latest, input: latest.input, thisVersion: true };
+	const input = savedInput(SHOWN_INPUT, latest.input);
+
+	if (input !== undefined && hasEnded(runStatus(latest))) return { task: latest, input, thisVersion: false };
+	throw otherVersion(latest, id, verb);
+}
+
+function otherVersion(latest: RunTask, id: string, verb: string): OtherVersion {
+	const { name, later } = savedBy(latest);
+
+	return new OtherVersion(
+		`run ${id} was saved by ${later ? "a later" : "an earlier"} version of ${name} and cannot ${verb}`,
+	);
+}
+
+/** The workflow of the task `latest` of any version, and whether the version that saved it is later than this one. */
 export function savedBy(latest: TaskRecord<JsonValue, JsonValue, JsonValue>) {
-	// A script task of an earlier version names its workflow in its input; an earlier task kind names it in the kind.
+	// A script task names its workflow in its input; an earlier task kind names it in the kind.
 	const name = inputString(latest.input, "name") ?? latest.kind.slice(PREFIX.length);
 
 	return { name, later: savedLater(latest) };

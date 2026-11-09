@@ -75,7 +75,6 @@ workflows wait <run-id>                    # follow a run to its outcome
 workflows attach <run-id>                  # open its working session in Pi
 workflows stop <run-id>
 workflows prune --yes                      # remove the worktrees of merged runs
-workflows web --tailscale                  # the runs and their agents in a browser, also on the tailnet
 workflows                                  # the workflows that you can run
 workflows ship --help
 ```
@@ -98,7 +97,7 @@ harvest gives lessons only when the overlay changes one file. See [docs/spec.md]
 
 ```sh
 npm ci
-npm run check                              # Biome, oxlint, TypeScript, Vitest
+npm run check                              # Biome, oxlint, the build, TypeScript, Vitest
 XDG_STATE_HOME=/tmp/wf-dev/state XDG_CONFIG_HOME=/tmp/wf-dev/config node src/cli.ts list
 ```
 

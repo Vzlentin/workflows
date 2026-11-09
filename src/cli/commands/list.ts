@@ -5,9 +5,8 @@ import { resolveProject } from "@vzlentin/harness/projects";
 import { statePaths } from "@vzlentin/harness/protocol";
 import { type Mark, Progress } from "../../records/steps.ts";
 import { inputString, inputWorktree, progressEvents, reading, runTasks, type Store } from "../../records/store.ts";
-import { type RunStatus, type RunTask, runStatus, taskOf } from "../../run/past.ts";
-import { title as titleOf } from "../../run/result.ts";
-import { current } from "../../run/version.ts";
+import { type RunStatus, type RunTask, runStatus, savedInput, taskOf } from "../../run/past.ts";
+import { SHOWN_INPUT, title as titleOf } from "../../run/result.ts";
 import { UsageError } from "../../workflow/find.ts";
 import { runsDirectory, STORE_FILE } from "../host.ts";
 import type { Choose, Terminal } from "../main.ts";
@@ -102,8 +101,10 @@ async function listedRuns(store: Store, runs: ReadonlyMap<string, readonly RunTa
 		const repository = inputWorktree(task.input)?.repository ?? null;
 		const caller = inputString(task.input, "caller");
 
-		const workflow = current(task) ? task.input.name : savedBy(task).name;
-		const title = current(task) ? titleOf(task.input, await progressEvents(store, id)) : workflow;
+		// A task of every version whose input has the fields of a title gets its title; another keeps its workflow name.
+		const input = savedInput(SHOWN_INPUT, task.input);
+		const workflow = savedBy(task).name;
+		const title = input === undefined ? workflow : titleOf(input, await progressEvents(store, id));
 		const row = { runId: id, workflow, title, status, repository, run };
 
 		listed.push(caller === undefined ? row : { ...row, caller });

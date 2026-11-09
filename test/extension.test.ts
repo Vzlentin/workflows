@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { copyFile, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,6 +24,7 @@ import extension, { type workflowTool } from "../pi/index.ts";
 import { parseRun, RunView } from "../pi/run-view.ts";
 import workflowsEntry from "../src/entry.ts";
 import type { Host } from "../src/run/version.ts";
+import type * as runsModule from "../src/runs.ts";
 import * as toolModule from "../src/tool.ts";
 import { hostModel, sandbox, startHost } from "./support.ts";
 
@@ -1154,6 +1156,17 @@ describe("the installed extension", () => {
 		expect(await entry()).toBe(join(repo, "src", "entry.ts"));
 		await load();
 		expect(await entry()).toBe(join(modules, "@vzlentin", "workflows", "dist", "entry.js"));
+	});
+
+	it("exports ./runs and ./tool from dist/ of its workflows dependency, with their declarations", async () => {
+		const dist = join(modules, "@vzlentin", "workflows", "dist");
+		const { resolve } = createRequire(join(modules, "..", "index.js"));
+		const runs = resolve("@vzlentin/workflows/runs");
+
+		expect([runs, resolve("@vzlentin/workflows/tool")]).toEqual([join(dist, "runs.js"), join(dist, "tool.js")]);
+		expect(["runs.d.ts", "tool.d.ts"].filter((file) => !existsSync(join(dist, file)))).toEqual([]);
+		const { scriptsOf }: typeof runsModule = await import(pathToFileURL(runs).href);
+		expect((await scriptsOf(repo)).map(({ name }) => name)).toContain("ship");
 	});
 });
 

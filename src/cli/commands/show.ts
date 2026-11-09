@@ -1,7 +1,6 @@
 /** `workflows show <run-id>`: the steps, the calls or the agents of a run. */
 import { parseArgs } from "node:util";
 import { Value } from "typebox/value";
-import type { ScriptInput } from "../../launch/input.ts";
 import { endMark, Progress } from "../../records/steps.ts";
 import { callRecords, progressEvents, reading, runTasksAndLive } from "../../records/store.ts";
 import {
@@ -14,13 +13,13 @@ import {
 	treeLines,
 } from "../../records/tree.ts";
 import type { SavedCall } from "../../run/calls.ts";
-import { hasEnded, hasResult, type RunStatus, runStatus, taskOf, taskOutcome } from "../../run/past.ts";
-import { reportOf, title as titleOf } from "../../run/result.ts";
+import { hasEnded, hasResult, type RunStatus, type RunTask, runStatus, taskOf, taskOutcome } from "../../run/past.ts";
+import { reportOf, type ShownInput, title as titleOf } from "../../run/result.ts";
 import { WAITING } from "../../tool.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin, endOf } from "../follow.ts";
 import type { Choose, Terminal } from "../main.ts";
-import { checked, oneRunId, type SavedRun, savedRun, shownStatus } from "../saved.ts";
+import { oneRunId, readable, type SavedRun, savedRun, shownStatus } from "../saved.ts";
 import type { PickItem } from "../terminal/pick.ts";
 
 export const SHOW = "workflows show <run-id> [--pick | [--calls | --agents] [--json]]";
@@ -78,23 +77,26 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 	} else if (mode === "calls") {
 		for (const line of [head, ...treeLines(calls, "", now), ...footer]) terminal.stdout(line);
 	} else {
-		for (const entry of shownEntries(shown, now)) terminal.stdout(entry.text);
+		for (const entry of shownLines(shown, now)) terminal.stdout(entry.text);
 	}
 
 	return 0;
 }
 
 /**
- * A saved run as `show` prints it. `run` is its run status, `end` has the report lines or the error of a run that
- * ended, and `question` is the question of a run that waits for an answer.
+ * A saved run as `show` prints it. `task` is the task that it reads, `run` is its run status, `end` has the report
+ * lines or the error of a run that ended, and `question` is the question of a run that waits for an answer.
+ * `resumable` is true for a run of this version that ended and is not `done`, which `resume` continues.
  */
-type ShownRun = {
-	readonly input: ScriptInput;
+export type ShownRun = {
+	readonly task: RunTask;
+	readonly input: ShownInput;
 	readonly title: string;
 	readonly status: string;
 	readonly run: RunStatus;
 	readonly head: string;
 	readonly ended: boolean;
+	readonly resumable: boolean;
 	readonly calls: Shown[];
 	readonly progress: Progress;
 	readonly footer: readonly string[];
@@ -104,8 +106,9 @@ type ShownRun = {
 
 /**
  * The saved run `run` as `show` prints it: its task, its head line, its steps, its calls, and its footer lines. It
- * reads the call records `withCalls`, or when the run has no steps. `verb` completes the error for a run that cannot
- * be read, as in `cannot <verb>`.
+ * reads the call records `withCalls`, or when the run has no steps. It reads a task of this version, and a task of
+ * another version that ended, as `readable` gives them. The footer tells how to resume only a `resumable` run. `verb`
+ * completes the error for a run that cannot be read, as in `cannot <verb>`.
  */
 export async function readRun(run: SavedRun, withCalls: boolean, verb: string): Promise<ShownRun> {
 	const { id } = run;
@@ -129,11 +132,11 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 		return { task: taskOf(runs.get(id) ?? []), saved: calls, progress: read, events: stored, live };
 	});
 
-	const checkedTask = checked(task, id, verb);
-	const { input } = checkedTask;
+	const { task: checkedTask, input, thisVersion } = readable(task, id, verb);
 	const known = runStatus(checkedTask);
 	const completed = hasResult(known);
 	const ended = hasEnded(known);
+	const resumable = thisVersion && ended && known !== "done";
 	const title = titleOf(input, events);
 	const result = taskOutcome(checkedTask)?.result ?? null;
 	const footer: string[] = [];
@@ -143,7 +146,7 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 		footer.push(...reportOf(input, result).lines);
 		end = { report: footer };
 	} else if (ended) {
-		const shown = endOf(checkedTask, title, id);
+		const shown = endOf(checkedTask, title, id, resumable);
 		footer.push(...shown.lines);
 
 		if (shown.error !== undefined) end = { error: shown.error };
@@ -156,11 +159,25 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 	const calls = callTree(saved, id, { ended, waiting: known === "waiting", live });
 	const question = known === "waiting" && Value.Check(WAITING, result) ? result.question : undefined;
 
-	return { input, title, status, run: known, head, ended, calls, progress, footer, end, question };
+	return {
+		task: checkedTask,
+		input,
+		title,
+		status,
+		run: known,
+		head,
+		ended,
+		resumable,
+		calls,
+		progress,
+		footer,
+		end,
+		question,
+	};
 }
 
 /** The lines of `show` of `read`, each with its agent: the head line, the lines of `showEntries`, then the footer. */
-function shownEntries(read: ShownRun, now: number): TreeEntry[] {
+export function shownLines(read: ShownRun, now: number): TreeEntry[] {
 	const footer = read.footer.map((text) => ({ text }));
 
 	return [{ text: read.head }, ...showEntries(read.calls, read.progress, now), ...footer];
@@ -176,10 +193,10 @@ function shownEntries(read: ShownRun, now: number): TreeEntry[] {
 async function pickAgent(run: SavedRun, terminal: Terminal, choose: Choose): Promise<number> {
 	for (;;) {
 		const read = await readRun(run, true, "be shown");
-		const entries = shownEntries(read, Date.now());
+		const entries = shownLines(read, Date.now());
 
 		if (entries.some((entry) => entry.conversation !== undefined)) {
-			const refresh = async () => agentItems(shownEntries(await readRun(run, true, "be shown"), Date.now()));
+			const refresh = async () => agentItems(shownLines(await readRun(run, true, "be shown"), Date.now()));
 			const conversation = await choose("Pick an agent:", agentItems(entries), refresh);
 
 			if (conversation === undefined) return 130;

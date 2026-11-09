@@ -2,19 +2,16 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createRegistry, defineExtension, defineTask, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { entriesPath } from "@vzlentin/harness/entries";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { newRunId } from "../src/launch/input.ts";
 import { TASK } from "../src/run/version.ts";
 import {
 	COMMIT,
 	conversationOf,
 	detached,
-	FakeModel,
 	git,
 	LESSON,
 	LESSON_LINE,
@@ -25,6 +22,7 @@ import {
 	repository,
 	runsOf,
 	sandbox,
+	saveRun,
 	startHost,
 	statusesOf,
 	storeOf,
@@ -48,9 +46,6 @@ afterEach(() => rm(root, { recursive: true, force: true }));
 const runs = () => runsOf(root);
 const RUN_ID = Type.Object({ runId: Type.String() });
 
-/** The input of a task of another version: some versions wrapped it as `{ input }`. */
-type SavedInput = { readonly name?: string; readonly input?: { readonly name?: string } };
-
 type Stored = {
 	readonly kind: string;
 	readonly label: string;
@@ -58,46 +53,6 @@ type Stored = {
 	readonly calls?: readonly Stored[];
 	readonly result?: { readonly result?: object };
 };
-
-/**
- * The ID of a new run of the `main` project whose store holds one pending task of `kind` at `version` with `input`, as
- * a run that another version saved.
- */
-async function saveRun(kind: string, version: number, input: SavedInput = { input: {} }): Promise<string> {
-	const id = newRunId();
-	const directory = join(runs(), id);
-	await mkdir(directory, { recursive: true });
-	await writeFile(join(directory, "project"), "main\n");
-	await mkdir(join(root, "state", "harness", "main"), { recursive: true });
-
-	const task = defineTask<object, { phase: string }, null>({
-		name: kind,
-		version,
-		initial: () => ({ phase: "run" }),
-		phases: { run: async () => {} },
-		abort: async () => {},
-	});
-
-	const registry = createRegistry();
-	registry.install(defineExtension({ name: "workflows", tasks: [task] }));
-	const models = new FakeModel({ interrupt: new AbortController() }).models;
-	const storage = await openNodeSqliteStorage(storeOf());
-	const harness = await Harness.open(storage, { models, registry }, BACKGROUND_CONTEXT);
-
-	try {
-		const conversation = await harness.root(BACKGROUND_CONTEXT);
-		// A script task of some earlier versions wrapped its input as `{ input }`.
-		const saved = "input" in input ? { input: { ...input.input, runId: id } } : { ...input, runId: id };
-		await conversation.commit(
-			(tx) => tx.createTask(task, saved, { ownership: { kind: "conversation" } }),
-			BACKGROUND_CONTEXT,
-		);
-	} finally {
-		await harness.close(BACKGROUND_CONTEXT);
-	}
-
-	return id;
-}
 
 const worktreeOf = (id: string | undefined) => worktreeAt(repo, id);
 const progress = /^ *(research|plan|implement|judge|round \d\/\d: (implement|review))$/;
@@ -1122,13 +1077,13 @@ describe("workflows show --pick", () => {
 describe("workflows resume of ship runs", () => {
 	it("refuses a run that another version saved, and lists it as such", async () => {
 		// A task without a workflow name in its input is named by its kind.
-		const run = await saveRun("workflows.run", TASK.version - 1);
+		const run = await saveRun(root, "workflows.run", TASK.version - 1);
 		// A script task of an earlier version names its workflow in its input.
-		const script = await saveRun("workflows.run", TASK.version - 1, { name: "ship" });
+		const script = await saveRun(root, "workflows.run", TASK.version - 1, { name: "ship" });
 		// Some earlier versions wrapped the input as `{ input }`.
-		const wrapped = await saveRun("workflows.run", TASK.version - 1, { input: { name: "campaign" } });
+		const wrapped = await saveRun(root, "workflows.run", TASK.version - 1, { input: { name: "campaign" } });
 		// A script task of a later version is refused too.
-		const later = await saveRun("workflows.run", TASK.version + 1, { name: "ship" });
+		const later = await saveRun(root, "workflows.run", TASK.version + 1, { name: "ship" });
 
 		for (const [id, name, word] of [
 			[run, "run", "an earlier"],
@@ -1184,8 +1139,8 @@ describe("workflows resume of ship runs", () => {
 	});
 
 	it("starts the host with a pending run of another version, and leaves that run pending", async () => {
-		const earlier = await saveRun("workflows.run", TASK.version - 1, { name: "ship" });
-		const later = await saveRun("workflows.run", TASK.version + 1, { name: "ship" });
+		const earlier = await saveRun(root, "workflows.run", TASK.version - 1, { name: "ship" });
+		const later = await saveRun(root, "workflows.run", TASK.version + 1, { name: "ship" });
 
 		const run = await workflows(["-"], { cwd: repo, stdin: 'return await agent("Script: one")' });
 		expect([run.code, run.stdout]).toEqual([0, [`run ${run.id}`, "Reply to one"]]);

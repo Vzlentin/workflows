@@ -682,7 +682,7 @@ workflows check audit
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `wait`, `stop`, `list`, `show`, `attach`, `save`, `prune`, `check` and `web` are commands, so no script of
+`resume`, `wait`, `stop`, `list`, `show`, `attach`, `save`, `prune` and `check` are commands, so no script of
 these names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command,
 such as `usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]`, and exits 2.
 
@@ -1327,8 +1327,10 @@ else the script name. A finished run has the
 `status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
 `done` when the result has no `status`. A run that waits for an answer to `input()` is `waiting`. A run whose task has not ended is `running`, also when it waits for its host
 to start. A run whose task ended without a result is `aborted` (a second Ctrl+C or `workflows stop` stopped it), `failed` (also a task that pi-durable faulted) or `orphaned`. A pending run that
-another version of workflows saved is `earlier-version` or `later-version`, with its workflow name as its title: it
-cannot resume. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status", "repository" }`.
+another version of workflows saved is `earlier-version` or `later-version`: it cannot resume. A run that another
+version saved has its title as a run of this version has it, when its saved input has the fields of a title (the
+run ID, the script name, the arguments, and the `args` and `exit` of its `meta`); a run whose input does not have them
+has its workflow name as its title. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status", "repository" }`.
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
 without a worktree. A run that an hc terminal started also has `"caller"`, the ID of that terminal, also for a run of
 another version; other runs have no `caller` key.
@@ -1444,7 +1446,9 @@ run <run-id> <workflow> <status> <title>
   the time since the call started.
 - A finished run ends with its report lines. A failed run ends with `failed <title>: <error>` and `continue with:
   workflows resume <run-id>`, an aborted run with `stopped <title>; continue with: workflows resume <run-id>`, and an
-  orphaned run with `orphaned <title>: <reason>` and the `continue with` line. Any other run ends after its calls.
+  orphaned run with `orphaned <title>: <reason>` and the `continue with` line. A run that another version saved, which
+  `resume` refuses, has no `continue with` line: an aborted one ends with `stopped <title>`. Any other run ends after
+  its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
 object with both trees: `{ "runId", "workflow", "caller"?, "title", "status", "report"?, "error"?, "steps", "calls" }`, where `caller` is the hc
@@ -1509,9 +1513,11 @@ the pick exits 130. `--pick` without a terminal, or with `--calls`, `--agents` o
 `show` exits 0 for every run it can show. It reads the project store through pi-durable's storage functions, as `list`
 does, and does not start the host. It reads the file read-only as `list` does. An unknown run ID, or a run directory
 without a `project` file, prints the
-`no run` error of `resume`. A run saved by an earlier version prints `workflows: run
-<run-id> was saved by an earlier version of <workflow> and cannot be shown`, and a run saved by a later version prints
-`workflows: run <run-id> was saved by a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
+`no run` error of `resume`. `show` shows a run that another version saved when its task ended and its saved input
+has the fields of a title, as `list` reads them. `show` and `attach` read such a run: `resume`, `wait` and `save`
+refuse it. Another run that another version saved, such as a run whose task has not ended, prints `workflows: run
+<run-id> was saved by an earlier version of <workflow> and cannot be shown`, or `workflows: run <run-id> was saved by
+a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
 as no run ID, prints `usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]` and exits 2.
 
 ## Attach
@@ -1539,7 +1545,7 @@ workflows attach <run-id> [--conversation <id>] [--side]
 
 A run with no session prints `workflows: run <run-id> has no session`. A conversation that is not a session of the run prints
 `workflows: run <run-id> has no session with conversation <id>`. An unknown run ID prints the `no run` error of `resume`, and a run
-saved by another version prints the error of `show` with `cannot be attached`. An hc failure prints
+of another version that `show` cannot show prints the error of `show` with `cannot be attached`. An hc failure prints
 `workflows: <error>`. These exit 1. Bad usage, such as no run ID or a second argument, prints `usage: workflows attach <run-id> [--conversation <id>]
 [--side]` and
 exits 2.
@@ -1568,95 +1574,6 @@ with its `export const meta` header. Only the script is saved: no prompts, agent
 
 `save` reads the project store as `show` does, and does not start the host. It exits 0 when it wrote the file. `--json`
 has no effect.
-
-## Web
-
-```sh
-workflows web [--port <n>] [--host <ip> | --tailscale]
-```
-
-`workflows web` serves the control center, a web page of the runs of every harness project and of their agents. It
-prints one URL for each address that it listens on, `http://<address>:<port>/`, and runs until Ctrl+C or SIGTERM. Then
-it closes its connections and exits 0.
-
-- It listens on port 7502, or on a free port with `--port 0`, and on `127.0.0.1` only. `--host <ip>` listens on that
-  address only, and `--tailscale` on `127.0.0.1` and on each IPv4 address that `tailscale ip -4` gives, on the same
-  port. The addresses and their errors are those of `harness inspect` (see the Inspect section of the
-  [harness reference](https://github.com/Vzlentin/harness/blob/main/docs/spec.md#inspect)). A host that is not an IP
-  address or `localhost` prints `workflows: The host must be an IP address or localhost: <host>`, and both `--host`
-  and `--tailscale` print `workflows: Use --host or --tailscale, not both`. These exit 1. A `--port` that is not an
-  integer from 0 to 65535 prints `workflows: --port must be an integer from 0 to 65535` and the usage, and exits 2.
-- Before it listens, it sets the entry of workflows in harness's `entries.json`, because the inspect view starts the
-  host of a project when none runs.
-- The routes have no login: each client that reaches an address can start, stop and steer the runs and the agents of
-  the user. `127.0.0.1` keeps them on this machine, and `--tailscale` on the tailnet. Every request whose `Host` header
-  is not an IP address or `localhost` gets 403, so that the DNS name of another site cannot reach them (DNS
-  rebinding). This refuses a Tailscale MagicDNS name too: use the address.
-
-The page has two panes. The page puts all text in as text, never as HTML.
-
-- The left pane has a project filter, a form that starts a run, a `Prune` button, the runs with their badges, and the
-  selected run. The form takes a workflow of `/api/workflows`, a text that goes as the positional argument after `--`
-  (a text or the path of a `.md` file; a text that starts with `-` is not an option), and optional `--repo` and
-  `--agents`. `Prune` asks before it prunes the runs on a merged branch. With a project selected, the page gives it as
-  the `project` of a start and of a prune, so they run in the directory of the project; else in the directory of the
-  command. The run list reads the runs every 2 s.
-- The selected run follows its stream: its lines as `show` prints them, its footer lines, `Stop` while it has not
-  ended, `Resume` when it ended as `stopped` or `failed`, and its question with an answer box and `Send Answer` while
-  it waits for an answer. A line with an agent has the pill `#<conversation>`.
-- The right pane has the inspect view of harness, `mountInspect` of `/assets/inspect.js`. A click on a line with an
-  agent shows its conversation there, live, with its message box and `Stop`. The bar above the view opens the project
-  agent or a child of the host of a project.
-
-The routes reply with JSON, and with `{ "error" }` for an error. A POST takes only an `application/json` body of at
-most 1 MiB, as the inspect routes do: another body gets 400 with `The body must be application/json`, `The body is
-longer than 1 MiB`, `The body is not JSON` or `Invalid body: <path> <message>`.
-
-- `GET /api/runs[?project=<name>]` gives `{ "runs": [...] }`: the runs of each harness project, then of `main`, or of
-  `project`, newest run ID first, each as `list --json` prints it, with `project` and `badge`. An unknown project gets
-  400 with `Unknown harness project: <name>`. The badge comes from the status of the run: `running`, `waiting` and
-  `done` for themselves, `failed` for `failed` and `orphaned`, and `stopped` for `aborted`, `earlier-version`,
-  `later-version` and `unstarted`. A `done` run whose result has the status `stopped` or `failed` has the badge `done`.
-- `GET /api/workflows[?project=<name>]` gives `{ "workflows": [{ "name", "description" }] }`: the scripts that
-  `workflows` lists in the directory of the project (the home directory for `main`), or in the directory of the
-  command without `project`. `description` is empty for a script without `meta.description`. An unknown project gets
-  400 with `Unknown harness project: <name>`, and a project whose directory is gone 400 with `Not an absolute
-  path of a directory: <directory>`.
-- `GET /api/runs/<run-id>` gives the snapshot of the run: `{ "runId", "project", "workflow", "title", "status",
-  "badge", "ended", "waitingQuestion", "entries", "footer", "end" }`. `status` is the status that `list` prints.
-  `entries` are the lines of `show` between its head line and its footer lines, each `{ "text", "conversation" }`,
-  with the conversation of its agent as `show --pick` gives it, and without `conversation` for a line without an
-  agent. `footer` has the footer lines of `show`, and `end` is `{ "report" }` or `{ "error" }` for a run that ended,
-  else `null`. `waitingQuestion` is the question of a run that waits for an answer, and is not there for other runs. A
-  run ID that is a path gets 400, a run that is gone 404, and a run that another version saved 500.
-- `GET /api/runs/<run-id>/stream` gives Server-Sent Events (`text/event-stream`). Each event is one `data:` line with a
-  snapshot. One comes at once, then one each time that a read, 1 s after the last read ended, gives another snapshot.
-  A running call shows its time, so a run without steps sends one each second while it runs. A first read that fails
-  gets the error of `GET /api/runs/<run-id>`; a later read that fails sends nothing. The stream ends when the client
-  closes it, also during the first read.
-- `POST /api/runs/start` with `{ "workflow", "args"?, "project"?, "cwd"? }` runs `workflows --background --json
-  <workflow> <args>...` and gives `{ "runId", "status": "started" }`. A `workflow` that is a command name or starts with
-  `-` gets 400 with `<workflow> is not a workflow`.
-- `POST /api/runs/<run-id>/stop` with `{}` runs `workflows stop <run-id> --json` and gives `{ "ok": true }`.
-- `POST /api/runs/<run-id>/resume` with `{ "answer"? }` runs `workflows resume <run-id> [--answer=<answer>]
-  --background --json` and gives `{ "ok": true }` when the run goes on. When the command prints another outcome, such
-  as for a run that is done, the route gets 409 with the summary of the outcome, such as `run <run-id> finished:
-  "done"`.
-- `POST /api/runs/prune` with `{ "runIds"?, "project"?, "cwd"? }` runs `workflows prune --yes --json -- <run-id>...`
-  and gives `{ "pruned": [<run-id>...] }`.
-- Each action runs the `workflows` command of the same install as a child process. A start and a prune run in the
-  directory of `project`, as `/api/workflows` finds it, or in `cwd`, which must be an absolute path of a directory,
-  else in the directory of the command; a stop and a resume run in the directory of the command. A body with both
-  `project` and `cwd` gets 400 with `Use project or cwd, not both`, an unknown project 400 with `Unknown harness
-  project: <name>`, and a project directory or a `cwd` that is not an absolute path of a directory, such as the
-  directory of a project that is gone, 400 with `Not an absolute path of a directory: <directory>`. The child gets
-  the environment of the server without `HARNESS_PROJECT`, `PI_SESSION_ID` and `HC_TERMINAL_ID`: its project comes
-  from its directory, and a run that the page starts has no conversation to post its outcome to and no hc terminal. A
-  command that fails with exit code 2 gets 400, with exit code 4 (a run that is gone) 404, and else 500, each with the
-  stderr of the command.
-- The routes of harness inspect, `/api/inspect/*`, `/assets/inspect.js` and `/assets/inspect.css`, are on the same
-  port, and start the host of a project when none runs. `/assets/control.js` and `/assets/control.css` are the browser
-  files of the page, from the `web/` folder of the package. Another path under `/api/` gets 404 with `{ "error" }`.
 
 ## Install
 
@@ -2004,12 +1921,10 @@ The engine files in `src/`:
   `list` and `show` print, and progress.
 - `cli/follow.ts`: how the command follows a run to its outcome, the answer of a waiting run, and the Ctrl+C presses.
 - `cli/commands/`: one file for each command: `start.ts`, `resume.ts` (also `wait`), `stop.ts`, `list.ts`, `show.ts`,
-  `attach.ts`, `save.ts`, `prune.ts` and `web.ts`.
-- `web/`: the server of `workflows web`: `server.ts` its routes, `runs.ts` the runs, their snapshots and their stream,
-  `actions.ts` the actions as child commands, `http.ts` the `Host` guard, the JSON bodies and the servers, and
-  `page.ts` the page. The browser files are `control.js` and `control.css` in `web/` at the root of the package.
-- `command.ts`: the `workflows` command of the package as a child process, for the `workflow` tool of the host and
-  `workflows web`.
+  `attach.ts`, `save.ts` and `prune.ts`.
+- `runs.ts`: the module `@vzlentin/workflows/runs`, for a program that reads the runs of a project as `list` and `show`
+  do: the runs and the workflows of a project, one run with its lines, and the `workflows` command as a child process.
+- `command.ts`: the `workflows` command of the package as a child process, for the `workflow` tool of the host.
 - `cli/terminal/pick.ts` and `cli/terminal/keys.ts`: the picker of `list --pick` and `show --pick`, and its keys.
 - `entry.ts`: the entry that the harness host loads, with the script task and the catch-up hook.
 - `records/tree.ts`: the call tree of a saved run, its lines and agent rows for `show` and `attach`, and the lines of

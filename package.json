@@ -10,9 +10,19 @@
 	"bin": {
 		"workflows": "dist/cli.js"
 	},
+	"exports": {
+		"./runs": {
+			"types": "./dist/runs.d.ts",
+			"default": "./dist/runs.js"
+		},
+		"./tool": {
+			"types": "./dist/tool.d.ts",
+			"default": "./dist/tool.js"
+		},
+		"./package.json": "./package.json"
+	},
 	"files": [
 		"dist",
-		"web",
 		"workflows"
 	],
 	"engines": {
@@ -23,8 +33,9 @@
 	},
 	"scripts": {
 		"build": "rm -rf dist && tsc -p tsconfig.build.json",
+		"prepare": "npm run build",
 		"prepack": "npm run build",
-		"check": "biome check . && oxlint --deny-warnings && tsc -p tsconfig.json && tsc -p workflows/jsconfig.json && vitest --run",
+		"check": "biome check . && oxlint --deny-warnings && npm run build && tsc -p tsconfig.json && tsc -p workflows/jsconfig.json && vitest --run",
 		"test": "vitest --run"
 	},
 	"dependencies": {

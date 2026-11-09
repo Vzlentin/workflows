@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TASK } from "../src/run/version.ts";
-import { git, repository, runsOf, sandbox, storeOf, workflows, worktreeAt } from "./support.ts";
+import { git, repository, runsOf, sandbox, saveAs, storeOf, workflows, worktreeAt } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -53,18 +53,6 @@ async function mergedRun(): Promise<{ id: string; worktree: string }> {
 	git(worktree, "branch", "-m", "feat/x");
 
 	return { id, worktree };
-}
-
-/** Marks the run task of the store as saved by `version`, with its input wrapped as `{ input }` when `wrap` is set. */
-function saveAs(version: number, wrap: boolean): void {
-	const database = new DatabaseSync(storeOf());
-	const input = wrap ? ", '$.input', json_object('input', record -> '$.input')" : "";
-	database
-		.prepare(
-			`UPDATE tasks SET record = json_set(record, '$.version', ?${input}) WHERE record ->> '$.kind' = 'workflows.run'`,
-		)
-		.run(version);
-	database.close();
 }
 
 const hasBranch = (name: string) => git(repo, "branch", "--list", name) !== "";

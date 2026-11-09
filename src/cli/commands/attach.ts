@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { type ConversationPlace, inHerdr, openConversationPane } from "@vzlentin/harness/herdr";
 import { cliPath } from "@vzlentin/harness/protocol";
+import { inputWorktree } from "../../records/store.ts";
 import { agentRows } from "../../records/tree.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { connectTo } from "../host.ts";
@@ -42,7 +43,7 @@ export async function attach(args: readonly string[], terminal: Terminal): Promi
 	const conversation = wanted === undefined ? undefined : Number(wanted);
 
 	const run = await savedRun(id, ATTACH);
-	const { input, calls } = await readRun(run, true, "be attached");
+	const { task, calls } = await readRun(run, true, "be attached");
 
 	const list = agentRows(calls, 0, Date.now())
 		.flatMap((row) => (row.kind === "agent" ? [row] : []))
@@ -65,7 +66,8 @@ export async function attach(args: readonly string[], terminal: Terminal): Promi
 		const { child } = await client.request({ type: "watch", conversation: watched });
 
 		if (inHerdr(process.env)) {
-			const open = input.worktree !== undefined && existsSync(input.worktree.path);
+			const worktree = inputWorktree(task.input);
+			const open = worktree !== undefined && existsSync(worktree.path);
 			const place: ConversationPlace = values.side ? { side: true } : open ? { space: id } : {};
 			await openConversationPane(child, place, { ...process.env, HARNESS_PROJECT: run.project });
 

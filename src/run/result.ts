@@ -1,12 +1,29 @@
 /** The title of a run, and the status, report lines and exit code of its result. */
 import type { JsonValue } from "@earendil-works/chord";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { type ScriptInput, subject } from "../launch/input.ts";
+import { subject } from "../launch/input.ts";
 import type { ProgressEvent } from "./progress.ts";
 
+/**
+ * The fields of a saved input that the title, the report and the JSON of `show` read. A run that another version saved
+ * has a title and a report only when its saved input has these fields.
+ */
+export const SHOWN_INPUT = Type.Object({
+	runId: Type.String(),
+	name: Type.String(),
+	args: Type.Record(Type.String(), Type.Unknown()),
+	meta: Type.Object({
+		args: Type.Record(Type.String(), Type.Object({ type: Type.String() })),
+		exit: Type.Record(Type.String(), Type.Integer()),
+	}),
+	caller: Type.Optional(Type.String()),
+});
+
+export type ShownInput = Static<typeof SHOWN_INPUT>;
+
 /** The first `text` argument of `input`, whose subject is the run's title. */
-function textArg(input: ScriptInput): string | undefined {
+function textArg(input: ShownInput): string | undefined {
 	const [arg] = Object.entries(input.meta.args).find(([, spec]) => spec.type === "text") ?? [];
 	const value = arg === undefined ? undefined : input.args[arg];
 
@@ -25,7 +42,7 @@ export function statusOf(result: JsonValue): string | undefined {
  * A short name of the run's subject for output lines: the last `title` of the run in its progress `events`, else the
  * subject of its first text argument, or the script name.
  */
-export function title(input: ScriptInput, events: readonly ProgressEvent[]): string {
+export function title(input: ShownInput, events: readonly ProgressEvent[]): string {
 	const given = events.findLast((event) => event.kind === "title" && event.run === input.runId);
 
 	if (given?.kind === "title") return given.text;
@@ -42,7 +59,7 @@ export type Report = { readonly lines: string[]; readonly code: number };
  * `waiting`, whatever `meta.exit` says, 0 for a result without a status, and 1 for a status that `meta.exit` does not
  * declare.
  */
-export function reportOf(input: ScriptInput, result: JsonValue): Report {
+export function reportOf(input: ShownInput, result: JsonValue): Report {
 	const lines = Value.Check(REPORT, result)
 		? result.report.map((line) => String(line))
 		: [Value.Check(Type.String(), result) ? result : JSON.stringify(result)];

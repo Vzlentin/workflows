@@ -74,10 +74,12 @@ type Ended = {
 
 /**
  * How the run `id` whose task is `task` ended, when it ended without a result. It throws for a run that has a result,
- * or has not ended. It reads the fields of the outcome, whose `failed` and `faulted` are the run status `failed`.
+ * or has not ended. It reads the fields of the outcome, whose `failed` and `faulted` are the run status `failed`. The
+ * lines tell how to resume the run only when it is `resumable`.
  */
-export function endOf(task: RunTask | TaskEnd, title: string, id: string): Ended {
+export function endOf(task: RunTask | TaskEnd, title: string, id: string, resumable: boolean): Ended {
 	const resume = `continue with: workflows resume ${id}`;
+	const hint = resumable ? [resume] : [];
 	const outcome = taskOutcome(task);
 
 	switch (outcome?.status) {
@@ -85,17 +87,25 @@ export function endOf(task: RunTask | TaskEnd, title: string, id: string): Ended
 		case "faulted": {
 			const error = outcome.error.message;
 
-			return { lines: [`failed ${title}: ${error}`, resume], error, outcome: { status: "failed", error }, code: 1 };
+			return { lines: [`failed ${title}: ${error}`, ...hint], error, outcome: { status: "failed", error }, code: 1 };
 		}
 
 		case "orphaned": {
 			const error = `the task was orphaned: ${outcome.reason}`;
 
-			return { lines: [`orphaned ${title}: ${outcome.reason}`, resume], outcome: { status: "failed", error }, code: 1 };
+			return {
+				lines: [`orphaned ${title}: ${outcome.reason}`, ...hint],
+				outcome: { status: "failed", error },
+				code: 1,
+			};
 		}
 
-		case "aborted":
-			return { lines: [`stopped ${title}; ${resume}`], outcome: { status: "stopped" }, code: 130 };
+		case "aborted": {
+			const line = resumable ? `stopped ${title}; ${resume}` : `stopped ${title}`;
+
+			return { lines: [line], outcome: { status: "stopped" }, code: 130 };
+		}
+
 		case "completed":
 		case undefined:
 			throw new Error(`run ${id} did not end without a result`);
@@ -373,7 +383,7 @@ export function outcomeOf(
 	if (hasResult(status)) return finished(input, id, taskOutcome(task)?.result ?? null, terminal, json);
 
 	if (!hasEnded(status)) throw new Error(`run ${id} has not ended`);
-	const ended = endOf(task, titleOf(input, events), id);
+	const ended = endOf(task, titleOf(input, events), id, true);
 
 	if (json) terminal.stdout(JSON.stringify({ runId: id, ...ended.outcome }));
 	else for (const line of ended.lines) terminal.stderr(line);

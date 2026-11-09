@@ -1,4 +1,4 @@
-/** The `workflows` command of this package as a child process: the `workflow` tool of the host and `workflows web` run it. */
+/** The `workflows` command of this package as a child process, which the `workflow` tool of the host runs. */
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";

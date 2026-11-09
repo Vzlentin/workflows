@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -14,7 +15,15 @@ import {
 	fauxText,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { ConversationId, EntryRecord, JsonObject } from "@earendil-works/pi-durable";
+import {
+	type ConversationId,
+	createRegistry,
+	defineExtension,
+	defineTask,
+	type EntryRecord,
+	Harness,
+	type JsonObject,
+} from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { connect } from "@vzlentin/harness/client";
 import { entriesPath } from "@vzlentin/harness/entries";
@@ -26,6 +35,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { CtrlC } from "../src/cli/follow.ts";
 import { type Choose, main } from "../src/cli/main.ts";
+import { newRunId } from "../src/launch/input.ts";
 import { addFaults, type Faults, faultState } from "./faults.ts";
 
 /** The entry of the workflows checkout, which the hosts of the tests load. */
@@ -98,6 +108,77 @@ export async function inputsOf(id: string | undefined): Promise<JsonObject[]> {
 	return (await runTasks("main")).flatMap((task) =>
 		Value.Check(CHILD_INPUT, task.input) && task.input.root === id ? [task.input] : [],
 	);
+}
+
+/**
+ * The input of a task of another version, with the workflow `name`, the arguments `args` and the `meta` of its script.
+ * Some versions wrapped it as `{ input }`.
+ */
+type SavedInput = {
+	readonly name?: string;
+	readonly args?: JsonObject;
+	readonly meta?: JsonObject;
+	readonly input?: { readonly name?: string };
+};
+
+/**
+ * The ID of a new run of the `main` project of the sandbox `root` whose store holds one pending task of `kind` at
+ * `version` with `input`, as a run that another version saved.
+ */
+export async function saveRun(
+	root: string,
+	kind: string,
+	version: number,
+	input: SavedInput = { input: {} },
+): Promise<string> {
+	const id = newRunId();
+	const directory = join(runsOf(root), id);
+	await mkdir(directory, { recursive: true });
+	await writeFile(join(directory, "project"), "main\n");
+	await mkdir(statePaths("main").dir, { recursive: true });
+
+	const task = defineTask<object, { phase: string }, null>({
+		name: kind,
+		version,
+		initial: () => ({ phase: "run" }),
+		phases: { run: async () => {} },
+		abort: async () => {},
+	});
+
+	const registry = createRegistry();
+	registry.install(defineExtension({ name: "workflows", tasks: [task] }));
+	const models = new FakeModel({ interrupt: new AbortController() }).models;
+	const storage = await openNodeSqliteStorage(storeOf());
+	const harness = await Harness.open(storage, { models, registry }, BACKGROUND_CONTEXT);
+
+	try {
+		const conversation = await harness.root(BACKGROUND_CONTEXT);
+		// A script task of some earlier versions wrapped its input as `{ input }`.
+		const saved = "input" in input ? { input: { ...input.input, runId: id } } : { ...input, runId: id };
+		await conversation.commit(
+			(tx) => tx.createTask(task, saved, { ownership: { kind: "conversation" } }),
+			BACKGROUND_CONTEXT,
+		);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
+
+	return id;
+}
+
+/**
+ * Marks the run tasks of the store of `main` as saved by `version`, with their input wrapped as `{ input }` when `wrap`
+ * is set.
+ */
+export function saveAs(version: number, wrap: boolean): void {
+	const database = new DatabaseSync(storeOf());
+	const input = wrap ? ", '$.input', json_object('input', record -> '$.input')" : "";
+	database
+		.prepare(
+			`UPDATE tasks SET record = json_set(record, '$.version', ?${input}) WHERE record ->> '$.kind' = 'workflows.run'`,
+		)
+		.run(version);
+	database.close();
 }
 
 /** Writes Pi's settings of the sandbox `root`: the Pi packages `packages`, and `settings`. */
