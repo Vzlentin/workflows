@@ -1,15 +1,24 @@
-// The globals of a workflow script, for editors. See "The script API" in docs/spec.md.
-// The sandbox replaces Date and Math: `Date`, `Date.now()` and `Math.random()` throw, so that a script makes the
-// same calls each time it runs.
+// The script API: the globals of a workflow script, for editors and for the agent that writes a script. See "The script
+// API" in docs/spec.md of the workflows repository.
+// A script is the body of an async function, so top-level `await` and `return` work. A call that runs something,
+// also a lib helper, returns a promise, so write `await` before it, as in `JSON.parse(await sh(cmd))`. `session`,
+// `phase`, `log` and `title` need no `await`.
+// A script has no file system, network, modules or timers, so its effects go through `sh` and `ok`. The sandbox
+// replaces Date and Math: `Date`, `Date.now()` and `Math.random()` throw, so that a script makes the same calls each
+// time it runs.
+// A resume runs the script again from the top: a saved call returns its result, and a command that did not finish runs
+// again, so keep `sh` and `ok` commands safe to repeat.
+// To keep a script as a named workflow of the project, call the `workflow` tool with `save: { runId, name }` after its
+// run. `force: true` replaces a workflow of that name.
 
 /**
- * The command line and the outline of a script, as `export const meta = { ... }`. A script uses it with the JSDoc tag
- * `@type {Meta}`.
+ * The command line and the outline of a script, as `export const meta = { ... }`: optional, at the top of the script,
+ * after its leading comments. A script uses it with the JSDoc tag `@type {Meta}`.
  */
 type Meta = {
 	/** One line for `workflows` and `--help`. */
 	description?: string;
-	/** The arguments, by name. */
+	/** The arguments, by name. The tool's `args`, or the `--<name>` flags, fill `args.<name>`. */
 	args?: Record<
 		string,
 		{
@@ -45,7 +54,10 @@ type OutlineStep =
 	| { kind: "run"; workflow: string; label: string }
 	| { kind: "loop"; label: string; steps: [OutlineStep, ...OutlineStep[]] };
 
-/** The argument values of `meta.args`, and `start` with `worktree: true`. */
+/**
+ * The argument values of `meta.args`, and `start` with `worktree: true`. The tool's `args`, or the `--<name>` flags,
+ * fill `args.<name>`.
+ */
 declare const args: any;
 
 /** The run ID. A script that `run()` starts gets its own value. */
@@ -64,16 +76,21 @@ declare const cwd: string;
 declare const prompts: Record<string, (inputs?: Record<string, string>) => Promise<string>>;
 
 /**
- * The model of a session. `as` is the role name, any name (default `default`). The run's `--agents`, then the
- * `agents.json` tables, give the model and thinking of each name or of `"*"`. `provider`, `model` and `thinking`
- * override them, and a field that none gives comes from the project agent.
+ * The model of a session. `as` is the role name, any name (default `default`). The run's `agents` arg (`--agents`),
+ * then the `agents.json` tables, `<repo>/.workflows/agents.json` first, then `$XDG_CONFIG_HOME/workflows/agents.json`
+ * (default `~/.config/workflows/agents.json`), then `workflows/agents.json` of the package, give the model and thinking
+ * of each name or of `"*"`. `provider`, `model` and `thinking` override them all. A field that none gives comes from
+ * the project agent: the Pi default model and thinking level.
  */
 type SessionOptions = { as?: string; provider?: string; model?: string; thinking?: string };
 
-/** One turn in a new session. Returns the reply text, or the answer with `schema`. */
+/** One turn in a new session. Returns the reply text, or with `schema` the answer checked against that JSON Schema. */
 declare function agent(prompt: string | Promise<string>, options?: SessionOptions & { schema?: object }): Promise<any>;
 
-/** A new session of a role name or of `options` (default `default`). `.ask(prompt, { schema })` is one turn in it. */
+/**
+ * A new session of a role name or of `options` (default `default`). Returns at once, and the session keeps its history:
+ * `.ask(prompt, { schema })` is one turn in it.
+ */
 declare function session(
 	options?: string | SessionOptions,
 ): { ask(prompt: string | Promise<string>, options?: { schema?: object }): Promise<any> };
@@ -88,8 +105,9 @@ declare function sh(cmd: string | readonly string[]): Promise<string>;
 declare function ok(cmd: string | readonly string[]): Promise<boolean>;
 
 /**
- * Asks the user `question`. The first time, the run stops and waits: the command prints the question and exits with 3.
- * `workflows resume <run-id> --answer <text>` runs the script again, and this call returns the text.
+ * Asks the user `question`. The first time, the run stops and waits: the command prints the question and exits with 3,
+ * and the `workflow` tool gives a `waiting` result with the question. `workflows resume <run-id> --answer <text>`, or
+ * the tool with `resume: <run-id>` and `answer`, runs the script again, and this call returns the answer.
  */
 declare function input(question: string): Promise<string>;
 
@@ -98,7 +116,8 @@ type Json = null | boolean | number | string | Json[] | { [key: string]: Json | 
 
 /**
  * Runs the script `name` of `workflows/` as a child run and returns its result, with `runId` when it is an object. The
- * args that its `meta.args` declares are checked before the child starts.
+ * args that its `meta.args` declares are checked before the child starts. The reserved arg `from: <run-id>` gives the
+ * child the prompts and agents table of that saved run.
  */
 declare function run(name: string, args?: { [key: string]: Json | undefined }): Promise<any>;
 
@@ -164,7 +183,7 @@ declare function log(text: string): void;
 /** Gives the run the title `text`, in place of the subject of its first text argument, in `list`, `show` and the end lines. */
 declare function title(text: string): void;
 
-// The lib: helpers that every script gets. See "The script lib" in docs/spec.md.
+// The lib: helpers that every script gets. See "The script lib" in docs/spec.md of the workflows repository.
 
 /** The subject of a text: its first non-empty line without leading `#`. */
 declare function subjectOf(text: string): string;

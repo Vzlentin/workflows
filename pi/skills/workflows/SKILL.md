@@ -1,6 +1,6 @@
 ---
 name: workflows
-description: Run and follow workflows runs with the `workflow` tool. ship ships one work item onto a new branch, campaign splits a goal into work items and ships each one, rpi researches, plans and implements one work item, thermoloop reviews and fixes a change in rounds, and judge scores a change. Use it when the user asks to ship, run a campaign, review, fix or judge a change, or asks about a run, its status, its result, its worktree or its report.
+description: Use it when the user asks to ship, run a campaign, review, fix or judge a change, or asks about a workflows run, its status, its result, its worktree or its report.
 ---
 # workflows
 

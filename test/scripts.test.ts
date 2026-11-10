@@ -7,9 +7,11 @@ import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { createModels } from "@earendil-works/pi-ai/models";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { REMINDER } from "@vzlentin/harness/respond";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { AGENTS } from "../pi/run-view.ts";
@@ -18,7 +20,9 @@ import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { branchOf, renameBranch } from "../src/launch/worktree.ts";
 import { callRecords, reading, runTasks } from "../src/records/store.ts";
 import { CallDoc, type SavedCall } from "../src/run/calls.ts";
+import { prelude } from "../src/run/sandbox.ts";
 import { TASK } from "../src/run/version.ts";
+import { loadBundle } from "../src/workflow/bundle.ts";
 import { readMeta } from "../src/workflow/meta.ts";
 import {
 	childTasks,
@@ -145,10 +149,70 @@ function rows() {
 	}
 }
 
+/** The names of the lib that only the lib uses: a script gets them, and `script.d.ts` does not declare them. */
+const LIB_INTERNALS = [
+	"checkedOutAt",
+	"prIntent",
+	"prOf",
+	"isBranch",
+	"isAncestor",
+	"pullBranch",
+	"targetOf",
+	"intentOf",
+	"MEMO_INSTALL",
+	"MEMO",
+	"PLAIN",
+	"PLAIN_KEYS",
+	"COMPRESS_PASSES",
+	"plainAdds",
+	"NOTE_BYTES",
+	"memo",
+	"bytesOf",
+	"cutNote",
+	"openStore",
+	"optmemStore",
+	"plainStore",
+	"NOTED",
+	"LESSONS",
+];
+
+/** The names of the own properties of `globalThis` in a sandbox, as a script returns them. */
+const NAMES = Type.Array(Type.String());
+
+/** The names of the `declare const` and `declare function` lines of `workflows/script.d.ts`, in file order. */
+async function declaredNames(): Promise<string[]> {
+	const declarations = await readFile("workflows/script.d.ts", "utf8");
+
+	return [...declarations.matchAll(/^declare (?:const|function) (\w+)/gm)].map(([, name]) => name ?? "");
+}
+
 describe("workflows/script.d.ts", () => {
+	it("declares every global and lib helper that a script gets", async () => {
+		const declared = await declaredNames();
+		const text = prelude({ runId: "r", runDir: root, args: {}, bundle: await loadBundle() }, root);
+		const lexical = [...text.matchAll(/^(?:async function|function|const|let) (\w+)/gm)].map(([, name]) => name ?? "");
+		const probe = "return Object.getOwnPropertyNames(globalThis)";
+		await writeFile(join(root, "x.js"), probe);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(0);
+		const globals = Value.Parse(NAMES, JSON.parse(run.stdout.at(-1) ?? "null"));
+		const bare = new CodemodeSandbox({});
+		const builtIn = await bare.execute(probe).finally(() => bare.close());
+
+		if (!builtIn.ok) throw new Error(`the bare sandbox failed: ${builtIn.error.message}`);
+		const builtIns = Value.Parse(NAMES, builtIn.value);
+
+		const missing = [...lexical, ...globals].filter(
+			(name) =>
+				!name.startsWith("__") && !builtIns.includes(name) && !LIB_INTERNALS.includes(name) && !declared.includes(name),
+		);
+
+		expect(missing).toEqual([]);
+		expect(LIB_INTERNALS.filter((name) => !lexical.includes(name))).toEqual([]);
+	});
+
 	it("declares only globals that a script has", async () => {
-		const declarations = await readFile("workflows/script.d.ts", "utf8");
-		const names = [...declarations.matchAll(/^declare (?:const|function) (\w+)/gm)].map((match) => match[1] ?? "");
+		const names = await declaredNames();
 		const types = names.map((name) => `${name}: typeof ${name}`).join(", ");
 		await writeFile(join(root, "x.js"), `return { ${types} }`);
 		const run = await workflows(["x.js"], { cwd: root });

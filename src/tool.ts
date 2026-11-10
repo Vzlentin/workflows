@@ -1,8 +1,9 @@
 /**
  * The one definition of the `workflow` tool: its description, parameters and output schema, the `workflows` arguments
  * of a call, and the outcome and text of a result. The tool of the harness host (`entry.ts`) and the tool of the Pi
- * extension (`pi/index.ts`, which loads `dist/tool.js`) both use it. It imports only `typebox`.
+ * extension (`pi/index.ts`, which loads `dist/tool.js`) both use it. It imports only `typebox` and `node:url`.
  */
+import { fileURLToPath } from "node:url";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 
@@ -96,52 +97,13 @@ export const DESCRIPTION =
 	"conversation continues. `input(question)` stops the run, and the tool gives a `waiting` result with the " +
 	"question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` then returns the answer.";
 
-/** How to write an inline script. Keep it in step with `workflows/script.d.ts`; a test checks the globals. */
+/** `workflows/script.d.ts` of this package: the script API, which the model reads before it writes a script. */
+const SCRIPT_TYPES = fileURLToPath(new URL("../workflows/script.d.ts", import.meta.url));
+
+/** The rules that the tool adds to the system prompt. */
 export const GUIDELINES = [
-	"A `workflow` `script` is the body of an async function, so top-level `await` and `return` work. An optional " +
-		'`export const meta = { args: { <name>: { type: "string" | "number" | "boolean" | "text" } } }` at ' +
-		"the top declares the args, which the tool's `args` fill and the script reads as `args.<name>`.",
-	"Script globals are async: a call that runs something returns a promise, so write `await` before it, as in " +
-		"`JSON.parse(await sh(cmd))`. `await agent(prompt, { as, provider, model, thinking, schema })` is one turn in a " +
-		"new session and returns the reply, or the checked answer with a JSON Schema. `session(name)` or " +
-		"`session({ as, provider, model, thinking })` returns at once a session that keeps its history, and " +
-		"`await <session>.ask(prompt, { schema })` is one turn in it. `as` is a role name (default `default`): `<repo>/.workflows/agents.json` " +
-		'and `~/.config/workflows/agents.json` give a name or `"*"` a `model` and `thinking`, else the Pi model; the ' +
-		"run's `agents` arg comes before the tables, and `provider`, `model` and `thinking` override them all. `await sh(cmd)` returns stdout and throws on a nonzero exit, `await ok(cmd)` returns true on exit 0. " +
-		"`await run(name, args)` runs a named workflow as a child run, and `from: <run-id>` in `args` gives it the prompts " +
-		"and agents table of that saved run. `await pastRuns(workflow, { runs, limit })` gives the completed root runs of a " +
-		"workflow, newest first, with their item, repository, start, prompts and result. " +
-		"`await todo.add(text)`, `await todo.set(id, state, text)` and `await todo.list()` keep the list of todos of the " +
-		"run, `{ id, text, state }` with the state `open`, `doing`, `done` or `dropped`; a child run has its own list. " +
-		"`await input(question)` stops the run, and the tool gives a " +
-		"`waiting` result with the question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` " +
-		"then returns the answer. `await parallel([() => ...])` and " +
-		"`await pipeline(items, ...stages)` run calls at once. `prompts.<name>(inputs)` gives a prompt template. " +
-		"`phase(title)` and `log(text)` write progress lines, and `title(text)` names the run; these three need no `await`. " +
-		"`args`, `runId`, `runDir` and `cwd`, the directory of `sh`, are values.",
-	"Script lib: its helpers that run calls return promises, so write `await` before them too. `subjectOf(text)` gives the first non-empty line without leading `#`. `oneLine(text)` gives the text with each whitespace run made one space, trimmed. `memory(path, item)` gives a promise of a run memory in an " +
-		"OptMem store, `<runDir>/memory` without `path`: `.path` and `.item` to pass to a child run, `.note(author, round, notes)`, " +
-		"`.text` (a promise of the notes), `.finish(item, result)` (the result with `lessons`, 0 to 3 " +
-		"`{ cue, lesson, evidence }` of the notes, `[]` with no turn when there are none, and a report line for each one, " +
-		"when the store opened here), and `.session(name)`, whose first `.ask` starts with the notes and whose " +
-		"`.noted(round, prompt, rule)` asks for `{ text, notes }` and keeps the notes. `noteLines(notes)` gives the `#<k> <note>` lines of `notes.text`, without empty lines. `commitAll(message)` stages and commits every change, " +
-		"`squash(start, message, subject)` squashes the commits since `start` into one (no commit when nothing changed), logs it and gives the short head, " +
-		"`commitChange(item, start, findings)` writes the commit message of the change since `start` in an `implementer` turn, with the judge's `findings` lines, squashes the change with it and gives `{ head, subject }`, " +
-		"`judgeCommit(item, start, committed)` runs the child run `judge` and gives `committed`, the result of `commitChange`, with `score, answers, findings, judgeError, divergence`, " +
-		"`commitAndJudge(item, start)` runs `commitChange`, then `judgeCommit`, " +
-		"`writePatch(path, from)` writes the diff from `from` to `HEAD` to `path` and gives `path`, " +
-		"`diffStat(from, to)` gives `+12 -3 in 2 files`, `assertClean()` throws on changes that are not committed, " +
-		"`changeOf(args, { wip })` gives `{ start, intent, checkout, dirty }` of `args.start` and `args.item`, or else of " +
-		"`args.change` (the current branch, a PR number, a ref or a range) and names the run, and `inCheckout(name, change, args)` runs the script again in a worktree on the " +
-		"branch of the change and adds the line `worktree <path>` to its report.",
-	"A script has no file system, network, modules or timers, so effects go through `sh`. `Date`, `Date.now()` and " +
-		"`Math.random()` throw. A resume runs the script again from the top: saved calls return their results, and a " +
-		"command that did not finish runs again, so keep `sh` and `ok` commands safe to repeat.",
-	"To keep a good inline script as a named workflow of the project, call `workflow` with " +
-		"`save: { runId, name }` after its run. Add `force: true` to replace a workflow of that name.",
-	"Use `background: true` for long runs, such as `campaign` or `optimize`, or for work that can go on while the " +
-		"conversation continues. The call returns at once, and the result of the run comes later as a message in the " +
-		"conversation. `resume` follows the run.",
+	`Before you write a \`workflow\` \`script\`, read ${SCRIPT_TYPES}: it declares the script globals, the lib helpers and \`meta\`, and gives the limits of a script and how a resume runs it again.`,
+	"Use `background: true` for long runs, such as `campaign` or `optimize`: the call returns at once, the result comes later as a message, and `resume` follows the run.",
 ];
 
 /**

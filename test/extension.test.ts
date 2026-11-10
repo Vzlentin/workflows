@@ -610,13 +610,10 @@ describe("the workflow tool", () => {
 		]);
 	});
 
-	it("names every script global in its prompt guidelines", async () => {
-		const declarations = await readFile(new URL("../workflows/script.d.ts", import.meta.url), "utf8");
-		const globals = [...declarations.matchAll(/^declare (?:const|function) (\w+)/gm)].map(([, name]) => name);
-		expect(globals.length).toBeGreaterThan(10);
-		const guidelines = (tool.promptGuidelines ?? []).join("\n");
-
-		for (const name of globals) expect(guidelines, name).toMatch(new RegExp(`\`(await )?${name}\\b`));
+	it("points to script.d.ts of its package in prompt guidelines of at most 1,000 characters", () => {
+		const rules = (tool.promptGuidelines ?? []).map((rule) => `- ${rule}`).join("\n");
+		expect(rules).toContain(join(import.meta.dirname, "..", "workflows", "script.d.ts"));
+		expect(rules.length).toBeLessThanOrEqual(1000);
 	});
 
 	it("has the description, parameters and output schema of the tool of the harness host", () => {
@@ -1154,6 +1151,9 @@ describe("the installed extension", () => {
 		const registered = await load();
 		expect(registered.description).toBe(toolModule.DESCRIPTION);
 		expect(registered.parameters).toEqual(toolModule.PARAMETERS);
+		expect(registered.promptGuidelines?.join("\n")).toContain(
+			join(modules, "@vzlentin", "workflows", "workflows", "script.d.ts"),
+		);
 	});
 
 	it("puts the .bin folder next to its workflows last on PATH, once for each load", async () => {

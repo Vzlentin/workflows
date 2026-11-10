@@ -11,12 +11,11 @@
 import { withCancel, type Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
-import type { JsonObject } from "@earendil-works/pi-durable";
 import { TodoState } from "@vzlentin/harness/todo";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { JSON_VALUE } from "../tool.ts";
-import { META, render } from "../workflow/bundle.ts";
+import { type Bundle, META, render } from "../workflow/bundle.ts";
 import {
 	CallDoc,
 	type Calls,
@@ -35,9 +34,12 @@ import { askTurn, ownerOf, SESSION_ARGS, sessionOf } from "./sessions.ts";
 import type { Host, Runtime } from "./version.ts";
 
 /** The sandbox functions that are not host calls, and the script lib; `cwd` is the directory of the script calls. */
-function prelude(args: JsonObject, prompts: readonly string[], script: ScriptRun, cwd: string): string {
+export function prelude(
+	script: Pick<ScriptRun, "runId" | "runDir" | "args"> & { readonly bundle: Bundle },
+	cwd: string,
+): string {
 	return `
-const args = ${JSON.stringify(args)};
+const args = ${JSON.stringify(script.args)};
 const runId = ${JSON.stringify(script.runId)};
 const runDir = ${JSON.stringify(script.runDir)};
 const cwd = ${JSON.stringify(cwd)};
@@ -50,7 +52,7 @@ const Math = Object.freeze({
 	random: __unavailable("Math.random"),
 });
 const prompts = Object.fromEntries(
-	${JSON.stringify(prompts)}.map((name) => [name, (inputs) => __prompt(name, inputs)]),
+	${JSON.stringify(Object.keys(script.bundle.prompts))}.map((name) => [name, (inputs) => __prompt(name, inputs)]),
 );
 function session(options = "default") {
 	const { as = "default", provider, model, thinking } = typeof options === "string" ? { as: options } : (options ?? {});
@@ -122,7 +124,7 @@ export async function runScript(
 	host: Host,
 	script: ScriptRun,
 ): Promise<JsonValue> {
-	const { bundle, args } = script;
+	const { bundle } = script;
 	// A module export is a syntax error in the function body that the script runs as.
 	const source = bundle.main.replace(META, "$1$2");
 	const progress: PhaseLines = { run: script.runId, parent: script.parent, lines: [], phase: null };
@@ -240,7 +242,7 @@ export async function runScript(
 	let result: Awaited<ReturnType<CodemodeSandbox["execute"]>>;
 
 	try {
-		const wrapped = `${prelude(args, Object.keys(bundle.prompts), script, cwd)}\nreturn await (async () => {\n${source}\n})();`;
+		const wrapped = `${prelude(script, cwd)}\nreturn await (async () => {\n${source}\n})();`;
 		result = await sandbox.execute(wrapped, { signal: AbortSignal.any([signal, stop.signal]) });
 	} finally {
 		await sandbox.close();

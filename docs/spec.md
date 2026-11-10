@@ -1860,9 +1860,13 @@ The tool takes one of `name`, `script`, `resume` or `save`, plus `args` with `na
 - `background: true`, with `name`, `script` or `resume`, adds `--background` before `--json`. With `save`, it is the
   error `background works only with name, script or resume`, and no command starts.
 
-The tool adds guidelines to the system prompt on how to write a `script`: its shape and `meta`, the script globals,
-the sandbox and resume rules, `input` and how to answer a `waiting` result, `save`, and `background`. A test checks that they name every global of
-`workflows/script.d.ts`.
+The tool adds two guidelines to the system prompt. The first tells the model to read `workflows/script.d.ts` of the
+package before it writes a `script`, by the absolute path that the tool module computes from its own location. The
+second says that `background: true` is for long runs, whose result comes later as a message, and that `resume` follows
+the run. The guidelines are at most 1,000 characters. A test checks that `script.d.ts` declares every global and lib
+helper that a script gets, apart from the `__` internals, the names that only the lib uses, and the globals of a bare
+pi-codemode sandbox: the JavaScript built-ins and the sandbox's own `store`, `load`, `tools`, `ALL_TOOLS`, `text`,
+`image` and `exit`.
 
 Each stderr line of the run is a progress update of the tool. A progress line is a stderr line that is a JSON object
 with a `progress` array, whatever the order of its keys. The text of an update is the last line of a progress line, or
