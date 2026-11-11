@@ -4,7 +4,7 @@
  * host of a test loads this module, and the test sets the host here.
  */
 import { once } from "node:events";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { ConversationHandle, Submission, SubmissionDraft, SubmissionId, Tx } from "@earendil-works/pi-durable";
 import type { Host as HarnessHost } from "@vzlentin/harness/host";
 import workflowsEntry from "../src/entry.ts";

@@ -2,7 +2,8 @@
  * The sessions of a run: children of harness's children library, owned by the run's task, which the `session` and
  * `ask` calls open and use, and which the end of the run ends.
  */
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { AgentDoc, type ConversationId, defineDocFamily, type JsonObject } from "@earendil-works/pi-durable";
 import type { Failure, Owner, Spec } from "@vzlentin/harness/children";
 import { type Static, Type } from "typebox";

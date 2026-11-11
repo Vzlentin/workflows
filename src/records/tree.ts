@@ -2,7 +2,7 @@
  * The calls of a saved run as `workflows show` and `workflows attach` read them: the call tree of a run and its child
  * runs, its lines for `show --calls`, and its agent rows for `show --agents`.
  */
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { Todo } from "@vzlentin/harness/todo";
 import { Type } from "typebox";
 import { Value } from "typebox/value";

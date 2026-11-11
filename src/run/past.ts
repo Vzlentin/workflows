@@ -3,7 +3,8 @@
  * tasks of the kind `workflows.run`, at the current version and at earlier versions alike, and the first task of a run,
  * whose list of todos is the list of the run.
  */
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { Cursor, Page, TaskOutcome, TaskRecord } from "@earendil-works/pi-durable";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";

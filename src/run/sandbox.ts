@@ -8,8 +8,8 @@
  * run. `run(name, args)` starts a child run as a child task of the caller, with its own run directory, and a resume of
  * the caller continues that child run. Sessions are children of harness's children library, owned by the run's task.
  */
-import type { Context, JsonValue } from "@earendil-works/chord";
-import { withCancel } from "@earendil-works/chord/context";
+import { withCancel, type Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { TodoState } from "@vzlentin/harness/todo";

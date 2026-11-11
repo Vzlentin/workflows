@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { chmod, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { createRegistry, defineDoc, Harness, ROOT_CONVERSATION_ID, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { request } from "@vzlentin/harness/client";

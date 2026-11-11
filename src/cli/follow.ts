@@ -1,8 +1,8 @@
 /** How the command line follows a run to its outcome, and the Ctrl+C presses of the command line. */
 
 import { join } from "node:path";
-import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { type Client, hostStopped } from "@vzlentin/harness/client";
 import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";

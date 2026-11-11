@@ -2,7 +2,7 @@
  * The kind and version of the task of every script run, and the types that the files of `run/` share: the checkpoint,
  * the runtime and the definition of the task, and what it gets from the harness host.
  */
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { Task, TaskRecord, TaskRuntime } from "@earendil-works/pi-durable";
 import type { Children, Place } from "@vzlentin/harness/children";
 import type { ScriptInput } from "../launch/input.ts";

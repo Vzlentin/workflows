@@ -2,7 +2,8 @@
  * The task of every script run: its one phase, which runs the script, its outcome, the message that a background run
  * posts, and its abort.
  */
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";

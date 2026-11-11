@@ -1,7 +1,8 @@
 /** The child runs that the `run` calls of a script start, as child tasks of the caller's task. */
 import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { JsonObject, TaskId } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";

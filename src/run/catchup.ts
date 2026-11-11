@@ -2,8 +2,8 @@
  * The catch-up hook of the workflows entry: before an input of the project agent, the lines of the workflows runs that
  * ended since the agent last saw them, with their sessions.
  */
-import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { Harness, TaskId } from "@earendil-works/pi-durable";
 import { StartedTasks } from "@vzlentin/harness/tasks";
 import { type Static, Type } from "typebox";

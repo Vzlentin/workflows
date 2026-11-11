@@ -4,7 +4,7 @@
  * conversations of the host the `workflow` tool, which runs the `workflows` command of this package as a child process,
  * and the project agent the catch-up hook `workflows.runs`, which tells it about the runs that ended.
  */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { Type } from "typebox";

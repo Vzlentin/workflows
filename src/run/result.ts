@@ -1,5 +1,5 @@
 /** The title of a run, and the status, report lines and exit code of its result. */
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { subject } from "../launch/input.ts";
