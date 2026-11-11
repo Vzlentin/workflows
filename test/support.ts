@@ -25,7 +25,7 @@ import {
 	type JsonObject,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { connect } from "@vzlentin/harness/client";
+import { connect, request } from "@vzlentin/harness/client";
 import { entriesPath } from "@vzlentin/harness/entries";
 import { type Host, runHost } from "@vzlentin/harness/host";
 import { projectDir } from "@vzlentin/harness/projects";
@@ -1031,6 +1031,17 @@ export async function startHost(project = "main", models = createModels()): Prom
 	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
 
 	return host;
+}
+
+/** The list of todos of the task `wf:<id>#1` of the root run `id`, from the `todo` request of a host of the sandbox. */
+export async function startList(id: string | undefined) {
+	const host = await startHost();
+
+	try {
+		return await request({ type: "todo", caller: "test", action: "list", key: `wf:${id}#1` }, { start: false });
+	} finally {
+		await host.close();
+	}
 }
 
 /** Sends `request` to the host of `project` that runs in this process. */

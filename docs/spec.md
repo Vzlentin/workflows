@@ -381,6 +381,21 @@ sessions of the next items see them.
 
 The items of the split do not change while they ship. Only a failed item changes them: see below.
 
+The list of todos of the campaign run, as in [Todos](#todos), has one todo for each item, in the order of its split.
+The text of the todo is the subject of the item, as the item step shows it:
+
+- After each split, the run adds the todos of its items, with the state `open`.
+- At its item step, the todo of the item becomes `doing`. It stays `doing` during the fix rounds of the item, and while
+  the run waits for an answer about the item.
+- When the item ships, also after a fix round or on the answer `keep`, its todo becomes `done`.
+- When the run resets the item, its todo becomes `dropped` at the reset, before the rundown question. When the user
+  stops the campaign at the item, its todo is `dropped`, and the todos of the items after it stay `open`.
+- When an answer to the rundown question makes a new split, the todos of the remaining items of the old split become
+  `dropped` before the step `split`, and the new split adds one todo for each of its items.
+
+The step `all <n> item(s)` adds no todo. Each ship child run keeps its own list, and makes no todo call, so its list
+is empty. `workflows show <run-id> --json` gives the list of the run as `todos`.
+
 The campaign ends with the harvest of `ship`, with the goal as the work item, at each end: done or stopped. It makes no
 harvest while it waits for an answer. Its result then has `lessons`, and its items make no harvest and have no
 `lessons`.

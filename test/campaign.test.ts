@@ -20,6 +20,7 @@ import {
 	sandbox,
 	setEntries,
 	startHost,
+	startList,
 	statusesOf,
 	untimed,
 	workflows,
@@ -94,6 +95,13 @@ const stillZero = (head: string) =>
 
 /** The report line of a shipped item with the commit `subject`. */
 const itemLine = (subject: string) => expect.stringMatching(new RegExp(`^ {2}[0-9a-f]+ ${subject}, judge 0\\.83$`));
+
+/** The list of todos of the run `id`, from `workflows show --json`. */
+async function todosOf(id: string | undefined) {
+	const shown = await workflows(["show", id ?? "", "--json"], { cwd: root });
+
+	return JSON.parse(shown.stdout[0] ?? "").todos;
+}
 
 // Each test runs a whole campaign, and some resume it: on CI one takes about 5 s.
 describe("workflows campaign", () => {
@@ -224,7 +232,7 @@ describe("workflows campaign", () => {
 		for (const [n, child] of children.entries()) {
 			const at = lines.indexOf(`  ✓ run ship ${child}`);
 			const item = n === 0 ? "Fix the README typo" : "Add a thanks line";
-			expect(lines[at - 4], child).toBe(`item ${n + 1}/2: ${item}`);
+			expect(lines.slice(at - 5, at - 3), child).toEqual([`item ${n + 1}/2: ${item}`, `  ✓ todo set ${n + 1} doing`]);
 			researchers.push(await conversationOf(new RegExp(`Research the codebase[\\s\\S]*${item}`)));
 			expect(lines.slice(at + 1, at + 5)).toEqual([
 				expect.stringMatching(/^ {6}✓ run rpi \S+$/),
@@ -235,12 +243,23 @@ describe("workflows campaign", () => {
 		}
 
 		expect(lines.slice(-report.length)).toEqual(report);
-		const { calls } = JSON.parse((await workflows(["show", run.id ?? "", "--json"], { cwd: root })).stdout[0] ?? "");
+		const json = JSON.parse((await workflows(["show", run.id ?? "", "--json"], { cwd: root })).stdout[0] ?? "");
+		const { calls } = json;
+
+		const todos = [
+			{ id: 1, text: "Fix the README typo", state: "done" },
+			{ id: 2, text: "Add a thanks line", state: "done" },
+		];
+
+		expect(await startList(run.id)).toEqual({ todos });
+		expect(json.todos).toEqual(todos);
 		const ran = calls.filter((call: { kind: string }) => call.kind === "run");
 		expect(ran.map((call: { label: string }) => call.label)).toEqual([
 			...children.map((child: string) => `ship ${child}`),
 			expect.stringMatching(/^judge \S+$/),
 		]);
+		// Each ship and the campaign judge keep their own list, with no todo.
+		expect(ran.map((call: { todos: unknown }) => call.todos)).toEqual([[], [], []]);
 		const shipped = ran.slice(0, -1);
 		expect(shipped[0].calls[0]).toMatchObject({ kind: "run", label: expect.stringMatching(/^rpi \S+$/) });
 		expect(shipped[0].calls[0].calls[0]).toMatchObject({
@@ -492,6 +511,10 @@ describe("workflows campaign", () => {
 		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("1");
 		expect(run.model.count("rundown")).toBe(0);
 		expect(existsSync(join(runs(), run.id ?? "", "item-1", "item.patch"))).toBe(false);
+		expect(await todosOf(run.id)).toEqual([
+			{ id: 1, text: "Fix the README typo", state: "doing" },
+			{ id: 2, text: "Add a thanks line", state: "open" },
+		]);
 		const reflog = git(worktree, "reflog", "--format=%gs");
 
 		const kept = await workflows(["resume", run.id ?? "", "--answer", "keep", "--json"], {
@@ -509,6 +532,10 @@ describe("workflows campaign", () => {
 		expect(result.items[1]).not.toHaveProperty("kept");
 		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("2");
 		expect(git(worktree, "reflog", "--format=%gs").endsWith(reflog)).toBe(true);
+		expect(await todosOf(run.id)).toEqual([
+			{ id: 1, text: "Fix the README typo", state: "done" },
+			{ id: 2, text: "Add a thanks line", state: "done" },
+		]);
 	});
 
 	it("runs a fix round on the words of the user's answer, and ships the item", async () => {
@@ -629,6 +656,13 @@ describe("workflows campaign", () => {
 		);
 		expect(rundown).toContain(`## patch\n${patch}`);
 
+		const dropped = [
+			{ id: 1, text: "Fix the README typo", state: "dropped" },
+			{ id: 2, text: "Add a thanks line", state: "open" },
+		];
+
+		expect(await todosOf(run.id)).toEqual(dropped);
+
 		const stopped = await workflows(["resume", run.id ?? "", "--answer", " Stop "], { cwd: root });
 		expect(stopped.code).toBe(1);
 		expect(stopped.stdout).toEqual([
@@ -641,6 +675,7 @@ describe("workflows campaign", () => {
 		const json = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
 		const result = JSON.parse(json.stdout[1] ?? "").result;
 		expect(result.rundown).toBe("Rundown 1: the item failed.");
+		expect(await todosOf(run.id)).toEqual(dropped);
 		git(worktree, "apply", "--index", patch);
 		// The patch is the whole change of the item, with the commit of its fix round.
 		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(FIX);
@@ -762,12 +797,18 @@ describe("workflows campaign", () => {
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).not.toBe(start);
 		// The fix round squashed the item again: the stopped item has the commit of the fix round.
 		expect(result.items[0].result.head).toBe(git(worktreeOf(run.id), "rev-parse", "--short", "HEAD"));
+		expect(await todosOf(run.id)).toEqual([
+			{ id: 1, text: "Fix the README typo", state: "dropped" },
+			{ id: 2, text: "Add a thanks line", state: "open" },
+		]);
 	});
 
 	it("resets to the last shipped commit after a stopped item, and goes on with the answer", async () => {
+		const sign = "# Sign the README\n\nEnd the README with a name.";
+
 		const run = await workflows(["campaign", "--rounds", "1", GOAL], {
 			cwd: repo,
-			script: { items: [[FIRST, SECOND]], edits: [FIXED, THANKED], verdicts: ["SHIP", "FIX"] },
+			script: { items: [[FIRST, SECOND, sign]], edits: [FIXED, THANKED], verdicts: ["SHIP", "FIX"] },
 		});
 
 		expect(run.code).toBe(3);
@@ -780,6 +821,12 @@ describe("workflows campaign", () => {
 		expect(rundown).toContain(
 			`## shipped\n${JSON.stringify([{ item: FIRST, commit: git(worktree, "rev-parse", "--short", "HEAD"), divergence: "none" }])}`,
 		);
+		expect(rundown).toContain(`## remaining\n${JSON.stringify([sign])}`);
+		expect(await todosOf(run.id)).toEqual([
+			{ id: 1, text: "Fix the README typo", state: "done" },
+			{ id: 2, text: "Add a thanks line", state: "dropped" },
+			{ id: 3, text: "Sign the README", state: "open" },
+		]);
 
 		const resumed = await workflows(["resume", run.id ?? "", "--answer", "Thank the reader in one line", "--json"], {
 			cwd: root,
@@ -800,6 +847,12 @@ describe("workflows campaign", () => {
 			"branch docs/readme",
 		]);
 		expect(git(worktree, "rev-parse", "HEAD~2")).toBe(start);
+		expect(await todosOf(run.id)).toEqual([
+			{ id: 1, text: "Fix the README typo", state: "done" },
+			{ id: 2, text: "Add a thanks line", state: "dropped" },
+			{ id: 3, text: "Sign the README", state: "dropped" },
+			{ id: 4, text: "Thank the reader", state: "done" },
+		]);
 	});
 
 	it("resumes in the second item and repeats no call of the first", async () => {

@@ -4,6 +4,8 @@
 // the user answers keep, one more fix round on their words, reset or stop. A failed or reset item gets a rundown and a
 // question, and the answer goes back to the split. When every item shipped, judge.js judges the change of the whole
 // campaign against the goal, which no item's judge sees. The engine names the branch from `subject` of the result.
+// Each item is a todo of the run: `open` after its split, `doing` from its item step, `done` when it ships, and
+// `dropped` at its reset, at a stop at it, or when a new split replaces it.
 // Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
 export const meta = {
 	description: "Split a goal into work items and ship each one as a commit on one branch.",
@@ -57,13 +59,17 @@ const shipped = () =>
 	JSON.stringify(done.map(({ item, result }) => ({ item, commit: result.head, divergence: result.divergence })))
 
 // The step `split`: the first split has only the goal, a split after a failed item also has `shipped`, `rundown` and
-// `answer`.
+// `answer`. Gives the subject and the queue: each item of the split, in order, with the ID of its new todo, whose text
+// is the subject of the item.
 async function split(inputs) {
 	phase("split")
 	const answered = await agent(`${await prompts.split({ goal, ...inputs })}${answer}`, { as: "planner", schema: SPLIT })
 	log(count(answered.items.length))
+	const queue = []
 
-	return answered
+	for (const item of answered.items) queue.push({ item, id: (await todo.add(subjectOf(item))).id })
+
+	return { subject: answered.subject, queue }
 }
 
 // The rundown text of each failed fix round, by the status of fix.js.
@@ -161,21 +167,21 @@ function withFixRound(result, shipped) {
 	return { ...Object.fromEntries(kept), ...shipped }
 }
 
-// The outcome of an item's ship: `shipped`, the result of an item that shipped, `kept`, the result of an item that the
-// user kept at 0 with `findings`, the findings of its question, `stopped`, the result of an item at which the user
-// stopped the campaign, or `failure`, the rundown inputs of an item that the campaign resets: `status`, `reply`,
-// `findings` and an optional `summary` block of the question. An item that shipped with a judge score of 0 and findings
-// gets one fix round, the child run fix.js, which squashes the item again with a new commit message and judges it
-// again. After a fix round, the result of the item is `withFixRound`. With a score above 0 the item ships. An item
-// whose judge failed, that is at 0 with no findings, or that the fix round left at 0 or unjudged, is one squashed
-// commit, so the user answers keep, fix: <words> for one more fix round, reset or stop. A fix round that fails, leaves
-// no change or ends with an unknown status is a failure.
+// The outcome of an item's ship: `shipped`, the `done` entry of an item that shipped, without its `item`, `stopped`,
+// the result of an item at which the user stopped the campaign, or `failure`, the rundown inputs of an item that the
+// campaign resets: `status`, `reply`, `findings` and an optional `summary` block of the question. The entry is
+// `{ result }`, or `{ result, kept: true, findings }` when the user kept the item at 0, with the findings of its
+// question. An item that shipped with a judge score of 0 and findings gets one fix round, the child run fix.js, which
+// squashes the item again with a new commit message and judges it again. After a fix round, the result of the item is
+// `withFixRound`. With a score above 0 the item ships. An item whose judge failed, that is at 0 with no findings, or
+// that the fix round left at 0 or unjudged, is one squashed commit, so the user answers keep, fix: <words> for one
+// more fix round, reset or stop. A fix round that fails, leaves no change or ends with an unknown status is a failure.
 async function settle(n, item, start, result) {
 	if (result.status !== "shipped") {
 		return { failure: { status: result.status, reply: result.reply ?? "", findings: result.findings ?? [] } }
 	}
 
-	if (result.score !== undefined && result.score !== 0) return { shipped: result }
+	if (result.score !== undefined && result.score !== 0) return { shipped: { result } }
 
 	let current = result
 	let round = result.rounds
@@ -209,7 +215,7 @@ async function settle(n, item, start, result) {
 
 			if (fixed.shipped !== undefined) current = withFixRound(result, fixed.shipped)
 
-			if (fixed.status === "judged" && fixed.shipped.score !== 0) return { shipped: current }
+			if (fixed.status === "judged" && fixed.shipped.score !== 0) return { shipped: { result: current } }
 
 			const outcome = Object.hasOwn(FIX_FAILED, fixed.status)
 				? FIX_FAILED[fixed.status](fixed)
@@ -230,7 +236,7 @@ async function settle(n, item, start, result) {
 
 		switch (answered.answer) {
 			case "keep":
-				return { kept: current, findings }
+				return { shipped: { result: current, kept: true, findings } }
 			case "stop":
 				return { stopped: current }
 			case "reset":
@@ -255,15 +261,16 @@ function stoppedAt(n, item, result, rundown) {
 	return { status: "stopped", items, rundown, report: [line, rundown] }
 }
 
-let { subject, items: queue } = await split({})
+let { subject, queue } = await split({})
 const notes = await memory()
 
 // The result of a campaign that the user stopped after a failed item.
 let stopped
 
 for (let n = 1; queue.length > 0; n++) {
-	const [item, ...rest] = queue
+	const [{ item, id }, ...rest] = queue
 	phase(`item ${n}/${n + rest.length}: ${subjectOf(item)}`)
+	await todo.set(id, "doing")
 	await ensureBranch()
 	const patches = `${runDir}/item-${n}`
 	await sh(["mkdir", "-p", patches])
@@ -273,19 +280,15 @@ for (let n = 1; queue.length > 0; n++) {
 	const outcome = await settle(n, item, start, result)
 
 	if (outcome.shipped !== undefined) {
-		done.push({ item, result: outcome.shipped })
-		queue = rest
-		continue
-	}
-
-	if (outcome.kept !== undefined) {
-		done.push({ item, result: outcome.kept, kept: true, findings: outcome.findings })
+		await todo.set(id, "done")
+		done.push({ item, ...outcome.shipped })
 		queue = rest
 		continue
 	}
 
 	// A stop at the question about an item still at 0 keeps its commit, and has no rundown.
 	if (outcome.stopped !== undefined) {
+		await todo.set(id, "dropped")
 		stopped = stoppedAt(n, item, outcome.stopped)
 		break
 	}
@@ -297,6 +300,7 @@ for (let n = 1; queue.length > 0; n++) {
 	const file = await writePatch(`${patches}/item.patch`, start)
 	const patch = (await ok(["test", "-s", file])) ? file : ""
 	await sh(["git", "reset", "--hard", start])
+	await todo.set(id, "dropped")
 	await notes.note("campaign", undefined, [`item ${n} failed and was reset: its notes describe code that is gone`])
 
 	const proposed = await agent(
@@ -309,7 +313,7 @@ for (let n = 1; queue.length > 0; n++) {
 			handoff: result.handoff ?? "",
 			findings: failure.findings.join("\n"),
 			memory: await notes.text,
-			remaining: JSON.stringify(rest),
+			remaining: JSON.stringify(rest.map((later) => later.item)),
 			patch,
 		}),
 		{ as: "planner", schema: RUNDOWN },
@@ -327,14 +331,18 @@ for (let n = 1; queue.length > 0; n++) {
 
 	const reply = (await input(`${summary}\n\nHow should the campaign continue? Answer stop, or nothing, to end it.`)).trim()
 
+	// The reset dropped the todo of the item. The todos of the items after it stay open.
 	if (reply === "" || reply.toLowerCase() === "stop") {
 		stopped = stoppedAt(n, item, result, rundown)
 		break
 	}
 
+	// The new split replaces the items that did not run.
+	for (const later of rest) await todo.set(later.id, "dropped")
+
 	const next = await split({ shipped: shipped(), rundown: summary, answer: reply })
 	subject = next.subject
-	queue = next.items
+	queue = next.queue
 }
 
 await ensureBranch()

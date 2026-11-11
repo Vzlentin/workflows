@@ -9,7 +9,6 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { request } from "@vzlentin/harness/client";
 import { REMINDER } from "@vzlentin/harness/respond";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -35,6 +34,7 @@ import {
 	sandbox,
 	setEntries,
 	startHost,
+	startList,
 	storeOf,
 	untimed,
 	workflows,
@@ -1931,17 +1931,6 @@ return [one.reply, two.reply].join(", ")`,
 		expect(existsSync(join(root, "state", "workflows", "runs"))).toBe(false);
 	});
 });
-
-/** The list of todos of the task `wf:<id>#1` of the root run `id`, from the `todo` request of a host of the sandbox. */
-async function startList(id: string | undefined) {
-	const host = await startHost();
-
-	try {
-		return await request({ type: "todo", caller: "test", action: "list", key: `wf:${id}#1` }, { start: false });
-	} finally {
-		await host.close();
-	}
-}
 
 describe("todo calls", () => {
 	it("keep each todo once in the list of the run after a host stop and a resume", async () => {
