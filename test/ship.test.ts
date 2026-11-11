@@ -64,8 +64,8 @@ const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|fail
 const BRANCH = "fix/correct-the-readme-typo";
 const TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash"];
 
-// The tool of the harness host, before the tools of the packages in Pi's settings.
-const HARNESS_TOOLS = ["subagent", "codemode"];
+// The tools of the harness host, before the tools of the packages in Pi's settings.
+const HARNESS_TOOLS = ["subagent", "todo", "codemode"];
 
 const answers = (kind: string) =>
 	["review", "commit", "judge", "implement", "handoff", "harvest"].includes(kind) ? ["respond"] : [];
