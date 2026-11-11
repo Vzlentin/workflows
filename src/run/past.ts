@@ -1,6 +1,7 @@
 /**
  * The saved root runs of a project store, as the `pastRuns` script call and `run(name, { from })` read them from the
- * tasks of the kind `workflows.run`, at the current version and at earlier versions alike.
+ * tasks of the kind `workflows.run`, at the current version and at earlier versions alike, and the first task of a run,
+ * whose list of todos is the list of the run.
  */
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { Cursor, Page, TaskOutcome, TaskRecord } from "@earendil-works/pi-durable";
@@ -143,10 +144,18 @@ export function rootRuns(tasks: readonly RunTask[]): Map<string, RunTask[]> {
 }
 
 /**
- * The root tasks of the kind `workflows.run` in the store, of every version, by run ID, oldest first. The commit only
+ * The first task of the run `runId` in `tasks`, which are in scan order: the oldest task, root or child, of any version,
+ * whose saved input has the run ID. Its list of todos is the list of the run, which every later task of the run uses.
+ */
+export function firstTask(tasks: readonly RunTask[], runId: string): RunTask | undefined {
+	return tasks.find((task) => savedInput(RUN_ID, task.input)?.runId === runId);
+}
+
+/**
+ * The tasks of the kind `workflows.run` in the store, root and child, of every version, in scan order. The commit only
  * reads, so it keeps the task state and takes no lock but the host's own.
  */
-export async function scanRuns(runtime: Runtime, context: Context): Promise<Map<string, RunTask[]>> {
+export async function scanTasks(runtime: Runtime, context: Context): Promise<RunTask[]> {
 	let tasks: RunTask[] = [];
 
 	await runtime.commit(async (tx) => {
@@ -155,7 +164,12 @@ export async function scanRuns(runtime: Runtime, context: Context): Promise<Map<
 		return undefined;
 	}, context);
 
-	return rootRuns(tasks);
+	return tasks;
+}
+
+/** The root tasks of the kind `workflows.run` in the store, of every version, by run ID, oldest first. */
+export async function scanRuns(runtime: Runtime, context: Context): Promise<Map<string, RunTask[]>> {
+	return rootRuns(await scanTasks(runtime, context));
 }
 
 /** The options of `pastRuns(workflow, options)`. */

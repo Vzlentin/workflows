@@ -5,15 +5,22 @@
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import type { Context, JsonValue } from "@earendil-works/chord";
-import { type ConversationId, defineDocFamily, type JsonObject, type TaskId } from "@earendil-works/pi-durable";
+import {
+	type ConversationId,
+	defineDocFamily,
+	type JsonObject,
+	type TaskId,
+	type Tx,
+} from "@earendil-works/pi-durable";
 import type { Owner } from "@vzlentin/harness/children";
 import type { Overlay } from "@vzlentin/harness/overlay";
+import { addTodo, readTodos, setTodo, type TodoOwner, type TodoState } from "@vzlentin/harness/todo";
 import { type Static, Type } from "typebox";
 import { failure, run } from "../git.ts";
 import { JSON_VALUE } from "../tool.ts";
 import type { RunBundle } from "../workflow/bundle.ts";
 import type { Roles } from "../workflow/roles.ts";
-import { type PastOptions, pastRuns, scanRuns } from "./past.ts";
+import { firstTask, type PastOptions, pastRuns, scanRuns, scanTasks } from "./past.ts";
 import { addProgress, checkpointWhen, type PhaseLines, takeLines } from "./progress.ts";
 import type { Host, Runtime, ScriptTask } from "./version.ts";
 
@@ -52,6 +59,7 @@ const CALL_KINDS = Type.Union([
 	Type.Literal("run"),
 	Type.Literal("input"),
 	Type.Literal("pastRuns"),
+	Type.Literal("todo"),
 ]);
 
 /** The kinds of script calls. */
@@ -140,6 +148,8 @@ export type Calls = {
 	answered?: boolean;
 	/** The error of the first `input` call that would wait while another one waits, which fails the run. */
 	secondInput?: Error;
+	/** The list of todos of the run, which the first `todo` call of the execution finds. */
+	todos?: Promise<TodoOwner>;
 };
 
 /** The document key of the call `name` with `args` in this execution: `<run ID>/<call key>`. */
@@ -162,6 +172,47 @@ export async function memoized(
 	start: Start,
 	effect: (key: string) => Promise<JsonValue>,
 ): Promise<JsonValue> {
+	const saved = await startCall(calls, key, start);
+
+	if (saved !== undefined) return saved;
+	let value: JsonValue;
+
+	try {
+		value = await effect(key);
+	} catch (error) {
+		return failCall(calls, key, start.kind, error);
+	}
+
+	return endCall(calls, key, async () => value);
+}
+
+/**
+ * The result of the call `key`, as `memoized` gives it, for a call whose effect is `change`, a change of the store. The
+ * change runs in the commit that saves its value as the result, so a stop cannot make the change without the result,
+ * and a resume never makes it twice.
+ */
+async function memoizedChange(
+	calls: Calls,
+	key: string,
+	start: Start,
+	change: (tx: Tx) => Promise<JsonValue>,
+): Promise<JsonValue> {
+	const saved = await startCall(calls, key, start);
+
+	if (saved !== undefined) return saved;
+
+	try {
+		return await endCall(calls, key, change);
+	} catch (error) {
+		return failCall(calls, key, start.kind, error);
+	}
+}
+
+/**
+ * Records the start of the call `key` with the waiting lines, and gives undefined. When the call has a saved result, it
+ * records nothing, drops the log lines, keeps the phase line, and gives the result.
+ */
+async function startCall(calls: Calls, key: string, start: Start): Promise<JsonValue | undefined> {
 	const { runtime, context, progress } = calls;
 	const saved = await savedCall(runtime, key, context);
 	const { lines } = progress;
@@ -183,34 +234,48 @@ export async function memoized(
 
 		return undefined;
 	}, context);
-	let value: JsonValue;
 
-	try {
-		value = await effect(key);
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+	return undefined;
+}
 
-		// A call that the end of its script or task cancelled did not fail, and runs again. The waiting `input` call
-		// ends by that cancel too, and stays open.
-		if (!context.abortSignal?.aborted) await endCall(calls, key, { error: message });
-		else if (start.kind !== "input" && !runtime.signal.aborted) await cancelCall(calls, key);
-		throw error;
-	}
+/**
+ * Records the end of the call `key` with the value that `result` gives in the same commit, and gives the saved value.
+ */
+async function endCall(calls: Calls, key: string, result: (tx: Tx) => Promise<JsonValue>): Promise<JsonValue> {
+	const { runtime, context } = calls;
+	let value: JsonValue = null;
 
-	await endCall(calls, key, { result: value });
+	await runtime.commit(async (tx) => {
+		value = await result(tx);
+		const doc = await tx.doc(CallDoc, key, null);
+		doc.result = value;
+		doc.endedAt = new Date().toISOString();
+
+		return undefined;
+	}, context);
 
 	return (await savedCall(runtime, key, context)) ?? value;
 }
 
-/** Records the end of the call `key`, with its result, or its error when it failed. */
-async function endCall(calls: Calls, key: string, end: { result: JsonValue } | { error: string }): Promise<void> {
-	await calls.runtime.commit(async (tx) => {
-		const doc = await tx.doc(CallDoc, key, null);
-		Object.assign(doc, end);
-		doc.endedAt = new Date().toISOString();
+/** Records the error `cause` of the call `key` of `kind`, or that the end of its script cancelled it, and throws it. */
+async function failCall(calls: Calls, key: string, kind: CallKind, cause: unknown): Promise<never> {
+	const { runtime, context } = calls;
 
-		return undefined;
-	}, calls.context);
+	// A call that the end of its script or task cancelled did not fail, and runs again. The waiting `input` call ends by
+	// that cancel too, and stays open.
+	if (!context.abortSignal?.aborted) {
+		const message = cause instanceof Error ? cause.message : String(cause);
+
+		await runtime.commit(async (tx) => {
+			const doc = await tx.doc(CallDoc, key, null);
+			doc.error = message;
+			doc.endedAt = new Date().toISOString();
+
+			return undefined;
+		}, context);
+	} else if (kind !== "input" && !runtime.signal.aborted) await cancelCall(calls, key);
+
+	throw cause;
 }
 
 /** Records that the end of the script cancelled the call `key`, in the context of the phase, which still commits. */
@@ -298,5 +363,49 @@ export function pastRunsCall(calls: Calls, workflow: string, options: PastOption
 
 	return memoized(calls, callKey(calls, "pastRuns", args), { kind: "pastRuns", args }, async () =>
 		pastRuns(await scanRuns(calls.runtime, calls.context), workflow, options),
+	);
+}
+
+/** The args of a `todo` call: its action, and the values of the action. */
+export type TodoArgs =
+	| { readonly action: "add"; readonly text: string }
+	| { readonly action: "set"; readonly id: number; readonly state: TodoState; readonly text?: string }
+	| { readonly action: "list" };
+
+/**
+ * The list of todos of the run: the list of its first task, so every task of the run, and no other run, uses it. The
+ * first `todo` call of the execution finds it, so the other calls do not read the tasks again.
+ */
+function runTodos(calls: Calls): Promise<TodoOwner> {
+	const { runtime, context, script } = calls;
+
+	calls.todos ??= scanTasks(runtime, context).then((tasks) => ({
+		kind: "task",
+		id: firstTask(tasks, script.runId)?.id ?? runtime.taskId,
+	}));
+
+	return calls.todos;
+}
+
+/**
+ * The `todo` call with `args` on the list of the run: the todo that `add` adds or `set` changes, or the todos of the
+ * list for `list`. An `add` or a `set` changes the list in the commit that saves its result.
+ */
+export async function todoCall(calls: Calls, args: TodoArgs): Promise<JsonValue> {
+	const key = callKey(calls, "todo", args);
+	const start = { kind: "todo", args } as const;
+
+	if (args.action === "list") {
+		return memoized(calls, key, start, async () => {
+			const { todos } = await readTodos(calls.runtime, await runTodos(calls), calls.context);
+
+			return todos;
+		});
+	}
+
+	const list = await runTodos(calls);
+
+	return memoizedChange(calls, key, start, (tx) =>
+		args.action === "add" ? addTodo(tx, list, args.text) : setTodo(tx, list, args),
 	);
 }

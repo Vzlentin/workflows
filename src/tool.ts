@@ -111,6 +111,8 @@ export const GUIDELINES = [
 		"`await run(name, args)` runs a named workflow as a child run, and `from: <run-id>` in `args` gives it the prompts " +
 		"and agents table of that saved run. `await pastRuns(workflow, { runs, limit })` gives the completed root runs of a " +
 		"workflow, newest first, with their item, repository, start, prompts and result. " +
+		"`await todo.add(text)`, `await todo.set(id, state, text)` and `await todo.list()` keep the list of todos of the " +
+		"run, `{ id, text, state }` with the state `open`, `doing`, `done` or `dropped`; a child run has its own list. " +
 		"`await input(question)` stops the run, and the tool gives a " +
 		"`waiting` result with the question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` " +
 		"then returns the answer. `await parallel([() => ...])` and " +

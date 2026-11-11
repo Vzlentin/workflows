@@ -12,11 +12,22 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { withCancel } from "@earendil-works/chord/context";
 import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
 import type { JsonObject } from "@earendil-works/pi-durable";
+import { TodoState } from "@vzlentin/harness/todo";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { JSON_VALUE } from "../tool.ts";
 import { META, render } from "../workflow/bundle.ts";
-import { CallDoc, type Calls, callKey, inputCall, memoized, pastRunsCall, type ScriptRun, shellCall } from "./calls.ts";
+import {
+	CallDoc,
+	type Calls,
+	callKey,
+	inputCall,
+	memoized,
+	pastRunsCall,
+	type ScriptRun,
+	shellCall,
+	todoCall,
+} from "./calls.ts";
 import { childResult } from "./child.ts";
 import { PAST_OPTIONS } from "./past.ts";
 import { addProgress, type PhaseLines, phaseLine, takeLines } from "./progress.ts";
@@ -59,6 +70,11 @@ const input = (question) => {
 	return answer;
 };
 const pastRuns = (workflow, options) => __pastRuns(workflow, options ?? {});
+const todo = Object.freeze({
+	add: (text) => __todoAdd(text),
+	set: (id, state, text) => __todoSet(id, state, text ?? null),
+	list: () => __todoList(),
+});
 const run = async (name, args = {}) => {
 	const { runId: id, result } = await __run(name, args);
 	return result !== null && typeof result === "object" && !Array.isArray(result) ? { ...result, runId: id } : result;
@@ -72,6 +88,8 @@ const SH_ARGS = Type.Tuple([Type.Union([Type.String(), Type.Array(Type.String())
 const RUN_ARGS = Type.Tuple([Type.String(), JSON_OBJECT]);
 const INPUT_ARGS = Type.Tuple([Type.String()]);
 const PAST_ARGS = Type.Tuple([Type.String(), PAST_OPTIONS]);
+const TODO_ADD_ARGS = Type.Tuple([Type.String()]);
+const TODO_SET_ARGS = Type.Tuple([Type.Integer({ minimum: 1 }), TodoState, Type.Union([Type.String(), Type.Null()])]);
 const LINE_ARGS = Type.Array(JSON_VALUE);
 const PROMPT_ARGS = Type.Tuple([Type.String(), Type.Union([Type.Record(Type.String(), Type.String()), Type.Null()])]);
 
@@ -131,16 +149,18 @@ export async function runScript(
 	// the host before a waiting call stops the script, which drops the messages that come later.
 	let turnEnd = Promise.withResolvers<void>();
 
+	// `call` names the call in the error of bad arguments.
 	const global = <T extends TSchema>(
 		name: string,
 		schema: T,
 		execute: (values: Static<T>) => Promise<JsonValue> | JsonValue | void,
+		call = name.replace(/^__/, ""),
 	): CodemodeTool => ({
 		name,
 		spread: true,
 		execute: (values) => {
 			if (!Value.Check(schema, values)) {
-				throw new Error(`${name.replace(/^__/, "")} got bad arguments: ${argumentError(Value.Errors(schema, values))}`);
+				throw new Error(`${call} got bad arguments: ${argumentError(Value.Errors(schema, values))}`);
 			}
 
 			const result = execute(values);
@@ -192,6 +212,17 @@ export async function runScript(
 				turnEnd = Promise.withResolvers<void>();
 			}),
 			global("__pastRuns", PAST_ARGS, ([workflow, options]) => pastRunsCall(calls, workflow, options)),
+			// A text is any string, so an empty text fails with the error of harness.
+			global("__todoAdd", TODO_ADD_ARGS, ([text]) => todoCall(calls, { action: "add", text }), "todo"),
+			// The sandbox sends a missing text as null, and the args leave it out.
+			global(
+				"__todoSet",
+				TODO_SET_ARGS,
+				([id, state, text]) =>
+					todoCall(calls, text === null ? { action: "set", id, state } : { action: "set", id, state, text }),
+				"todo",
+			),
+			global("__todoList", Type.Tuple([]), () => todoCall(calls, { action: "list" }), "todo"),
 			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
 			global("log", LINE_ARGS, ([line]) => progress.lines.push({ kind: "log", text: String(line), at: Date.now() })),
 			global("title", LINE_ARGS, ([text]) => progress.lines.push({ kind: "title", text: String(text) })),

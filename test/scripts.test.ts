@@ -9,6 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { request } from "@vzlentin/harness/client";
 import { REMINDER } from "@vzlentin/harness/respond";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -35,6 +36,7 @@ import {
 	setEntries,
 	startHost,
 	storeOf,
+	untimed,
 	workflows,
 	worktreeAt,
 } from "./support.ts";
@@ -1920,6 +1922,135 @@ return [one.reply, two.reply].join(", ")`,
 		]);
 		expect([started.code, started.stdout]).toEqual([1, []]);
 		expect(existsSync(join(root, "state", "workflows", "runs"))).toBe(false);
+	});
+});
+
+/** The list of todos of the task `wf:<id>#1` of the root run `id`, from the `todo` request of a host of the sandbox. */
+async function startList(id: string | undefined) {
+	const host = await startHost();
+
+	try {
+		return await request({ type: "todo", caller: "test", action: "list", key: `wf:${id}#1` }, { start: false });
+	} finally {
+		await host.close();
+	}
+}
+
+describe("todo calls", () => {
+	it("keep each todo once in the list of the run after a host stop and a resume", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const one = await todo.add("one")
+await todo.add("two")
+await todo.set(one.id, "doing")
+await sh("./gate.sh g")
+await todo.set(2, "done", "two, done")
+await todo.add("three")
+return await todo.list()`,
+		);
+		const first = await stopped(["x.js"], { gate: "g" });
+		expect(first.code).toBe(130);
+		expect(await startList(first.id)).toEqual({
+			todos: [
+				{ id: 1, text: "one", state: "doing" },
+				{ id: 2, text: "two", state: "open" },
+			],
+		});
+
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+		expect(resumed.code).toBe(0);
+
+		const todos = [
+			{ id: 1, text: "one", state: "doing" },
+			{ id: 2, text: "two, done", state: "done" },
+			{ id: 3, text: "three", state: "open" },
+		];
+
+		expect(JSON.parse(resumed.stdout.at(-1) ?? "")).toEqual(todos);
+		expect(await startList(first.id)).toEqual({ todos });
+	});
+
+	it("change the list of the first task of the run in a new task after a failure", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'await todo.add("one")\nawait todo.add("two")\nawait sh("test -f fixed")\nawait todo.set(1, "done")\nreturn await todo.list()',
+		);
+		const failed = await workflows(["x.js"], { cwd: root });
+		expect(failed.code).toBe(1);
+
+		await writeFile(join(root, "fixed"), "");
+		const resumed = await workflows(["resume", failed.id ?? ""], { cwd: root });
+		expect(resumed.code).toBe(0);
+		expect(await rootTasks(failed.id ?? "")).toEqual([
+			{ status: "terminal", outcome: "failed" },
+			{ status: "terminal", outcome: "completed" },
+		]);
+
+		const todos = [
+			{ id: 1, text: "one", state: "done" },
+			{ id: 2, text: "two", state: "open" },
+		];
+
+		expect(JSON.parse(resumed.stdout.at(-1) ?? "")).toEqual(todos);
+		expect(await startList(failed.id)).toEqual({ todos });
+	});
+
+	it("keep the list of a child run apart from the list of its caller, also in a new child task", async () => {
+		await writeFile(
+			join(root, "parent.js"),
+			'await todo.add("parent")\nconst child = await run("child")\nreturn { child, parent: await todo.list() }',
+		);
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(
+			join(root, ".workflows", "scripts", "child.js"),
+			'await todo.add("child")\nawait sh("test -f fixed")\nawait todo.set(1, "done")\nreturn await todo.list()',
+		);
+		const failed = await workflows(["parent.js"], { cwd: root });
+		expect(failed.code).toBe(1);
+
+		await writeFile(join(root, "fixed"), "");
+		const resumed = await workflows(["resume", failed.id ?? ""], { cwd: root });
+		expect(resumed.code).toBe(0);
+		expect((await childTasks(failed.id ?? "")).map((task) => task.outcome)).toEqual(["failed", "completed"]);
+		const parent = [{ id: 1, text: "parent", state: "open" }];
+		expect(JSON.parse(resumed.stdout.at(-1) ?? "")).toEqual({
+			child: [{ id: 1, text: "child", state: "done" }],
+			parent,
+		});
+		expect(await startList(failed.id)).toEqual({ todos: parent });
+	});
+
+	it("fail with the errors of harness and of bad arguments", async () => {
+		for (const [code, error] of [
+			['todo.add("")', "The text of a todo is empty"],
+			['todo.set(99, "done")', "Unknown todo: 99"],
+			['todo.set(1, "finished")', "todo got bad arguments: /1 must be equal to one of the allowed values"],
+			['todo.set(0, "done")', "todo got bad arguments: /0 must be >= 1"],
+			['todo.set(1, "done", 2)', "todo got bad arguments: /2 must be string"],
+			["todo.add(1)", "todo got bad arguments: /0 must be string"],
+		]) {
+			await writeFile(join(root, "bad.js"), `await ${code}`);
+			const run = await workflows(["bad.js"], { cwd: root });
+			expect([run.code, run.stderr[0]], code).toEqual([1, `failed bad: ${error}`]);
+		}
+	});
+
+	it("show their actions in show --calls", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'await todo.add("one")\nawait todo.add("a long\\ntext " + "word ".repeat(30))\nawait todo.set(1, "done")\nreturn (await todo.list()).length',
+		);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, "2"]);
+
+		const shown = await workflows(["show", run.id ?? "", "--calls"], { cwd: root });
+		expect(shown.stdout.slice(1).map(untimed)).toEqual([
+			"  ✓ todo add one",
+			`  ✓ todo add a long text ${"word ".repeat(12)}word`,
+			"  ✓ todo set 1 done",
+			"  ✓ todo list",
+			"2",
+		]);
 	});
 });
 

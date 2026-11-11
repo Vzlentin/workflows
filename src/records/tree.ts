@@ -295,7 +295,8 @@ function works(call: Shown, siblings: readonly Shown[]): boolean {
 
 /**
  * The role name and conversation of a session, the role name of the session for an ask, the command on one line for
- * `sh` and `ok`, the workflow and child run ID for `run`, and the question on one line for `input`.
+ * `sh` and `ok`, the workflow and child run ID for `run`, the question on one line for `input`, and the action with its
+ * text, or its ID and state, on one line for `todo`.
  */
 function labelOf(
 	{ kind, args, conversation }: Pick<SavedCall, "kind" | "args" | "conversation">,
@@ -305,14 +306,24 @@ function labelOf(
 	if (kind === "sh" || kind === "ok") {
 		const { cmd } = args;
 
-		return (Array.isArray(cmd) ? cmd.join(" ") : String(cmd)).replace(/\s+/g, " ").trim().slice(0, 80);
+		return labelLine(Array.isArray(cmd) ? cmd.join(" ") : String(cmd));
 	}
 
 	if (kind === "run") return [args.name, child].filter((value) => value !== undefined).join(" ");
 
-	if (kind === "input") return String(args.question).replace(/\s+/g, " ").trim().slice(0, 80);
+	if (kind === "input") return labelLine(String(args.question));
 
 	if (kind === "pastRuns") return String(args.workflow);
+
+	if (kind === "todo") {
+		const { action, text, id, state } = args;
+
+		if (action === "add") return labelLine(`add ${String(text)}`);
+
+		if (action === "set") return labelLine(`set ${String(id)} ${String(state)}`);
+
+		return labelLine(String(action));
+	}
 
 	if (kind === "session") {
 		return conversation === undefined ? String(args.profile) : `${String(args.profile)} conversation ${conversation}`;
@@ -322,4 +333,9 @@ function labelOf(
 	const session = [...records.values()].find((record) => record.conversation === args.conversation);
 
 	return String(session?.args.profile);
+}
+
+/** `text` as a label: on one line, cut at 80 characters. */
+function labelLine(text: string): string {
+	return text.replace(/\s+/g, " ").trim().slice(0, 80);
 }

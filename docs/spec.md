@@ -949,6 +949,9 @@ and `phase`, `log` and `title` need no `await`.
 | `await ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
 | `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow` in the project store. See [Past runs](#past-runs) |
+| `await todo.add(text)` | Adds a todo with the state `open` and the next ID to the list of the run, and returns it, `{ id, text, state }`. See [Todos](#todos) |
+| `await todo.set(id, state, text)` | Sets the state of the todo `id` of the list of the run to `open`, `doing`, `done` or `dropped`, and its text when `text` is given, and returns the todo |
+| `await todo.list()` | The todos of the list of the run, in ID order |
 | `await input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`, or of the `workflow` tool with `resume` and `answer`. See [Input](#input) |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
@@ -956,7 +959,7 @@ and `phase`, `log` and `title` need no `await`.
 
 A call with an argument of the wrong type, such as a prompt that is not a string, a `sh` command that is not a string
 or an array of strings, or a `prompts.<name>` input that is not a string, fails with
-`<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run`, `pastRuns`, `input` or `prompt`, and
+`<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run`, `pastRuns`, `todo`, `input` or `prompt`, and
 `<path>` points to the deepest wrong value in the arguments, such as `/0/1` for `sh(["git", 1])`.
 
 #### Past runs
@@ -979,6 +982,28 @@ does not have the fields below. Each run is an object:
 the call with `no completed <workflow> run <id>`. Without `runs`, `limit`, an integer of 0 or more, gives at most that
 many runs; without `limit`, it gives all of them. Another option fails with `pastRuns got bad arguments`. The call
 saves its result, so a resume returns the same list and does not read the store again.
+
+#### Todos
+
+`todo.add`, `todo.set` and `todo.list` read and change the list of todos of the run, with the rules of harness's
+`todo` request. A todo is `{ id, text, state }`: its ID is its place in the list (1, 2, 3 and so on), and its state is
+`open`, `doing`, `done` or `dropped`.
+
+- The list of a run is the list of the first task of the run: the oldest `workflows.run` task whose saved input has
+  the run ID. For a root run, this is the task of the key `wf:<run-id>#1`, so `harness todo --task wf:<run-id>#1` gives
+  the same list. Every later task of the run uses the same list: the task of a resume after a failure or an abort, of
+  a `resume --answer`, and the new child task of a child run that ended without completing.
+- A child run has its own list: the list of its own first task. A `todo` call of a child run does not change the list
+  of its caller.
+- The `todo` tool of a session keeps the list of the session's conversation, which is another list.
+- Each verb is a call of the kind `todo`, with the args `{ action: "add", text }`, `{ action: "set", id, state, text }`
+  (`text` only when it is given) or `{ action: "list" }`. A resume returns the saved result. `add` and `set` change the
+  list in the commit that saves their result, so a stop cannot add a todo that the run does not know, and a resume never
+  adds a todo twice.
+- An ID that is not an integer from 1, a state that is not one of the four, or a text that is not a string fails with
+  `todo got bad arguments: <path> <problem>`, where `/0` is the text of `add` or the ID of `set`, `/1` the state, and
+  `/2` the text of `set`. An empty text fails with `The text of a todo is empty`, and an unknown ID with
+  `Unknown todo: <id>`. A call that fails does not change the list and saves no result.
 
 #### The script lib
 
@@ -1431,7 +1456,7 @@ run <run-id> <workflow> <status> <title>
 
 - The calls are in the order they started. Each call is under the phase line that was current when it started, and is
   indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `sh`, `ok`,
-  `run` or `input`. An `agent` call is a `session` call and an `ask` call.
+  `run`, `todo` or `input`. An `agent` call is a `session` call and an `ask` call.
 - Each call has a state. It is `done` or `failed` once it ended. A call that did not end is `cancelled` when the end of
   its script cancelled it, `waiting` when it is the open `input` call of a waiting run, `running` while the task that
   started it has not ended (it runs now, or the host stopped), and `cut` once that task ended. A call that an earlier
@@ -1442,7 +1467,8 @@ run <run-id> <workflow> <status> <title>
 - The label is `<role> conversation <id>` for a `session` that opened, with the role name and the conversation ID of
   the session, and the role name only for a `session` that did not open. For `ask`, it is the role name of its session. For
   `sh` and `ok`, it is the command on one line, cut at 80 characters. For `run`, it is the workflow name and the child
-  run ID. For `input`, it is the question on one line, cut at 80 characters. The phase lines and calls of the child run
+  run ID. For `input`, it is the question on one line, cut at 80 characters. For `todo`, it is `add <text>`,
+  `set <id> <state>` or `list`, on one line, cut at 80 characters. The phase lines and calls of the child run
   are indented by 2 more under the `run` line.
 - The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, also for a working session, it is
   the time since the call started.
@@ -1956,7 +1982,8 @@ The engine files in `src/`:
 - `cli/commands/check.ts`: the static analysis of `workflows check`.
 - `run/version.ts`: the kind and version of the script task, and the task types that the `run/` files share.
 - `run/past.ts`: the saved root runs of the project store, for the `pastRuns` call and `run(name, { from })`, the task
-  of a run that the commands go by, and `runStatus`, the one place that computes the status of a run.
+  of a run that the commands go by, the first task of a run, whose list of todos is the list of the run, and
+  `runStatus`, the one place that computes the status of a run.
 - `run/progress.ts`: the progress events of a run, their document, and the lines that wait for the next call.
 - `run/calls.ts`: the workflow script calls and their records in the project store.
 - `run/sessions.ts`: the sessions on harness's children library, and the end of the sessions of a run.

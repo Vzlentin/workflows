@@ -108,6 +108,22 @@ type PastRun = {
  */
 declare function pastRuns(workflow: string, options?: { runs?: readonly string[]; limit?: number }): Promise<PastRun[]>;
 
+/** A todo of the list of the run: a line of intent with a state. Its ID is its place in the list: 1, 2, 3 and so on. */
+type Todo = { readonly id: number; readonly text: string; readonly state: "open" | "doing" | "done" | "dropped" };
+
+/**
+ * The list of todos of the run, which every task of the run uses. A child run has its own list. Each verb is a call
+ * that saves its result, so a resume does not add a todo twice. An empty text and an unknown ID throw.
+ */
+declare const todo: {
+	/** Adds a todo with the state `open` and the next ID, and returns it. */
+	add(text: string): Promise<Todo>;
+	/** Sets the state of the todo `id`, and its text when `text` is given, and returns the todo. */
+	set(id: number, state: Todo["state"], text?: string): Promise<Todo>;
+	/** The todos of the list, in ID order. */
+	list(): Promise<Todo[]>;
+};
+
 /** Runs the functions at once and returns their results. */
 declare function parallel<const T extends readonly unknown[]>(thunks: { [K in keyof T]: () => T[K] }): Promise<{ -readonly [K in keyof T]: Awaited<T[K]> }>;
 
