@@ -47,6 +47,8 @@ describe("runs that another version saved", () => {
 			0,
 			[`run ${id} t done Fix the parser`, "✓ a", "Reply to one"],
 		]);
+		const json = await workflows(["show", id, "--json"], { cwd: root });
+		expect(JSON.parse(json.stdout[0] ?? "").todos).toEqual([]);
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect([resumed.code, resumed.stderr]).toEqual([
 			1,

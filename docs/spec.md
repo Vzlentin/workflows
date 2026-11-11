@@ -1479,13 +1479,16 @@ run <run-id> <workflow> <status> <title>
   its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
-object with both trees: `{ "runId", "workflow", "caller"?, "title", "status", "report"?, "error"?, "steps", "calls" }`, where `caller` is the hc
-terminal that started the run, as in [List](#list), and
+object with both trees: `{ "runId", "workflow", "caller"?, "title", "status", "report"?, "error"?, "todos", "steps", "calls" }`, where `caller` is the hc
+terminal that started the run, as in [List](#list),
+`todos` is the list of todos of the run, as in [Todos](#todos): an array of `{ "id", "text", "state" }` in ID order,
+or `[]` when the run has no todo, also for a run that an earlier version saved, and
 `steps` has the step lines of the text, without the first line and the footer. Each call is
-`{ "kind", "runId", "label", "phase", "args", "state", "mark", "startedAt", "endedAt"?, "conversation"?, "result"?, "error"?, "calls"? }`,
+`{ "kind", "runId", "label", "phase", "args", "state", "mark", "startedAt", "endedAt"?, "conversation"?, "result"?, "error"?, "todos"?, "calls"? }`,
 with ISO times. `runId` is the ID of the run that made the call. `conversation` is the conversation ID of a `session` that opened. The JSON `mark` of a working session
 is `✓`: only the text shows it as `◉`. `phase` is `null` before the first phase line. The `result` of a `run` call is
-`{ "runId", "result" }`, with the result of its child run, and its `calls` are the calls of the child run.
+`{ "runId", "result" }`, with the result of its child run. A `run` call whose child run started also has `todos`, the
+list of todos of the child run, and `calls`, the calls of the child run.
 
 With `--agents`, `show` prints the agents of the run, the tree that the [`/workflows`](#the-workflows-command) run
 view shows:
@@ -1965,7 +1968,7 @@ The engine files in `src/`:
   `show` with the agent of each step, for `show --pick`.
 - `records/steps.ts`: the tree of steps of a run.
 - `records/store.ts`: the command's read-only reads of the project store: the tasks of the runs, harness's task
-  keys, their progress and calls.
+  keys, their progress, calls and lists of todos.
 - `cli/terminal/redraw.ts`: how the command draws the tree of steps of a run on stderr.
 - `launch/input.ts`: the generic entry point `workflows <wf>`: the checked arguments of a run, its run ID, its saved
   input, and the input of a child run.

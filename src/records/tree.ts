@@ -3,6 +3,7 @@
  * runs, its lines for `show --calls`, and its agent rows for `show --agents`.
  */
 import type { JsonValue } from "@earendil-works/chord";
+import type { Todo } from "@vzlentin/harness/todo";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { SavedCall } from "../run/calls.ts";
@@ -17,12 +18,16 @@ export type CallMark = "✓" | "◉" | "✗";
  */
 export type CallState = "running" | "done" | "failed" | "cancelled" | "cut" | "waiting";
 
-/** One call of the run `runId` in `workflows show`, with the calls of its child run when it is a `run` call. */
+/**
+ * One call of the run `runId` in `workflows show`. A `run` call whose child run started has the list of todos and the
+ * calls of that child run.
+ */
 export type Shown = Omit<SavedCall, "child" | "task" | "cancelledAt" | "childRun"> & {
 	readonly runId: string;
 	readonly label: string;
 	readonly state: CallState;
 	readonly mark: CallMark;
+	readonly todos?: Todo[];
 	readonly calls?: Shown[];
 };
 
@@ -53,8 +58,16 @@ function markOf(state: CallState): CallMark {
 	return state === "running" ? "◉" : state === "done" ? "✓" : "✗";
 }
 
-/** The calls of the run `runId` in the order they started, each `run` call with the calls of its child run. */
-export function callTree(records: Map<string, SavedCall>, runId: string, run: RunState): Shown[] {
+/**
+ * The calls of the run `runId` in the order they started, each `run` call with the list of todos of its child run in
+ * `todos`, empty when `todos` has none, and the calls of its child run.
+ */
+export function callTree(
+	records: Map<string, SavedCall>,
+	todos: ReadonlyMap<string, Todo[]>,
+	runId: string,
+	run: RunState,
+): Shown[] {
 	const own = [...records].flatMap(([key, record]) => (key.startsWith(`${runId}/`) ? [record] : []));
 
 	return own
@@ -66,7 +79,9 @@ export function callTree(records: Map<string, SavedCall>, runId: string, run: Ru
 			const child = started?.runId;
 			const shown = { ...rest, runId, label: labelOf(record, child, records), state, mark: markOf(state) } as const;
 
-			return child === undefined ? shown : { ...shown, calls: callTree(records, child, run) };
+			return child === undefined
+				? shown
+				: { ...shown, todos: todos.get(child) ?? [], calls: callTree(records, todos, child, run) };
 		});
 }
 

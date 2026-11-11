@@ -5,21 +5,29 @@
 import { existsSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
-import type { JsonValue } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Cursor, DocumentId } from "@earendil-works/pi-durable";
+import type {
+	Cursor,
+	DocumentId,
+	DocumentReader,
+	JsonObject,
+	SessionDocFamilyToken,
+	SessionDocToken,
+} from "@earendil-works/pi-durable";
 import {
 	type SqliteDatabase,
 	type SqliteExecutor,
 	SqliteStorage,
 	type SqliteValue,
 } from "@earendil-works/pi-durable/storage/sqlite";
-import { type StartedTaskIds, StartedTasks } from "@vzlentin/harness/tasks";
+import { StartedTasks } from "@vzlentin/harness/tasks";
+import { readTodos, type Todo } from "@vzlentin/harness/todo";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { ScriptInput } from "../launch/input.ts";
 import { CALL_KIND, CALL_RECORD, type SavedCall } from "../run/calls.ts";
-import { allPages, type RunTask, rootRuns, runStatus, savedInput } from "../run/past.ts";
+import { allPages, firstTask, type RunTask, rootRuns, runStatus, savedInput } from "../run/past.ts";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "../run/progress.ts";
 import { TASK } from "../run/version.ts";
 
@@ -226,32 +234,81 @@ export async function runTasks(store: Store): Promise<Map<string, RunTask[]>> {
 }
 
 /**
- * From one scan: the root tasks as `runTasks` gives them, and the IDs of the tasks, root or child, whose status is
- * `running`.
+ * From one scan: the tasks of the kind `workflows.run`, root or child, in scan order, the root tasks as `runTasks`
+ * gives them, and the IDs of the tasks, root or child, whose status is `running`.
  */
-export async function runTasksAndLive(
-	store: Store,
-): Promise<{ readonly runs: Map<string, RunTask[]>; readonly live: Set<number> }> {
+export async function runTasksAndLive(store: Store): Promise<{
+	readonly tasks: readonly RunTask[];
+	readonly runs: Map<string, RunTask[]>;
+	readonly live: Set<number>;
+}> {
 	const tasks = await scanRuns(store);
 	const live = new Set(tasks.flatMap((task) => (runStatus(task) === "running" ? [task.id] : [])));
 
-	return { runs: rootRuns(tasks), live };
+	return { tasks, runs: rootRuns(tasks), live };
 }
 
-/** Where harness keeps its document of the `start` keys. */
-const STARTED = { kind: StartedTasks.definition.kind, scope: { kind: StartedTasks.definition.scope } };
+/**
+ * The list of todos of each of `runIds`, root or child runs: the list of the first task of the run in `tasks`, as the
+ * todo calls of its script change it, or empty when the run has no task or no list.
+ */
+export async function todoLists(
+	store: Store,
+	tasks: readonly RunTask[],
+	runIds: Iterable<string>,
+): Promise<Map<string, Todo[]>> {
+	const reader = todoReader(store);
+	const lists = new Map<string, Todo[]>();
+
+	for (const runId of runIds) {
+		const first = firstTask(tasks, runId);
+
+		if (first === undefined) {
+			lists.set(runId, []);
+			continue;
+		}
+
+		lists.set(runId, (await readTodos(reader, { kind: "task", id: first.id }, BACKGROUND_CONTEXT)).todos);
+	}
+
+	return lists;
+}
+
+/** The reader of `readTodos` over `store`: `readTodos` reads the list of a task, a document of a session family. */
+function todoReader(store: Store): Pick<DocumentReader, "snapshot"> {
+	const snapshot = <T extends JsonObject>(token: SessionDocFamilyToken<T, JsonValue>, key: string, context: Context) =>
+		sessionDocument(store, token, key, context);
+
+	// SAFETY: `readTodos` reads the list of a task with `(token, key, context)` only.
+	return { snapshot } as Pick<DocumentReader, "snapshot">;
+}
 
 /** The task ID of each `start` key of the host, from harness's document of the keys; empty when it has none. */
 export async function startedTasks(store: Store): Promise<Map<string, number>> {
-	const record = await store.findDocument(STARTED, "current", BACKGROUND_CONTEXT);
-	const stored = record === undefined ? undefined : await store.document(record.id, "current", BACKGROUND_CONTEXT);
+	const value = await sessionDocument(store, StartedTasks, undefined, BACKGROUND_CONTEXT);
 
-	if (stored?.version !== StartedTasks.definition.version) return new Map();
+	return new Map(Object.entries(value?.tasks ?? {}));
+}
 
-	// SAFETY: harness writes this document only through `StartedTasks`, and the version is the one of that token.
-	const value = stored.value as StartedTaskIds;
+/**
+ * The current session document of `token` in `store`, at the family key `key` for a family. A document of another
+ * version than the one of `token` reads as absent.
+ */
+async function sessionDocument<T extends JsonObject>(
+	store: Store,
+	token: SessionDocToken<T> | SessionDocFamilyToken<T, JsonValue>,
+	key: string | undefined,
+	context: Context,
+): Promise<Readonly<T> | undefined> {
+	const { kind, scope, version } = token.definition;
+	const address = key === undefined ? { kind, scope: { kind: scope } } : { kind, scope: { kind: scope }, key };
+	const record = await store.findDocument(address, "current", context);
+	const stored = record === undefined ? undefined : await store.document(record.id, "current", context);
 
-	return new Map(Object.entries(value.tasks));
+	if (stored?.version !== version) return undefined;
+
+	// SAFETY: harness writes a document of the kind of `token` only through that token, at the version checked above.
+	return stored.value as T;
 }
 
 const PROGRESS = Type.Object({ events: Type.Array(Type.Unknown()) });

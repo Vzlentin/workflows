@@ -454,7 +454,14 @@ describe("workflows show", () => {
 		]);
 		const shownJson = await workflows(["show", id, "--json"], { cwd: root });
 		const { calls, steps: json, ...tree } = JSON.parse(shownJson.stdout[0] ?? "");
-		expect(tree).toEqual({ runId: id, workflow: "x", title: "x", status: "failed", error: "sh exited with 3: exit 3" });
+		expect(tree).toEqual({
+			runId: id,
+			workflow: "x",
+			title: "x",
+			status: "failed",
+			error: "sh exited with 3: exit 3",
+			todos: [],
+		});
 		expect(json).toEqual(steps.stdout.slice(1, 3));
 		expect(
 			calls.map((call: { mark: string; result?: unknown; error?: string }) => [call.mark, call.result, call.error]),
@@ -1993,6 +2000,9 @@ return await todo.list()`,
 
 		expect(JSON.parse(resumed.stdout.at(-1) ?? "")).toEqual(todos);
 		expect(await startList(failed.id)).toEqual({ todos });
+
+		const shown = await workflows(["show", failed.id ?? "", "--json"], { cwd: root });
+		expect(JSON.parse(shown.stdout[0] ?? "").todos).toEqual(todos);
 	});
 
 	it("keep the list of a child run apart from the list of its caller, also in a new child task", async () => {
@@ -2018,6 +2028,48 @@ return await todo.list()`,
 			parent,
 		});
 		expect(await startList(failed.id)).toEqual({ todos: parent });
+
+		const shown = JSON.parse((await workflows(["show", failed.id ?? "", "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(shown.todos).toEqual(parent);
+		expect(shown.calls.find((call: { kind: string }) => call.kind === "run").todos).toEqual([
+			{ id: 1, text: "child", state: "done" },
+		]);
+	});
+
+	it("give the list of the run and of each child run in show --json", async () => {
+		await writeFile(
+			join(root, "parent.js"),
+			'await todo.add("one")\nawait todo.add("two")\nawait todo.set(2, "done")\nawait run("child")\nawait run("empty")\nreturn 0',
+		);
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(
+			join(root, ".workflows", "scripts", "child.js"),
+			'await todo.add("child")\nawait todo.set(1, "doing")\nawait run("grandchild")\nreturn 0',
+		);
+		await writeFile(join(root, ".workflows", "scripts", "grandchild.js"), 'await todo.add("grandchild")\nreturn 0');
+		await writeFile(join(root, ".workflows", "scripts", "empty.js"), "return 0");
+		const run = await workflows(["parent.js"], { cwd: root });
+		expect(run.code).toBe(0);
+
+		const shown = await workflows(["show", run.id ?? "", "--json"], { cwd: root });
+		const withCalls = await workflows(["show", run.id ?? "", "--calls", "--json"], { cwd: root });
+		expect(withCalls.stdout).toEqual(shown.stdout);
+
+		type Call = { kind: string; todos?: unknown; calls?: Call[] };
+
+		const { todos, calls } = JSON.parse(shown.stdout[0] ?? "");
+		expect(todos).toEqual([
+			{ id: 1, text: "one", state: "open" },
+			{ id: 2, text: "two", state: "done" },
+		]);
+		const runs = calls.filter((call: Call) => call.kind === "run");
+		expect(runs.map((call: Call) => call.todos)).toEqual([[{ id: 1, text: "child", state: "doing" }], []]);
+		const grandchild = runs[0].calls.find((call: Call) => call.kind === "run");
+		expect(grandchild.todos).toEqual([{ id: 1, text: "grandchild", state: "open" }]);
+
+		const all = (list: Call[]): Call[] => list.flatMap((call) => [call, ...all(call.calls ?? [])]);
+
+		expect(all(calls).filter((call) => call.todos !== undefined)).toEqual([runs[0], grandchild, runs[1]]);
 	});
 
 	it("fail with the errors of harness and of bad arguments", async () => {

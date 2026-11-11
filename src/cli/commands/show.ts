@@ -1,8 +1,9 @@
 /** `workflows show <run-id>`: the steps, the calls or the agents of a run. */
 import { parseArgs } from "node:util";
+import type { Todo } from "@vzlentin/harness/todo";
 import { Value } from "typebox/value";
 import { endMark, Progress } from "../../records/steps.ts";
-import { callRecords, progressEvents, reading, runTasksAndLive } from "../../records/store.ts";
+import { callRecords, progressEvents, reading, runTasksAndLive, todoLists } from "../../records/store.ts";
 import {
 	agentLines,
 	agentRows,
@@ -61,7 +62,7 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 
 	const mode = values.agents ? "agents" : values.calls ? "calls" : "steps";
 	const shown = await readRun(await savedRun(id, SHOW), mode !== "steps" || json, "be shown");
-	const { input, title, status, head, ended, calls, progress, footer, end } = shown;
+	const { input, title, status, head, ended, todos, calls, progress, footer, end } = shown;
 	const now = Date.now();
 	const named = { runId: id, workflow: input.name };
 	const run = input.caller === undefined ? named : { ...named, caller: input.caller };
@@ -73,7 +74,7 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 		for (const line of [head, ...agentLines(agentRows(calls, 0, now)), ...footer]) terminal.stdout(line);
 	} else if (json) {
 		const steps = progress.lines();
-		terminal.stdout(JSON.stringify({ ...run, title, status, ...end, steps, calls }));
+		terminal.stdout(JSON.stringify({ ...run, title, status, ...end, todos, steps, calls }));
 	} else if (mode === "calls") {
 		for (const line of [head, ...treeLines(calls, "", now), ...footer]) terminal.stdout(line);
 	} else {
@@ -84,9 +85,10 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 }
 
 /**
- * A saved run as `show` prints it. `task` is the task that it reads, `run` is its run status, `end` has the report
- * lines or the error of a run that ended, and `question` is the question of a run that waits for an answer.
- * `resumable` is true for a run of this version that ended and is not `done`, which `resume` continues.
+ * A saved run as `show` prints it. `task` is the task that it reads, `run` is its run status, `todos` is the list of
+ * todos of the run, `end` has the report lines or the error of a run that ended, and `question` is the question of a
+ * run that waits for an answer. `resumable` is true for a run of this version that ended and is not `done`, which
+ * `resume` continues.
  */
 export type ShownRun = {
 	readonly task: RunTask;
@@ -97,6 +99,7 @@ export type ShownRun = {
 	readonly head: string;
 	readonly ended: boolean;
 	readonly resumable: boolean;
+	readonly todos: Todo[];
 	readonly calls: Shown[];
 	readonly progress: Progress;
 	readonly footer: readonly string[];
@@ -105,10 +108,11 @@ export type ShownRun = {
 };
 
 /**
- * The saved run `run` as `show` prints it: its task, its head line, its steps, its calls, and its footer lines. It
- * reads the call records `withCalls`, or when the run has no steps. It reads a task of this version, and a task of
- * another version that ended, as `readable` gives them. The footer tells how to resume only a `resumable` run. `verb`
- * completes the error for a run that cannot be read, as in `cannot <verb>`.
+ * The saved run `run` as `show` prints it: its task, its head line, its steps, its list of todos, its calls, and its
+ * footer lines. It reads the call records `withCalls`, or when the run has no steps, and the lists of todos of the run
+ * and of the child runs of those records. It reads a task of this version, and a task of another version that ended,
+ * as `readable` gives them. The footer tells how to resume only a `resumable` run. `verb` completes the error for a
+ * run that cannot be read, as in `cannot <verb>`.
  */
 export async function readRun(run: SavedRun, withCalls: boolean, verb: string): Promise<ShownRun> {
 	const { id } = run;
@@ -119,17 +123,20 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 		progress: new Progress(),
 		events: [],
 		live: new Set<number>(),
+		todos: new Map<string, Todo[]>(),
 	};
 
-	const { task, saved, progress, events, live } = await reading(run.store, empty, async (store) => {
+	const { task, saved, progress, events, live, todos } = await reading(run.store, empty, async (store) => {
 		const read = new Progress();
 		const stored = await progressEvents(store, id);
 
 		for (const event of stored) read.add(event);
 		const calls = withCalls || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
-		const { runs, live } = await runTasksAndLive(store);
+		const { tasks, runs, live } = await runTasksAndLive(store);
+		const children = [...calls.values()].flatMap((record) => (record.child === undefined ? [] : [record.child.runId]));
+		const lists = await todoLists(store, tasks, [id, ...children]);
 
-		return { task: taskOf(runs.get(id) ?? []), saved: calls, progress: read, events: stored, live };
+		return { task: taskOf(runs.get(id) ?? []), saved: calls, progress: read, events: stored, live, todos: lists };
 	});
 
 	const { task: checkedTask, input, thisVersion } = readable(task, id, verb);
@@ -156,7 +163,7 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 
 	if (ended) progress.stop(endMark(known));
 	const head = `run ${id} ${input.name} ${status} ${title}`;
-	const calls = callTree(saved, id, { ended, waiting: known === "waiting", live });
+	const calls = callTree(saved, todos, id, { ended, waiting: known === "waiting", live });
 	const question = known === "waiting" && Value.Check(WAITING, result) ? result.question : undefined;
 
 	return {
@@ -168,6 +175,7 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 		head,
 		ended,
 		resumable,
+		todos: todos.get(id) ?? [],
 		calls,
 		progress,
 		footer,
