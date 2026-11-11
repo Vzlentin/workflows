@@ -9,6 +9,11 @@ export const meta = {
 	},
 	worktree: true,
 	exit: { implemented: 0, blocked: 1 },
+	outline: [
+		{ kind: "agent", role: "researcher", label: "research" },
+		{ kind: "agent", role: "planner", label: "plan" },
+		{ kind: "run", workflow: "implement", label: "implement" },
+	],
 }
 
 const { item, start } = args

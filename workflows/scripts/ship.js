@@ -10,6 +10,20 @@ export const meta = {
 	},
 	worktree: true,
 	exit: { shipped: 0, blocked: 1, stopped: 1 },
+	outline: [
+		{ kind: "agent", role: "researcher", label: "research" },
+		{ kind: "agent", role: "planner", label: "plan" },
+		{ kind: "run", workflow: "implement", label: "implement" },
+		{
+			kind: "loop",
+			label: "review, in rounds",
+			steps: [
+				{ kind: "agent", role: "reviewer", label: "review" },
+				{ kind: "run", workflow: "implement", label: "fix" },
+			],
+		},
+		{ kind: "run", workflow: "judge", label: "judge" },
+	],
 }
 
 const { item, rounds, start, patches = runDir } = args

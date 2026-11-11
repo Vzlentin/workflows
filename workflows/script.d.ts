@@ -2,7 +2,10 @@
 // The sandbox replaces Date and Math: `Date`, `Date.now()` and `Math.random()` throw, so that a script makes the
 // same calls each time it runs.
 
-/** The command line of a script, as `export const meta = { ... }`. A script uses it with the JSDoc tag `@type {Meta}`. */
+/**
+ * The command line and the outline of a script, as `export const meta = { ... }`. A script uses it with the JSDoc tag
+ * `@type {Meta}`.
+ */
 type Meta = {
 	/** One line for `workflows` and `--help`. */
 	description?: string;
@@ -29,7 +32,18 @@ type Meta = {
 	repo?: boolean;
 	/** The exit code of each `result.status`. Any other status exits 1, and a result without a status exits 0. */
 	exit?: Record<string, number>;
+	/** The steps that a user sees in the progress of the script, in order, for the map of the script before a run. */
+	outline?: OutlineStep[];
 };
+
+/**
+ * One step of `meta.outline`: a turn of the role `role`, a child run of the workflow `workflow`, or steps that repeat.
+ * `role`, `workflow` and `label` are non-empty strings with no line break, and a step has no other field.
+ */
+type OutlineStep =
+	| { kind: "agent"; role: string; label: string }
+	| { kind: "run"; workflow: string; label: string }
+	| { kind: "loop"; label: string; steps: [OutlineStep, ...OutlineStep[]] };
 
 /** The argument values of `meta.args`, and `start` with `worktree: true`. */
 declare const args: any;

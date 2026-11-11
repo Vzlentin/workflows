@@ -15,6 +15,7 @@ export const meta = {
 	},
 	repo: true,
 	exit: { judged: 0, unjudged: 1 },
+	outline: [{ kind: "agent", role: "judge", label: "judge" }],
 }
 
 phase("judge")

@@ -1,7 +1,8 @@
 /**
  * The `meta` of a workflow script. `export const meta = { ... }` at the top of the script declares its arguments,
- * whether it runs in a new worktree or in the repository of `--repo`, and the exit code of each result status. The meta
- * reader evaluates only that literal, in the sandbox, and never runs the script.
+ * whether it runs in a new worktree or in the repository of `--repo`, and the exit code of each result status. It can
+ * also give the outline of the script, the steps of its progress for the map before a run. The meta reader evaluates
+ * only that literal, in the sandbox, and never runs the script.
  */
 import { InlineCodemodeSandbox, loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import { type Static, Type } from "typebox";
@@ -51,6 +52,15 @@ export type Meta = {
 	readonly exit: Readonly<Record<string, number>>;
 };
 
+/**
+ * One step of `meta.outline`: a turn of the role `role`, a child run of the workflow `workflow`, or the steps of a
+ * loop. `role`, `workflow` and `label` are non-empty lines.
+ */
+export type OutlineStep =
+	| { readonly kind: "agent"; readonly role: string; readonly label: string }
+	| { readonly kind: "run"; readonly workflow: string; readonly label: string }
+	| { readonly kind: "loop"; readonly label: string; readonly steps: readonly [OutlineStep, ...OutlineStep[]] };
+
 /** `meta` as a script writes it: the `Meta` of `workflows/script.d.ts`. */
 type Literal = {
 	readonly description?: string;
@@ -58,9 +68,10 @@ type Literal = {
 	readonly worktree?: boolean;
 	readonly repo?: boolean;
 	readonly exit?: Readonly<Record<string, number>>;
+	readonly outline?: readonly OutlineStep[];
 };
 
-const META_KEYS = new Set(["description", "args", "worktree", "repo", "exit"]);
+const META_KEYS = new Set(["description", "args", "worktree", "repo", "exit", "outline"]);
 const SPEC_KEYS = new Set(["type", "default", "required", "positional", "label"]);
 export const OBJECT = Type.Object({});
 const DESCRIPTION = Type.Object({ description: Type.Optional(Type.String()) });
@@ -69,6 +80,23 @@ const WORKTREE = Type.Object({ worktree: Type.Optional(Type.Boolean()) });
 const REPO = Type.Object({ repo: Type.Optional(Type.Boolean()) });
 const EXIT = Type.Object({ exit: Type.Optional(Type.Record(Type.String(), Type.Integer())) });
 const SPEC_TYPE = Type.Object({ type: ARG_TYPE });
+
+// `.` matches no line terminator, so a line is a non-empty string without `\n`, `\r`, U+2028 or U+2029.
+const LINE = Type.String({ pattern: "^.+$" });
+const STEPS = Type.Array(Type.Unknown());
+const OUTLINE = Type.Object({ outline: Type.Optional(STEPS) });
+const LOOP_STEPS = Type.Object({ steps: STEPS });
+const KIND = Type.Object({ kind: Type.Union([Type.Literal("agent"), Type.Literal("run"), Type.Literal("loop")]) });
+const ROLE = Type.Object({ role: LINE });
+const WORKFLOW = Type.Object({ workflow: LINE });
+const LABEL = Type.Object({ label: LINE });
+
+/** The fields of each kind of outline step. */
+const STEP_KEYS = {
+	agent: new Set(["kind", "role", "label"]),
+	run: new Set(["kind", "workflow", "label"]),
+	loop: new Set(["kind", "label", "steps"]),
+};
 
 const SPEC_FLAGS = Type.Object({
 	required: Type.Optional(Type.Boolean()),
@@ -97,6 +125,34 @@ function placementOf({ worktree, repo }: Pick<Literal, "worktree" | "repo">): Pl
 	if (worktree === true) return "worktree";
 
 	return repo === true ? "repo" : "here";
+}
+
+/** Throws the first problem of the outline step `value` at the JSON pointer `at` of `meta.outline`, such as `/2`. */
+function checkStep(value: unknown, at: string, fail: (problem: string) => Error): asserts value is OutlineStep {
+	const where = `meta.outline${at}`;
+
+	if (!Value.Check(OBJECT, value)) throw fail(`${where} is not a step`);
+
+	if (!Value.Check(KIND, value)) throw fail(`${where}/kind must be agent, run or loop`);
+	const [extra] = Object.keys(value).filter((key) => !STEP_KEYS[value.kind].has(key));
+
+	if (extra !== undefined) {
+		throw fail(`${where}/${extra.replaceAll("~", "~0").replaceAll("/", "~1")} is not an outline field`);
+	}
+
+	if (value.kind === "agent" && !Value.Check(ROLE, value)) throw fail(`${where}/role must be a non-empty line`);
+
+	if (value.kind === "run" && !Value.Check(WORKFLOW, value)) throw fail(`${where}/workflow must be a non-empty line`);
+
+	if (!Value.Check(LABEL, value)) throw fail(`${where}/label must be a non-empty line`);
+
+	if (value.kind !== "loop") return;
+
+	if (!Value.Check(LOOP_STEPS, value)) throw fail(`${where}/steps is not an array of steps`);
+
+	if (value.steps.length === 0) throw fail(`${where}/steps must have at least one step`);
+
+	for (const [index, step] of value.steps.entries()) checkStep(step, `${at}/steps/${index}`, fail);
 }
 
 /** Throws the first problem of `value` as the `meta` of the script `name`. */
@@ -150,16 +206,20 @@ function checkMeta(value: unknown, name: string): asserts value is Literal {
 	}
 
 	if (positionals > 1) throw fail("meta.args has more than one positional argument");
+
+	if (!Value.Check(OUTLINE, value)) throw fail("meta.outline is not an array of steps");
+
+	for (const [index, step] of (value.outline ?? []).entries()) checkStep(step, `/${index}`, fail);
 }
 
 /**
- * The `meta` of the script `source`, checked; no arguments for a script without one. The end of the literal is the
+ * The `meta` literal of the script `source`, checked; `{}` for a script without one. The end of the literal is the
  * first `}` after which the text compiles as an expression. Compiling runs nothing; the literal then runs in the sandbox.
  */
-export async function readMeta(source: string, name: string): Promise<Meta> {
+async function checkedLiteral(source: string, name: string): Promise<Literal> {
 	const found = META.exec(source);
 
-	if (found === null) return { description: "", args: {}, placement: "here", exit: {} };
+	if (found === null) return {};
 	const from = found[0].length;
 	let literal: string | undefined;
 
@@ -193,10 +253,22 @@ export async function readMeta(source: string, name: string): Promise<Meta> {
 		if (!result.ok) throw new Error(`${name}: meta: ${result.error.message}`);
 		const { value } = result;
 		checkMeta(value, name);
-		const { description = "", args = {}, exit = {} } = value;
 
-		return { description, args, placement: placementOf(value), exit };
+		return value;
 	} finally {
 		await sandbox.close();
 	}
+}
+
+/** The `meta` of the script `source`, checked; no arguments for a script without one. */
+export async function readMeta(source: string, name: string): Promise<Meta> {
+	const literal = await checkedLiteral(source, name);
+	const { description = "", args = {}, exit = {} } = literal;
+
+	return { description, args, placement: placementOf(literal), exit };
+}
+
+/** The outline of the script `source`, from its checked `meta`; no steps for a script without one. */
+export async function readOutline(source: string, name: string): Promise<readonly OutlineStep[]> {
+	return (await checkedLiteral(source, name)).outline ?? [];
 }

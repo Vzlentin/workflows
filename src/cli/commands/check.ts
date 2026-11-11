@@ -1,11 +1,11 @@
 /**
- * `workflows check <wf>`: the static analysis of a workflow script, which reads its `meta` and its prompts, and the
- * models of its agents table and of the literal fields of its calls.
+ * `workflows check <wf>`: the static analysis of a workflow script, which reads its `meta`, the workflows that its
+ * outline runs, its prompts, and the models of its agents table and of the literal fields of its calls.
  */
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { Bundle } from "../../workflow/bundle.ts";
 import { findScript, type Io, problem, UsageError } from "../../workflow/find.ts";
-import { readMeta } from "../../workflow/meta.ts";
+import { type OutlineStep, readOutline } from "../../workflow/meta.ts";
 import { roleOf } from "../../workflow/roles.ts";
 
 export const CHECK = "workflows check <workflow>";
@@ -122,6 +122,27 @@ function sessionFields(source: string): Fields[] {
 }
 
 /**
+ * The first `run` step of `steps`, at any depth, that names a workflow that `bundle` does not have, as the problem at the
+ * JSON pointer of its `workflow` field; `at` is the pointer of `steps`.
+ */
+function unknownWorkflow(steps: readonly OutlineStep[], bundle: Bundle, at: string): string | undefined {
+	for (const [index, step] of steps.entries()) {
+		const here = `${at}/${index}`;
+
+		if (step.kind === "run" && !Object.hasOwn(bundle.scripts, step.workflow)) {
+			return `${here}/workflow names no workflow ${step.workflow}`;
+		}
+
+		if (step.kind !== "loop") continue;
+		const inner = unknownWorkflow(step.steps, bundle, `${here}/steps`);
+
+		if (inner !== undefined) return inner;
+	}
+
+	return undefined;
+}
+
+/**
  * The first model, as `<provider>/<id>`, that a session call of `source` names with a literal `provider` or `model`,
  * with the role of its `as` (default `default`) in the agents table for the other field, and that `models` does not
  * have. A call with a computed field, or without a provider or a model after its role, is left to the start of the
@@ -166,8 +187,9 @@ async function unknownTableModel(
 }
 
 /**
- * `workflows check <wf>`: reads `meta` and checks the prompts that the script names, and the models of the agents
- * table and the literal models of its calls against Pi's model registry; starts no run. A role name needs no entry.
+ * `workflows check <wf>`: reads `meta`, checks the workflows that the `run` steps of its outline name against the
+ * bundle, the prompts that the script names, and the models of the agents table and the literal models of its calls
+ * against Pi's model registry; starts no run. A role name needs no entry.
  */
 export async function check(
 	args: readonly string[],
@@ -177,7 +199,10 @@ export async function check(
 
 	if (word === undefined || rest.length > 0) throw new UsageError("give one workflow to check", CHECK);
 	const found = await findScript(word, io);
-	await readMeta(found.source, found.name);
+	const outline = await readOutline(found.source, found.name);
+	const workflow = unknownWorkflow(outline, found.bundle, "meta.outline");
+
+	if (workflow !== undefined) throw new Error(`${found.name}: ${workflow}`);
 	const failed = problem(found.source, found.name, found.bundle);
 
 	if (failed !== undefined) throw new Error(failed);

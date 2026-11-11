@@ -15,6 +15,11 @@ export const meta = {
 	},
 	worktree: true,
 	exit: { done: 0, stopped: 1 },
+	outline: [
+		{ kind: "agent", role: "planner", label: "split" },
+		{ kind: "loop", label: "each item: ship", steps: [{ kind: "run", workflow: "ship", label: "ship" }] },
+		{ kind: "run", workflow: "judge", label: "judge" },
+	],
 }
 
 const { goal, rounds, start: first } = args

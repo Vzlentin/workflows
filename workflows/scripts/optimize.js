@@ -12,6 +12,20 @@ export const meta = {
 		limit: { type: "number", default: 8 },
 		"always-on-max": { type: "number" },
 	},
+	outline: [
+		{ kind: "loop", label: "each item: baseline", steps: [{ kind: "run", workflow: "ship", label: "baseline" }] },
+		{ kind: "agent", role: "default", label: "inv" },
+		{ kind: "agent", role: "default", label: "dom" },
+		{ kind: "agent", role: "default", label: "compose" },
+		{
+			kind: "loop",
+			label: "each item: ship ─ select",
+			steps: [
+				{ kind: "run", workflow: "ship", label: "ship" },
+				{ kind: "agent", role: "judge", label: "select" },
+			],
+		},
+	],
 }
 
 const EDITS = {

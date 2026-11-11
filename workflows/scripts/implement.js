@@ -10,6 +10,7 @@ export const meta = {
 		round: { type: "number", default: 1 },
 	},
 	exit: { implemented: 0, blocked: 1 },
+	outline: [{ kind: "agent", role: "implementer", label: "implement" }],
 }
 
 const { plan, round } = args

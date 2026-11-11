@@ -17,6 +17,10 @@ export const meta = {
 		message: { type: "string" },
 	},
 	exit: { judged: 0, failed: 1, blocked: 1, unjudged: 1 },
+	outline: [
+		{ kind: "run", workflow: "implement", label: "fix" },
+		{ kind: "run", workflow: "judge", label: "judge" },
+	],
 }
 
 const { item, start, round, findings = [] } = args

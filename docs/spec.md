@@ -715,11 +715,12 @@ without `meta.description`.
 
 ### `meta`
 
-A script declares its command line in `export const meta = { ... }`, after its leading comments and before any other
-code. `meta` is an object literal. The command evaluates it alone, in the sandbox, and does not run the script. The
-evaluation has no time limit, but it stops after 1,000 interrupt polls of the sandbox, so a `meta` that computes
-without end fails with `workflows: <name>: meta: Execution exceeded its interrupt budget of 1000`. The
-script runs without `export`, so it can read `meta`. A script without `meta` takes no arguments.
+A script declares its command line, and optionally its outline, in `export const meta = { ... }`, after its leading
+comments and before any other code. `meta` is an object literal. The command evaluates it alone, in the sandbox, and
+does not run the script. The evaluation has no time limit, but it stops after 1,000 interrupt polls of the sandbox,
+so a `meta` that computes without end fails with
+`workflows: <name>: meta: Execution exceeded its interrupt budget of 1000`. The script runs without `export`, so it
+can read `meta`. A script without `meta` takes no arguments.
 
 ```js
 export const meta = {
@@ -766,6 +767,34 @@ export const meta = {
 - `exit` maps `result.status` to the exit code. A script declares each status that it returns, also the ones that exit
   0. A status that `exit` does not declare exits 1, and a result without `status` exits 0. The status `waiting` always
   exits 3, whatever `exit` says. See [Input](#input).
+- `outline` is the map of the script before a run: an array of the steps that a user sees in the progress of the
+  script, in order. A step is `{ kind: "agent", role, label }`, a turn of the role `role`; `{ kind: "run", workflow,
+  label }`, a child run of the workflow `workflow`; or `{ kind: "loop", label, steps }`, steps that repeat, such as
+  review rounds or the items of a campaign. `steps` has at least one step, and loops can nest. `role`, `workflow` and
+  `label` are non-empty strings with no line break, and a step has no other field. A child run whose phases show as
+  steps of the caller gives those steps in place of one `run` step, as `rpi` and `thermoloop` do in `ship`:
+
+  ```js
+  outline: [
+    { kind: "agent", role: "researcher", label: "research" },
+    { kind: "agent", role: "planner", label: "plan" },
+    { kind: "run", workflow: "implement", label: "implement" },
+    {
+      kind: "loop",
+      label: "review, in rounds",
+      steps: [
+        { kind: "agent", role: "reviewer", label: "review" },
+        { kind: "run", workflow: "implement", label: "fix" },
+      ],
+    },
+    { kind: "run", workflow: "judge", label: "judge" },
+  ],
+  ```
+
+  A bad outline fails with `meta.outline<pointer> <problem>`, where `<pointer>` is the JSON pointer of the wrong
+  value, such as `meta.outline/0/kind must be agent, run or loop`. The problems are `is not an array of steps`, `is not
+  a step`, `must be agent, run or loop`, `must be a non-empty line`, `must have at least one step` and `is not an
+  outline field`. A run does not save the outline in its input.
 
 Every script also takes `--prompts <folder>`, as `ship` does, `--agents <name>=<provider>/<id>:<thinking>,...`, the
 run layer of the roles (see [Roles](#roles)), `--background`, `--json` and `--help`. `workflows <wf> --help` prints
@@ -786,8 +815,10 @@ the field that it leaves out, against Pi's model registry: Pi's
 literal, or an object with a spread, is checked when the session opens. A regular expression literal is skipped, so a
 quote in it hides no later field. `check` also checks every model of the merged agents table, and fails with
 `agents.json gives <role> the model <provider>/<id>, which Pi's model registry does not have`. A role name without an
-entry passes. `check` prints `ok <name>` and exits 0, or prints the first
-problem and exits 1. It starts no run and writes nothing.
+entry passes. `check` also fails when a `run` step of `meta.outline`, at any depth, names a workflow that the bundle
+(the scripts of the package and of `.workflows/scripts`) does not have, with `<name>: meta.outline<pointer> names no
+workflow <workflow>`, where `<pointer>` is the pointer of the `workflow` field. `check` prints `ok <name>` and exits
+0, or prints the first problem and exits 1. It starts no run and writes nothing.
 
 ### Branch name
 

@@ -18,6 +18,16 @@ export const meta = {
 	},
 	repo: true,
 	exit: { approved: 0, blocked: 1, stopped: 1 },
+	outline: [
+		{
+			kind: "loop",
+			label: "review ─ fix, in rounds",
+			steps: [
+				{ kind: "agent", role: "reviewer", label: "review" },
+				{ kind: "run", workflow: "implement", label: "fix" },
+			],
+		},
+	],
 }
 
 const { rounds, patches = runDir } = args
