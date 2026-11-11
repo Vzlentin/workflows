@@ -18,6 +18,7 @@ import { help, type Io, listScripts, parseArgsMessage, UsageError } from "../wor
 import { ATTACH, attach } from "./commands/attach.ts";
 import { CHECK, check } from "./commands/check.ts";
 import { LIST, list } from "./commands/list.ts";
+import { OUTLINE, outline } from "./commands/outline.ts";
 import { PRUNE, prune } from "./commands/prune.ts";
 import { RESUME, resume, WAIT } from "./commands/resume.ts";
 import { type CommandName, SAVE, save } from "./commands/save.ts";
@@ -87,6 +88,7 @@ const COMMANDS = new Map<string, Command>(
 		save,
 		prune,
 		check,
+		outline,
 	} satisfies Record<CommandName, Command>),
 );
 
@@ -107,6 +109,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		SAVE,
 		PRUNE,
 		CHECK,
+		OUTLINE,
 		"workflows --version",
 		"workflows",
 	]

@@ -697,9 +697,9 @@ workflows check audit
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `wait`, `stop`, `list`, `show`, `attach`, `save`, `prune` and `check` are commands, so no script of
-these names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of that command,
-such as `usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]`, and exits 2.
+`resume`, `wait`, `stop`, `list`, `show`, `attach`, `save`, `prune`, `check` and `outline` are commands, so no
+script of these names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of
+that command, such as `usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]`, and exits 2.
 
 `workflows --version` prints the version of the package, from its `package.json`, and exits 0. It ignores any other
 argument.
@@ -794,7 +794,8 @@ export const meta = {
   A bad outline fails with `meta.outline<pointer> <problem>`, where `<pointer>` is the JSON pointer of the wrong
   value, such as `meta.outline/0/kind must be agent, run or loop`. The problems are `is not an array of steps`, `is not
   a step`, `must be agent, run or loop`, `must be a non-empty line`, `must have at least one step` and `is not an
-  outline field`. A run does not save the outline in its input.
+  outline field`. A run does not save the outline in its input. `workflows outline` prints it: see
+  [Outline](#outline).
 
 Every script also takes `--prompts <folder>`, as `ship` does, `--agents <name>=<provider>/<id>:<thinking>,...`, the
 run layer of the roles (see [Roles](#roles)), `--background`, `--json` and `--help`. `workflows <wf> --help` prints
@@ -1652,6 +1653,43 @@ with its `export const meta` header. Only the script is saved: no prompts, agent
 `save` reads the project store as `show` does, and does not start the host. It exits 0 when it wrote the file. `--json`
 has no effect.
 
+## Outline
+
+```sh
+workflows outline [<workflow>] [--json]
+```
+
+`workflows outline` prints the `meta.outline` of one script, or of every script, before a run. It reads the scripts
+as a run does: the project folder first, then the package. It starts no run, does not connect to the host, opens no
+store and calls no model.
+
+- `<workflow>` selects one script as `check` does: `-` reads the script from stdin and gives the name `stdin`, a word
+  that ends in `.js` or contains `/` is a file and gives its name without `.js`, and any other word is a name.
+  Without `<workflow>`, the command takes every script, in the order of `workflows` without arguments.
+- The text form prints one line for each script: its name, padded to the longest name that the command prints, two
+  spaces, then the labels of the top-level steps joined with ` ─ `. A script without an outline prints its name
+  alone. `workflows outline judge` prints `judge  judge`, and `workflows outline` prints for the package scripts:
+
+  ```text
+  campaign    split ─ each item: ship ─ judge
+  fix         fix ─ judge
+  implement   implement
+  judge       judge
+  optimize    each item: baseline ─ inv ─ dom ─ compose ─ each item: ship ─ select
+  rpi         research ─ plan ─ implement
+  ship        research ─ plan ─ implement ─ review, in rounds ─ judge
+  thermoloop  review ─ fix, in rounds
+  ```
+
+- With `--json`, the command prints one line: the object `{ "workflow", "steps" }` of `<workflow>`, or the array of
+  these objects for every script. `steps` is the outline as the script declares it, and `[]` for a script without an
+  outline.
+
+An unknown name fails as it fails for `check`: `workflows: unknown command <name>`, then the usage lines, and exits 2.
+A bad `meta` of a script that the command reads prints `workflows: <name>: <problem>` and exits 1. More than one
+workflow, or another flag, prints the error, then `usage: workflows outline [<workflow>] [--json]`, and exits 2.
+`--background` has no effect. Else the command exits 0.
+
 ## Install
 
 `@vzlentin/harness` is a dependency of `@vzlentin/workflows`, at the caret range of its `package.json`. The Pi
@@ -2004,7 +2042,7 @@ The engine files in `src/`:
   `list` and `show` print, and progress.
 - `cli/follow.ts`: how the command follows a run to its outcome, the answer of a waiting run, and the Ctrl+C presses.
 - `cli/commands/`: one file for each command: `start.ts`, `resume.ts` (also `wait`), `stop.ts`, `list.ts`, `show.ts`,
-  `attach.ts`, `save.ts` and `prune.ts`.
+  `attach.ts`, `save.ts`, `prune.ts` and `outline.ts`.
 - `runs.ts`: the module `@vzlentin/workflows/runs`, for a program that reads the runs of a project as `list` and `show`
   do: the runs and the workflows of a project, one run with its lines, and the `workflows` command as a child process.
 - `command.ts`: the `workflows` command of the package as a child process, for the `workflow` tool of the host.

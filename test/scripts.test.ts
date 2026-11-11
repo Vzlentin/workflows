@@ -188,8 +188,15 @@ describe("workflows save", () => {
 
 	it("rejects a bad name, a command name, a bad run ID and bad usage", async () => {
 		const { repo, id } = await stdinRun();
-		const command = await workflows(["save", id, "show"], { cwd: repo });
-		expect([command.code, command.stderr]).toEqual([1, ["workflows: show is a command and cannot be a workflow name"]]);
+
+		for (const name of ["show", "outline"]) {
+			const command = await workflows(["save", id, name], { cwd: repo });
+			expect([command.code, command.stderr], name).toEqual([
+				1,
+				[`workflows: ${name} is a command and cannot be a workflow name`],
+			]);
+		}
+
 		const unknown = await workflows(["save", "nothing", "other"], { cwd: repo });
 		expect([unknown.code, unknown.stderr]).toEqual([4, [`workflows: no run nothing in ${runs()}`]]);
 
@@ -242,6 +249,8 @@ describe("usage errors", () => {
 			[["show", ".."], "usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]"],
 			[["list", "x"], "usage: workflows list [--pick] [--json]"],
 			[["check"], "usage: workflows check <workflow>"],
+			[["outline", "ship", "judge"], "usage: workflows outline [<workflow>] [--json]"],
+			[["outline", "--x"], "usage: workflows outline [<workflow>] [--json]"],
 		];
 
 		for (const [argv, usage] of cases) {

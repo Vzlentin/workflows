@@ -77,6 +77,7 @@ workflows stop <run-id>
 workflows prune --yes                      # remove the worktrees of merged runs
 workflows                                  # the workflows that you can run
 workflows ship --help
+workflows outline ship                     # the steps of ship, before a run
 ```
 
 A ship run works on the branch `ship/<run-id>` in its own worktree, and renames the branch at the end. It does not push
