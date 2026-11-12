@@ -224,6 +224,9 @@ export function savedOutcome(output: Output, runId: string): Saved {
 /** The result of a run that waits on `input(question)`. */
 export const WAITING = Type.Object({ status: Type.Literal("waiting"), question: Type.String() });
 
+/** The most UTF-8 bytes of the JSON of a finished result that the summary gives. */
+const RESULT_BYTES = 2000;
+
 export function summary(outcome: WorkflowOutcome): string {
 	switch (outcome.status) {
 		case "finished":
@@ -231,7 +234,7 @@ export function summary(outcome: WorkflowOutcome): string {
 				return `run ${outcome.runId} waits for an answer: ${outcome.result.question}; answer it with resume: "${outcome.runId}" and answer: "<your answer>"`;
 			}
 
-			return `run ${outcome.runId} finished: ${JSON.stringify(outcome.result)}`;
+			return finished(outcome.runId, JSON.stringify(outcome.result));
 		case "failed":
 			return `run ${outcome.runId} failed: ${outcome.error}; continue it with resume: "${outcome.runId}"`;
 		case "started":
@@ -243,6 +246,13 @@ export function summary(outcome: WorkflowOutcome): string {
 		case "host-stopped":
 			return `the harness host of run ${outcome.runId} stopped; the run continues when the host starts again, so follow it with resume: "${outcome.runId}"`;
 	}
+}
+
+/** The summary of a finished run whose result is `json`, or the command that prints the result when it is too long. */
+function finished(runId: string, json: string): string {
+	if (new TextEncoder().encode(json).length <= RESULT_BYTES) return `run ${runId} finished: ${json}`;
+
+	return `run ${runId} finished; its result is longer than ${RESULT_BYTES} bytes, so read it with the command workflows wait ${runId} --json`;
 }
 
 /** The text of `outcome` for the model: its summary, then the report lines of a finished run that does not wait. */

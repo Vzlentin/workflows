@@ -53,6 +53,7 @@ ok)
 -)
 	echo "run r2"; cat > stdin.js
 	echo '{"runId":"r2","status":"finished","result":"from stdin","report":["from stdin"]}' ;;
+long) echo "run r14"; x=$(printf '%2100s' '' | tr ' ' x); echo '{"runId":"r14","status":"finished","result":"'"$x"'","report":["one","'"$x"'"]}' ;;
 keys) echo "run r12"; echo '{"status":"s","progress":["◉ one"]}' >&2; echo '{"runId":"r12","status":"finished","result":1,"report":["one"]}' ;;
 many|cutmany)
 	echo "run r13"; i=1; while [ $i -le 150 ]; do echo "warning: $i" >&2; i=$((i + 1)); done
@@ -483,6 +484,22 @@ describe("the workflow tool", () => {
 			"  ◉ plan",
 			"warning: slow disk",
 		]);
+	});
+
+	it("gives the command that prints a result longer than 2000 bytes, every report line uncut, and the result in the structured output", async () => {
+		const { result } = await call({ name: "long" });
+		expect(result.content).toEqual([
+			{
+				type: "text",
+				text: `run r14 finished; its result is longer than 2000 bytes, so read it with the command workflows wait r14 --json\none\n${"x".repeat(2100)}`,
+			},
+		]);
+		expect(result.structuredContent).toEqual({
+			runId: "r14",
+			status: "finished",
+			result: "x".repeat(2100),
+			report: ["one", "x".repeat(2100)],
+		});
 	});
 
 	it("takes a JSON line with progress as a progress line, whatever the order of its keys", async () => {

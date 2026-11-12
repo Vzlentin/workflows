@@ -1235,6 +1235,24 @@ return "done"`;
 		}
 	});
 
+	it("gives the command that prints a result longer than 2000 bytes, and the report lines", async () => {
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			// Its JSON has fewer than 2000 characters, but more than 2000 bytes.
+			const script = 'return { text: "é".repeat(1000), report: ["first", "second"] }';
+			await tellAgent(`Script workflow: ${JSON.stringify({ script })}`);
+			const result = await nextResult(0);
+			const id = /^run (\S+) /.exec(result.text)?.[1] ?? "";
+			expect([result.text, result.isError]).toEqual([
+				`run ${id} finished; its result is longer than 2000 bytes, so read it with the command workflows wait ${id} --json\nfirst\nsecond`,
+				false,
+			]);
+		} finally {
+			await host.close();
+		}
+	});
+
 	it("gives no workflow tool to a subagent of a session at the depth limit, and starts no run", async () => {
 		const call = JSON.stringify({ script: 'return "nested"' });
 		await writeFile(
