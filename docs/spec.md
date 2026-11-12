@@ -697,7 +697,7 @@ workflows check audit
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `wait`, `stop`, `list`, `show`, `attach`, `save`, `prune`, `check` and `outline` are commands, so no
+`resume`, `wait`, `stop`, `list`, `show`, `log`, `attach`, `save`, `prune`, `check` and `outline` are commands, so no
 script of these names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of
 that command, such as `usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]`, and exits 2.
 
@@ -894,7 +894,7 @@ stopped, and `✗` when it failed in another way. The end of a stopped run is sa
 command show its steps as `·` too. A command that Ctrl+C detaches leaves them as they are. On a terminal and with `--json`, the tree draws once
 more then. A command that follows a run shows only the lines that come after it starts or reaches the run. `<title>`
 is the subject of the first `text` argument, or else the file name without `.js`, the workflow name, or `stdin`. The
-run's task ends as failed, and its saved calls stay in the project store for the resume. `workflows show <run-id> --calls` shows the failed call. See [Show](#show).
+run's task ends as failed, and its saved calls stay in the project store for the resume. `workflows show <run-id> --calls` shows the failed call, and `workflows log <run-id>` shows it with the last lines of its error. See [Show](#show) and [Log](#log).
 
 `workflows/scripts/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
 workflows campaign, which give it the start commit`. `run("ship", { repo })` gets its own worktree and `start`, as
@@ -1208,7 +1208,7 @@ workflows resume <run-id> [--answer <text>]
 
 `workflows resume` finds the workflow that the run saved and continues the run. A run that is gone, with no run
 directory or no task, prints `workflows: no run <run-id> in <runs>` or `workflows: run <run-id> has no workflow`, and
-exits 4. Every command that reads a saved run (`resume`, `wait`, `stop`, `show`, `save` and `attach`) does the same. A run of a workflow script continues
+exits 4. Every command that reads a saved run (`resume`, `wait`, `stop`, `show`, `log`, `save` and `attach`) does the same. A run of a workflow script continues
 with the script that the run saved. The `project` file of the run directory names the run's project, so resume reaches
 the host of that project from any directory.
 
@@ -1597,6 +1597,73 @@ refuse it. Another run that another version saved, such as a run whose task has 
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, or `workflows: run <run-id> was saved by
 a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
 as no run ID, prints `usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]` and exits 2.
+
+## Log
+
+```sh
+workflows log <run-id>
+workflows log <run-id> <call>
+workflows log <run-id> --follow
+```
+
+`workflows log` prints what a run did from the store of its project: its steps and its calls, and the full output of
+one call. It reads only the root tasks, the progress and the call records of the run, in one read, so it also prints a
+run that another version saved, which `show` refuses.
+
+The short log:
+
+```text
+run <run-id> <workflow> <status>
+HH:MM:SS  <phase text>  <duration>
+HH:MM:SS    ✓ <kind> <label>  <duration>  exit <code>  <size>  <call>
+HH:MM:SS    ✗ <kind> <label>  <duration>  <size>  <call>
+              | <last lines of the error>
+HH:MM:SS    ✓ run <workflow> <child run-id>  <duration>  <size>  <call>
+HH:MM:SS      <phase text of the child run>  <duration>
+HH:MM:SS        ◉ <kind> <label>  running  <call>
+HH:MM:SS      end ok
+HH:MM:SS  end ok
+```
+
+- The first line has the workflow and the status as `list` gives them, for a task of any version. A run with no task
+  has only the run ID in it.
+- For each run, its `phase` lines, its calls and the ends of its executions (`end ok`, `end failed` or `end stopped`)
+  are in time order. At the same time, a phase line comes before a call, and a call before an end. The time is the
+  local time of the line; a line that an earlier version saved has no time, and its time column is blank. The `log`
+  lines of a script are not in the short log. A `phase` line that continues the step of the same text, after a
+  resume, has no line.
+- The lines of a child run are under its `run` call, indented by 4 more, as in `show --calls`.
+- A phase line has its text, cut at 80 characters, and the duration of its step as `show` gives it: the time to the
+  next phase line or end of its run, without the time between a stop and the resume that continues the step. A step
+  that has not ended has no duration.
+- A call line has the mark, kind and label of `show --calls`. A call that ended has its duration; a call that has not
+  ended has its state word (`running`, `waiting`, `cancelled` or `cut`) in place of it, so that its line stays the same
+  while it runs. A `sh` or `ok` call with a result has `exit <code>`. A failed `sh` call has no exit code: the store
+  keeps only its error. The size is the UTF-8 size of its output in `B`, `KB` or `MB`: the stdout and the stderr of a
+  `sh` or `ok` call, else its result (a string as it is, else its JSON) or its error. The last field is the name of
+  the call.
+- A failed call has the last 5 lines of its error under it, each as `| <line>`, cut at 120 characters.
+
+The name of a call is its key in the store: `<hash>.<n>` for a call of the root run, and `<child run-id>/<hash>.<n>` for
+a call of a child run. `workflows log <run-id> <call>` prints that call in full: `call <call>`, its kind with its
+whole command or its label, `phase <phase>` (`-` before the first phase), `started <ISO time>`, and `ended <ISO time>
+<duration>`. A `session` or an `ask` then has `conversation <id>: workflows attach <run-id> --conversation <id>`. A `sh`
+or `ok` call with a result then has `exit <code>`, `--- stdout (<size>)` with its whole stdout, and `--- stderr
+(<size>)` with its whole stderr. Another call has `--- args` with its args as JSON, then `--- result` or `--- error`. A
+call that has not ended has `the call still runs; the store gets its output only when it ends` in place of the
+`ended` line: the store has no partial output of a call.
+
+With `--follow`, the command prints the short log, then reads the store again every second and prints each line that
+it has not printed yet, such as a call that ended or a new step, in log order. A call line prints again when the state
+of the call changes. Every other line prints once: a step that was open at an earlier read does not print again with
+its duration, and the first line does not print again with a new status. It exits 0
+after a read that finds the run's task not `running`, also when the run has no task. Ctrl+C exits 130.
+
+`log` exits 0 for every run it can read. An unknown run ID prints the `no run` error of `resume`, and a run with no
+task, no progress and no call records prints `workflows: run <run-id> has no workflow`; these exit 4. An error of the
+read exits 1. Bad usage exits 2 and prints `usage: workflows log <run-id> [<call>] [--follow]`: no run ID, more than
+one call, `--follow` with a call, `--json`, or an unknown call, which prints `workflows: no call <call> in run
+<run-id>`.
 
 ## Attach
 

@@ -36,6 +36,12 @@ type Item = Step | { readonly log: string } | { readonly run: RunNode };
 /** A step as a reader of `Progress.entries` sees it: its run, its text and the time of its first start. */
 export type StepView = Readonly<Pick<Step, "runId" | "text" | "firstStart">>;
 
+/**
+ * A step of one run as `Progress.steps` gives it: its text, the time of its first start, and the start and end that
+ * give its duration, without the time between a stop and the resume that continues it.
+ */
+export type RunStep = Readonly<Pick<Step, "text" | "firstStart" | "started" | "ended">>;
+
 /** A line of the tree, with the step that it belongs to, if any. The lines of one step share one `step` object. */
 export type Entry = { readonly text: string; readonly step?: StepView | undefined };
 
@@ -170,9 +176,7 @@ export class Progress {
 				if ("run" in item) visit(item.run.items, indent, step);
 				else if ("log" in item) entries.push({ text: `${indent}${item.log}`, step });
 				else {
-					const { started, ended } = item;
-					const time = started === undefined || ended === undefined ? "" : `  ${duration(ended - started)}`;
-					entries.push({ text: `${indent}${item.mark} ${item.text}${time}`, step: item });
+					entries.push({ text: `${indent}${item.mark} ${item.text}${stepTime(item)}`, step: item });
 					visit(item.items, `${indent}  `, item);
 				}
 			}
@@ -181,6 +185,11 @@ export class Progress {
 		visit(this.#top, "", undefined);
 
 		return entries;
+	}
+
+	/** The steps of the run `runId` in the order they started, without the steps of its child runs. */
+	steps(runId: string): RunStep[] {
+		return (this.#runs.get(runId)?.items ?? []).filter((item): item is Step => "mark" in item);
 	}
 
 	/** The node of `run`: a new one goes under the current step of the run `parent`, or at the top without one. */
@@ -195,6 +204,20 @@ export class Progress {
 
 		return node;
 	}
+}
+
+/** The steps of `events`. */
+export function progressOf(events: readonly ProgressEvent[]): Progress {
+	const progress = new Progress();
+
+	for (const event of events) progress.add(event);
+
+	return progress;
+}
+
+/** `  <duration>` of a step that ended, else nothing. */
+export function stepTime({ started, ended }: RunStep): string {
+	return started === undefined || ended === undefined ? "" : `  ${duration(ended - started)}`;
 }
 
 /** `12s`, `3m05s` or `1h02m`. */

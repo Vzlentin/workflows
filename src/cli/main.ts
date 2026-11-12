@@ -2,8 +2,9 @@
  * The `workflows` command line, a client of the harness host of a project. `workflows <workflow> ...` starts a run of a
  * workflow script in the host and follows it, `workflows resume <run-id>` continues or follows one, `workflows wait
  * <run-id>` follows one to its outcome, `workflows stop <run-id>` stops one, `workflows list` prints the runs of the
- * project, `workflows show <run-id>` prints the steps or the calls of one run, `workflows attach <run-id>` opens a
- * session of one run in Pi, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow;
+ * project, `workflows show <run-id>` prints the steps or the calls of one run, `workflows log <run-id>` prints the
+ * short log of one run or the output of one of its calls, `workflows attach <run-id>` opens a session of one run in
+ * Pi, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow;
  * `workflows prune` removes the worktrees of the ended runs whose branch is merged. The project store holds the runs; a
  * run directory holds the run's `project` file and whatever the workflow writes there.
  */
@@ -18,6 +19,7 @@ import { help, type Io, listScripts, parseArgsMessage, UsageError } from "../wor
 import { ATTACH, attach } from "./commands/attach.ts";
 import { CHECK, check } from "./commands/check.ts";
 import { LIST, list } from "./commands/list.ts";
+import { LOG, log } from "./commands/log.ts";
 import { OUTLINE, outline } from "./commands/outline.ts";
 import { PRUNE, prune } from "./commands/prune.ts";
 import { RESUME, resume, WAIT } from "./commands/resume.ts";
@@ -84,6 +86,7 @@ const COMMANDS = new Map<string, Command>(
 		wait: (args, terminal, json) => resume(args, terminal, json, false, true),
 		stop,
 		show,
+		log,
 		attach,
 		save,
 		prune,
@@ -105,6 +108,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		STOP,
 		LIST,
 		SHOW,
+		LOG,
 		ATTACH,
 		SAVE,
 		PRUNE,

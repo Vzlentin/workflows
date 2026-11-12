@@ -54,13 +54,41 @@ function stateOf(record: SavedCall, run: RunState): CallState {
 }
 
 /** The mark of a call in `state`: `◉` running, `✓` done, else `✗`. */
-function markOf(state: CallState): CallMark {
+export function markOf(state: CallState): CallMark {
 	return state === "running" ? "◉" : state === "done" ? "✓" : "✗";
 }
 
 /**
- * The calls of the run `runId` in the order they started, each `run` call with the list of todos of its child run in
- * `todos`, empty when `todos` has none, and the calls of its child run.
+ * One call of the run `runId` with its store `key`, its record, its label and its state, and the calls of its child run
+ * when it is a `run` call whose child run started.
+ */
+export type CallNode = {
+	readonly key: string;
+	readonly runId: string;
+	readonly record: SavedCall;
+	readonly label: string;
+	readonly state: CallState;
+	readonly calls?: CallNode[];
+};
+
+/** The calls of the run `runId` in the order they started, each `run` call with the calls of its child run. */
+export function callNodes(records: Map<string, SavedCall>, runId: string, run: RunState): CallNode[] {
+	const own = [...records].filter(([key]) => key.startsWith(`${runId}/`));
+
+	return own
+		.sort(([, a], [, b]) => a.startedAt.localeCompare(b.startedAt))
+		.map(([key, record]) => {
+			// A `run` call that failed before its child run started has no `child`.
+			const child = record.child?.runId;
+			const node = { key, runId, record, label: labelOf(record, child, records), state: stateOf(record, run) };
+
+			return child === undefined ? node : { ...node, calls: callNodes(records, child, run) };
+		});
+}
+
+/**
+ * The calls of the run `runId` as `show` gives them: the nodes of `callNodes`, each with its mark, and each `run` call
+ * with the list of todos of its child run in `todos`, empty when `todos` has none.
  */
 export function callTree(
 	records: Map<string, SavedCall>,
@@ -68,21 +96,18 @@ export function callTree(
 	runId: string,
 	run: RunState,
 ): Shown[] {
-	const own = [...records].flatMap(([key, record]) => (key.startsWith(`${runId}/`) ? [record] : []));
+	return shownCalls(callNodes(records, runId, run), todos);
+}
 
-	return own
-		.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-		.map((record) => {
-			const { child: started, task: _task, cancelledAt: _cancelled, childRun: _childRun, ...rest } = record;
-			const state = stateOf(record, run);
-			// A `run` call that failed before its child run started has no `child`.
-			const child = started?.runId;
-			const shown = { ...rest, runId, label: labelOf(record, child, records), state, mark: markOf(state) } as const;
+function shownCalls(nodes: readonly CallNode[], todos: ReadonlyMap<string, Todo[]>): Shown[] {
+	return nodes.map(({ record, runId, label, state, calls }) => {
+		const { child, task: _task, cancelledAt: _cancelled, childRun: _childRun, ...rest } = record;
+		const shown = { ...rest, runId, label, state, mark: markOf(state) } as const;
 
-			return child === undefined
-				? shown
-				: { ...shown, todos: todos.get(child) ?? [], calls: callTree(records, todos, child, run) };
-		});
+		return child === undefined || calls === undefined
+			? shown
+			: { ...shown, todos: todos.get(child.runId) ?? [], calls: shownCalls(calls, todos) };
+	});
 }
 
 /**
@@ -108,7 +133,7 @@ export function treeEntries(calls: readonly Shown[], indent: string, now: number
 		const end = mark === "◉" ? now : call.endedAt === undefined ? undefined : Date.parse(call.endedAt);
 		const time = end === undefined ? shownState(call.state) : `  ${duration(end - Date.parse(call.startedAt))}`;
 		const text = `${indent}  ${mark} ${call.kind} ${call.label}${time}`;
-		const conversation = call.kind === "session" ? call.conversation : askedConversation(call);
+		const conversation = conversationOf(call);
 
 		entries.push({ text, conversation });
 
@@ -123,8 +148,13 @@ function shownState(state: CallState): string {
 	return state === "cancelled" || state === "cut" || state === "waiting" ? `  ${state}` : "";
 }
 
+/** The conversation of `call`: the one that a session opened, or the one that an ask asks; else undefined. */
+export function conversationOf(call: Pick<SavedCall, "kind" | "args" | "conversation">): number | undefined {
+	return call.kind === "session" ? call.conversation : askedConversation(call);
+}
+
 /** The conversation that the ask `call` asks, or undefined for another call. */
-function askedConversation(call: Shown): number | undefined {
+function askedConversation(call: Pick<SavedCall, "kind" | "args">): number | undefined {
 	const asked = call.args.conversation;
 
 	return call.kind === "ask" && Value.Check(Type.Number(), asked) ? asked : undefined;
@@ -308,6 +338,13 @@ function works(call: Shown, siblings: readonly Shown[]): boolean {
 	);
 }
 
+/** The whole command of the args of a `sh` or `ok` call. */
+export function commandOf(args: SavedCall["args"]): string {
+	const { cmd } = args;
+
+	return Array.isArray(cmd) ? cmd.join(" ") : String(cmd);
+}
+
 /**
  * The role name and conversation of a session, the role name of the session for an ask, the command on one line for
  * `sh` and `ok`, the workflow and child run ID for `run`, the question on one line for `input`, and the action with its
@@ -318,11 +355,7 @@ function labelOf(
 	child: string | undefined,
 	records: Map<string, SavedCall>,
 ): string {
-	if (kind === "sh" || kind === "ok") {
-		const { cmd } = args;
-
-		return labelLine(Array.isArray(cmd) ? cmd.join(" ") : String(cmd));
-	}
+	if (kind === "sh" || kind === "ok") return labelLine(commandOf(args));
 
 	if (kind === "run") return [args.name, child].filter((value) => value !== undefined).join(" ");
 
