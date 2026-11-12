@@ -72,6 +72,7 @@ workflows optimize ship --limit 4          # propose and test surface edits from
 workflows list                             # the runs of this project
 workflows resume <run-id>
 workflows wait <run-id>                    # follow a run to its outcome
+workflows log <run-id> [<call>] [--follow] # its steps and calls, or the output of one call
 workflows attach <run-id>                  # open its working session in Pi
 workflows stop <run-id>
 workflows prune --yes                      # remove the worktrees of merged runs

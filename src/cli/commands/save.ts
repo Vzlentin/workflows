@@ -17,6 +17,7 @@ export const COMMAND_NAMES = [
 	"wait",
 	"stop",
 	"show",
+	"log",
 	"attach",
 	"save",
 	"prune",

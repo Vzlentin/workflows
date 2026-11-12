@@ -107,8 +107,9 @@ The values of `result.status` for a `finished` run:
 | judge | `judged` | `result.score`, from 0 to 1, and `result.findings`. |
 | judge | `unjudged` | The judge gave no verdict. Quote `result.judgeError`. |
 
-Do not guess findings. To read the findings of the last review, use `workflows show <runId> --json`: the review
-rounds are in the `thermoloop` child run, in the `calls` of its `run` call. `show` only reads.
+Do not guess findings. To read the findings of the last review, use `workflows log <runId>`: the review rounds are
+under the `run thermoloop` line. Then `workflows log <runId> <call>` prints the full output of one call, with the call
+name at the end of its line. `log` only reads.
 
 ### A waiting run
 
@@ -123,7 +124,9 @@ commit).
 - `{ resume: "<runId>" }` follows a run that goes on, or continues one that ended without a result. Add `background:
   true` to return at once.
 - `workflows list` gives the runs of this project, newest first, with their status. `workflows show <runId>` gives the
-  steps and the report of one run, and `--json` gives the full record. These commands only read; run them with bash.
+  steps and the report of one run. `workflows log <runId>` gives its steps and calls with their times, exit codes and
+  sizes, `workflows log <runId> <call>` the full output of one call, and `--follow` follows the run. Read the output
+  of a run with `log`, not with `show --calls --json`. These commands only read; run them with bash.
 - The worktree of a local repository is `<parent>/.worktrees/<repository folder>/<runId>`, next to the repository.
   The branch is `<workflow>/<runId>` until a shipped run renames it from its commit subject.
 - The run directory is `${XDG_STATE_HOME:-$HOME/.local/state}/workflows/runs/<runId>`. It holds the patches of each

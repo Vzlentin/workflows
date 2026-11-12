@@ -34,6 +34,7 @@ import {
 	rootTasks,
 	runsOf,
 	sandbox,
+	saveAs,
 	setEntries,
 	startHost,
 	storeOf,
@@ -63,14 +64,17 @@ async function reached(name: string): Promise<void> {
 	while (!existsSync(join(root, `${name}.reached`))) await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
-/** Starts `gated.js`, and detaches once its gate is reached. The host keeps running the run. */
-async function detachedRun() {
+/**
+ * Starts `script`, and detaches once its gate `g` is reached. The host keeps running the run. `progress` is what the
+ * run prints on stderr before it detaches.
+ */
+async function detachedRun(script = "gated.js", progress: string[] = []) {
 	const interrupt = new AbortController();
-	const pending = workflows(["gated.js"], { cwd: root, interrupt, keepHost: true });
+	const pending = workflows([script], { cwd: root, interrupt, keepHost: true });
 	await reached("g");
 	interrupt.abort();
 	const run = await pending;
-	expect([run.code, run.stderr]).toEqual([130, [detached(run.id)]]);
+	expect([run.code, run.stderr]).toEqual([130, [...progress, detached(run.id)]]);
 
 	if (run.host === undefined) throw new Error("no host");
 
@@ -619,6 +623,96 @@ describe("runs in the harness host", () => {
 		database.close();
 		const shown = await workflows(["show", id], { cwd: root });
 		expect(shown.stdout.slice(0, 2)).toEqual([`run ${id} gated running gated`, "  ✗ sh ./gate.sh g  cut"]);
+	});
+
+	it("follows a run with log --follow, and ends when its task ends", async () => {
+		const { id, host } = await detachedRun();
+
+		try {
+			let ended = false;
+
+			const pending = workflows(["log", id, "--follow"], { cwd: root, host }).finally(() => {
+				ended = true;
+			});
+
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			expect(ended).toBe(false);
+			await writeFile(join(root, "g.open"), "");
+			const followed = await pending;
+			expect([followed.code, followed.stderr]).toEqual([0, []]);
+			expect(followed.stdout).toEqual([
+				`run ${id} gated running`,
+				expect.stringMatching(/^\d\d:\d\d:\d\d {4}◉ sh \.\/gate\.sh g {2}running {2}[0-9a-f]{16}\.1$/),
+				expect.stringMatching(/^\d\d:\d\d:\d\d {4}✓ sh \.\/gate\.sh g {2}\d+s {2}exit 0 {2}0 B {2}[0-9a-f]{16}\.1$/),
+				expect.stringMatching(/^\d\d:\d\d:\d\d {2}end ok$/),
+			]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("follows a run with log --follow, and prints each step once, also when it ends later", async () => {
+		await writeFile(join(root, "phased.js"), 'phase("wait")\nawait sh("./gate.sh g")\nphase("after")\nreturn "done"');
+		const { id, host } = await detachedRun("phased.js", ["wait"]);
+
+		try {
+			const pending = workflows(["log", id, "--follow"], { cwd: root, host });
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			await writeFile(join(root, "g.open"), "");
+			const followed = await pending;
+			const at = "\\d\\d:\\d\\d:\\d\\d";
+			const line = (text: string) => expect.stringMatching(new RegExp(`^${at}  ${text}$`));
+			expect([followed.code, followed.stderr]).toEqual([0, []]);
+			expect(followed.stdout).toEqual([
+				`run ${id} phased running`,
+				line("wait"),
+				line("  ◉ sh \\./gate\\.sh g  running  [0-9a-f]{16}\\.1"),
+				line("  ✓ sh \\./gate\\.sh g  \\d+s  exit 0  0 B  [0-9a-f]{16}\\.1"),
+				line("after(  \\d+s)?"),
+				line("end ok"),
+			]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("logs a run that show refuses because another version saved it", async () => {
+		const { id, host } = await detachedRun();
+		await host.close();
+		saveAs(TASK.version - 1, false);
+		const shown = await workflows(["show", id], { cwd: root });
+		expect([shown.code, shown.stderr]).toEqual([
+			1,
+			[`workflows: run ${id} was saved by an earlier version of gated and cannot be shown`],
+		]);
+		const logged = await workflows(["log", id], { cwd: root });
+		expect([logged.code, logged.stdout]).toEqual([
+			0,
+			[
+				`run ${id} gated earlier-version`,
+				expect.stringMatching(/^\d\d:\d\d:\d\d {4}✗ sh \.\/gate\.sh g {2}cut {2}[0-9a-f]{16}\.1$/),
+			],
+		]);
+	});
+
+	it("logs a call whose record has no task", async () => {
+		const { id, host } = await detachedRun();
+		await host.close();
+		const database = new DatabaseSync(storeOf());
+		database
+			.prepare(
+				`UPDATE document_revisions SET content = json_remove(content, '$.task') WHERE kind = 'base' AND content LIKE '{"kind":"sh"%gate.sh g%'`,
+			)
+			.run();
+		database.close();
+		const logged = await workflows(["log", id], { cwd: root });
+		expect([logged.code, logged.stdout]).toEqual([
+			0,
+			[
+				`run ${id} gated running`,
+				expect.stringMatching(/^\d\d:\d\d:\d\d {4}◉ sh \.\/gate\.sh g {2}running {2}[0-9a-f]{16}\.1$/),
+			],
+		]);
 	});
 
 	it("gives the script's result when the end of its sessions fails, and reports the failure", async () => {

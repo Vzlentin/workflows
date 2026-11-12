@@ -2,8 +2,8 @@
 import { parseArgs } from "node:util";
 import type { Todo } from "@vzlentin/harness/todo";
 import { Value } from "typebox/value";
-import { endMark, Progress } from "../../records/steps.ts";
-import { callRecords, progressEvents, reading, runTasksAndLive, todoLists } from "../../records/store.ts";
+import { endMark, type Progress } from "../../records/steps.ts";
+import { runRecords } from "../../records/store.ts";
 import {
 	agentLines,
 	agentRows,
@@ -13,7 +13,6 @@ import {
 	type TreeEntry,
 	treeLines,
 } from "../../records/tree.ts";
-import type { SavedCall } from "../../run/calls.ts";
 import { hasEnded, hasResult, type RunStatus, type RunTask, runStatus, taskOf, taskOutcome } from "../../run/past.ts";
 import { reportOf, type ShownInput, title as titleOf } from "../../run/result.ts";
 import { WAITING } from "../../tool.ts";
@@ -116,30 +115,9 @@ export type ShownRun = {
  */
 export async function readRun(run: SavedRun, withCalls: boolean, verb: string): Promise<ShownRun> {
 	const { id } = run;
-
-	const empty = {
-		task: undefined,
-		saved: new Map<string, SavedCall>(),
-		progress: new Progress(),
-		events: [],
-		live: new Set<number>(),
-		todos: new Map<string, Todo[]>(),
-	};
-
-	const { task, saved, progress, events, live, todos } = await reading(run.store, empty, async (store) => {
-		const read = new Progress();
-		const stored = await progressEvents(store, id);
-
-		for (const event of stored) read.add(event);
-		const calls = withCalls || !read.stepped ? await callRecords(store, id) : new Map<string, SavedCall>();
-		const { tasks, runs, live } = await runTasksAndLive(store);
-		const children = [...calls.values()].flatMap((record) => (record.child === undefined ? [] : [record.child.runId]));
-		const lists = await todoLists(store, tasks, [id, ...children]);
-
-		return { task: taskOf(runs.get(id) ?? []), saved: calls, progress: read, events: stored, live, todos: lists };
-	});
-
-	const { task: checkedTask, input, thisVersion } = readable(task, id, verb);
+	const read = await runRecords(run.store, id, (progress) => withCalls || !progress.stepped);
+	const { events, progress, records, live, todos } = read;
+	const { task: checkedTask, input, thisVersion } = readable(taskOf(read.tasks), id, verb);
 	const known = runStatus(checkedTask);
 	const completed = hasResult(known);
 	const ended = hasEnded(known);
@@ -163,7 +141,7 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 
 	if (ended) progress.stop(endMark(known));
 	const head = `run ${id} ${input.name} ${status} ${title}`;
-	const calls = callTree(saved, todos, id, { ended, waiting: known === "waiting", live });
+	const calls = callTree(records, todos, id, { ended, waiting: known === "waiting", live });
 	const question = known === "waiting" && Value.Check(WAITING, result) ? result.question : undefined;
 
 	return {

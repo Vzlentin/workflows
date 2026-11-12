@@ -30,6 +30,7 @@ import { CALL_KIND, CALL_RECORD, type SavedCall } from "../run/calls.ts";
 import { allPages, firstTask, type RunTask, rootRuns, runStatus, savedInput } from "../run/past.ts";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "../run/progress.ts";
 import { TASK } from "../run/version.ts";
+import { type Progress, progressOf } from "./steps.ts";
 
 // Node warns once that `node:sqlite` is experimental, as the module loads. The warning tells a user of the command
 // nothing, so the load mutes warnings, and only for its own duration. This works only while this module is the first
@@ -361,4 +362,49 @@ export async function callRecords(store: Store, runId: string): Promise<Map<stri
 	}
 
 	return records;
+}
+
+/**
+ * What the store keeps of the root run `id`: its root tasks, oldest first, its progress events and their steps, its
+ * call records and those of its child runs, the IDs of the tasks that run, and the list of todos of the run and of each
+ * child run in its call records.
+ */
+export type RunRecords = {
+	readonly tasks: readonly RunTask[];
+	readonly events: readonly ProgressEvent[];
+	readonly progress: Progress;
+	readonly records: Map<string, SavedCall>;
+	readonly live: ReadonlySet<number>;
+	readonly todos: ReadonlyMap<string, Todo[]>;
+};
+
+/**
+ * The records of the root run `id` in the store at `path`, in one read; none when the store does not exist. It reads
+ * the call records only when `withCalls` of the steps of the progress events is true.
+ */
+export async function runRecords(
+	path: string,
+	id: string,
+	withCalls: (progress: Progress) => boolean,
+): Promise<RunRecords> {
+	const empty = {
+		tasks: [],
+		events: [],
+		progress: progressOf([]),
+		records: new Map<string, SavedCall>(),
+		live: new Set<number>(),
+		todos: new Map<string, Todo[]>(),
+	};
+
+	return reading(path, empty, async (store) => {
+		const events = await progressEvents(store, id);
+		const progress = progressOf(events);
+		const records = withCalls(progress) ? await callRecords(store, id) : new Map<string, SavedCall>();
+		const { tasks, runs, live } = await runTasksAndLive(store);
+		const children = [...records.values()].flatMap(({ child }) => (child === undefined ? [] : [child.runId]));
+
+		const todos = await todoLists(store, tasks, [id, ...children]);
+
+		return { tasks: runs.get(id) ?? [], events, progress, records, live, todos };
+	});
 }
