@@ -60,6 +60,7 @@ many|cutmany)
 	[ "$1" = cutmany ] && exit 1
 	echo '{"runId":"r13","status":"finished","result":1,"report":["one"]}' ;;
 bad) echo "run r3"; echo '{"progress":["✗ one"]}' >&2; echo '{"runId":"r3","status":"failed","error":"boom"}'; exit 1 ;;
+longbad) echo "run r15"; x=$(printf '%2100s' '' | tr ' ' x); echo '{"runId":"r15","status":"failed","error":"'"$x"'"}'; exit 1 ;;
 slow)
 	echo "run r4"
 	trap 'echo '"'"'{"runId":"r4","status":"detached"}'"'"'; exit 130' INT
@@ -88,6 +89,7 @@ wait)
 	case "$2" in
 	rb) echo '{"progress":["✓ plan"]}' >&2; echo '{"runId":"rb","status":"finished","result":1,"report":["one"]}' ;;
 	failed) echo '{"progress":["✗ plan"]}' >&2; echo '{"runId":"failed","status":"failed","error":"boom"}'; exit 1 ;;
+	longbad) x=$(printf '%2100s' '' | tr ' ' x); echo '{"runId":"longbad","status":"failed","error":"'"$x"'"}'; exit 1 ;;
 	stopped) echo '{"runId":"stopped","status":"stopped"}'; exit 130 ;;
 	gone) echo "workflows: no run gone" >&2; exit 4 ;;
 	sleepy) echo '{"runId":"sleepy","status":"host-stopped"}'; exit 1 ;;
@@ -486,20 +488,47 @@ describe("the workflow tool", () => {
 		]);
 	});
 
-	it("gives the command that prints a result longer than 2000 bytes, every report line uncut, and the result in the structured output", async () => {
+	it("cuts a finished text longer than 2000 bytes and a report line longer than 500 bytes, and keeps both whole in the structured output", async () => {
 		const { result } = await call({ name: "long" });
-		expect(result.content).toEqual([
-			{
-				type: "text",
-				text: `run r14 finished; its result is longer than 2000 bytes, so read it with the command workflows wait r14 --json\none\n${"x".repeat(2100)}`,
-			},
-		]);
+		// The text is `run r14 finished: "<2100 x>"`, 2120 bytes on one line: its first 500 bytes, the cut line, its end.
+		const start = 'run r14 finished: "';
+		const [content] = result.content;
+		const text = content?.type === "text" ? content.text : "";
+		const [head, cut, end, ...report] = text.split("\n");
+		expect(head).toBe(`${start}${"x".repeat(500 - start.length)}`);
+
+		const count = Number(
+			/^\[… (\d+) bytes cut; the command workflows wait r14 --json prints the whole result\]$/.exec(cut ?? "")?.[1],
+		);
+
+		expect(end).toMatch(/^x+"$/);
+		expect(500 + count + (end ?? "").length).toBe(2120);
+		expect(Buffer.byteLength([head, cut, end].join("\n"))).toBeLessThanOrEqual(2000);
+		expect(Buffer.byteLength([head, cut, end].join("\n"))).toBeGreaterThan(1990);
+		expect(report).toEqual(["one", `${"x".repeat(497)}…`]);
 		expect(result.structuredContent).toEqual({
 			runId: "r14",
 			status: "finished",
 			result: "x".repeat(2100),
 			report: ["one", "x".repeat(2100)],
 		});
+	});
+
+	it("cuts a failed text longer than 2000 bytes, names the log command, and keeps the whole error in the structured output", async () => {
+		const { result } = await call({ name: "longbad" });
+		const [content] = result.content;
+		const text = content?.type === "text" ? content.text : "";
+		const [head, cut, end, ...rest] = text.split("\n");
+		const start = "run r15 failed: ";
+		expect(head).toBe(`${start}${"x".repeat(500 - start.length)}`);
+		expect(cut).toMatch(
+			/^\[… \d+ bytes cut; the command workflows log r15 shows the run and its calls, and workflows log r15 <call> prints the whole output of a call\]$/,
+		);
+		expect(end).toMatch(/^x+; continue it with resume: "r15"$/);
+		expect(rest).toEqual([]);
+		expect(Buffer.byteLength(text)).toBeLessThanOrEqual(2000);
+		expect(result.structuredContent).toEqual({ runId: "r15", status: "failed", error: "x".repeat(2100) });
+		expect(result.isError).toBe(true);
 	});
 
 	it("takes a JSON line with progress as a progress line, whatever the order of its keys", async () => {
@@ -694,6 +723,19 @@ describe("a background run of the workflow tool", () => {
 				'✗ run failed failed: boom; continue it with resume: "failed"',
 			]);
 		}
+	});
+
+	it("posts a long error of a background run cut as the foreground result is, and keeps the whole error in the details", async () => {
+		const pi = fakePi([startEntry("longbad", root)]);
+		await pi.fire("session_start");
+		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
+		const [{ message } = { message: undefined }] = pi.messages;
+		const outcome = { runId: "longbad", status: "failed" as const, error: "x".repeat(2100) };
+		const text = toolModule.outcomeText(outcome);
+		expect(message?.content).toEqual([{ type: "text", text }]);
+		expect(text.split("\n")[1]).toMatch(/^\[… \d+ bytes cut; the command workflows log longbad shows/);
+		expect(Buffer.byteLength(text)).toBeLessThanOrEqual(2000);
+		expect(message?.details).toEqual(expect.objectContaining({ outcome }));
 	});
 
 	it("watches each run of the session that has no end entry, once", async () => {
