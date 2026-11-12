@@ -1602,24 +1602,25 @@ as no run ID, prints `usage: workflows show <run-id> [--pick | [--calls | --agen
 
 ```sh
 workflows log <run-id>
+workflows log <run-id> <step>
 workflows log <run-id> <call>
 workflows log <run-id> --follow
 ```
 
-`workflows log` prints what a run did from the store of its project: its steps and its calls, and the full output of
-one call. It reads only the root tasks, the progress and the call records of the run, in one read, so it also prints a
-run that another version saved, which `show` refuses.
+`workflows log` prints what a run did from the store of its project: its steps first, then the calls of one step, and
+the full output of one call. It reads only the root tasks, the progress and the call records of the run, in one read,
+so it also prints a run that another version saved, which `show` refuses.
 
 The short log:
 
 ```text
 run <run-id> <workflow> <status>
-HH:MM:SS  <phase text>  <duration>
-HH:MM:SS    ✓ <kind> <label>  <duration>  exit <code>  <size>  <call>
+HH:MM:SS  <phase text>  <duration>  <n> calls  <size>  s1
+HH:MM:SS  <phase text>  <duration>  <n> calls  <size>  s2
 HH:MM:SS    ✗ <kind> <label>  <duration>  <size>  <call>
               | <last lines of the error>
 HH:MM:SS    ✓ run <workflow> <child run-id>  <duration>  <size>  <call>
-HH:MM:SS      <phase text of the child run>  <duration>
+HH:MM:SS      <phase text of the child run>  <n> calls  <size>  <child run-id>/s1
 HH:MM:SS        ◉ <kind> <label>  running  <call>
 HH:MM:SS      end ok
 HH:MM:SS  end ok
@@ -1627,15 +1628,21 @@ HH:MM:SS  end ok
 
 - The first line has the workflow and the status as `list` gives them, for a task of any version. A run with no task
   has only the run ID in it.
-- For each run, its `phase` lines, its calls and the ends of its executions (`end ok`, `end failed` or `end stopped`)
-  are in time order. At the same time, a phase line comes before a call, and a call before an end. The time is the
-  local time of the line; a line that an earlier version saved has no time, and its time column is blank. The `log`
-  lines of a script are not in the short log. A `phase` line that continues the step of the same text, after a
-  resume, has no line.
+- For each run, its steps are in the order they started. A step is a `phase` line of the run; a `phase` line that
+  continues the step of the same text, after a resume, is no new step. A call is in the last step of its run whose
+  text is the phase of the call and that started at or before the call, as in `show`. The calls that are in no step,
+  such as the calls of a script with no `phase`, are in one step with the text `-` and the name `s0`, at the time of
+  its first call; it shows only when it has calls. The time is the local time of the line; a line that an earlier
+  version saved has no time, its time column is blank, and it comes first. The `log` lines of a script are not in the
+  short log.
+- A step line has its text, cut at 80 characters, the duration of its step as `show` gives it (the time to the next
+  phase line or end of its run, without the time between a stop and the resume that continues the step), the count
+  of its own calls (`1 call` or `<n> calls`), the size of their output, and the name of the step. A step that has not
+  ended, and step `s0`, have no duration. The count and the size include the `run` calls of the step and not the calls
+  of its child runs, which have their own step lines.
+- Under each step, in start order, are its calls that did not end done (failed, cut, cancelled, running or waiting),
+  and its `run` calls. A call that ended done, other than `run`, has no line: `workflows log <run-id> <step>` gives it.
 - The lines of a child run are under its `run` call, indented by 4 more, as in `show --calls`.
-- A phase line has its text, cut at 80 characters, and the duration of its step as `show` gives it: the time to the
-  next phase line or end of its run, without the time between a stop and the resume that continues the step. A step
-  that has not ended has no duration.
 - A call line has the mark, kind and label of `show --calls`. A call that ended has its duration; a call that has not
   ended has its state word (`running`, `waiting`, `cancelled` or `cut`) in place of it, so that its line stays the same
   while it runs. A `sh` or `ok` call with a result has `exit <code>`. A failed `sh` call has no exit code: the store
@@ -1643,6 +1650,14 @@ HH:MM:SS  end ok
   `sh` or `ok` call, else its result (a string as it is, else its JSON) or its error. The last field is the name of
   the call.
 - A failed call has the last 5 lines of its error under it, each as `| <line>`, cut at 120 characters.
+- The last line of a run is its end (`end ok`, `end failed` or `end stopped`), only when the last start or end of the
+  run is an end. Each task of a run, a resume too, starts it again, so a run that failed and then ended after a resume
+  has one end line, its last one.
+
+The name of a step is `s<n>`, where `n` counts the steps of the run from 1, for a step of the root run, and
+`<child run-id>/s<n>` for a step of a child run. `workflows log <run-id> <step>` prints the line of the step, then the
+line of each of its own calls in start order, done calls too, with the last lines of the error of a failed call, at no
+indent. The calls of its child runs are not in it: their steps have their own names.
 
 The name of a call is its key in the store: `<hash>.<n>` for a call of the root run, and `<child run-id>/<hash>.<n>` for
 a call of a child run. `workflows log <run-id> <call>` prints that call in full: `call <call>`, its kind with its
@@ -1654,16 +1669,17 @@ call that has not ended has `the call still runs; the store gets its output only
 `ended` line: the store has no partial output of a call.
 
 With `--follow`, the command prints the short log, then reads the store again every second and prints each line that
-it has not printed yet, such as a call that ended or a new step, in log order. A call line prints again when the state
-of the call changes. Every other line prints once: a step that was open at an earlier read does not print again with
-its duration, and the first line does not print again with a new status. It exits 0
+it has not printed yet, such as a call that failed or a new step, in log order. A step line prints again when its step
+ends (step `s0` when its run ends), with its duration, count and size. A call line prints again when the state of the
+call changes and the call still has a line; a call that ends done does not print again. Every other line prints once:
+the first line does not print again with a new status. It exits 0
 after a read that finds the run's task not `running`, also when the run has no task. Ctrl+C exits 130.
 
 `log` exits 0 for every run it can read. An unknown run ID prints the `no run` error of `resume`, and a run with no
 task, no progress and no call records prints `workflows: run <run-id> has no workflow`; these exit 4. An error of the
-read exits 1. Bad usage exits 2 and prints `usage: workflows log <run-id> [<call>] [--follow]`: no run ID, more than
-one call, `--follow` with a call, `--json`, or an unknown call, which prints `workflows: no call <call> in run
-<run-id>`.
+read exits 1. Bad usage exits 2 and prints `usage: workflows log <run-id> [<step> | <call>] [--follow]`: no run ID,
+more than one step or call, `--follow` with a step or a call, `--json`, an unknown step, which prints `workflows: no
+step <step> in run <run-id>`, or an unknown call, which prints `workflows: no call <call> in run <run-id>`.
 
 ## Attach
 

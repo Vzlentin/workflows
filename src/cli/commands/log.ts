@@ -1,6 +1,6 @@
 /** `workflows log <run-id>`: the short log of a run, the full output of one call, or the log as the run goes on. */
 import { parseArgs } from "node:util";
-import { callKey, callText, findCall, type LogLine, shortLog } from "../../records/log.ts";
+import { callKey, callText, findCall, isStepName, type RunProgress, runLines, stepLog } from "../../records/log.ts";
 import { runRecords } from "../../records/store.ts";
 import { type CallNode, callNodes } from "../../records/tree.ts";
 import { hasEnded, type RunStatus, runStatus, taskOf } from "../../run/past.ts";
@@ -9,13 +9,14 @@ import { abortedWithin } from "../follow.ts";
 import type { Terminal } from "../main.ts";
 import { GoneRun, type SavedRun, savedBy, savedRun, shownStatus } from "../saved.ts";
 
-export const LOG = "workflows log <run-id> [<call>] [--follow]";
+export const LOG = "workflows log <run-id> [<step> | <call>] [--follow]";
 
 /** How often `log --follow` reads the store again. */
 const FOLLOW_POLL_MS = 1000;
 
 /**
- * Prints the short log of a run, or with `<call>` the full text of that call, or with `--follow` the short log and its
+ * Prints the short log of a run, or with `<step>` the line of each call of that step, or with `<call>` the full text of
+ * that call, or with `--follow` the short log and its
  * new lines until the run's task does not run. It reads the project store only, for a run of any version.
  */
 export async function log(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
@@ -26,20 +27,32 @@ export async function log(args: readonly string[], terminal: Terminal, json: boo
 	);
 
 	if (json) throw new UsageError("log has no --json", LOG);
-	const [id, call, ...rest] = positionals;
+	const [id, named, ...rest] = positionals;
 
 	if (id === undefined || id.startsWith("-") || rest.length > 0) throw new UsageError("give one run ID", LOG);
 
-	if (values.follow && call !== undefined) throw new UsageError("give --follow or a call, not both", LOG);
+	const step = named !== undefined && isStepName(named);
+
+	if (values.follow && named !== undefined) {
+		throw new UsageError(`give --follow or a ${step ? "step" : "call"}, not both`, LOG);
+	}
+
 	const run = await savedRun(id, LOG);
 
-	if (call !== undefined) {
-		const { calls } = await readLog(run);
-		const node = findCall(calls, callKey(id, call));
+	if (named !== undefined) {
+		const { calls, progress } = await readLog(run);
+		let lines: string[] | undefined;
 
-		if (node === undefined) throw new UsageError(`no call ${call} in run ${id}`, LOG);
+		if (step) {
+			lines = stepLog(id, progress, calls, named);
+		} else {
+			const node = findCall(calls, (n) => n.key === callKey(id, named));
+			lines = node && callText(id, node);
+		}
 
-		for (const line of callText(id, node)) terminal.stdout(line);
+		if (lines === undefined) throw new UsageError(`no ${step ? "step" : "call"} ${named} in run ${id}`, LOG);
+
+		for (const line of lines) terminal.stdout(line);
 
 		return 0;
 	}
@@ -48,8 +61,9 @@ export async function log(args: readonly string[], terminal: Terminal, json: boo
 
 	for (;;) {
 		const read = await readLog(run);
+		const lines = [{ item: "run", text: read.head }, ...runLines(id, id, read.progress, read.calls, "")];
 
-		for (const { item, text } of read.lines) {
+		for (const { item, text } of lines) {
 			if (printed.has(item)) continue;
 			printed.add(item);
 			terminal.stdout(text);
@@ -61,8 +75,13 @@ export async function log(args: readonly string[], terminal: Terminal, json: boo
 	}
 }
 
-/** A run as `log` reads it: its lines, its call tree, and the status of its task, if it has one. */
-type ReadLog = { readonly lines: LogLine[]; readonly calls: CallNode[]; readonly status: RunStatus | undefined };
+/** A run as `log` reads it: its head line, its call tree, its progress, and the status of its task, if it has one. */
+type ReadLog = {
+	readonly head: string;
+	readonly calls: CallNode[];
+	readonly progress: RunProgress;
+	readonly status: RunStatus | undefined;
+};
 
 /** Reads the root tasks, the progress and the call records of `run` in one read. */
 async function readLog(run: SavedRun): Promise<ReadLog> {
@@ -81,5 +100,5 @@ async function readLog(run: SavedRun): Promise<ReadLog> {
 			? `run ${id}`
 			: `run ${id} ${savedBy(task).name} ${shownStatus(task, status)}`;
 
-	return { lines: shortLog(head, id, read, calls), calls, status };
+	return { head, calls, progress: read, status };
 }

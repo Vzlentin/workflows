@@ -62,21 +62,21 @@ harness host that runs keeps the old version until it stops. It stops by itself 
 ## Use
 
 ```sh
-workflows ship plan.md                     # ship the work item in plan.md
+workflows ship plan.md                              # ship the work item in plan.md
 workflows ship "Fix the README typo"
 workflows campaign goal.md
 workflows ship plan.md --agents '*=anthropic/claude-opus-5-5:high,judge=:low'   # the models of the run's roles
-workflows thermoloop                       # review and fix the current branch against main
-workflows thermoloop 74                    # review and fix PR 74 in a worktree of its own
-workflows optimize ship --limit 4          # propose and test surface edits from past ship runs
-workflows list                             # the runs of this project
+workflows thermoloop                                # review and fix the current branch against main
+workflows thermoloop 74                             # review and fix PR 74 in a worktree of its own
+workflows optimize ship --limit 4                   # propose and test surface edits from past ship runs
+workflows list                                      # the runs of this project
 workflows resume <run-id>
-workflows wait <run-id>                    # follow a run to its outcome
-workflows log <run-id> [<call>] [--follow] # its steps and calls, or the output of one call
-workflows attach <run-id>                  # open its working session in Pi
+workflows wait <run-id>                             # follow a run to its outcome
+workflows log <run-id> [<step> | <call>] [--follow] # its steps, the calls of one step, or the output of one call
+workflows attach <run-id>                           # open its working session in Pi
 workflows stop <run-id>
-workflows prune --yes                      # remove the worktrees of merged runs
-workflows                                  # the workflows that you can run
+workflows prune --yes                               # remove the worktrees of merged runs
+workflows                                           # the workflows that you can run
 workflows ship --help
 workflows outline ship                     # the steps of ship, before a run
 ```

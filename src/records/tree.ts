@@ -7,7 +7,7 @@ import type { Todo } from "@vzlentin/harness/todo";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { SavedCall } from "../run/calls.ts";
-import { duration, type Progress, type StepView } from "./steps.ts";
+import { duration, type Progress, type StepView, stepIndexOf } from "./steps.ts";
 
 /** The mark of a call: running, done, or any other state. */
 export type CallMark = "✓" | "◉" | "✗";
@@ -179,21 +179,17 @@ export function showEntries(calls: readonly Shown[], progress: Progress, now: nu
 
 /**
  * The agent of each of `steps`: the first session of `calls` that opened a conversation in the step, or in a child run
- * that a `run` call of the step started. A call is in the last step of its run with the text of its phase line that
- * started at or before it, so a step whose text comes back gets the sessions of its own time; a step with no start
- * time counts as started before every call. The summarizer of a step starts after the session whose note it
- * compresses, so it is never the one.
+ * that a `run` call of the step started, with the step of a call from `stepIndexOf`. The summarizer of a step starts
+ * after the session whose note it compresses, so it is never the one.
  */
 function stepAgents(calls: readonly Shown[], steps: readonly StepView[]): Map<StepView, number> {
 	const sessions: { readonly call: Shown; readonly at: readonly StepView[] }[] = [];
+	const byRun = Map.groupBy(steps, (step) => step.runId);
 
 	const visit = (shown: readonly Shown[], outer: readonly StepView[]) => {
 		for (const call of shown) {
-			const started = Date.parse(call.startedAt);
-
-			const step = steps.findLast(
-				(s) => s.runId === call.runId && s.text === call.phase && (s.firstStart ?? -Infinity) <= started,
-			);
+			const own = byRun.get(call.runId) ?? [];
+			const step = own[stepIndexOf(own, call)];
 
 			const at = step === undefined ? outer : [...outer, step];
 
