@@ -642,8 +642,9 @@ describe("runs in the harness host", () => {
 			expect([followed.code, followed.stderr]).toEqual([0, []]);
 			expect(followed.stdout).toEqual([
 				`run ${id} gated running`,
+				expect.stringMatching(/^\d\d:\d\d:\d\d {2}- {2}1 call {2}0 B {2}s0$/),
 				expect.stringMatching(/^\d\d:\d\d:\d\d {4}◉ sh \.\/gate\.sh g {2}running {2}[0-9a-f]{16}\.1$/),
-				expect.stringMatching(/^\d\d:\d\d:\d\d {4}✓ sh \.\/gate\.sh g {2}\d+s {2}exit 0 {2}0 B {2}[0-9a-f]{16}\.1$/),
+				expect.stringMatching(/^\d\d:\d\d:\d\d {2}- {2}1 call {2}0 B {2}s0$/),
 				expect.stringMatching(/^\d\d:\d\d:\d\d {2}end ok$/),
 			]);
 		} finally {
@@ -651,7 +652,7 @@ describe("runs in the harness host", () => {
 		}
 	});
 
-	it("follows a run with log --follow, and prints each step once, also when it ends later", async () => {
+	it("follows a run with log --follow, and prints a step again when it ends", async () => {
 		await writeFile(join(root, "phased.js"), 'phase("wait")\nawait sh("./gate.sh g")\nphase("after")\nreturn "done"');
 		const { id, host } = await detachedRun("phased.js", ["wait"]);
 
@@ -665,10 +666,10 @@ describe("runs in the harness host", () => {
 			expect([followed.code, followed.stderr]).toEqual([0, []]);
 			expect(followed.stdout).toEqual([
 				`run ${id} phased running`,
-				line("wait"),
+				line("wait  1 call  0 B  s1"),
 				line("  ◉ sh \\./gate\\.sh g  running  [0-9a-f]{16}\\.1"),
-				line("  ✓ sh \\./gate\\.sh g  \\d+s  exit 0  0 B  [0-9a-f]{16}\\.1"),
-				line("after(  \\d+s)?"),
+				line("wait  \\d+s  1 call  0 B  s1"),
+				line("after  \\d+s  0 calls  0 B  s2"),
 				line("end ok"),
 			]);
 		} finally {
@@ -690,6 +691,7 @@ describe("runs in the harness host", () => {
 			0,
 			[
 				`run ${id} gated earlier-version`,
+				expect.stringMatching(/^\d\d:\d\d:\d\d {2}- {2}1 call {2}0 B {2}s0$/),
 				expect.stringMatching(/^\d\d:\d\d:\d\d {4}✗ sh \.\/gate\.sh g {2}cut {2}[0-9a-f]{16}\.1$/),
 			],
 		]);
@@ -710,6 +712,7 @@ describe("runs in the harness host", () => {
 			0,
 			[
 				`run ${id} gated running`,
+				expect.stringMatching(/^\d\d:\d\d:\d\d {2}- {2}1 call {2}0 B {2}s0$/),
 				expect.stringMatching(/^\d\d:\d\d:\d\d {4}◉ sh \.\/gate\.sh g {2}running {2}[0-9a-f]{16}\.1$/),
 			],
 		]);

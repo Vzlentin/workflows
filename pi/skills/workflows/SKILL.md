@@ -107,9 +107,10 @@ The values of `result.status` for a `finished` run:
 | judge | `judged` | `result.score`, from 0 to 1, and `result.findings`. |
 | judge | `unjudged` | The judge gave no verdict. Quote `result.judgeError`. |
 
-Do not guess findings. To read the findings of the last review, use `workflows log <runId>`: the review rounds are
-under the `run thermoloop` line. Then `workflows log <runId> <call>` prints the full output of one call, with the call
-name at the end of its line. `log` only reads.
+Do not guess findings. To read the findings of the last review, use `workflows log <runId>`: it gives the steps, and
+the review rounds are under the `run thermoloop` line. Then `workflows log <runId> <step>` gives the calls of one step,
+with the step name at the end of its line, and `workflows log <runId> <call>` the full output of one call, with the
+call name at the end of its line. `log` only reads.
 
 ### A waiting run
 
@@ -124,8 +125,9 @@ commit).
 - `{ resume: "<runId>" }` follows a run that goes on, or continues one that ended without a result. Add `background:
   true` to return at once.
 - `workflows list` gives the runs of this project, newest first, with their status. `workflows show <runId>` gives the
-  steps and the report of one run. `workflows log <runId>` gives its steps and calls with their times, exit codes and
-  sizes, `workflows log <runId> <call>` the full output of one call, and `--follow` follows the run. Read the output
+  steps and the report of one run. `workflows log <runId>` gives its steps with their times, call counts and sizes,
+  and the calls that failed or still run, `workflows log <runId> <step>` the calls of one step with their exit codes
+  and sizes, `workflows log <runId> <call>` the full output of one call, and `--follow` follows the run. Read the output
   of a run with `log`, not with `show --calls --json`. These commands only read; run them with bash.
 - The worktree of a local repository is `<parent>/.worktrees/<repository folder>/<runId>`, next to the repository.
   The branch is `<workflow>/<runId>` until a shipped run renames it from its commit subject.

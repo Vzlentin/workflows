@@ -1,13 +1,13 @@
 /**
- * The text of `workflows log`: the short log of a run, with its steps, its calls and the ends of its runs in time
- * order, and the full text of one call.
+ * The text of `workflows log`: the short log of a run, with its steps, the calls that did not end done, its child runs
+ * and their ends, the calls of one step, and the full text of one call.
  */
 import type { JsonValue } from "@earendil-works/chord/json";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { SavedCall } from "../run/calls.ts";
 import type { ProgressEvent } from "../run/progress.ts";
-import { duration, type Progress, type RunStep, stepTime } from "./steps.ts";
+import { duration, type Progress, type RunStep, stepIndexOf, stepTime } from "./steps.ts";
 import type { RunRecords } from "./store.ts";
 import { type CallNode, commandOf, conversationOf, markOf } from "./tree.ts";
 
@@ -31,23 +31,31 @@ export type LogLine = { readonly item: string; readonly text: string };
 
 const SHELL_RESULT = Type.Object({ code: Type.Number(), stdout: Type.String(), stderr: Type.String() });
 
-/** One entry of a run in the short log, at `at` ms since the epoch; `rank` orders entries of the same time. */
-type Entry =
-	| {
-			readonly kind: "step";
-			readonly at: number | undefined;
-			readonly rank: 0;
-			readonly step: RunStep;
-			readonly n: number;
-	  }
-	| { readonly kind: "call"; readonly at: number; readonly rank: 1; readonly node: CallNode }
-	| {
-			readonly kind: "end";
-			readonly at: number | undefined;
-			readonly rank: 2;
-			readonly word: string;
-			readonly n: number;
-	  };
+/**
+ * The calls of one step of a run: the step with its index `n` in `Progress.steps`, 1-based, or index 0 and no step for
+ * the calls that are in no step. `at` is the time of the line: the first start of the step, or the start of the first
+ * call of group 0.
+ */
+type StepGroup = {
+	readonly n: number;
+	readonly step: RunStep | undefined;
+	readonly at: number | undefined;
+	readonly calls: CallNode[];
+};
+
+/** The progress events of a root run and their steps. */
+export type RunProgress = Pick<RunRecords, "progress" | "events">;
+
+/** The last end of a run, with its index among the events. */
+type RunEnd = { readonly word: string; readonly at: number | undefined; readonly n: number };
+
+/** The name of a step: `s<n>` in the root run, `<run>/s<n>` in a child run. */
+const STEP_NAME = /^(?:(.+)\/)?s(\d+)$/;
+
+/** Whether `name` names a step and not a call: call keys are hex and never start with `s`. */
+export function isStepName(name: string): boolean {
+	return STEP_NAME.test(name);
+}
 
 /** The name of the call `key` in the run `root`: the key without `<root>/`, or the whole key for a child run. */
 export function callName(root: string, key: string): string {
@@ -70,8 +78,11 @@ function clock(ms: number | undefined): string {
 
 /** The UTF-8 size of `text` in B, KB or MB. */
 export function size(text: string): string {
-	const bytes = Buffer.byteLength(text);
+	return sizeOf(Buffer.byteLength(text));
+}
 
+/** `bytes` in B, KB or MB. */
+function sizeOf(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
 
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -91,15 +102,15 @@ function resultText(result: JsonValue): string {
 	return Value.Check(Type.String(), result) ? result : JSON.stringify(result);
 }
 
-/** The size of the output of `record`: stdout and stderr of a shell call, else its result or its error. */
-function outputSize(record: SavedCall): string | undefined {
+/** The UTF-8 bytes of the output of `record`: stdout and stderr of a shell call, else its result or its error. */
+function outputBytes(record: SavedCall): number | undefined {
 	const shell = shellResult(record);
 
-	if (shell !== undefined) return size(shell.stdout + shell.stderr);
+	if (shell !== undefined) return Buffer.byteLength(shell.stdout + shell.stderr);
 
-	if (record.result !== undefined) return size(resultText(record.result));
+	if (record.result !== undefined) return Buffer.byteLength(resultText(record.result));
 
-	return record.error === undefined ? undefined : size(record.error);
+	return record.error === undefined ? undefined : Buffer.byteLength(record.error);
 }
 
 /** The lines of `text`, without the empty line after a last newline. */
@@ -112,30 +123,59 @@ function linesOf(text: string): string[] {
 }
 
 /**
- * The entries of the run `runId` in time order: its steps in `progress`, its calls and its `end` events. An entry
- * without a time comes first.
+ * The steps of the run `runId` in `progress`, each with its own calls among `calls`, in the order they started, and
+ * group 0 at the start of its first call when a call is in no step. A step with no start time comes first.
  */
-function entriesOf(
-	progress: Progress,
-	events: readonly ProgressEvent[],
-	runId: string,
-	calls: readonly CallNode[],
-): Entry[] {
-	const steps = progress
-		.steps(runId)
-		.map((step, n) => ({ kind: "step", at: step.firstStart, rank: 0, step, n }) as const);
+function groupsOf(progress: Progress, runId: string, calls: readonly CallNode[]): StepGroup[] {
+	const steps = progress.steps(runId);
+	const groups: StepGroup[] = steps.map((step, i) => ({ n: i + 1, step, at: step.firstStart, calls: [] }));
+	const loose: CallNode[] = [];
 
-	const ends = events.flatMap((event, n) => {
-		if (event.kind !== "end" || event.run !== runId) return [];
-		const word = "stopped" in event ? "stopped" : event.failed ? "failed" : "ok";
+	for (const node of calls) (groups[stepIndexOf(steps, node.record)]?.calls ?? loose).push(node);
 
-		return [{ kind: "end", at: event.at, rank: 2, word, n } as const];
-	});
+	const first = loose[0];
 
-	const called = calls.map((node) => ({ kind: "call", at: Date.parse(node.record.startedAt), rank: 1, node }) as const);
-	const key = (entry: Entry) => entry.at ?? -Infinity;
+	if (first !== undefined) {
+		groups.push({ n: 0, step: undefined, at: Date.parse(first.record.startedAt), calls: loose });
+	}
 
-	return [...steps, ...called, ...ends].sort((a, b) => key(a) - key(b) || a.rank - b.rank);
+	const key = (group: StepGroup) => group.at ?? -Infinity;
+
+	return groups.sort((a, b) => key(a) - key(b));
+}
+
+/**
+ * The end of the run `runId` when its last `start` or `end` event in `events` is an end: each task of the run, a resume
+ * too, starts with a `start` event, so a run that goes on has none.
+ */
+function lastEnd(events: readonly ProgressEvent[], runId: string): RunEnd | undefined {
+	const n = events.findLastIndex((event) => (event.kind === "start" || event.kind === "end") && event.run === runId);
+	const event = events[n];
+
+	if (event?.kind !== "end") return undefined;
+
+	return { word: "stopped" in event ? "stopped" : event.failed ? "failed" : "ok", at: event.at, n };
+}
+
+/** The name of the step `n` of the run `runId` in the root run `root`. */
+function stepName(root: string, runId: string, n: number): string {
+	return runId === root ? `s${n}` : `${runId}/s${n}`;
+}
+
+/**
+ * The line of the step `group` of the run `runId` at `indent`: its text, its duration, the count and output size of its
+ * own calls, and its name. Group 0 has the text `-`, and ends with `end`, the end of its run.
+ */
+function stepLine(root: string, runId: string, group: StepGroup, end: RunEnd | undefined, indent: string): LogLine {
+	const { n, step, at, calls } = group;
+	const text = step === undefined ? "-" : `${step.text.slice(0, PHASE_WIDTH)}${stepTime(step)}`;
+	const count = `${calls.length} ${calls.length === 1 ? "call" : "calls"}`;
+	const bytes = calls.reduce((sum, node) => sum + (outputBytes(node.record) ?? 0), 0);
+	const facts = [count, sizeOf(bytes), stepName(root, runId, n)];
+	const ended = step === undefined ? end?.at : step.ended;
+
+	// A step prints again in `log --follow` when it ends, with its last count.
+	return { item: `step:${runId}:${n}:${ended ?? "open"}`, text: `${clock(at)}  ${indent}${text}  ${facts.join("  ")}` };
 }
 
 /** The line of the call `node` at `indent`, and the last lines of its error when it failed. */
@@ -145,8 +185,8 @@ function callLines(root: string, node: CallNode, indent: string): LogLine[] {
 	const time = record.endedAt === undefined ? state : duration(Date.parse(record.endedAt) - started);
 	const shell = shellResult(record);
 	const exit = shell === undefined ? [] : [`exit ${shell.code}`];
-	const bytes = outputSize(record);
-	const facts = [time, ...exit, ...(bytes === undefined ? [] : [bytes]), callName(root, key)];
+	const bytes = outputBytes(record);
+	const facts = [time, ...exit, ...(bytes === undefined ? [] : [sizeOf(bytes)]), callName(root, key)];
 	const text = `${clock(started)}  ${indent}  ${markOf(state)} ${record.kind} ${node.label}  ${facts.join("  ")}`;
 	// A call prints again in `log --follow` when its state changes.
 	const lines = [{ item: `${key}:${state}`, text }];
@@ -162,54 +202,67 @@ function callLines(root: string, node: CallNode, indent: string): LogLine[] {
 	return lines;
 }
 
-/** The lines of the run `runId` at `indent`, with the lines of each child run under its `run` call. */
-function runLines(
+/**
+ * The lines of the run `runId` of the root run `root` at `indent`: each step line; under it each call of the step that
+ * is not done and each `run` call, with its child run under it, indented by 4 more; then the end of the run when the
+ * run does not go on. `read` gives the progress events of the run and their steps.
+ */
+export function runLines(
 	root: string,
 	runId: string,
-	read: Pick<RunRecords, "progress" | "events">,
+	read: RunProgress,
 	calls: readonly CallNode[],
 	indent: string,
 ): LogLine[] {
 	const lines: LogLine[] = [];
+	const end = lastEnd(read.events, runId);
 
-	for (const entry of entriesOf(read.progress, read.events, runId, calls)) {
-		if (entry.kind === "call") {
-			lines.push(...callLines(root, entry.node, indent));
+	for (const group of groupsOf(read.progress, runId, calls)) {
+		lines.push(stepLine(root, runId, group, end, indent));
 
-			const { calls: childCalls, record } = entry.node;
-			const child = record.child?.runId;
+		for (const node of group.calls) {
+			if (node.state === "done" && node.record.kind !== "run") continue;
+			lines.push(...callLines(root, node, indent));
+			const child = node.record.child?.runId;
 
-			if (child !== undefined && childCalls !== undefined) {
-				lines.push(...runLines(root, child, read, childCalls, `${indent}    `));
+			if (child !== undefined && node.calls !== undefined) {
+				lines.push(...runLines(root, child, read, node.calls, `${indent}    `));
 			}
-		} else if (entry.kind === "step") {
-			const line = `${clock(entry.at)}  ${indent}${entry.step.text.slice(0, PHASE_WIDTH)}${stepTime(entry.step)}`;
-			lines.push({ item: `step:${runId}:${entry.n}`, text: line });
-		} else {
-			lines.push({ item: `end:${runId}:${entry.n}`, text: `${clock(entry.at)}  ${indent}end ${entry.word}` });
 		}
+	}
+
+	if (end !== undefined) {
+		lines.push({ item: `end:${runId}:${end.n}`, text: `${clock(end.at)}  ${indent}end ${end.word}` });
 	}
 
 	return lines;
 }
 
 /**
- * The short log of the root run `root`: the line `head`, then the steps, the calls and the ends of the run, each child
- * run under its `run` call, indented by 4 more. `events` are the progress events of the run, and `progress` their steps.
+ * The step named `name` in the root run `root`: its line, then the line of each of its own calls with the last lines of
+ * the error of a failed one, without the calls of its child runs. Undefined when there is no such step.
  */
-export function shortLog(
-	head: string,
+export function stepLog(
 	root: string,
-	read: Pick<RunRecords, "progress" | "events">,
+	read: RunProgress,
 	calls: readonly CallNode[],
-): LogLine[] {
-	return [{ item: "run", text: head }, ...runLines(root, root, read, calls, "")];
+	name: string,
+): string[] | undefined {
+	const [, child, n] = STEP_NAME.exec(name) ?? [];
+	const runId = child ?? root;
+	const own = runId === root ? calls : (findCall(calls, (node) => node.record.child?.runId === runId)?.calls ?? []);
+	const group = groupsOf(read.progress, runId, own).find((g) => String(g.n) === n);
+
+	if (group === undefined) return undefined;
+	const head = stepLine(root, runId, group, lastEnd(read.events, runId), "");
+
+	return [head, ...group.calls.flatMap((node) => callLines(root, node, ""))].map((line) => line.text);
 }
 
-/** The call `key` among `calls` and the calls of their child runs, or undefined when there is none. */
-export function findCall(calls: readonly CallNode[], key: string): CallNode | undefined {
+/** The first call among `calls` and the calls of their child runs for which `test` holds, or undefined. */
+export function findCall(calls: readonly CallNode[], test: (node: CallNode) => boolean): CallNode | undefined {
 	for (const node of calls) {
-		const found = node.key === key ? node : findCall(node.calls ?? [], key);
+		const found = test(node) ? node : findCall(node.calls ?? [], test);
 
 		if (found !== undefined) return found;
 	}

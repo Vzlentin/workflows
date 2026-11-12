@@ -215,6 +215,21 @@ export function progressOf(events: readonly ProgressEvent[]): Progress {
 	return progress;
 }
 
+/**
+ * The index in `steps` of the step of a call of the phase `phase` that started at `startedAt`, or -1 when it is in no
+ * step. The steps are those of the call's run. A call is in the last step with its phase text that started before it,
+ * so a step whose text comes back gets the calls of its own time; a step with no start time counts as started before
+ * every call.
+ */
+export function stepIndexOf(
+	steps: readonly Pick<StepView, "text" | "firstStart">[],
+	{ phase, startedAt }: { readonly phase: string | null; readonly startedAt: string },
+): number {
+	const started = Date.parse(startedAt);
+
+	return steps.findLastIndex((step) => step.text === phase && (step.firstStart ?? -Infinity) <= started);
+}
+
 /** `  <duration>` of a step that ended, else nothing. */
 export function stepTime({ started, ended }: RunStep): string {
 	return started === undefined || ended === undefined ? "" : `  ${duration(ended - started)}`;
