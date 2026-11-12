@@ -1329,7 +1329,7 @@ return "done"`;
 		}
 	});
 
-	it("gives the command that prints a result longer than 2000 bytes, and the report lines", async () => {
+	it("cuts a finished text longer than 2000 bytes at a character, names the command that prints it, and keeps the report lines", async () => {
 		const host = await startHost("main", hostModel().models);
 
 		try {
@@ -1338,13 +1338,115 @@ return "done"`;
 			await tellAgent(`Script workflow: ${JSON.stringify({ script })}`);
 			const result = await nextResult(0);
 			const id = /^run (\S+) /.exec(result.text)?.[1] ?? "";
-			expect([result.text, result.isError]).toEqual([
-				`run ${id} finished; its result is longer than 2000 bytes, so read it with the command workflows wait ${id} --json\nfirst\nsecond`,
-				false,
-			]);
+			const lines = result.text.split("\n");
+			const start = `run ${id} finished: {"text":"`;
+			// The first line keeps 500 bytes at most, and a 2-byte é is never split.
+			expect(lines[0]).toBe(start + "é".repeat(Math.floor((500 - start.length) / 2)));
+			expect(lines[1]).toMatch(
+				new RegExp(`^\\[… \\d+ bytes cut; the command workflows wait ${id} --json prints the whole result\\]$`),
+			);
+			expect(lines[2]).toMatch(/^é+","report":\["first","second"\]\}$/);
+			expect(lines.slice(3)).toEqual(["first", "second"]);
+			expect(Buffer.byteLength(lines.slice(0, 3).join("\n"))).toBeLessThanOrEqual(2000);
+			expect(result.isError).toBe(false);
 		} finally {
 			await host.close();
 		}
+	});
+
+	it("keeps the first line and the end of a failed text of 100 KB, with the commands that show the rest, in the result and in the posted message", async () => {
+		const host = await startHost("main", hostModel().models);
+		const command = "head -c 100000 /dev/zero | tr '\\0' 'x' | fold -w 99 >&2; echo last >&2; exit 1";
+		const script = `await sh(${JSON.stringify(["sh", "-c", command])})`;
+		const x = "x".repeat(99);
+
+		try {
+			await tellAgent(`Script workflow: ${JSON.stringify({ script })}`);
+			await tellAgent(`Script workflow: ${JSON.stringify({ script, background: true })}`);
+			await until(async () => (await postedResults()).length === 1);
+			const [posted] = await postedResults();
+			const texts = [(await nextResult(0)).text, posted?.text ?? ""];
+
+			for (const text of texts) {
+				const id = /^run (\S+) /.exec(text)?.[1] ?? "";
+				const lines = text.split("\n");
+				expect(lines[0]).toBe(`run ${id} failed: sh -c failed: ${x}`);
+				expect(lines[1]).toMatch(
+					new RegExp(
+						`^\\[… \\d+ bytes cut; the command workflows log ${id} shows the run and its calls, and workflows log ${id} <call> prints the whole output of a call\\]$`,
+					),
+				);
+				// The end starts at a line start: every line before the last one is whole.
+				expect(new Set(lines.slice(2, -1))).toEqual(new Set([x]));
+				// fold ends its last line of 100000 % 99 characters without a newline.
+				expect(lines.at(-1)).toBe(`${x.slice(0, 100000 % 99)}last; continue it with resume: "${id}"`);
+				expect(Buffer.byteLength(text)).toBeLessThanOrEqual(2000);
+				expect(Buffer.byteLength(text)).toBeGreaterThan(1900);
+			}
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("cuts the error of a parent run that a child run with a long error failed, and names the root run in the cut line", async () => {
+		await mkdir(join(root, "project"));
+		const project = addProject("demo", join(root, "project"));
+		const scripts = join(project, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		const command = "head -c 100000 /dev/zero | tr '\\0' 'x' | fold -w 99 >&2; echo last >&2; exit 1";
+		await writeFile(join(scripts, "child.js"), `await sh(${JSON.stringify(["sh", "-c", command])})`);
+		const host = await startHost("demo", hostModel().models);
+
+		try {
+			await tellAgent(`Script workflow: ${JSON.stringify({ script: 'await run("child")' })}`, "demo");
+			const result = await nextResult(0, "demo");
+			const id = /^run (\S+) /.exec(result.text)?.[1] ?? "";
+			const lines = result.text.split("\n");
+			expect(lines[0]).toMatch(new RegExp(`^run ${id} failed: .*sh -c failed: x+$`));
+			expect(lines[1]).toMatch(
+				new RegExp(`^\\[… \\d+ bytes cut; the command workflows log ${id} shows the run and its calls, `),
+			);
+			expect(lines.at(-1)).toMatch(new RegExp(`^x+last; continue it with resume: "${id}"$`));
+			expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(2000);
+			expect(result.isError).toBe(true);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("cuts a long question of a waiting run, and names the log command", async () => {
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			const script = 'return await input("q".repeat(5000))';
+			await tellAgent(`Script workflow: ${JSON.stringify({ script })}`);
+			const waiting = await nextResult(0);
+			const id = /^run (\S+) /.exec(waiting.text)?.[1] ?? "";
+			const start = `run ${id} waits for an answer: `;
+			const [head, cut, end, ...rest] = waiting.text.split("\n");
+			expect(head).toBe(start + "q".repeat(500 - start.length));
+			expect(cut).toMatch(
+				new RegExp(
+					`^\\[… \\d+ bytes cut; the command workflows log ${id} shows the run and its calls, and workflows log ${id} <call> prints the whole output of a call\\]$`,
+				),
+			);
+			expect(end).toMatch(new RegExp(`^q+; answer it with resume: "${id}" and answer: "<your answer>"$`));
+			expect(rest).toEqual([]);
+			expect(Buffer.byteLength(waiting.text)).toBeLessThanOrEqual(2000);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("keeps the whole long error in the --json outcome", async () => {
+		const command = "head -c 100000 /dev/zero | tr '\\0' 'x' | fold -w 99 >&2; echo last >&2; exit 1";
+		await writeFile(join(root, "x.js"), `await sh(${JSON.stringify(["sh", "-c", command])})`);
+		const run = await workflows(["x.js", "--json"], { cwd: root });
+		expect(run.code).toBe(1);
+		const outcome = JSON.parse(run.stdout.at(-1) ?? "null");
+		expect(outcome).toEqual({ runId: run.id, status: "failed", error: expect.stringMatching(/^sh -c failed: /) });
+		// fold writes 100000 x in lines of 99, then `last`.
+		expect(outcome.error.replaceAll("\n", "")).toMatch(/x{100000}last$/);
 	});
 
 	it("gives no workflow tool to a subagent of a session at the depth limit, and starts no run", async () => {

@@ -188,40 +188,136 @@ export function savedOutcome(output: Output, runId: string): Saved {
 /** The result of a run that waits on `input(question)`. */
 export const WAITING = Type.Object({ status: Type.Literal("waiting"), question: Type.String() });
 
-/** The most UTF-8 bytes of the JSON of a finished result that the summary gives. */
-const RESULT_BYTES = 2000;
+/** The most UTF-8 bytes of a summary text. A longer text keeps its first line and its end, with a cut line between. */
+const OUTCOME_BYTES = 2000;
 
+/** The most UTF-8 bytes of the first line of a cut summary text. */
+const HEAD_BYTES = 500;
+
+/** The most UTF-8 bytes of a report line in the text for the caller, with its `…` when it is cut. */
+const REPORT_LINE_BYTES = 500;
+
+const ENCODER = new TextEncoder();
+
+/**
+ * The text of `outcome` for the caller, at most {@link OUTCOME_BYTES} UTF-8 bytes. A longer text keeps its first line,
+ * then a line with the count of cut bytes and the command that shows the rest, then its end.
+ */
 export function summary(outcome: WorkflowOutcome): string {
-	switch (outcome.status) {
-		case "finished":
-			if (Value.Check(WAITING, outcome.result)) {
-				return `run ${outcome.runId} waits for an answer: ${outcome.result.question}; answer it with resume: "${outcome.runId}" and answer: "<your answer>"`;
-			}
-
-			return finished(outcome.runId, JSON.stringify(outcome.result));
-		case "failed":
-			return `run ${outcome.runId} failed: ${outcome.error}; continue it with resume: "${outcome.runId}"`;
-		case "started":
-			return `run ${outcome.runId} started in the background; its result comes as a message in this conversation when it ends; follow it with resume: "${outcome.runId}", or stop it with the command workflows stop ${outcome.runId}`;
-		case "detached":
-			return `run ${outcome.runId} detached and goes on in the harness host; follow it with resume: "${outcome.runId}", or stop it with the command workflows stop ${outcome.runId}`;
-		case "stopped":
-			return `run ${outcome.runId} stopped; continue it with resume: "${outcome.runId}"`;
-		case "host-stopped":
-			return `the harness host of run ${outcome.runId} stopped; the run continues when the host starts again, so follow it with resume: "${outcome.runId}"`;
-	}
-}
-
-/** The summary of a finished run whose result is `json`, or the command that prints the result when it is too long. */
-function finished(runId: string, json: string): string {
-	if (new TextEncoder().encode(json).length <= RESULT_BYTES) return `run ${runId} finished: ${json}`;
-
-	return `run ${runId} finished; its result is longer than ${RESULT_BYTES} bytes, so read it with the command workflows wait ${runId} --json`;
+	return texts(outcome).summary;
 }
 
 /** The text of `outcome` for the model: its summary, then the report lines of a finished run that does not wait. */
 export function outcomeText(outcome: WorkflowOutcome): string {
-	if (outcome.status !== "finished" || Value.Check(WAITING, outcome.result)) return summary(outcome);
+	const { summary, report } = texts(outcome);
 
-	return [summary(outcome), ...outcome.report].join("\n");
+	return [summary, ...report].join("\n");
+}
+
+/** The summary text of an outcome, and the report lines that follow it in the text for the model. */
+type Texts = { readonly summary: string; readonly report: readonly string[] };
+
+function texts(outcome: WorkflowOutcome): Texts {
+	const id = outcome.runId;
+	const log = `the command workflows log ${id} shows the run and its calls, and workflows log ${id} <call> prints the whole output of a call`;
+
+	switch (outcome.status) {
+		case "finished":
+			if (Value.Check(WAITING, outcome.result)) {
+				const text = `run ${id} waits for an answer: ${outcome.result.question}; answer it with resume: "${id}" and answer: "<your answer>"`;
+
+				return { summary: bounded(text, log), report: [] };
+			}
+
+			return {
+				summary: bounded(
+					`run ${id} finished: ${JSON.stringify(outcome.result)}`,
+					`the command workflows wait ${id} --json prints the whole result`,
+				),
+				report: outcome.report.map(reportLine),
+			};
+		case "failed":
+			return {
+				summary: bounded(`run ${id} failed: ${outcome.error}; continue it with resume: "${id}"`, log),
+				report: [],
+			};
+		case "started":
+			return {
+				summary: `run ${id} started in the background; its result comes as a message in this conversation when it ends; follow it with resume: "${id}", or stop it with the command workflows stop ${id}`,
+				report: [],
+			};
+		case "detached":
+			return {
+				summary: `run ${id} detached and goes on in the harness host; follow it with resume: "${id}", or stop it with the command workflows stop ${id}`,
+				report: [],
+			};
+		case "stopped":
+			return { summary: `run ${id} stopped; continue it with resume: "${id}"`, report: [] };
+		case "host-stopped":
+			return {
+				summary: `the harness host of run ${id} stopped; the run continues when the host starts again, so follow it with resume: "${id}"`,
+				report: [],
+			};
+	}
+}
+
+/** `text` when it fits in {@link OUTCOME_BYTES}, else its first line, the cut line with `hint`, and its end. */
+function bounded(text: string, hint: string): string {
+	const bytes = ENCODER.encode(text);
+
+	if (bytes.length <= OUTCOME_BYTES) return text;
+	const newline = bytes.indexOf(0x0a);
+	const head = prefix(bytes.subarray(0, newline === -1 ? bytes.length : newline), HEAD_BYTES);
+	// The cut count has at most as many digits as the text length, so this cut line is the longest one.
+	const room = OUTCOME_BYTES - head.length - ENCODER.encode(cutLine(bytes.length, hint)).length - 2;
+	const tail = suffix(bytes.subarray(head.length), room);
+	const decoder = new TextDecoder();
+
+	return [decoder.decode(head), cutLine(bytes.length - head.length - tail.length, hint), decoder.decode(tail)].join(
+		"\n",
+	);
+}
+
+/** `line` when it fits in {@link REPORT_LINE_BYTES}, else its start, cut at a code point, and `…`. */
+function reportLine(line: string): string {
+	const bytes = ENCODER.encode(line);
+
+	if (bytes.length <= REPORT_LINE_BYTES) return line;
+
+	return `${new TextDecoder().decode(prefix(bytes, REPORT_LINE_BYTES - ENCODER.encode("…").length))}…`;
+}
+
+function cutLine(cut: number, hint: string): string {
+	return `[… ${cut} bytes cut; ${hint}]`;
+}
+
+/** The longest start of `bytes` of at most `max` bytes that ends at a code point boundary. */
+function prefix(bytes: Uint8Array, max: number): Uint8Array {
+	if (bytes.length <= max) return bytes;
+	let end = max;
+
+	while (end > 0 && isContinuation(bytes[end])) end -= 1;
+
+	return bytes.subarray(0, end);
+}
+
+/**
+ * The longest end of `bytes` of at most `max` bytes that starts at a line start when that window has one, else at a
+ * code point boundary.
+ */
+function suffix(bytes: Uint8Array, max: number): Uint8Array {
+	let start = Math.max(0, bytes.length - max);
+
+	if (start === 0) return bytes;
+	const newline = bytes.indexOf(0x0a, start - 1);
+
+	if (newline !== -1 && newline + 1 < bytes.length) return bytes.subarray(newline + 1);
+
+	while (start < bytes.length && isContinuation(bytes[start])) start += 1;
+
+	return bytes.subarray(start);
+}
+
+function isContinuation(byte: number | undefined): boolean {
+	return byte !== undefined && (byte & 0xc0) === 0x80;
 }

@@ -83,7 +83,7 @@ The tool result is `{ runId, status, result?, report?, error? }`. Lead your repo
 | Tool status | Meaning | What to tell the user |
 | --- | --- | --- |
 | `finished` | The run ended. `result.status` gives the outcome of the workflow, and `report` its report lines. | See the next table. |
-| `failed` | The run failed. `error` gives the reason, such as a Git hook or a model error after the retries. | Quote the error. `{ resume: "<runId>" }` continues the run. Do not resume it yourself. |
+| `failed` | The run failed. `error` gives the reason, such as a Git hook or a model error after the retries. The text keeps at most 2000 bytes: a longer error keeps its first line and its end, with a line `[… <n> bytes cut; the command workflows log <runId> shows the run and its calls, and workflows log <runId> <call> prints the whole output of a call]`. | Quote the error, or the lines that `workflows log <runId>` prints. `workflows log <runId> <call>` prints the whole error of the failed call. `{ resume: "<runId>" }` continues the run. Do not resume it yourself. |
 | `started` | A `background` call started the run. | The outcome comes as a message. |
 | `detached` | Esc detached the tool. The run goes on. | `{ resume: "<runId>" }` follows it again. |
 | `stopped` | `workflows stop` stopped the run. | `{ resume: "<runId>" }` continues it. |
@@ -114,7 +114,7 @@ name at the end of its line. `log` only reads.
 ### A waiting run
 
 A run that waits for an answer is `finished` with `result: { status: "waiting", question }`. Show the question to the
-user. When he answers, call `{ resume: "<runId>", answer: "<his answer>" }`. For a campaign, `stop` or an empty answer
+user. A text longer than 2000 bytes is cut, and its cut line names `workflows log <runId>`, which shows the run and its calls, and `workflows log <runId> <call>`, which prints the whole question of the `input` call. When he answers, call `{ resume: "<runId>", answer: "<his answer>" }`. For a campaign, `stop` or an empty answer
 ends it. For a campaign item still at judge 0, the answers are `keep` (ship it as it is), `fix: <words>` (one more fix
 round on his words), `reset` (reset the item and get a rundown), and `stop` or empty (end the campaign, keep the
 commit).
