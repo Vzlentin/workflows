@@ -3,13 +3,13 @@ import { isDeepStrictEqual, parseArgs } from "node:util";
 import type { Client } from "@vzlentin/harness/client";
 import type { ScriptInput } from "../../launch/input.ts";
 import { checkWorktree } from "../../launch/worktree.ts";
-import { callRecords, type Store } from "../../records/store.ts";
+import { callRecords, reading, type Store } from "../../records/store.ts";
 import { hasEnded, hasResult, runStatus } from "../../run/past.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { type Following, follow, outcomeOf, reportOutcome } from "../follow.ts";
 import { checkVersion, connectTo, startTask } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { checked, inputOf, lastTask, oneRunId, progressOf, savedRun } from "../saved.ts";
+import { checked, GoneRun, inputOf, lastTaskIn, oneRunId, progressOf, savedRun } from "../saved.ts";
 import { programStatus } from "../terminal/redraw.ts";
 
 export const RESUME = "workflows resume <run-id> [--answer <text>] [--background] [--json]";
@@ -35,10 +35,12 @@ export async function resume(
 
 	// The open input call comes from the same read as the task and its keys. A resume that reads before another
 	// resume's task starts asks for the same key as the other one.
-	const read = await lastTask(
-		run,
-		answer === undefined ? undefined : async (store) => answerTo(await openInput(store, run.id), answer),
-	);
+	const read = await reading(run.store, undefined, async (store) => ({
+		...(await lastTaskIn(store, run.id)),
+		open: answer === undefined ? undefined : await openInput(store, run.id),
+	}));
+
+	if (read === undefined) throw new GoneRun(`run ${run.id} has no workflow`);
 
 	const task = checked(read.latest, run.id, wait ? "be waited for" : "resume");
 	const { input: last } = task;
@@ -64,7 +66,7 @@ export async function resume(
 	// An answer that a call used replays from its record, so a resume without `--answer` drops the earlier answer.
 	const { answer: _earlier, ...unanswered } = last;
 
-	const { more: given } = read;
+	const given = read.open === undefined || answer === undefined ? undefined : { call: read.open, text: answer };
 
 	if (answer !== undefined && given === undefined) throw new Error(`run ${run.id} has no open input call`);
 
@@ -186,9 +188,4 @@ async function openInput(store: Store, id: string): Promise<string | undefined> 
 	const [key] = open.at(-1) ?? [];
 
 	return key;
-}
-
-/** The answer `text` to the open input call `call`, or undefined when there is no open input call. */
-function answerTo(call: string | undefined, text: string): { call: string; text: string } | undefined {
-	return call === undefined ? undefined : { call, text };
 }

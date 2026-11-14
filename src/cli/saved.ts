@@ -105,27 +105,23 @@ export function shownStatus(task: RunTask, status: RunStatus): string {
 /** The `start` keys of the tasks of a run: the key of its task `task`, and the key of a new task. */
 export type RunKeys = { readonly keyOf: (task: RunTask) => string; readonly next: string };
 
-/** The last root task of a run, the `start` keys of its tasks, and the value of an extra read of the same snapshot. */
-export type LastTask<T> = {
-	readonly latest: RunTask | undefined;
-	readonly keys: RunKeys;
-	readonly more: T | undefined;
-};
+/**
+ * The last root task of the run `id` in `store` and the keys of its tasks. They come from one read of the store:
+ * harness writes a task and its key in one commit, so the read sees both or neither.
+ */
+export async function lastTaskIn(
+	store: Store,
+	id: string,
+): Promise<{ readonly latest: RunTask | undefined; readonly keys: RunKeys }> {
+	return { latest: taskOf((await runTasks(store)).get(id) ?? []), keys: await runKeys(store, id) };
+}
 
 /**
- * The last root task of `run` and the keys of its tasks, with the value of `more` when it is given. They come from one
- * read of the store: harness writes a task and its key in one commit, so the read sees both or neither. It throws
- * `GoneRun` when the store is missing.
+ * The last root task of `run` and the keys of its tasks, as `lastTaskIn` reads them. It throws `GoneRun` when the store
+ * is missing.
  */
-export async function lastTask<T = undefined>(
-	run: SavedRun,
-	more?: (store: Store) => Promise<T>,
-): Promise<LastTask<T>> {
-	const read = await reading(run.store, undefined, async (store) => ({
-		latest: taskOf((await runTasks(store)).get(run.id) ?? []),
-		keys: await runKeys(store, run.id),
-		more: await more?.(store),
-	}));
+export async function lastTask(run: SavedRun) {
+	const read = await reading(run.store, undefined, (store) => lastTaskIn(store, run.id));
 
 	if (read === undefined) throw new GoneRun(`run ${run.id} has no workflow`);
 
