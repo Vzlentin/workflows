@@ -3,15 +3,7 @@ import { parseArgs } from "node:util";
 import type { Todo } from "@vzlentin/harness/todo";
 import { endMark, type Progress } from "../../records/steps.ts";
 import { runRecords } from "../../records/store.ts";
-import {
-	agentLines,
-	agentRows,
-	callTree,
-	type Shown,
-	showEntries,
-	type TreeEntry,
-	treeLines,
-} from "../../records/tree.ts";
+import { agentLines, agentRows, callTree, type Shown, showEntries, type TreeEntry } from "../../records/tree.ts";
 import { hasEnded, hasResult, type RunTask, runStatus, taskOf, taskOutcome } from "../../run/past.ts";
 import { reportOf, type ShownInput, title as titleOf } from "../../run/result.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
@@ -20,14 +12,14 @@ import type { Choose, Terminal } from "../main.ts";
 import { oneRunId, readable, type SavedRun, savedRun, shownStatus } from "../saved.ts";
 import type { PickItem } from "../terminal/pick.ts";
 
-export const SHOW = "workflows show <run-id> [--pick | [--calls | --agents] [--json]]";
+export const SHOW = "workflows show <run-id> [--pick | [--agents] [--json]]";
 
 /** How often `show --pick` reads the store again while no line of the run can be picked. */
 const PICK_POLL_MS = 1000;
 
 /**
- * Prints the steps of a run as a tree, or with `--calls` its phases and calls, then its report lines, or how it ended.
- * A run without steps prints its calls. With `--pick`, it asks on the terminal for a line, and prints the conversation
+ * Prints the steps of a run as a tree, or with `--agents` its agents, then its report lines, or how it ended. A run
+ * without steps prints its calls. With `--pick`, it asks on the terminal for a line, and prints the conversation
  * of the agent of that line. It reads the task records, the progress, and the call records when it needs them, from
  * the project store only.
  */
@@ -36,17 +28,15 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 		() =>
 			parseArgs({
 				args: [...args],
-				options: { calls: { type: "boolean" }, agents: { type: "boolean" }, pick: { type: "boolean" } },
+				options: { agents: { type: "boolean" }, pick: { type: "boolean" } },
 				allowPositionals: true,
 				strict: true,
 			}),
 		SHOW,
 	);
 
-	if (values.calls && values.agents) throw new UsageError("give --calls or --agents, not both", SHOW);
-
-	if (values.pick && (values.calls || values.agents || json)) {
-		throw new UsageError("give --pick without --calls, --agents or --json", SHOW);
+	if (values.pick && (values.agents || json)) {
+		throw new UsageError("give --pick without --agents or --json", SHOW);
 	}
 
 	const id = oneRunId(positionals, SHOW);
@@ -57,22 +47,20 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 		return pickAgent(await savedRun(id, SHOW), terminal, terminal.choose);
 	}
 
-	const mode = values.agents ? "agents" : values.calls ? "calls" : "steps";
-	const shown = await readRun(await savedRun(id, SHOW), mode !== "steps" || json, "be shown");
+	const agents = values.agents === true;
+	const shown = await readRun(await savedRun(id, SHOW), agents || json, "be shown");
 	const { input, title, status, head, ended, todos, calls, progress, footer, end } = shown;
 	const now = Date.now();
 	const run = { runId: id, workflow: input.name };
 
-	if (mode === "agents" && json) {
-		const agents = agentRows(calls, 0, now);
-		terminal.stdout(JSON.stringify({ ...run, title, status, ended, agents }));
-	} else if (mode === "agents") {
+	if (agents && json) {
+		const rows = agentRows(calls, 0, now);
+		terminal.stdout(JSON.stringify({ ...run, title, status, ended, agents: rows }));
+	} else if (agents) {
 		for (const line of [head, ...agentLines(agentRows(calls, 0, now)), ...footer]) terminal.stdout(line);
 	} else if (json) {
 		const steps = progress.lines();
 		terminal.stdout(JSON.stringify({ ...run, title, status, ...end, todos, steps, calls }));
-	} else if (mode === "calls") {
-		for (const line of [head, ...treeLines(calls, "", now), ...footer]) terminal.stdout(line);
 	} else {
 		for (const entry of shownLines(shown, now)) terminal.stdout(entry.text);
 	}
@@ -160,7 +148,7 @@ function shownLines(read: ShownRun, now: number): TreeEntry[] {
 /**
  * Asks on the terminal for a line of `show` of `run`, and prints the conversation of its agent. Only a line that maps
  * to an agent can be taken: a step line, a log line or a line of a child run gets the first session of its step, and a
- * line of `--calls`, for a run without steps, the conversation of its session or its ask. While no line maps to an
+ * call line of a run without steps the conversation of its session or its ask. While no line maps to an
  * agent and the run has not ended, it reads the store again every second. While the pick waits for a key, it reads the
  * run again every second.
  */

@@ -33,6 +33,7 @@ import { AGENT_HANDLE, type Request, statePaths } from "@vzlentin/harness/protoc
 import { REMINDER } from "@vzlentin/harness/respond";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { expect } from "vite-plus/test";
 import { CtrlC } from "../src/cli/follow.ts";
 import { type Choose, main } from "../src/cli/main.ts";
 import { newRunId } from "../src/launch/input.ts";
@@ -889,6 +890,16 @@ const PROGRESS = Type.Object({ progress: Type.Array(Type.String()), status: Type
 /** `line` without the duration at the end of a step line, which depends on how fast the test runs. */
 export function untimed(line: string): string {
 	return line.replace(/ {2}\d+(?:s|m\d\ds|h\d\dm)$/, "");
+}
+
+/** A matcher for a line of `workflows log`: the clock, two spaces, then the regular expression `pattern`. */
+export function logLine(pattern: string) {
+	return expect.stringMatching(new RegExp(`^\\d\\d:\\d\\d:\\d\\d  ${pattern}$`));
+}
+
+/** A call line of `workflows log` without its clock, and without its duration and the facts after it. */
+export function loggedCall(line: string): string {
+	return line.slice(10).replace(/ {2}\d+(?:s|m\d\ds|h\d\dm)(?: {2}.*)?$/, "");
 }
 
 /**

@@ -30,6 +30,8 @@ import {
 	untimed,
 	workflows,
 	worktreeAt,
+	logLine,
+	loggedCall,
 } from "./support.ts";
 
 let root: string;
@@ -906,7 +908,7 @@ describe("pastRuns", () => {
 });
 
 describe("workflows show", () => {
-	it("prints the calls of a finished ship run with --calls, and the same tree as JSON", async () => {
+	it("logs the calls of each step of a finished ship run, and gives the same calls as JSON", async () => {
 		const run = await workflows(["ship", "--repo", ".", "Fix the README typo"], {
 			cwd: repo,
 			script: { edits: [FIXED] },
@@ -914,71 +916,116 @@ describe("workflows show", () => {
 
 		expect(run.code).toBe(0);
 		const id = run.id ?? "";
-		const shown = await workflows(["show", id, "--calls"], { cwd: root });
-		expect([shown.code, shown.stderr]).toEqual([0, []]);
-		const call = (line: string, indent = "  ") => expect.stringMatching(new RegExp(`^${indent}✓ ${line}  \\d+s$`));
-		const child = (line: string) => call(line, "      ");
-		const grandchild = (line: string) => call(line, "          ");
+		const logged = await workflows(["log", id], { cwd: root });
+		expect([logged.code, logged.stderr]).toEqual([0, []]);
 
-		const asks = (p: string, n: number, at = call) => [
-			at(`session ${p} conversation \\d+`),
-			...Array(n).fill(at(`ask ${p}`)),
-		];
+		const [rpiId, implementId, thermoloopId, judgeId] = logged.stdout.flatMap(
+			(text) => /✓ run \S+ (\S+)/.exec(text)?.[1] ?? [],
+		);
 
-		// The `memo` calls of the run memory, and the read of its notes, cut at 80 characters.
-		const memo = (at = call) => at('sh sh -c m="\\$HOME/\\.optmem/memo".*');
-		const notes = (at = call) => at("sh sh -c sed .*");
+		const size = "[\\d.]+ K?B";
 
-		// The first ask of a remembering session reads the memory with `memo wake`.
-		const remembering = (p: string, n: number, at = call) => [
-			at(`session ${p} conversation \\d+`),
-			memo(at),
-			...Array(n).fill(at(`ask ${p}`)),
-		];
+		const step = (indent: string, text: string, name: string) =>
+			logLine(`${indent}${text}  (?:\\d+s  )?\\d+ calls?  ${size}  ${name}`);
 
-		expect(shown.stdout).toEqual([
-			`run ${id} ship shipped Fix the README typo`,
-			memo(),
-			call("run rpi \\S+"),
-			"    research",
-			...asks("researcher", 1, child),
-			"    plan",
-			...remembering("planner", 2, child),
-			memo(child),
-			"    implement",
-			child("run implement \\S+"),
-			grandchild("sh git rev-parse HEAD"),
-			...remembering("implementer", 1, grandchild),
-			memo(grandchild),
-			grandchild("sh git add -A"),
-			grandchild("ok git diff --cached --quiet"),
-			grandchild("sh git commit --allow-empty -m Fix the README typo"),
-			notes(grandchild),
-			grandchild(`ok git diff --quiet ${start} HEAD`),
-			grandchild(`sh git diff --shortstat ${start} HEAD`),
-			grandchild("sh git rev-parse --short HEAD"),
-			notes(child),
-			call("run thermoloop \\S+"),
-			"    round 1/3: review",
-			// The command is cut at 80 characters.
-			child("sh git diff --binary --output=.{53}"),
-			...remembering("reviewer", 1, child),
-			child("sh git rev-parse --short HEAD"),
-			notes(child),
-			call("sh git rev-parse HEAD"),
-			...asks("implementer", 1),
-			call('sh sh -c git reset -q --soft "\\$1" && if git diff --cached --quiet; then echo none; '),
-			call("sh git rev-parse --short HEAD"),
-			call("run judge \\S+"),
-			"    judge",
-			child("sh git rev-parse HEAD"),
-			...asks("judge", 1, child),
-			notes(),
-			...asks("summarizer", 1),
-			expect.stringMatching(SHIPPED),
-			`branch ${BRANCH}`,
+		const ran = (indent: string, name: string, child = "") =>
+			logLine(`${indent}  ✓ run ${name} ${child}  \\d+s  ${size}  \\S+`);
+
+		const ended = (indent: string) => logLine(`${indent}end ok`);
+
+		expect(logged.stdout).toEqual([
+			`run ${id} ship shipped`,
+			step("", "-", "s0"),
+			ran("", "rpi", rpiId),
+			step("    ", "research", `${rpiId}/s1`),
+			step("    ", "plan", `${rpiId}/s2`),
+			step("    ", "implement", `${rpiId}/s3`),
+			ran("    ", "implement", implementId),
+			step("        ", "-", `${implementId}/s0`),
+			ended("        "),
+			ended("    "),
+			ran("", "thermoloop", thermoloopId),
+			step("    ", "round 1/3: review", `${thermoloopId}/s1`),
+			ended("    "),
+			ran("", "judge", judgeId),
+			step("    ", "judge", `${judgeId}/s1`),
+			ended("    "),
+			ended(""),
 		]);
 
+		const call = (text: string) => expect.stringMatching(new RegExp(`^  ✓ ${text}$`));
+		const asks = (p: string, n: number) => [call(`session ${p} conversation \\d+`), ...Array(n).fill(call(`ask ${p}`))];
+		// The `memo` calls of the run memory, and the read of its notes, cut at 80 characters.
+		const memo = call('sh sh -c m="\\$HOME/\\.optmem/memo".*');
+		const notes = call("sh sh -c sed .*");
+
+		// The first ask of a remembering session reads the memory with `memo wake`.
+		const remembering = (p: string, n: number) => [
+			call(`session ${p} conversation \\d+`),
+			memo,
+			...Array(n).fill(call(`ask ${p}`)),
+		];
+
+		const expected = new Map([
+			[
+				"s0",
+				[
+					memo,
+					call("run rpi \\S+"),
+					call("run thermoloop \\S+"),
+					call("sh git rev-parse HEAD"),
+					...asks("implementer", 1),
+					call('sh sh -c git reset -q --soft "\\$1" && if git diff --cached --quiet; then echo none; '),
+					call("sh git rev-parse --short HEAD"),
+					call("run judge \\S+"),
+					notes,
+					...asks("summarizer", 1),
+				],
+			],
+			[`${rpiId}/s1`, asks("researcher", 1)],
+			[`${rpiId}/s2`, [...remembering("planner", 2), memo]],
+			[`${rpiId}/s3`, [call("run implement \\S+"), notes]],
+			[
+				`${implementId}/s0`,
+				[
+					call("sh git rev-parse HEAD"),
+					...remembering("implementer", 1),
+					memo,
+					call("sh git add -A"),
+					call("ok git diff --cached --quiet"),
+					call("sh git commit --allow-empty -m Fix the README typo"),
+					notes,
+					call(`ok git diff --quiet ${start} HEAD`),
+					call(`sh git diff --shortstat ${start} HEAD`),
+					call("sh git rev-parse --short HEAD"),
+				],
+			],
+			// The command is cut at 80 characters.
+			[
+				`${thermoloopId}/s1`,
+				[
+					call("sh git diff --binary --output=.{53}"),
+					...remembering("reviewer", 1),
+					call("sh git rev-parse --short HEAD"),
+					notes,
+				],
+			],
+			[`${judgeId}/s1`, [call("sh git rev-parse HEAD"), ...asks("judge", 1)]],
+		]);
+
+		const names = logged.stdout.flatMap((text) => /  ((?:\S+\/)?s\d+)$/.exec(text)?.[1] ?? []);
+		expect(names.toSorted()).toEqual([...expected.keys()].toSorted());
+		let logs = 0;
+
+		for (const name of names) {
+			const steps = await workflows(["log", id, name], { cwd: root });
+			expect([steps.code, steps.stderr], name).toEqual([0, []]);
+			const lines = steps.stdout.slice(1).map(loggedCall);
+			expect(lines, name).toEqual(expected.get(name));
+			logs += lines.length;
+		}
+
+		const shown = await workflows(["show", id], { cwd: root });
 		const json = await workflows(["show", id, "--json"], { cwd: root });
 		expect([json.code, json.stdout.length]).toEqual([0, 1]);
 		const tree = JSON.parse(json.stdout[0] ?? "");
@@ -992,8 +1039,8 @@ describe("workflows show", () => {
 		});
 		const flat = (calls: readonly Stored[]): Stored[] => calls.flatMap((c) => [c, ...flat(c.calls ?? [])]);
 		const calls = flat(tree.calls);
-		// The header, the 5 phase lines and the 2 report lines are not calls.
-		expect(calls).toHaveLength(shown.stdout.length - 8);
+		// Each call is in the log of one step.
+		expect(calls).toHaveLength(logs);
 
 		const conversation = await conversationOf(/Plan this change\./);
 		const planner = calls.find((c: Stored) => c.kind === "session" && c.args.profile === "planner");

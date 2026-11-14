@@ -25,6 +25,8 @@ import {
 	untimed,
 	workflows,
 	worktreeAt,
+	logLine,
+	loggedCall,
 } from "./support.ts";
 
 let root: string;
@@ -223,26 +225,32 @@ describe("workflows campaign", () => {
 
 		const steps = await workflows(["show", run.id ?? ""], { cwd: root });
 		expect(steps.stdout.slice(1).map(untimed)).toEqual([...progressOf(run.stderr), ...report]);
-		const shown = await workflows(["show", run.id ?? "", "--calls"], { cwd: root });
+		const id = run.id ?? "";
+		const logged = await workflows(["log", id], { cwd: root });
+		expect([logged.code, logged.stderr]).toEqual([0, []]);
 		const children = result.items.map((item: { result: { runId: string } }) => item.result.runId);
-		const lines = shown.stdout.map((line) => untimed(line));
 
 		const researchers: (number | undefined)[] = [];
 
 		for (const [n, child] of children.entries()) {
-			const at = lines.indexOf(`  ✓ run ship ${child}`);
+			const at = logged.stdout.findIndex((text) => loggedCall(text) === `  ✓ run ship ${child}`);
 			const item = n === 0 ? "Fix the README typo" : "Add a thanks line";
-			expect(lines.slice(at - 5, at - 3), child).toEqual([`item ${n + 1}/2: ${item}`, `  ✓ todo set ${n + 1} doing`]);
+			const head = logged.stdout[at - 1] ?? "";
+			expect(head, child).toEqual(logLine(`item ${n + 1}/2: ${item}  \\d+s  \\d+ calls  \\d+ B  s\\d+`));
+			const step = await workflows(["log", id, head.split("  ").at(-1) ?? ""], { cwd: root });
+			const calls = step.stdout.slice(1).map(loggedCall);
+			const doing = calls.indexOf(`  ✓ todo set ${n + 1} doing`);
+			expect([doing >= 0, doing < calls.indexOf(`  ✓ run ship ${child}`)], child).toEqual([true, true]);
+			const rpi = /^ {6}✓ run rpi (\S+)$/.exec(loggedCall(logged.stdout[at + 2] ?? ""))?.[1] ?? "";
 			researchers.push(await conversationOf(new RegExp(`Research the codebase[\\s\\S]*${item}`)));
-			expect(lines.slice(at + 1, at + 5)).toEqual([
-				expect.stringMatching(/^ {6}✓ run rpi \S+$/),
-				"        research",
-				`          ✓ session researcher conversation ${researchers[n]}`,
-				"          ✓ ask researcher",
+			const research = await workflows(["log", id, `${rpi}/s1`], { cwd: root });
+			expect(research.stdout).toEqual([
+				logLine(`research  \\d+s  2 calls  \\d+ B  ${rpi}/s1`),
+				logLine(`  ✓ session researcher conversation ${researchers[n]}  \\d+s  \\d+ B  ${rpi}/[0-9a-f]{16}\\.1`),
+				logLine(`  ✓ ask researcher  \\d+s  \\d+ B  ${rpi}/[0-9a-f]{16}\\.1`),
 			]);
 		}
 
-		expect(lines.slice(-report.length)).toEqual(report);
 		const json = JSON.parse((await workflows(["show", run.id ?? "", "--json"], { cwd: root })).stdout[0] ?? "");
 		const { calls } = json;
 

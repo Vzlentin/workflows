@@ -1,6 +1,6 @@
 /**
  * The calls of a saved run as `workflows show` and `workflows attach` read them: the call tree of a run and its child
- * runs, its lines for `show --calls`, and its agent rows for `show --agents`.
+ * runs, its lines for a run without steps, and its agent rows for `show --agents`.
  */
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { Todo } from "@vzlentin/harness/todo";
@@ -110,19 +110,15 @@ function shownCalls(nodes: readonly CallNode[], todos: ReadonlyMap<string, Todo[
 	});
 }
 
-/**
- * The phase lines at `indent` and the calls under them, the calls of a child run under its `run` line. A call that a
- * stopped or failed task cut has no duration. A working session prints `◉`.
- */
-export function treeLines(calls: readonly Shown[], indent: string, now: number): string[] {
-	return treeEntries(calls, indent, now).map((entry) => entry.text);
-}
-
-/** A line of `treeLines`, with the conversation of its session or its ask. */
+/** A line of `treeEntries`, with the conversation of its session or its ask. */
 export type TreeEntry = { readonly text: string; readonly conversation?: number | undefined };
 
-/** The lines of `treeLines`, each session with its conversation and each ask with the conversation that it asks. */
-export function treeEntries(calls: readonly Shown[], indent: string, now: number): TreeEntry[] {
+/**
+ * The phase lines at `indent` and the calls under them, the calls of a child run under its `run` line, each session
+ * with its conversation and each ask with the conversation that it asks. A call that a stopped or failed task cut has
+ * no duration. A working session prints `◉`.
+ */
+function treeEntries(calls: readonly Shown[], indent: string, now: number): TreeEntry[] {
 	const entries: TreeEntry[] = [];
 	let phase: string | null = null;
 

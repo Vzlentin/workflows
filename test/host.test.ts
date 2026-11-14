@@ -41,6 +41,7 @@ import {
 	tellAgent,
 	untimed,
 	workflows,
+	logLine,
 } from "./support.ts";
 
 let root: string;
@@ -661,16 +662,14 @@ describe("runs in the harness host", () => {
 			await new Promise((resolve) => setTimeout(resolve, 1000));
 			await writeFile(join(root, "g.open"), "");
 			const followed = await pending;
-			const at = "\\d\\d:\\d\\d:\\d\\d";
-			const line = (text: string) => expect.stringMatching(new RegExp(`^${at}  ${text}$`));
 			expect([followed.code, followed.stderr]).toEqual([0, []]);
 			expect(followed.stdout).toEqual([
 				`run ${id} phased running`,
-				line("wait  1 call  0 B  s1"),
-				line("  ◉ sh \\./gate\\.sh g  running  [0-9a-f]{16}\\.1"),
-				line("wait  \\d+s  1 call  0 B  s1"),
-				line("after  \\d+s  0 calls  0 B  s2"),
-				line("end ok"),
+				logLine("wait  1 call  0 B  s1"),
+				logLine("  ◉ sh \\./gate\\.sh g  running  [0-9a-f]{16}\\.1"),
+				logLine("wait  \\d+s  1 call  0 B  s1"),
+				logLine("after  \\d+s  0 calls  0 B  s2"),
+				logLine("end ok"),
 			]);
 		} finally {
 			await host.close();

@@ -127,8 +127,8 @@ commit).
 - `workflows list` gives the runs of this project, newest first, with their status. `workflows show <runId>` gives the
   steps and the report of one run. `workflows log <runId>` gives its steps with their times, call counts and sizes,
   and the calls that failed or still run, `workflows log <runId> <step>` the calls of one step with their exit codes
-  and sizes, `workflows log <runId> <call>` the full output of one call, and `--follow` follows the run. Read the output
-  of a run with `log`, not with `show --calls --json`. These commands only read; run them with bash.
+  and sizes, `workflows log <runId> <call>` the full output of one call, and `--follow` follows the run. Read the calls
+  and the output of a run with `log`. These commands only read; run them with bash.
 - The worktree of a local repository is `<parent>/.worktrees/<repository folder>/<runId>`, next to the repository.
   The branch is `<workflow>/<runId>` until a shipped run renames it from its commit subject.
 - The run directory is `${XDG_STATE_HOME:-$HOME/.local/state}/workflows/runs/<runId>`. It holds the patches of each

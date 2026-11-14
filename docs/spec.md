@@ -699,7 +699,7 @@ workflows check audit
 
 `resume`, `wait`, `stop`, `list`, `show`, `log`, `attach`, `save`, `prune`, `check` and `outline` are commands, so no
 script of these names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of
-that command, such as `usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]`, and exits 2.
+that command, such as `usage: workflows show <run-id> [--pick | [--agents] [--json]]`, and exits 2.
 
 `workflows --version` prints the version of the package, from its `package.json`, and exits 0. It ignores any other
 argument.
@@ -893,7 +893,7 @@ stopped, and `✗` when it failed in another way. The end of a stopped run is sa
 command show its steps as `·` too. A command that Ctrl+C detaches leaves them as they are. On a terminal and with `--json`, the tree draws once
 more then. A command that follows a run shows only the lines that come after it starts or reaches the run. `<title>`
 is the subject of the first `text` argument, or else the file name without `.js`, the workflow name, or `stdin`. The
-run's task ends as failed, and its saved calls stay in the project store for the resume. `workflows show <run-id> --calls` shows the failed call, and `workflows log <run-id>` shows it with the last lines of its error. See [Show](#show) and [Log](#log).
+run's task ends as failed, and its saved calls stay in the project store for the resume. `workflows log <run-id>` shows the failed call with the last lines of its error. See [Log](#log).
 
 `workflows/scripts/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
 workflows campaign, which give it the start commit`. `run("ship", { repo })` gets its own worktree and `start`, as
@@ -1457,7 +1457,6 @@ hook exists, it writes nothing, prints an error with the line to add, and exits 
 
 ```sh
 workflows show <run-id>
-workflows show <run-id> --calls
 workflows show <run-id> --agents [--json]
 workflows show <run-id> --json
 workflows show <run-id> --pick
@@ -1466,9 +1465,9 @@ workflows show <run-id> --pick
 `workflows show` prints one run from the store of its project: the line `run <run-id> <workflow> <status> <title>`,
 with the fields of `workflows list`, then the steps of [Progress](#progress) from the first line of the run, then the
 report lines, or the `failed` and `continue with` lines. Once the run's task ended, the steps that still ran are `✓`
-when it completed, `·` when it was stopped, and `✗` otherwise. A run without steps prints its calls, as `--calls` does.
+when it completed, `·` when it was stopped, and `✗` otherwise. The calls of a run are in [Log](#log).
 
-With `--calls`, `show` prints the tree of its phases and calls:
+A run without steps prints the tree of its phases and calls in place of the steps:
 
 ```text
 run <run-id> <workflow> <status> <title>
@@ -1540,7 +1539,7 @@ With `--agents --json`, the command prints one JSON object `{ "runId", "workflow
 "depth", "mark", "text" }` with the text `run <workflow> <child run-id>`, or `{ "kind": "agent", "depth", "mark", "text",
 "phase", "model", "asks", "conversation", "startedAt", "endedAt"?, "facts" }`, where `phase` is the phase line of the
 session, or `null` before the first phase line, `endedAt` is absent while the agent works, and `facts` is the text
-after the agent text in its line, such as `sonnet  1 ask  31s`. `depth` is the nesting of child runs. `--calls` and `--agents` together are bad usage.
+after the agent text in its line, such as `sonnet  1 ask  31s`. `depth` is the nesting of child runs.
 
 With `--pick`, on a terminal, the command asks `Pick an agent:` with the lines that `show` prints: the first line, the
 steps, or the calls of a run without steps, then the footer. It prints the conversation ID of the agent of the line
@@ -1561,7 +1560,7 @@ first line with an agent. A read that fails keeps the lines it has.
 
 While no line has an agent and the run's task has not ended, the command reads the store again every second, and
 Ctrl+C exits 130. A run that ended with no agent prints `workflows: run <run-id> has no agent` and exits 1. A cancel of
-the pick exits 130. `--pick` without a terminal, or with `--calls`, `--agents` or `--json`, is bad usage.
+the pick exits 130. `--pick` without a terminal, or with `--agents` or `--json`, is bad usage.
 
 `show` exits 0 for every run it can show. It reads the project store through pi-durable's storage functions, as `list`
 does, and does not start the host. It reads the file read-only as `list` does. An unknown run ID, or a run directory
@@ -1571,7 +1570,7 @@ has the fields of a title, as `list` reads them. `show` and `attach` read such a
 refuse it. Another run that another version saved, such as a run whose task has not ended, prints `workflows: run
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, or `workflows: run <run-id> was saved by
 a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
-as no run ID, prints `usage: workflows show <run-id> [--pick | [--calls | --agents] [--json]]` and exits 2.
+as no run ID, prints `usage: workflows show <run-id> [--pick | [--agents] [--json]]` and exits 2.
 
 ## Log
 
@@ -1617,8 +1616,9 @@ HH:MM:SS  end ok
   of its child runs, which have their own step lines.
 - Under each step, in start order, are its calls that did not end done (failed, cut, cancelled, running or waiting),
   and its `run` calls. A call that ended done, other than `run`, has no line: `workflows log <run-id> <step>` gives it.
-- The lines of a child run are under its `run` call, indented by 4 more, as in `show --calls`.
-- A call line has the mark, kind and label of `show --calls`. A call that ended has its duration; a call that has not
+- The lines of a child run are under its `run` call, indented by 4 more.
+- A call line has its mark (`◉` for `running`, `✓` for `done`, and `✗` for every other state), and the kind and the
+  label of the call tree of [Show](#show). A call that ended has its duration; a call that has not
   ended has its state word (`running`, `waiting`, `cancelled` or `cut`) in place of it, so that its line stays the same
   while it runs. A `sh` or `ok` call with a result has `exit <code>`. A failed `sh` call has no exit code: the store
   keeps only its error. The size is the UTF-8 size of its output in `B`, `KB` or `MB`: the stdout and the stderr of a
