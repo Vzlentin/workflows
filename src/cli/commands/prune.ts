@@ -12,13 +12,14 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { failure, git, gitSucceeds, run as runCommand } from "../../git.ts";
 import { removeTerminals } from "../../herdr.ts";
+import { PRUNE_MARKER } from "../../launch/input.ts";
 import { hasBranch, repositoryAt } from "../../launch/worktree.ts";
 import { inputWorktree, reading, runTasks } from "../../records/store.ts";
 import { hasEnded, type RunTask, runStatus, taskOf } from "../../run/past.ts";
 import { withUsage } from "../../workflow/find.ts";
 import { runsDirectory, STORE_FILE } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { savedBy, unstartedRuns } from "../saved.ts";
+import { savedBy, tasksOf, unstartedRuns } from "../saved.ts";
 
 export const PRUNE = "workflows prune [<run-id>...] [--yes] [--install-hook] [--json]";
 
@@ -27,9 +28,6 @@ const HOOK_LINE = "workflows prune --yes >/dev/null 2>&1 &";
 
 /** How old the `project` file of a run directory with no task must be before `prune` removes the directory. */
 const UNSTARTED_GRACE_MS = 60 * 60 * 1000;
-
-/** The file of a run directory that names the worktree and branch that `prune --yes` removes, until both are gone. */
-const MARKER = "pruning";
 
 /** What a marker holds. */
 const MARKED = Type.Object({ branch: Type.String(), repository: Type.String(), path: Type.String() });
@@ -49,8 +47,10 @@ type Prunable = {
  * than an hour old, and `--yes` removes them. With run IDs, it takes only these runs, with no merge check, and each one
  * must be an ended run of the project with a worktree on a branch. With `--install-hook`, it writes a post-merge hook
  * that runs `prune --yes`. It reads the project store only, and runs every `gh` call before it removes anything. A run
- * whose run directory has a marker, which an interrupted `prune --yes` left, is pruned again with no merge check. It
- * exits 1 when the removal of a run failed, after it tried the other runs.
+ * whose run directory has a marker, which an interrupted `prune --yes` left, is pruned again with no merge check when it
+ * has ended. It refuses to run without a project store, keeps an old run directory with a Git clone that has commits on
+ * no remote, and skips a run whose task started again before its removal. It exits 1 when the removal of a run failed,
+ * after it tried the other runs.
  */
 export async function prune(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const { values, positionals } = withUsage(
@@ -67,9 +67,24 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 	if (values["install-hook"]) return installHook(terminal);
 	const project = resolveProject(process.env, terminal.cwd);
 	const store = join(statePaths(project).dir, STORE_FILE);
-	const runs = await reading(store, new Map<string, RunTask[]>(), runTasks);
+	const runs = await reading(store, undefined, runTasks);
+
+	if (runs === undefined) {
+		throw new Error(
+			`cannot prune: the project store ${store} does not exist, so no run directory counts as unstarted; remove the run directories that you do not need from ${runsDirectory()} by hand`,
+		);
+	}
+
+	const ended = new Map<string, RunTask>();
+
+	for (const [id, tasks] of runs) {
+		const task = endedTask(tasks);
+
+		if (task !== undefined) ended.set(id, task);
+	}
+
 	const given = positionals.length > 0;
-	const taken = given ? await givenRuns(positionals, runs) : await mergedRuns(runs);
+	const taken = given ? await givenRuns(positionals, ended) : await mergedRuns(ended);
 
 	// A run directory gets its task within moments of its `project` file, so a younger one may be a run that starts.
 	const unstarted = given ? [] : await unstartedRuns(project, runs);
@@ -80,6 +95,15 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 
 	for (const found of taken) {
 		if (values.yes) {
+			// The run can have started a new task since the first read, such as during a `gh` call.
+			if (endedTask(await tasksOf({ id: found.runId, project, store })) === undefined) {
+				terminal.stderr(
+					`workflows: skips ${found.runId}: its run has a task that has not ended; prune it after the run ends`,
+				);
+
+				continue;
+			}
+
 			try {
 				await removeWorktree(found);
 			} catch (error) {
@@ -96,27 +120,69 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 		if (!json) terminal.stdout(line(found));
 	}
 
+	const unstartedShown: { runId: string; directory: string }[] = [];
+
 	for (const { runId, directory } of stale) {
+		if (await hasUnpushed(directory)) {
+			terminal.stderr(
+				`workflows: keeps ${directory}: it holds a Git clone with commits that are on no remote, or one that Git cannot read; push them, or remove the directory by hand`,
+			);
+
+			continue;
+		}
+
 		if (values.yes) await rm(directory, { recursive: true, force: true });
+		unstartedShown.push({ runId, directory });
 
 		if (!json) terminal.stdout(`${runId} unstarted ${directory}`);
 	}
 
 	if (json) {
 		const worktrees = pruned.map(({ runId, branch, path }) => ({ runId, branch, worktree: path }));
-		terminal.stdout(JSON.stringify([...worktrees, ...stale.map(({ runId, directory }) => ({ runId, directory }))]));
+		terminal.stdout(JSON.stringify([...worktrees, ...unstartedShown]));
 	}
 
 	return failed ? 1 : 0;
 }
 
-/** The runs of `runs`, newest first, that have a marker, or that are prunable on a merged branch. */
-async function mergedRuns(runs: ReadonlyMap<string, readonly RunTask[]>): Promise<Prunable[]> {
+/**
+ * Whether the run directory `directory` holds a Git clone, in `repository/`, with a commit that no remote branch
+ * reaches, on a local branch or at the HEAD of one of its worktrees, or a clone that Git cannot read. A directory with
+ * neither `repository/` nor `.worktrees/` holds no clone.
+ */
+async function hasUnpushed(directory: string): Promise<boolean> {
+	const clone = join(directory, "repository");
+
+	if (!existsSync(clone) && !existsSync(join(directory, ".worktrees"))) return false;
+
+	try {
+		const listed = await git(clone, "worktree", "list", "--porcelain");
+
+		const heads = listed
+			.split("\n")
+			.filter((entry) => entry.startsWith("HEAD "))
+			.map((entry) => entry.slice("HEAD ".length));
+
+		return (await git(clone, "rev-list", "-n", "1", "--branches", ...heads, "--not", "--remotes")) !== "";
+	} catch {
+		return true;
+	}
+}
+
+/** The last task of `tasks` when it has ended and a task of this version or of an earlier version saved it. */
+function endedTask(tasks: readonly RunTask[]): RunTask | undefined {
+	const task = taskOf(tasks);
+
+	return task !== undefined && hasEnded(runStatus(task)) && !savedBy(task).later ? task : undefined;
+}
+
+/** The runs of `ended`, newest first, that have a marker, or that are prunable on a merged branch. */
+async function mergedRuns(ended: ReadonlyMap<string, RunTask>): Promise<Prunable[]> {
 	const merged: Prunable[] = [];
 
-	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
+	for (const [id, task] of [...ended].sort(([a], [b]) => b.localeCompare(a))) {
 		const marked = await markedRun(id);
-		const found = marked ?? (await prunable(id, tasks));
+		const found = marked ?? (await prunable(id, task));
 
 		if (found !== undefined && (marked !== undefined || (await isMerged(found)))) merged.push(found);
 	}
@@ -125,16 +191,16 @@ async function mergedRuns(runs: ReadonlyMap<string, readonly RunTask[]>): Promis
 }
 
 /**
- * The runs `ids`, in their order, each a root run of `runs` with a marker, or prunable. It throws for the first ID that
- * is neither, before anything is removed. It checks an ID against `runs` before it reads a marker, so an ID that is a
+ * The runs `ids`, in their order, each a root run of `ended` with a marker, or prunable. It throws for the first ID that
+ * is neither, before anything is removed. It checks an ID against `ended` before it reads a marker, so an ID that is a
  * path reads no file.
  */
-async function givenRuns(ids: readonly string[], runs: ReadonlyMap<string, readonly RunTask[]>): Promise<Prunable[]> {
+async function givenRuns(ids: readonly string[], ended: ReadonlyMap<string, RunTask>): Promise<Prunable[]> {
 	const found: Prunable[] = [];
 
 	for (const id of new Set(ids)) {
-		const tasks = runs.get(id);
-		const run = tasks === undefined ? undefined : ((await markedRun(id)) ?? (await prunable(id, tasks)));
+		const task = ended.get(id);
+		const run = task === undefined ? undefined : ((await markedRun(id)) ?? (await prunable(id, task)));
 
 		if (run === undefined) {
 			throw new Error(`cannot prune ${id}: not an ended run of this project with a worktree on a branch`);
@@ -154,7 +220,7 @@ async function markedRun(id: string): Promise<Prunable | undefined> {
 	let parsed: unknown;
 
 	try {
-		parsed = JSON.parse(await readFile(join(runsDirectory(), id, MARKER), "utf8"));
+		parsed = JSON.parse(await readFile(join(runsDirectory(), id, PRUNE_MARKER), "utf8"));
 	} catch {
 		return undefined;
 	}
@@ -162,16 +228,9 @@ async function markedRun(id: string): Promise<Prunable | undefined> {
 	return Value.Check(MARKED, parsed) ? { runId: id, ...parsed } : undefined;
 }
 
-/**
- * The run `id` with `tasks` when it has a run directory, has ended, was saved by this or an earlier version, and has a
- * worktree on a branch.
- */
-async function prunable(id: string, tasks: readonly RunTask[]): Promise<Prunable | undefined> {
+/** The run `id`, whose task `task` has ended, when it has a run directory and a worktree on a branch. */
+async function prunable(id: string, task: RunTask): Promise<Prunable | undefined> {
 	if (!existsSync(join(runsDirectory(), id, "project"))) return undefined;
-
-	const task = taskOf(tasks);
-
-	if (task === undefined || !hasEnded(runStatus(task)) || savedBy(task).later) return undefined;
 	const worktree = inputWorktree(task.input);
 
 	if (worktree === undefined || (await repositoryAt(worktree.path)) === undefined) return undefined;
@@ -208,7 +267,7 @@ async function isMerged({ branch, path }: Prunable): Promise<boolean> {
  */
 async function removeWorktree(found: Prunable): Promise<void> {
 	const { runId, branch, repository, path } = found;
-	const marker = join(runsDirectory(), runId, MARKER);
+	const marker = join(runsDirectory(), runId, PRUNE_MARKER);
 	await writeFile(marker, `${JSON.stringify({ branch, repository, path })}\n`);
 
 	try {

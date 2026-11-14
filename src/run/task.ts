@@ -2,12 +2,14 @@
  * The task of every script run: its one phase, which runs the script, its outcome, the message that a background run
  * posts, and its abort.
  */
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import type { ScriptInput } from "../launch/input.ts";
+import { PRUNE_MARKER, type ScriptInput } from "../launch/input.ts";
 import { branchOf, ensureWorktree, type Renamed, renameBranch } from "../launch/worktree.ts";
 import { outcomeText, type WorkflowOutcome } from "../tool.ts";
 import { firstTask, scanTasks } from "./past.ts";
@@ -143,6 +145,9 @@ async function runPhase(
 
 			return undefined;
 		}, context);
+
+		// A new task of the run cancels the removal that an interrupted `prune --yes` left.
+		await rm(join(input.runDir, PRUNE_MARKER), { force: true });
 
 		if (worktree !== undefined) {
 			// A rerun of the first task is still the first task, which may make the branch again.

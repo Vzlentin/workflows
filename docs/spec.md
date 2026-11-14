@@ -1435,7 +1435,9 @@ JSON array of `{ "runId", "branch", "worktree" }`. A run is a candidate only whe
 worktree, the worktree exists, and the worktree is on a branch. For a run of an earlier version, `prune` reads only the
 `worktree` of its saved input. A run of a later version, a run without a worktree, a run that has not ended, a detached
 worktree, and a worktree that is not a Git worktree of its own are never pruned. `prune` reads the project store file read-only, as `list` does, and does not
-start the host.
+start the host. When the project store file does not exist, `prune` prints `workflows: cannot prune: the project store
+<store> does not exist, so no run directory counts as unstarted; remove the run directories that you do not need from
+<runs directory> by hand`, removes nothing and exits 1, also without `--yes` and with run IDs.
 
 For each candidate, `prune` first runs `git merge-base --is-ancestor HEAD origin/main` in the worktree. A branch is
 merged when that succeeds: the commit that the worktree is on is in `origin/main`, which is also true of a worktree with
@@ -1449,9 +1451,14 @@ With `--yes`, `prune` removes each merged worktree in order, and prints its line
 its `terminals`. A missing `hc` command removes no terminal; any other `hc` failure
 fails the removal of the run. Then it runs `git worktree remove <worktree>` in the run's repository, without `--force`,
 and deletes the branch with `git branch -D <branch>` when the branch still exists. Before
-it removes anything of a run, it writes the marker `runs/<run-id>/pruning`, a JSON object `{ "branch", "repository",
-"path" }`, and it deletes the marker when the worktree and the branch are gone. A run with a marker is a candidate with no
-other check and no `gh` call, so a `prune` that stopped after the worktree removal is finished by the next one. A removal
+it removes anything of a run, `prune` reads the root tasks of the run from the store again. When the last task has not
+ended now, such as a resume that started during a `gh` call, it prints `workflows: skips <run-id>: its run has a task
+that has not ended; prune it after the run ends` on stderr, removes nothing of the run, leaves it out of stdout and the
+JSON, and goes on with the next run; the exit code does not change. Then it writes the marker `runs/<run-id>/pruning`,
+a JSON object `{ "branch", "repository", "path" }`, and it deletes the marker when the worktree and the branch are gone.
+An ended run with a marker is a candidate with no other check and no `gh` call, so a `prune` that stopped after the
+worktree removal is finished by the next one. A run with a marker whose last task has not ended is not a candidate, and
+each new task of a run deletes its marker before its worktree step. A removal
 that fails, such as of a worktree with changes, prints `workflows: cannot prune <run-id>: <error>` on stderr, leaves the
 run out of stdout and the JSON, and goes on with the next run; `prune` then exits 1. A failed worktree removal deletes the
 marker, as the worktree can get more work, and so does a failed `hc` call; a failed branch removal keeps it. The run directory and the run's records
@@ -1460,7 +1467,12 @@ stay, so `list` and `show` still show the run.
 `prune` also prints one line `<run-id> unstarted <run directory>` for each run directory of the project whose run has
 no task (the `unstarted` runs of `list`) and whose `project` file is more than 1 hour old, after the merged runs. With
 `--json`, each is an object `{ "runId", "directory" }` in the same array. With `--yes`, after every `gh` call, `prune`
-removes these run directories.
+removes these run directories. A run directory with `repository/` or `.worktrees/` is kept when the clone in
+`repository/` has a commit that no remote branch reaches: `git rev-list -n 1 --branches <worktree HEADs> --not
+--remotes`, with the HEADs from `git worktree list --porcelain`, prints a commit, or a Git call fails. `prune` then
+prints `workflows: keeps <run directory>: it holds a Git clone with commits that are on no remote, or one that Git
+cannot read; push them, or remove the directory by hand` on stderr, leaves the directory out of stdout and the JSON, and
+the exit code does not change.
 
 With run IDs, `prune` takes only these runs, in the given order, with no merge check and no `gh` call, and leaves the
 unstarted run directories. Each one must be a root run of the project store of the current directory that has a

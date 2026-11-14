@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { newRunId } from "../src/launch/input.ts";
 import { TASK } from "../src/run/version.ts";
 import { git, repository, runsOf, sandbox, saveAs, storeOf, workflows, worktreeAt } from "./support.ts";
 
@@ -56,6 +57,38 @@ async function mergedRun(): Promise<{ id: string; worktree: string }> {
 }
 
 const hasBranch = (name: string) => git(repo, "branch", "--list", name) !== "";
+
+/** A run directory of the project with no task, whose `project` file is 2 hours old. */
+async function oldRunDirectory(): Promise<{ id: string; directory: string }> {
+	const id = newRunId();
+	const directory = join(runsOf(root), id);
+	await mkdir(directory, { recursive: true });
+	const file = join(directory, "project");
+	await writeFile(file, "main\n");
+	const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+	await utimes(file, old, old);
+
+	return { id, directory };
+}
+
+/** Writes the script `gated` of `repo`: a run with a worktree that fails until the file `go` exists, then asks the agent. */
+async function writeGated(): Promise<void> {
+	await writeFile(
+		join(repo, ".workflows", "scripts", "gated.js"),
+		`export const meta = { worktree: true }\nawait sh("test -f ${root}/go")\nreturn await agent("Script: one")`,
+	);
+}
+
+/** Writes the marker of an interrupted `prune --yes` in the run directory of `id`, for its worktree on feat/x. */
+async function writeMarker(id: string, worktree: string): Promise<string> {
+	const marker = join(runsOf(root), id, "pruning");
+	await writeFile(
+		marker,
+		`${JSON.stringify({ branch: "feat/x", repository: await realpath(repo), path: worktree })}\n`,
+	);
+
+	return marker;
+}
 
 describe("workflows prune", () => {
 	it("lists the ended runs on a merged branch, and removes their worktree and branch with --yes", async () => {
@@ -344,6 +377,96 @@ exec "${real}" "$@"
 		expect(pruned.code).toBe(1);
 		expect(pruned.stderr.join("\n")).toContain("gh: not logged in");
 		expect(existsSync(worktree)).toBe(true);
+	});
+
+	it("refuses, and removes nothing, when the project store does not exist", async () => {
+		const { directory } = await oldRunDirectory();
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout, pruned.stderr]).toEqual([
+			1,
+			[],
+			[
+				`workflows: cannot prune: the project store ${storeOf()} does not exist, so no run directory counts as unstarted; remove the run directories that you do not need from ${runsOf(root)} by hand`,
+			],
+		]);
+		expect(existsSync(directory)).toBe(true);
+	});
+
+	it("keeps an unstarted run directory whose clone has commits on no remote", async () => {
+		expect((await workflows(["w"], { cwd: repo })).code).toBe(0);
+		const kept = await oldRunDirectory();
+		const clean = await oldRunDirectory();
+		git(root, "clone", "-q", repo, join(kept.directory, "repository"));
+		git(join(kept.directory, "repository"), "commit", "-q", "--allow-empty", "-m", "local");
+		git(root, "clone", "-q", repo, join(clean.directory, "repository"));
+
+		const pruned = await workflows(["prune", "--yes", "--json"], { cwd: repo });
+		expect([pruned.code, pruned.stderr]).toEqual([
+			0,
+			[
+				`workflows: keeps ${kept.directory}: it holds a Git clone with commits that are on no remote, or one that Git cannot read; push them, or remove the directory by hand`,
+			],
+		]);
+		expect(JSON.parse(pruned.stdout[0] ?? "")).toEqual([{ runId: clean.id, directory: clean.directory }]);
+		expect([existsSync(kept.directory), existsSync(clean.directory)]).toEqual([true, false]);
+	});
+
+	it("keeps a run with a marker that has not ended", async () => {
+		const run = await workflows(["slow"], { cwd: repo, script: { interruptAt: { kind: "script", nth: 1 } } });
+		expect(run.code).toBe(130);
+		const worktree = worktreeAt(repo, run.id);
+		git(worktree, "branch", "-m", "feat/x");
+		await writeMarker(run.id ?? "", worktree);
+
+		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
+		expect([pruned.code, pruned.stdout]).toEqual([0, []]);
+		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([true, true]);
+	});
+
+	it("removes the marker of a run when a new task of the run starts", async () => {
+		await writeGated();
+		const failed = await workflows(["gated"], { cwd: repo });
+		expect(failed.code).toBe(1);
+		const id = failed.id ?? "";
+		const marker = await writeMarker(id, worktreeAt(repo, id));
+		await writeFile(join(root, "go"), "");
+
+		expect((await workflows(["resume", id], { cwd: repo })).code).toBe(0);
+		expect(existsSync(marker)).toBe(false);
+	});
+
+	it("skips a run whose new task started after prune read the store", async () => {
+		await writeGated();
+		const failed = await workflows(["gated"], { cwd: repo });
+		expect(failed.code).toBe(1);
+		const id = failed.id ?? "";
+		const worktree = worktreeAt(repo, id);
+		git(worktree, "branch", "-m", "feat/x");
+		// gh waits at a gate, after the first read of the store and before any removal.
+		await fake(
+			"gh",
+			`touch "${root}/reached"
+while [ ! -f "${root}/open" ]; do [ -d "${root}" ] || exit 1; sleep 0.02; done
+echo "[{\\"headRefOid\\":\\"$(git rev-parse HEAD)\\"}]"
+`,
+		);
+
+		const pending = workflows(["prune", "--yes"], { cwd: repo });
+
+		while (!existsSync(join(root, "reached"))) await new Promise((resolve) => setTimeout(resolve, 10));
+		await writeFile(join(root, "go"), "");
+		const resumed = await workflows(["resume", id], { cwd: repo, script: { interruptAt: { kind: "script", nth: 1 } } });
+		expect(resumed.code).toBe(130);
+		await writeFile(join(root, "open"), "");
+
+		const pruned = await pending;
+		expect([pruned.code, pruned.stdout, pruned.stderr]).toEqual([
+			0,
+			[],
+			[`workflows: skips ${id}: its run has a task that has not ended; prune it after the run ends`],
+		]);
+		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([true, true]);
 	});
 
 	it("installs a post-merge hook, and refuses to replace a hook or a hooks path", async () => {

@@ -22,6 +22,12 @@ export function newRunId(): string {
 	return `${stamp}-${randomBytes(4).toString("hex")}`;
 }
 
+/**
+ * The file of a run directory that names the worktree and branch that `prune --yes` removes, until both are gone. A new
+ * task of the run removes it.
+ */
+export const PRUNE_MARKER = "pruning";
+
 /** What a run needs from the command line before it starts. */
 export type Run = { readonly id: string; readonly directory: string; readonly cwd: string };
 

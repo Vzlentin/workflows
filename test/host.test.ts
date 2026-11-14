@@ -537,6 +537,9 @@ describe("runs in the harness host", () => {
 		const stopped = await workflows(["stop", id], { cwd: root });
 		expect([stopped.code, stopped.stderr]).toEqual([4, [`workflows: run ${id} has no workflow`]]);
 
+		// prune needs the project store, which a run makes.
+		await writeFile(join(root, "x.js"), 'return "done"');
+		expect((await workflows(["x.js"], { cwd: root })).code).toBe(0);
 		const young = await workflows(["prune", "--yes"], { cwd: root });
 		expect([young.code, young.stdout, existsSync(directory)]).toEqual([0, [], true]);
 		const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
