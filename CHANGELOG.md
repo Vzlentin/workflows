@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.7.0](https://github.com/Vzlentin/workflows/compare/v0.6.1...v0.7.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* `workflows show --calls` is removed. Use `workflows log <run-id>` to see the calls of a run.
+* the package `@vzlentin/workflows` no longer exports `./runs` and `./tool`. Its only export is `./package.json`.
+* `list --json` and `show --json` no longer give `caller`, and a run no longer starts the pick loop of `show --pick` and `attach --side` in herdr-app. A run saved by TASK.version 22 does not resume.
+* HERDR_ENV and HERDR_PANE_ID have no effect, and runs no longer open Herdr workspaces. Runs saved at TASK.version 21 do not resume.
+* requires @vzlentin/harness 0.7.0 and @earendil-works/* 1.5.0.
+* .workflows/agents/*.md is no longer read, and TASK.version is 20.
+* optimize ship from saved runs with overlays and a blind judge ([#83](https://github.com/Vzlentin/workflows/issues/83))
+
+### Features
+
+* add --repo to judge and thermoloop, and show await on script globals ([febb5a5](https://github.com/Vzlentin/workflows/commit/febb5a5f87d7065d6d60a4fc4277c23cc8326741))
+* add `workflows log <run-id>`, which reads a run from the project store ([8a4c1a1](https://github.com/Vzlentin/workflows/commit/8a4c1a1138b621b60218c615fca7dcaccfab7ca7))
+* add workflows outline, which prints the outline of a script ([13315ff](https://github.com/Vzlentin/workflows/commit/13315ff07a9713c27bd5f519496704b66e680015))
+* add workflows web, a control center of the runs and their agents ([2be6f1d](https://github.com/Vzlentin/workflows/commit/2be6f1d91ef0b7060b51f14b1cee153129ab5fc2))
+* export ./runs, show ended runs of earlier versions, and drop workflows web ([bed8d64](https://github.com/Vzlentin/workflows/commit/bed8d64d10a6299e6e25379fade670c9ca6a46a9))
+* give the todos of a run and of each child run in show --json ([e91c452](https://github.com/Vzlentin/workflows/commit/e91c4527d8eec2a7215918bf18da33f6a3574155))
+* give workflow scripts the todo verbs on the list of their run ([56ca1ff](https://github.com/Vzlentin/workflows/commit/56ca1ffe5810bf2ddb3fabdddf247801a23cdf55))
+* judge the shipped commit, keep campaign items at 0, and make roles names ([#93](https://github.com/Vzlentin/workflows/issues/93)) ([fca7a14](https://github.com/Vzlentin/workflows/commit/fca7a14c6c29e13fdd06346d68ec013948361809))
+* keep the items of a campaign as todos of its run ([a960156](https://github.com/Vzlentin/workflows/commit/a9601567ff709c43605659cd4c7ee2ae148a2832))
+* label run sessions and give a refused campaign item one fix round ([#85](https://github.com/Vzlentin/workflows/issues/85)) ([9fa3eb2](https://github.com/Vzlentin/workflows/commit/9fa3eb23306ae9f9ae03aa8c594336480388d4f7))
+* let a script declare its outline in meta.outline, and check it ([2560b91](https://github.com/Vzlentin/workflows/commit/2560b914a6cfc5fe2d98b75985a8f3f69f31db9e))
+* make the short log of `workflows log` show steps, and give the calls of one step on request ([e9dc2ce](https://github.com/Vzlentin/workflows/commit/e9dc2ce2e057a5f8677372942119935d2df2e68b))
+* move from the Herdr TUI to hc terminals, record the caller, and widen prune ([49e3b7e](https://github.com/Vzlentin/workflows/commit/49e3b7eccc372c079c50fb84d909fa834a477749))
+* optimize ship from saved runs with overlays and a blind judge ([#83](https://github.com/Vzlentin/workflows/issues/83)) ([0a7b35b](https://github.com/Vzlentin/workflows/commit/0a7b35b9c285598f76adee3f053e793ed670897c))
+* **pi:** `/workflows` picks a run, then an agent, in two Pi selects ([b428987](https://github.com/Vzlentin/workflows/commit/b428987d9a6127eb43b4c798f500f19f42917c6a))
+* **pi:** show each workflows run on its own line in the widget ([feedf55](https://github.com/Vzlentin/workflows/commit/feedf555115db1901fdcc7da6b72c3d3c1a0d9ff))
+* **pi:** show the workflows widget below the editor, with a header ([e321afb](https://github.com/Vzlentin/workflows/commit/e321afb81f02741fc7843e4947133c88290a20aa))
+* point the workflow tool to script.d.ts in place of its script rules ([87ecb17](https://github.com/Vzlentin/workflows/commit/87ecb17724a5aa58e17887ab45b4ad889bb00dd7))
+* remove `show --calls`; `workflows log` is the view of the calls ([fe2484c](https://github.com/Vzlentin/workflows/commit/fe2484c0b0933da0ff4dc923d3e6a89c3a507872))
+
+
+### Bug Fixes
+
+* bound every outcome text that a run gives its caller with one function ([45466f8](https://github.com/Vzlentin/workflows/commit/45466f8560e0efefa5bc9535718ce22ea2976ab0))
+* bound the result JSON in the text of a finished run ([819f7ad](https://github.com/Vzlentin/workflows/commit/819f7ad5c2b9ad6d5fb32191f93838e707d1e7ee))
+* let the sessions install the dependencies of a fresh worktree ([#88](https://github.com/Vzlentin/workflows/issues/88)) ([7100727](https://github.com/Vzlentin/workflows/commit/710072756b3560dff55bea1371fe6cb68af6641f))
+* make the state machines of the workflows engine explicit ([#91](https://github.com/Vzlentin/workflows/issues/91)) ([073308a](https://github.com/Vzlentin/workflows/commit/073308ad51c363c928bd9e07cfdc9f7438786446))
+* read meta without a deadline, and make the tests pass on Node 26, Git 2.39 and under load ([bcefbad](https://github.com/Vzlentin/workflows/commit/bcefbad1149eb1ec5ec5edd19744da4005e70466))
+* the engine starts no pick loop, and a run saves no `caller` ([9c9eb5b](https://github.com/Vzlentin/workflows/commit/9c9eb5b65e9865e94bee0d11a18104b9b1afef8a))
+
+
+### Code Refactoring
+
+* move workflows onto the new harness and Pi 1.5.0 ([#92](https://github.com/Vzlentin/workflows/issues/92)) ([8d0e15c](https://github.com/Vzlentin/workflows/commit/8d0e15c8aeaf5b4b7c637e92aed6ef79dd621639))
+* the package exports only `./package.json` ([8779180](https://github.com/Vzlentin/workflows/commit/87791807b74c64e03b7152f015b7af2727e99fdb))
+
 ## [0.6.1](https://github.com/Vzlentin/workflows/compare/v0.6.0...v0.6.1) (2026-10-31)
 
 
