@@ -11,7 +11,7 @@ import { checked, savedRun, tasksOf } from "../saved.ts";
 export const SAVE = "workflows save <run-id> <name> [--force]";
 
 /** The names of the commands. No script can have one of these names. */
-export const COMMAND_NAMES = [
+const COMMAND_NAMES = [
 	"list",
 	"resume",
 	"wait",

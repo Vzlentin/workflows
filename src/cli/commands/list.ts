@@ -26,9 +26,6 @@ type Listed = {
 /** A listed run, with its run status `run`, which orders it in the picker and gives its mark, and which JSON leaves out. */
 type Row = Listed & { readonly run: RunStatus };
 
-/** A run of `projectRuns`: a listed run with its run status, or `unstarted` for a run directory whose run has no task. */
-export type ListedRun = Listed & { readonly run: RunStatus | "unstarted" };
-
 /**
  * Prints the runs of the project of the current directory that have a run directory, newest run ID first, also the run
  * directories whose run has no task, as `unstarted`. It reads the project store only. The picker leaves out these.
@@ -48,8 +45,7 @@ export async function list(args: readonly string[], terminal: Terminal, json: bo
 		return 0;
 	}
 
-	const runs = await projectRuns(resolveProject(process.env, terminal.cwd));
-	const listed = runs.map(({ run: _run, ...shown }): Listed => shown);
+	const listed = await projectRuns(resolveProject(process.env, terminal.cwd));
 
 	if (json) terminal.stdout(JSON.stringify(listed));
 	else for (const run of listed) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
@@ -61,7 +57,7 @@ export async function list(args: readonly string[], terminal: Terminal, json: bo
  * The runs of `project` that have a run directory, newest run ID first, also the run directories whose run has no task,
  * as `unstarted`. It reads the project store only.
  */
-export async function projectRuns(project: string): Promise<ListedRun[]> {
+async function projectRuns(project: string): Promise<Listed[]> {
 	const { rows, runs } = await reading(
 		join(statePaths(project).dir, STORE_FILE),
 		{ rows: [], runs: new Map<string, RunTask[]>() },
@@ -72,16 +68,17 @@ export async function projectRuns(project: string): Promise<ListedRun[]> {
 		},
 	);
 
-	const unstarted = (await unstartedRuns(project, runs)).map(({ runId }): ListedRun => ({
+	const started = rows.map(({ run: _run, ...listed }): Listed => listed);
+
+	const unstarted = (await unstartedRuns(project, runs)).map(({ runId }): Listed => ({
 		runId,
 		workflow: "-",
 		title: "-",
 		status: "unstarted",
 		repository: null,
-		run: "unstarted",
 	}));
 
-	return [...rows, ...unstarted].sort((a, b) => b.runId.localeCompare(a.runId));
+	return [...started, ...unstarted].sort((a, b) => b.runId.localeCompare(a.runId));
 }
 
 /** The runs `runs` of the open project store `store` that have a run directory, newest run ID first. */

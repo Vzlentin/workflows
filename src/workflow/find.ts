@@ -137,24 +137,15 @@ export async function help(word: string, io: Io): Promise<string[]> {
 	return [`usage: ${usageOf(found.name, meta)}`, ...(meta.description === "" ? [] : [meta.description])];
 }
 
-/** A script of the package or the project, with its `meta.description`, which is empty without one. */
-export type ListedScript = { readonly name: string; readonly description: string };
-
-/** The scripts of the package and of the project of the directory `cwd`. */
-export async function scriptsOf(cwd: string): Promise<ListedScript[]> {
-	const { scripts } = await loadBundle(cwd);
-
-	return Promise.all(
-		Object.entries(scripts).map(async ([name, source]) => ({
-			name,
-			description: (await readMeta(source, name)).description,
-		})),
-	);
-}
-
 /** One line `<name>: <description>`, or `<name>` without a description, for each script of the package and project. */
 export async function listScripts(io: Io): Promise<string[]> {
-	const scripts = await scriptsOf(io.cwd);
+	const { scripts } = await loadBundle(io.cwd);
 
-	return scripts.map(({ name, description }) => (description === "" ? name : `${name}: ${description}`));
+	return Promise.all(
+		Object.entries(scripts).map(async ([name, source]) => {
+			const { description } = await readMeta(source, name);
+
+			return description === "" ? name : `${name}: ${description}`;
+		}),
+	);
 }

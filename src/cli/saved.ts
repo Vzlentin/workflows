@@ -136,10 +136,7 @@ export function progressOf(run: SavedRun): Promise<readonly ProgressEvent[]> {
 
 const PREFIX = "workflows.";
 
-/** The error of a command on a saved run whose task another version saved, and that the command cannot read or continue. */
-export class OtherVersion extends Error {}
-
-/** The task `latest` of the run `id`. It throws `GoneRun` when there is none, and `OtherVersion` when another version saved it. */
+/** The task `latest` of the run `id`. It throws `GoneRun` when there is none, and an error when another version saved it. */
 export function checked(
 	latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined,
 	id: string,
@@ -155,12 +152,12 @@ export function checked(
  * A task that `show` can read, with the fields of its input that it reads. `thisVersion` is true for a task of this
  * version, which `resume` can continue.
  */
-export type ReadableTask = { readonly task: RunTask; readonly input: ShownInput; readonly thisVersion: boolean };
+type ReadableTask = { readonly task: RunTask; readonly input: ShownInput; readonly thisVersion: boolean };
 
 /**
  * The task `latest` of the run `id`, with the fields of its input that `show` reads: a task of this version, or a task
  * of another version that ended and whose input has these fields. It throws `GoneRun` when there is no task, and
- * `OtherVersion` for another task of another version.
+ * an error for another task of another version.
  */
 export function readable(latest: RunTask | undefined, id: string, verb: string): ReadableTask {
 	if (latest === undefined) throw new GoneRun(`run ${id} has no workflow`);
@@ -172,12 +169,10 @@ export function readable(latest: RunTask | undefined, id: string, verb: string):
 	throw otherVersion(latest, id, verb);
 }
 
-function otherVersion(latest: RunTask, id: string, verb: string): OtherVersion {
+function otherVersion(latest: RunTask, id: string, verb: string): Error {
 	const { name, later } = savedBy(latest);
 
-	return new OtherVersion(
-		`run ${id} was saved by ${later ? "a later" : "an earlier"} version of ${name} and cannot ${verb}`,
-	);
+	return new Error(`run ${id} was saved by ${later ? "a later" : "an earlier"} version of ${name} and cannot ${verb}`);
 }
 
 /** The workflow of the task `latest` of any version, and whether the version that saved it is later than this one. */

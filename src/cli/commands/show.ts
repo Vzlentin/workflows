@@ -1,7 +1,6 @@
 /** `workflows show <run-id>`: the steps, the calls or the agents of a run. */
 import { parseArgs } from "node:util";
 import type { Todo } from "@vzlentin/harness/todo";
-import { Value } from "typebox/value";
 import { endMark, type Progress } from "../../records/steps.ts";
 import { runRecords } from "../../records/store.ts";
 import {
@@ -13,9 +12,8 @@ import {
 	type TreeEntry,
 	treeLines,
 } from "../../records/tree.ts";
-import { hasEnded, hasResult, type RunStatus, type RunTask, runStatus, taskOf, taskOutcome } from "../../run/past.ts";
+import { hasEnded, hasResult, type RunTask, runStatus, taskOf, taskOutcome } from "../../run/past.ts";
 import { reportOf, type ShownInput, title as titleOf } from "../../run/result.ts";
-import { WAITING } from "../../tool.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin, endOf } from "../follow.ts";
 import type { Choose, Terminal } from "../main.ts";
@@ -83,26 +81,21 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 }
 
 /**
- * A saved run as `show` prints it. `task` is the task that it reads, `run` is its run status, `todos` is the list of
- * todos of the run, `end` has the report lines or the error of a run that ended, and `question` is the question of a
- * run that waits for an answer. `resumable` is true for a run of this version that ended and is not `done`, which
- * `resume` continues.
+ * A saved run as `show` prints it. `task` is the task that it reads, `todos` is the list of todos of the run, and
+ * `end` has the report lines or the error of a run that ended.
  */
-export type ShownRun = {
+type ShownRun = {
 	readonly task: RunTask;
 	readonly input: ShownInput;
 	readonly title: string;
 	readonly status: string;
-	readonly run: RunStatus;
 	readonly head: string;
 	readonly ended: boolean;
-	readonly resumable: boolean;
 	readonly todos: Todo[];
 	readonly calls: Shown[];
 	readonly progress: Progress;
 	readonly footer: readonly string[];
 	readonly end: { report: string[] } | { error: string } | undefined;
-	readonly question: string | undefined;
 };
 
 /**
@@ -141,28 +134,24 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 	if (ended) progress.stop(endMark(known));
 	const head = `run ${id} ${input.name} ${status} ${title}`;
 	const calls = callTree(records, todos, id, { ended, waiting: known === "waiting", live });
-	const question = known === "waiting" && Value.Check(WAITING, result) ? result.question : undefined;
 
 	return {
 		task: checkedTask,
 		input,
 		title,
 		status,
-		run: known,
 		head,
 		ended,
-		resumable,
 		todos: todos.get(id) ?? [],
 		calls,
 		progress,
 		footer,
 		end,
-		question,
 	};
 }
 
 /** The lines of `show` of `read`, each with its agent: the head line, the lines of `showEntries`, then the footer. */
-export function shownLines(read: ShownRun, now: number): TreeEntry[] {
+function shownLines(read: ShownRun, now: number): TreeEntry[] {
 	const footer = read.footer.map((text) => ({ text }));
 
 	return [{ text: read.head }, ...showEntries(read.calls, read.progress, now), ...footer];

@@ -14,9 +14,7 @@ import type { Terminal } from "./main.ts";
  * The entry of workflows that the harness host loads: `dist/entry.js`, or `src/entry.ts` in a checkout. The command sets
  * it in harness's `entries.json` before it can start a host.
  */
-export const ENTRY = fileURLToPath(
-	new URL(import.meta.url.endsWith(".ts") ? "../entry.ts" : "../entry.js", import.meta.url),
-);
+const ENTRY = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../entry.ts" : "../entry.js", import.meta.url));
 
 /** The file name of the project store in the state folder of a project. */
 export const STORE_FILE = "durable.sqlite";

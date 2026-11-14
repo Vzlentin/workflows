@@ -2121,8 +2121,6 @@ The engine files in `src/`:
 - `cli/follow.ts`: how the command follows a run to its outcome, the answer of a waiting run, and the Ctrl+C presses.
 - `cli/commands/`: one file for each command: `start.ts`, `resume.ts` (also `wait`), `stop.ts`, `list.ts`, `show.ts`,
   `attach.ts`, `save.ts`, `prune.ts` and `outline.ts`.
-- `runs.ts`: the module `@vzlentin/workflows/runs`, for a program that reads the runs of a project as `list` and `show`
-  do: the runs and the workflows of a project, one run with its lines, and the `workflows` command as a child process.
 - `command.ts`: the `workflows` command of the package as a child process, for the `workflow` tool of the host.
 - `cli/terminal/pick.ts` and `cli/terminal/keys.ts`: the picker of `list --pick` and `show --pick`, and its keys.
 - `entry.ts`: the entry that the harness host loads, with the script task and the catch-up hook.
