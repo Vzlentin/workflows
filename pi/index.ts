@@ -16,12 +16,11 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
-	ExtensionUIContext,
 	RegisteredCommand,
 	Theme,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { type Component, Text, type TUI } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Output, Saved, WorkflowCall, WorkflowOutcome } from "../src/tool.ts";
@@ -408,7 +407,8 @@ function postable(outcome: WorkflowOutcome | undefined): outcome is WorkflowOutc
  * with the exit code `GONE_EXIT`, gets an end entry with the reason, and no message. A call of the tool that resumes a
  * followed run in the foreground gives the outcome itself: the watcher posts only when that call gave none. Shutdown
  * sends SIGINT to the waits, which detach and post nothing, and ends the retries. With a UI from `session_start`, the
- * widget `workflows` above the editor shows the step of each followed run.
+ * widget `workflows` below the editor shows a dim `workflows` header and the step of each followed run, and draws no
+ * line when no run is followed.
  */
 class Watcher {
 	readonly #pi: Api;
@@ -417,7 +417,7 @@ class Watcher {
 	readonly #controller = new AbortController();
 	/** The runs that a wait of this instance follows, by run ID, in the order they started to be followed. */
 	readonly #watched = new Map<string, Followed>();
-	#ui: ExtensionUIContext | undefined;
+	#tui: TUI | undefined;
 
 	constructor(pi: Api, command: readonly string[], tool: ToolModule) {
 		this.#pi = pi;
@@ -432,11 +432,26 @@ class Watcher {
 	}
 
 	/**
-	 * Takes the UI of the session when it has one, and follows each run of the session that has a start entry after its
-	 * last end entry.
+	 * Sets the widget in the UI of the session when it has one, and follows each run of the session that has a start
+	 * entry after its last end entry.
 	 */
 	resume(ctx: ExtensionContext): void {
-		if (ctx.hasUI) this.#ui = ctx.ui;
+		// A reload or a session switch clears every widget, so each `session_start` sets it again. `pi/package.json` lists
+		// `./index.ts` before pi-agents, Pi runs the `session_start` handlers in extension order, and the subagents widget
+		// sets its lines later, after an async read. So this widget sits above the subagents widget below the editor: keep
+		// that manifest order.
+		if (ctx.hasUI) {
+			ctx.ui.setWidget(
+				"workflows",
+				(tui, theme) => {
+					this.#tui = tui;
+
+					return this.#widget(theme);
+				},
+				{ placement: "belowEditor" },
+			);
+		}
+
 		const pending = new Map<string, { cwd: string; workflow: string }>();
 
 		for (const entry of ctx.sessionManager.getEntries()) {
@@ -469,7 +484,7 @@ class Watcher {
 
 	stop(): void {
 		this.#controller.abort();
-		this.#ui = undefined;
+		this.#tui = undefined;
 	}
 
 	#watch(runId: string, cwd: string, workflow: string): void {
@@ -485,19 +500,30 @@ class Watcher {
 			});
 	}
 
-	/** Draws one line with the workflow name, the short ID and the step of each followed run, or removes the widget. */
+	/** Asks the TUI to render the widget again. */
 	#draw(): void {
-		const ui = this.#ui;
+		this.#tui?.requestRender();
+	}
 
-		if (ui === undefined) return;
+	/**
+	 * The widget: no line when no run is followed, else a dim `workflows` header, then one line with the workflow name,
+	 * the short ID and the step of each followed run. `Text` pads and wraps the lines as Pi does for a widget of lines.
+	 */
+	#widget(theme: Theme): Component {
+		const text = new Text("", 1, 0);
 
-		if (this.#watched.size === 0) {
-			ui.setWidget("workflows", undefined);
+		return {
+			render: (width) => {
+				text.setText(this.#lines(theme));
 
-			return;
-		}
+				return text.render(width);
+			},
+			invalidate: () => text.invalidate(),
+		};
+	}
 
-		const { theme } = ui;
+	#lines(theme: Theme): string {
+		if (this.#watched.size === 0) return "";
 
 		const shown = [...this.#watched.values()].map(({ runId, workflow, steps }) => {
 			const short = runId.slice(runId.lastIndexOf("-") + 1);
@@ -505,7 +531,7 @@ class Watcher {
 			return `${theme.fg("dim", `${workflow}:`)} ${short} ${steps.step}`;
 		});
 
-		ui.setWidget("workflows", [shown.join(theme.fg("dim", " | "))]);
+		return `${theme.fg("dim", "workflows")}\n${shown.join(theme.fg("dim", " | "))}`;
 	}
 
 	/**

@@ -12,10 +12,12 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 	ExtensionUIContext,
+	ExtensionWidgetOptions,
 	Theme,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { DefaultPackageManager, loadSkills, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import { entriesPath } from "@vzlentin/harness/entries";
 import { inHerdr } from "@vzlentin/harness/herdr";
 import type { TSchema } from "typebox";
@@ -32,6 +34,8 @@ const run = promisify(execFile);
 
 /** The factory that `/workflows` gives `ctx.ui.custom`. */
 type CustomFactory = Parameters<ExtensionUIContext["custom"]>[0];
+
+type WidgetFactory = (tui: TUI, theme: Theme) => Component;
 
 type Tool = ReturnType<typeof workflowTool>;
 
@@ -278,20 +282,26 @@ const endEntry = (runId: string): CustomEntry => ({
 });
 
 /**
- * A fake UI that records each `setWidget`, `select` and `notify` call and each read of its theme. `select` gives the
- * line at the index that `choose` sets, or undefined.
+ * A fake UI that records each `setWidget`, `select` and `notify` call and each read of its theme. `setWidget` calls a
+ * factory with a fake TUI that counts `requestRender`, and keeps its component. `select` gives the line at the index
+ * that `choose` sets, or undefined.
  */
 function fakeUi() {
 	const views: RunView[] = [];
-	const widgets: [string, string[] | undefined][] = [];
+	const widgets: [string, WidgetFactory, ExtensionWidgetOptions][] = [];
+	let widget: Component | undefined;
+	let renders = 0;
 	const selects: [string, string[]][] = [];
 	const notes: [string, string | undefined][] = [];
 	let chosen: number | undefined;
 	let reads = 0;
 
 	const fake = {
-		setWidget: (key: string, content: string[] | undefined) => {
-			widgets.push([key, content]);
+		setWidget: (key: string, factory: WidgetFactory, options: ExtensionWidgetOptions) => {
+			widgets.push([key, factory, options]);
+			// SAFETY: the widget calls only `requestRender` of the TUI.
+			const tui = { requestRender: () => (renders += 1) } as never;
+			widget = factory(tui, theme);
 		},
 		select: async (title: string, lines: string[]) => {
 			selects.push([title, lines]);
@@ -317,11 +327,15 @@ function fakeUi() {
 		},
 	};
 
-	// SAFETY: the watcher calls only `setWidget` with lines or undefined, and reads only `theme`. The `/workflows` command
+	// SAFETY: the watcher calls `setWidget` only with a factory and its options, and its widget reads only the theme that
+	// the factory gets. The `/workflows` command
 	// calls only `select` with a title and lines, `notify` with a message and a type, and `custom` with a run view.
 	return {
 		ui: fake as ExtensionUIContext,
 		widgets,
+		/** The lines of the widget at a width of 80, with the end of each line trimmed, as `Text` pads to the width. */
+		lines: () => widget?.render(80).map((line) => line.trimEnd()),
+		renders: () => renders,
 		selects,
 		notes,
 		views,
@@ -779,13 +793,14 @@ describe("a background run of the workflow tool", () => {
 
 	it("removes a run that a foreground resume ends while the watcher waits to retry", async () => {
 		const pi = fakePi([startEntry("sleepy", root)]);
-		const { ui, widgets } = fakeUi();
+		const { ui, lines } = fakeUi();
 		await pi.fire("session_start", ui);
 		await vi.waitFor(async () => expect(await waits()).toEqual(["wait sleepy --json"]));
+		expect(lines()).toEqual([" workflows", " ?: sleepy starting"]);
 		await pi.registered.execute("call-1", { resume: "sleepy" }, undefined, undefined, contextOf(root));
 
 		// The first retry comes after 1 s; the run leaves the widget before it.
-		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", undefined]), { timeout: 500 });
+		await vi.waitFor(() => expect(lines()).toEqual([]), { timeout: 500 });
 		expect(pi.messages).toEqual([]);
 		expect(pi.entries.map((entry) => entry.data)).toEqual([{ runId: "sleepy", cwd: root }, { runId: "sleepy" }]);
 	});
@@ -801,51 +816,50 @@ describe("a background run of the workflow tool", () => {
 		expect(pi.entries).toHaveLength(1);
 	});
 
-	it("shows the step of a followed run in the widget, and removes the widget when the run ends", async () => {
+	it("sets the widget below the editor once, with a header and the step of a followed run, and draws no line after the run ends", async () => {
 		const pi = fakePi();
-		const { ui, widgets } = fakeUi();
+		const { ui, widgets, lines, renders } = fakeUi();
 		const id = "20261024T223428-bb814010";
 		await pi.fire("session_start", ui);
-		expect(widgets).toEqual([["workflows", undefined]]);
+		expect(widgets).toEqual([["workflows", expect.any(Function), { placement: "belowEditor" }]]);
+		expect(lines()).toEqual([]);
 		await pi.registered.execute("call-1", { resume: id, background: true }, undefined, undefined, contextOf(root));
-		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", ["campaign: bb814010 starting"]]));
+		expect(renders()).toBeGreaterThan(0);
+		await vi.waitFor(() => expect(lines()).toEqual([" workflows", " campaign: bb814010 starting"]));
 
 		await writeFile(join(root, `go-${id}`), "");
-		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", ["campaign: bb814010 ◉ round 1: review"]]));
-		expect(widgets.some(([, lines]) => lines?.some((line) => line.includes("slow disk")))).toBe(false);
+		await vi.waitFor(() => expect(lines()).toEqual([" workflows", " campaign: bb814010 ◉ round 1: review"]));
 
 		// The status of a progress line takes the place of its last line.
 		await writeFile(join(root, `status-${id}`), "");
-		await vi.waitFor(() =>
-			expect(widgets.at(-1)).toEqual(["workflows", ["campaign: bb814010 item 2/5 › round 1/3: review"]]),
-		);
+		await vi.waitFor(() => expect(lines()).toEqual([" workflows", " campaign: bb814010 item 2/5 › round 1/3: review"]));
 
 		await writeFile(join(root, `end-${id}`), "");
 		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
-		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", undefined]));
+		await vi.waitFor(() => expect(lines()).toEqual([]));
+		expect(widgets).toHaveLength(1);
 		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: `run ${id} finished: 1\none` }]);
 		expect(pi.entries[1]?.data).toEqual({ runId: id });
 	});
 
-	it("shows each run that a resume at start or a call follows, in one line", async () => {
+	it("shows each run that a resume at start or a call follows, in one line under the header", async () => {
 		const first = "20261024T223428-aaaa1111";
 		const second = "20261024T223428-bb814010";
 		const pi = fakePi([startEntry(first, root, "ship")]);
-		const { ui, widgets } = fakeUi();
+		const { ui, widgets, lines } = fakeUi();
 		await pi.fire("session_start", ui);
 		await pi.registered.execute("call-1", { resume: second, background: true }, undefined, undefined, contextOf(root));
-		await vi.waitFor(() =>
-			expect(widgets.at(-1)).toEqual(["workflows", ["ship: aaaa1111 starting | campaign: bb814010 starting"]]),
-		);
+		expect(lines()).toEqual([" workflows", " ship: aaaa1111 starting | campaign: bb814010 starting"]);
 
 		await writeFile(join(root, `go-${first}`), "");
 		await writeFile(join(root, `end-${first}`), "");
 		await vi.waitFor(() => expect(pi.messages).toHaveLength(1));
-		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", ["campaign: bb814010 starting"]]));
+		await vi.waitFor(() => expect(lines()).toEqual([" workflows", " campaign: bb814010 starting"]));
 
 		await writeFile(join(root, `go-${second}`), "");
 		await writeFile(join(root, `end-${second}`), "");
-		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", undefined]));
+		await vi.waitFor(() => expect(lines()).toEqual([]));
+		expect(widgets).toHaveLength(1);
 	});
 
 	it("draws no widget without a UI", async () => {
@@ -858,17 +872,17 @@ describe("a background run of the workflow tool", () => {
 		expect([fake.widgets, fake.reads()]).toEqual([[], 0]);
 	});
 
-	it("draws nothing after shutdown", async () => {
+	it("asks for no redraw after shutdown", async () => {
 		const pi = fakePi([startEntry("long", root, "ship")]);
-		const { ui, widgets } = fakeUi();
+		const { ui, lines, renders } = fakeUi();
 		await pi.fire("session_start", ui);
 		await vi.waitFor(() => readFile(join(root, "waiting")));
-		await vi.waitFor(() => expect(widgets.at(-1)).toEqual(["workflows", ["ship: long starting"]]));
-		const drawn = widgets.length;
+		expect(lines()).toEqual([" workflows", " ship: long starting"]);
+		const drawn = renders();
 		await pi.fire("session_shutdown");
 		await vi.waitFor(() => readFile(join(root, "detached")));
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		expect(widgets).toHaveLength(drawn);
+		expect(renders()).toBe(drawn);
 	});
 
 	it("refuses background with save, and answer without resume, and runs no command", async () => {
