@@ -12,7 +12,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { failure, git, gitSucceeds, run as runCommand } from "../../git.ts";
 import { removeTerminals } from "../../herdr.ts";
-import { repositoryAt } from "../../launch/worktree.ts";
+import { hasBranch, repositoryAt } from "../../launch/worktree.ts";
 import { inputWorktree, reading, runTasks } from "../../records/store.ts";
 import { hasEnded, type RunTask, runStatus, taskOf } from "../../run/past.ts";
 import { withUsage } from "../../workflow/find.ts";
@@ -221,7 +221,7 @@ async function removeWorktree(found: Prunable): Promise<void> {
 		throw error;
 	}
 
-	if (await gitSucceeds(repository, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`)) {
+	if (await hasBranch(repository, branch)) {
 		await git(repository, "branch", "-D", branch);
 	}
 

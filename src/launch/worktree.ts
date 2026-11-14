@@ -1,5 +1,5 @@
 /** The repository and worktree of a run: repository selection, the run's worktree and the name of its branch. */
-import { realpath, rm, stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { git, gitSucceeds, run } from "../git.ts";
 import { UsageError } from "../workflow/find.ts";
@@ -60,6 +60,11 @@ export async function selectRepository(
 	return { path: clone, start: await commitOf(clone, `refs/remotes/origin/${base}`) };
 }
 
+/** Whether `branch` is a branch of the repository at `cwd`. */
+export function hasBranch(cwd: string, branch: string): Promise<boolean> {
+	return gitSucceeds(cwd, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`);
+}
+
 async function commitOf(repository: string, ref: string): Promise<string> {
 	return git(repository, "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`);
 }
@@ -83,7 +88,7 @@ export async function prepareWorktree(
 		throw new UsageError(`--branch ${branch} is not a valid branch name`);
 	}
 
-	if (await gitSucceeds(repository.path, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`)) {
+	if (await hasBranch(repository.path, branch)) {
 		throw new UsageError(`--branch ${branch} exists`);
 	}
 
@@ -104,7 +109,7 @@ export async function checkoutWorktree(
 ): Promise<Worktree> {
 	const repository = await git(cwd, "rev-parse", "--show-toplevel");
 
-	if (!(await gitSucceeds(repository, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`))) {
+	if (!(await hasBranch(repository, branch))) {
 		throw new Error(`run ${name}: no branch ${branch}`);
 	}
 
@@ -170,35 +175,95 @@ export async function renameBranch(path: string, from: string, to: string, signa
 	return (await exists(name)) ? { kind: "raced", name } : { kind: "refused", name };
 }
 
-/** Removes the folder at `path` and the registrations of worktrees whose folder is gone. */
-async function clearWorktree(repository: string, path: string): Promise<void> {
-	await rm(path, { recursive: true, force: true });
-	await git(repository, "worktree", "prune");
+/** A worktree that `repository` lists: its path, and the branch that it has checked out. */
+type Registered = { readonly path: string; readonly branch: string | undefined };
+
+/** The worktrees that `repository` lists, from `git worktree list --porcelain`, whose entries blank lines separate. */
+async function registered(repository: string): Promise<Registered[]> {
+	const list = await git(repository, "worktree", "list", "--porcelain");
+
+	return list.split("\n\n").flatMap((entry) => {
+		const lines = entry.split("\n");
+		const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+		const branch = lines.find((line) => line.startsWith("branch refs/heads/"))?.slice("branch refs/heads/".length);
+
+		return path === undefined ? [] : [{ path, branch }];
+	});
 }
 
-/** The path of the worktree of `repository` that has `branch` checked out, or undefined when none has it. */
-async function checkedOutAt(repository: string, branch: string): Promise<string | undefined> {
-	let path: string | undefined;
+/** The realpath of the Git common directory of the repository or worktree at `path`. */
+async function commonDir(path: string): Promise<string> {
+	return realpath(resolve(path, await git(path, "rev-parse", "--git-common-dir")));
+}
 
-	for (const line of (await git(repository, "worktree", "list", "--porcelain")).split("\n")) {
-		if (line.startsWith("worktree ")) path = line.slice("worktree ".length);
-		else if (line === `branch refs/heads/${branch}`) return path;
-	}
+/** Whether the reflog of the branch `current` at `path` records its rename from `from`. */
+async function renamedFrom(path: string, from: string, current: string): Promise<boolean> {
+	const log = await run("git", ["log", "-g", "--format=%gs", `refs/heads/${current}`, "--"], path);
 
-	return undefined;
+	return (
+		log.code === 0 && log.stdout.split("\n").includes(`Branch: renamed refs/heads/${from} to refs/heads/${current}`)
+	);
 }
 
 /**
- * A worktree at `path` on `branch`, created from `start` when the branch is new. Safe to repeat after an interruption
- * at any point: an existing worktree is kept, and each attempt starts from a clean path, with no folder and no stale
- * registration. The repository's checkout stays untouched. It throws when another worktree has `branch` checked out.
+ * Checks the worktree of the run `runId`, and does not change it. It gives whether the folder exists. It throws when
+ * the folder exists but is not a worktree of the run's repository, when the worktree is on another branch than the
+ * run's branch or the name that the run renamed it to, and when the folder and the branch are both missing in a task
+ * that is not the `first` task of the run: only the first task makes the branch.
  */
-export async function ensureWorktree(repository: string, path: string, branch: string, start: string): Promise<void> {
-	if ((await repositoryAt(path)) !== undefined) return;
-	await clearWorktree(repository, path);
-	const holder = await checkedOutAt(repository, branch);
+export async function checkWorktree(runId: string, worktree: Worktree, first: boolean): Promise<boolean> {
+	const { repository, path, branch, start } = worktree;
 
-	if (holder !== undefined) throw new Error(`branch ${branch} is checked out at ${holder}`);
-	const exists = await gitSucceeds(repository, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`);
+	const found = await stat(path).then(
+		() => true,
+		() => false,
+	);
+
+	if (found) {
+		const readable =
+			(await repositoryAt(path)) !== undefined && (await commonDir(path)) === (await commonDir(repository));
+
+		if (!readable) {
+			throw new Error(
+				`run ${runId}: ${path} exists, but Git cannot read it as a worktree of ${repository}: move or repair the folder, then resume`,
+			);
+		}
+
+		const current = await git(path, "branch", "--show-current");
+
+		if (current === branch) return true;
+
+		if (current !== "" && !(await hasBranch(path, branch)) && (await renamedFrom(path, branch, current))) return true;
+
+		throw new Error(
+			`run ${runId}: the worktree ${path} is on ${current === "" ? "a detached HEAD" : current}, not on ${branch}: check out ${branch} in it, then resume`,
+		);
+	}
+
+	if (!first && !(await hasBranch(repository, branch))) {
+		throw new Error(
+			`run ${runId}: branch ${branch} does not exist, and only the first task of a run makes it from ${start}: restore the branch, then resume`,
+		);
+	}
+
+	return false;
+}
+
+/**
+ * The worktree of the run `runId`, after `checkWorktree`. Safe to repeat after an interruption at any point. An
+ * existing worktree is kept. When the folder is missing, it removes the stale registration of its path, then adds the
+ * worktree on the run's branch, and makes the branch from `start` only in the `first` task of the run. The repository's
+ * checkout stays untouched. It throws when another worktree has the branch checked out.
+ */
+export async function ensureWorktree(runId: string, worktree: Worktree, first: boolean): Promise<void> {
+	if (await checkWorktree(runId, worktree, first)) return;
+	const { repository, path, branch, start } = worktree;
+
+	for (const entry of await registered(repository)) {
+		if (entry.path === path) await git(repository, "worktree", "remove", "--force", path);
+		else if (entry.branch === branch) throw new Error(`branch ${branch} is checked out at ${entry.path}`);
+	}
+
+	const exists = await hasBranch(repository, branch);
 	await git(repository, "worktree", "add", ...(exists ? [path, branch] : ["-b", branch, path, start]));
 }

@@ -2,6 +2,7 @@
 import { isDeepStrictEqual, parseArgs } from "node:util";
 import type { Client } from "@vzlentin/harness/client";
 import type { ScriptInput } from "../../launch/input.ts";
+import { checkWorktree } from "../../launch/worktree.ts";
 import { callRecords, reading } from "../../records/store.ts";
 import { hasEnded, hasResult, runStatus, taskOf } from "../../run/past.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
@@ -70,6 +71,8 @@ export async function resume(
 
 	try {
 		if (ended) {
+			// The new task is never the first task of the run, so it refuses what its phase would refuse.
+			if (last.worktree !== undefined) await checkWorktree(run.id, last.worktree, false);
 			from = (await progressOf(run)).length;
 			client = await connectTo(terminal, run.project, true);
 			// The new task posts its outcome only when this resume runs in the background, whatever the last task did.

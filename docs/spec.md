@@ -754,6 +754,22 @@ export const meta = {
   clone of a GitHub repository gets `<run-directory>/.worktrees/repository/<run-id>`. Git creates the worktree with
   `git worktree add`. At the end, the run names the branch: see
   [Branch name](#branch-name).
+
+  Each task of the run checks the worktree before the script runs, and changes nothing when it refuses. The run then
+  fails with one of these lines:
+  - `run <run-id>: <path> exists, but Git cannot read it as a worktree of <repository>: move or repair the folder,
+    then resume`, when the folder is not its own top level, or its Git common directory is not the repository's. The
+    folder and its files stay.
+  - `run <run-id>: the worktree <path> is on <branch | a detached HEAD>, not on <expected>: check out <expected> in
+    it, then resume`. The worktree may also be on the name that the run gave the branch, when the branch `<expected>`
+    is gone and the reflog of the current branch records the rename from `<expected>`.
+  - `run <run-id>: branch <branch> does not exist, and only the first task of a run makes it from <start>: restore
+    the branch, then resume`, when the folder and the branch are both missing. Only the first task of the run, also
+    when its phase runs again, makes the branch from the start commit.
+
+  When the folder is missing, the task removes the registration of a worktree at that one path with
+  `git worktree remove --force`, if Git lists one, and adds the worktree again on the branch. It removes no folder, and
+  leaves the registrations of other paths.
 - `repo: true` adds `--repo <path>`, and shows `[--repo <repository>]` in the usage line. `<path>` is relative to the
   current directory and must be the top level of a local Git repository. The run's directory is that top level in
   place of the current directory, so `sh`, `ok`, the sessions and the child runs work in that checkout, as
@@ -1217,6 +1233,10 @@ that the run saved before it started. `campaign` does the same with its goal and
 the splits, the shipped items, the fix rounds, the questions and the rundown are not run again. It does not read the work item file again, select or clone the
 repository again, or create another branch. Answered turns are not sent to the model again. A turn that was in
 progress is sent again.
+
+Before resume starts a new task for a run with a worktree whose last task ended, it checks the worktree as each task
+does (see `worktree: true` in [Meta](#meta)), with the rule that the new task is not the first task. When the check
+refuses, it prints `workflows: <line>`, exits 1 and starts no task.
 
 With `--background`, at any position before `--`, start and resume print `run <run-id>` once the host has the run's
 task, and exit 0 without following it. With `--json`, they also print

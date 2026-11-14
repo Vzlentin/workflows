@@ -10,6 +10,7 @@ import { Value } from "typebox/value";
 import type { ScriptInput } from "../launch/input.ts";
 import { branchOf, ensureWorktree, type Renamed, renameBranch } from "../launch/worktree.ts";
 import { outcomeText, type WorkflowOutcome } from "../tool.ts";
+import { firstTask, scanTasks } from "./past.ts";
 import { addProgress } from "./progress.ts";
 import { reportOf, statusOf } from "./result.ts";
 import { runScript } from "./sandbox.ts";
@@ -144,8 +145,9 @@ async function runPhase(
 		}, context);
 
 		if (worktree !== undefined) {
-			const { repository, path, branch, start } = worktree;
-			await ensureWorktree(repository, path, branch, start);
+			// A rerun of the first task is still the first task, which may make the branch again.
+			const first = firstTask(await scanTasks(runtime, context), runId)?.id === runtime.taskId;
+			await ensureWorktree(runId, worktree, first);
 		}
 
 		const ran = await runScript(runtime, context, cwd, host, {

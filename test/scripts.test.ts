@@ -1235,18 +1235,22 @@ return "done"`,
 		expect(await readFile(join(cwd, "log"), "utf8")).toBe("x\nx\n");
 	});
 
-	it("ends the task as failed when a phase fails, and a resume continues its saved calls in a new task", async () => {
+	/** A repository with the `worktree: true` script `w`, whose body is `body` with `ROOT` as the sandbox. */
+	async function worktreeScript(body: string) {
 		const repo = join(root, "repo");
 		await repository(repo);
 		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
-		await writeFile(
-			join(scripts, "w.js"),
-			`export const meta = { worktree: true }
-const one = await agent("Script: one")
-const two = await agent("Script: two")
-return [one, two].join(", ")`,
+		await writeFile(join(scripts, "w.js"), `export const meta = { worktree: true }\n${body.replaceAll("ROOT", root)}`);
+
+		return repo;
+	}
+
+	it("ends the task as failed when a phase fails, and a resume continues its saved calls in a new task", async () => {
+		const repo = await worktreeScript(
+			`const one = await agent("Script: one")\nconst two = await agent("Script: two")\nreturn [one, two].join(", ")`,
 		);
+
 		const first = await stopped(["w", "--repo", "."], { nth: 2 }, repo);
 		expect(first.code).toBe(130);
 		const id = first.id ?? "";
@@ -1277,6 +1281,77 @@ return [one, two].join(", ")`,
 			{ status: "terminal", outcome: "failed" },
 			{ status: "terminal", outcome: "completed" },
 		]);
+	});
+
+	it("refuses a worktree folder that Git cannot read, and keeps the folder", async () => {
+		const repo = await worktreeScript(`await sh("echo x >> log")\nawait sh("ROOT/gate.sh ROOT/g")\nreturn "done"`);
+		const first = await stopped(["w", "--repo", "."], { gate: "../g" }, repo);
+		expect(first.code).toBe(130);
+		const id = first.id ?? "";
+		const worktree = worktreeAt(repo, id);
+		await rm(join(worktree, ".git"));
+		await writeFile(join(worktree, "notes.txt"), "mine\n");
+
+		const failed = await workflows(["resume", id], { cwd: repo });
+		expect(failed.code).toBe(1);
+		expect(failed.stderr.at(-2)).toBe(
+			`failed w: run ${id}: ${worktree} exists, but Git cannot read it as a worktree of ${await realpath(repo)}: move or repair the folder, then resume`,
+		);
+		expect(await readFile(join(worktree, "notes.txt"), "utf8")).toBe("mine\n");
+		expect(await readFile(join(worktree, "log"), "utf8")).toBe("x\n");
+	});
+
+	it("refuses to make the branch again after the first task, in the task and in resume", async () => {
+		const repo = await worktreeScript(`await sh("test -f ROOT/go")\nawait sh("ROOT/gate.sh ROOT/g")\nreturn "done"`);
+		const first = await workflows(["w", "--repo", "."], { cwd: repo });
+		expect(first.code).toBe(1);
+		const id = first.id ?? "";
+		await writeFile(join(root, "go"), "");
+		const second = await stopped(["resume", id], { gate: "../g" }, repo);
+		expect(second.code).toBe(130);
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "failed" }, { status: "pending" }]);
+		const branch = `w/${id}`;
+		git(repo, "worktree", "remove", "--force", worktreeAt(repo, id));
+		git(repo, "branch", "-D", branch);
+		const line = `run ${id}: branch ${branch} does not exist, and only the first task of a run makes it from ${git(repo, "rev-parse", "main")}: restore the branch, then resume`;
+
+		const failed = await workflows(["resume", id], { cwd: repo });
+		expect(failed.code).toBe(1);
+		expect(failed.stderr.at(-2)).toBe(`failed w: ${line}`);
+		expect(git(repo, "branch", "--list", branch)).toBe("");
+		const tasks = await rootTasks(id);
+		expect(tasks).toEqual([
+			{ status: "terminal", outcome: "failed" },
+			{ status: "terminal", outcome: "failed" },
+		]);
+
+		const refused = await workflows(["resume", id], { cwd: repo });
+		expect([refused.code, refused.stderr]).toEqual([1, [`workflows: ${line}`]]);
+		expect(await rootTasks(id)).toEqual(tasks);
+		expect(git(repo, "branch", "--list", branch)).toBe("");
+	});
+
+	it("refuses a worktree on another branch, and leaves that branch", async () => {
+		const repo = await worktreeScript(`await sh("echo x >> log")\nawait sh("test -f ROOT/go")\nreturn "done"`);
+		const first = await workflows(["w", "--repo", "."], { cwd: repo });
+		expect(first.code).toBe(1);
+		const id = first.id ?? "";
+		const worktree = worktreeAt(repo, id);
+		git(worktree, "switch", "-q", "-c", "other");
+		git(worktree, "commit", "-q", "--allow-empty", "-m", "other");
+		const head = git(repo, "rev-parse", "other");
+		await writeFile(join(root, "go"), "");
+
+		const refused = await workflows(["resume", id], { cwd: repo });
+		expect([refused.code, refused.stderr]).toEqual([
+			1,
+			[
+				`workflows: run ${id}: the worktree ${worktree} is on other, not on w/${id}: check out w/${id} in it, then resume`,
+			],
+		]);
+		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "failed" }]);
+		expect(git(repo, "rev-parse", "other")).toBe(head);
+		expect(git(worktree, "branch", "--show-current")).toBe("other");
 	});
 
 	it("resumes an aborted run in a new task with its saved calls", async () => {
