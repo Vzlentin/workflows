@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -63,6 +63,42 @@ afterEach(() => rm(root, { recursive: true, force: true }));
 /** Waits until the gate `name` in the sandbox is reached. */
 async function reached(name: string): Promise<void> {
 	while (!existsSync(join(root, `${name}.reached`))) await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+/** A copy of the store of the `main` project, made while no host runs, as a command read it at this time. */
+async function copyStore(): Promise<string> {
+	const copy = join(root, "before.sqlite");
+
+	for (const suffix of ["", "-wal", "-shm"]) {
+		if (existsSync(storeOf() + suffix)) await copyFile(storeOf() + suffix, copy + suffix);
+	}
+
+	return copy;
+}
+
+/**
+ * `command`, whose first read-only open of the store of the `main` project opens `copy`: the command reads the store
+ * as it was earlier, and its later reads see the store as it is.
+ */
+async function readingFrom<T>(copy: string, command: () => Promise<T>): Promise<T> {
+	const sqlite = process.getBuiltinModule("node:sqlite");
+	const original = sqlite.DatabaseSync;
+	let redirected = false;
+
+	sqlite.DatabaseSync = class extends original {
+		constructor(path: string, options?: ConstructorParameters<typeof original>[1]) {
+			const earlier = !redirected && path === storeOf() && options?.readOnly === true;
+
+			if (earlier) redirected = true;
+			super(earlier ? copy : path, options);
+		}
+	};
+
+	try {
+		return await command();
+	} finally {
+		sqlite.DatabaseSync = original;
+	}
 }
 
 /**
@@ -856,6 +892,54 @@ describe("runs in the harness host", () => {
 			await host.close();
 		}
 
+		expect(await rootTasks(id)).toEqual([
+			{ status: "terminal", outcome: "completed" },
+			{ status: "terminal", outcome: "completed" },
+		]);
+	});
+
+	it("follows the task of another resume of an ended run that read the store before that task started", async () => {
+		await writeFile(join(root, "x.js"), 'await sh("test -f ok")\nawait sh("./gate.sh g")\nreturn "done"');
+		const first = await workflows(["x.js"], { cwd: root });
+		const id = first.id ?? "";
+		expect(first.code).toBe(1);
+		const before = await copyStore();
+		await writeFile(join(root, "ok"), "");
+		const host = await startHost();
+
+		try {
+			const a = workflows(["resume", id], { cwd: root, host });
+			await reached("g");
+			const b = readingFrom(before, () => workflows(["resume", id], { cwd: root, host }));
+			await writeFile(join(root, "g.open"), "");
+			const both = await Promise.all([a, b]);
+			expect(both.map(({ code, stdout }) => [code, stdout])).toEqual([
+				[0, [`run ${id}`, "done"]],
+				[0, [`run ${id}`, "done"]],
+			]);
+		} finally {
+			await host.close();
+		}
+
+		expect(await rootTasks(id)).toEqual([
+			{ status: "terminal", outcome: "failed" },
+			{ status: "terminal", outcome: "completed" },
+		]);
+	});
+
+	it("fails a resume with another answer that read the store before the task of another resume started", async () => {
+		await writeFile(join(root, "x.js"), 'return await input("A?")');
+		const first = await workflows(["x.js"], { cwd: root });
+		const id = first.id ?? "";
+		expect(first.code).toBe(3);
+		const before = await copyStore();
+		const a = await workflows(["resume", id, "--answer", "a"], { cwd: root });
+		expect([a.code, a.stdout.at(-1)]).toEqual([0, "a"]);
+		const b = await readingFrom(before, () => workflows(["resume", id, "--answer", "b"], { cwd: root }));
+		expect([b.code, b.stderr.at(-1)]).toEqual([
+			1,
+			`workflows: run ${id} was resumed by another command with another input: follow it with workflows wait ${id}`,
+		]);
 		expect(await rootTasks(id)).toEqual([
 			{ status: "terminal", outcome: "completed" },
 			{ status: "terminal", outcome: "completed" },

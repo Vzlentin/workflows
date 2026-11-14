@@ -3,13 +3,13 @@ import { isDeepStrictEqual, parseArgs } from "node:util";
 import type { Client } from "@vzlentin/harness/client";
 import type { ScriptInput } from "../../launch/input.ts";
 import { checkWorktree } from "../../launch/worktree.ts";
-import { callRecords, reading } from "../../records/store.ts";
-import { hasEnded, hasResult, runStatus, taskOf } from "../../run/past.ts";
+import { callRecords, type Store } from "../../records/store.ts";
+import { hasEnded, hasResult, runStatus } from "../../run/past.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { type Following, follow, outcomeOf, reportOutcome } from "../follow.ts";
 import { checkVersion, connectTo, startTask } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { checked, inputOf, keysOf, oneRunId, progressOf, type SavedRun, savedRun, tasksOf } from "../saved.ts";
+import { checked, inputOf, lastTask, oneRunId, progressOf, savedRun } from "../saved.ts";
 import { programStatus } from "../terminal/redraw.ts";
 
 export const RESUME = "workflows resume <run-id> [--answer <text>] [--background] [--json]";
@@ -32,7 +32,15 @@ export async function resume(
 	const usage = wait ? WAIT : RESUME;
 	const { id, answer } = wait ? { id: oneRunId(args, usage), answer: undefined } : resumeArgs(args);
 	const run = await savedRun(id, usage);
-	const task = checked(taskOf(await tasksOf(run)), run.id, wait ? "be waited for" : "resume");
+
+	// The open input call comes from the same read as the task and its keys. A resume that reads before another
+	// resume's task starts asks for the same key as the other one.
+	const read = await lastTask(
+		run,
+		answer === undefined ? undefined : async (store) => answerTo(await openInput(store, run.id), answer),
+	);
+
+	const task = checked(read.latest, run.id, wait ? "be waited for" : "resume");
 	const { input: last } = task;
 	const status = runStatus(task);
 	const waiting = status === "waiting";
@@ -55,9 +63,14 @@ export async function resume(
 
 	// An answer that a call used replays from its record, so a resume without `--answer` drops the earlier answer.
 	const { answer: _earlier, ...unanswered } = last;
-	const input = answer === undefined ? unanswered : { ...last, answer: { call: await openInput(run), text: answer } };
-	const keys = await keysOf(run);
-	const key = ended ? keys.next : keys.keyOf(task);
+
+	const { more: given } = read;
+
+	if (answer !== undefined && given === undefined) throw new Error(`run ${run.id} has no open input call`);
+
+	const input: ScriptInput = given === undefined ? unanswered : { ...last, answer: given };
+
+	const key = ended ? read.keys.next : read.keys.keyOf(task);
 
 	// A wait never tells the terminal that it follows a run, so a second Ctrl+C exits rather than stops the run. It
 	// never asks for the answer of a waiting run.
@@ -161,17 +174,21 @@ function resumeArgs(args: readonly string[]) {
 	return { id: oneRunId(positionals, RESUME), answer: values.answer };
 }
 
-/** The document key of the `input` call that the run waits for an answer to: the last one that started and did not end. */
-async function openInput(run: SavedRun): Promise<string> {
-	const records = await reading(run.store, new Map(), (store) => callRecords(store, run.id));
-
-	const open = [...records]
-		.filter(([key, record]) => key.startsWith(`${run.id}/`) && record.kind === "input" && record.endedAt === undefined)
+/**
+ * The document key of the `input` call that the run `id` waits for an answer to, in the call records of `store`: the
+ * last one that started and did not end, or undefined when there is none.
+ */
+async function openInput(store: Store, id: string): Promise<string | undefined> {
+	const open = [...(await callRecords(store, id))]
+		.filter(([key, record]) => key.startsWith(`${id}/`) && record.kind === "input" && record.endedAt === undefined)
 		.sort(([, a], [, b]) => a.startedAt.localeCompare(b.startedAt));
 
 	const [key] = open.at(-1) ?? [];
 
-	if (key === undefined) throw new Error(`run ${run.id} has no open input call`);
-
 	return key;
+}
+
+/** The answer `text` to the open input call `call`, or undefined when there is no open input call. */
+function answerTo(call: string | undefined, text: string): { call: string; text: string } | undefined {
+	return call === undefined ? undefined : { call, text };
 }

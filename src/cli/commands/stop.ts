@@ -1,11 +1,11 @@
 /** `workflows stop <run-id>`: stops a run in its host. */
-import { hasEnded, runStatus, taskOf } from "../../run/past.ts";
+import { hasEnded, runStatus } from "../../run/past.ts";
 import { title as titleOf } from "../../run/result.ts";
 import { current } from "../../run/version.ts";
 import type { OutcomeStatus } from "../../tool.ts";
 import { abortRun } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { GoneRun, keysOf, oneRunId, progressOf, savedBy, savedRun, tasksOf } from "../saved.ts";
+import { GoneRun, lastTask, oneRunId, progressOf, savedBy, savedRun } from "../saved.ts";
 
 export const STOP = "workflows stop <run-id> [--json]";
 
@@ -15,12 +15,13 @@ export const STOP = "workflows stop <run-id> [--json]";
  */
 export async function stop(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const run = await savedRun(oneRunId(args, STOP), STOP);
-	const latest = taskOf(await tasksOf(run));
+
+	const { latest, keys } = await lastTask(run);
 
 	if (latest === undefined) throw new GoneRun(`run ${run.id} has no workflow`);
 
 	if (hasEnded(runStatus(latest))) throw new Error(`run ${run.id} is not running`);
-	const key = (await keysOf(run)).keyOf(latest);
+	const key = keys.keyOf(latest);
 	const status = runStatus(await abortRun(terminal, run.project, key));
 
 	if (status !== "aborted" && status !== "orphaned") throw new Error(`run ${run.id} is not running`);

@@ -9,8 +9,17 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import type { TaskId, TaskRecord } from "@earendil-works/pi-durable";
 import { statePaths } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
-import { inputName, progressEvents, reading, runTasks, startedTasks } from "../records/store.ts";
-import { hasEnded, type RunStatus, type RunTask, runStatus, savedInput, savedLater, taskOutcome } from "../run/past.ts";
+import { inputName, progressEvents, reading, runTasks, type Store, startedTasks } from "../records/store.ts";
+import {
+	hasEnded,
+	type RunStatus,
+	type RunTask,
+	runStatus,
+	savedInput,
+	savedLater,
+	taskOf,
+	taskOutcome,
+} from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
 import { SHOWN_INPUT, type ShownInput, statusOf } from "../run/result.ts";
 import { current } from "../run/version.ts";
@@ -96,32 +105,55 @@ export function shownStatus(task: RunTask, status: RunStatus): string {
 /** The `start` keys of the tasks of a run: the key of its task `task`, and the key of a new task. */
 export type RunKeys = { readonly keyOf: (task: RunTask) => string; readonly next: string };
 
+/** The last root task of a run, the `start` keys of its tasks, and the value of an extra read of the same snapshot. */
+export type LastTask<T> = {
+	readonly latest: RunTask | undefined;
+	readonly keys: RunKeys;
+	readonly more: T | undefined;
+};
+
 /**
- * The `start` keys of the tasks of `run`, from harness's map of keys. The key of a new task has the highest number of
- * the run's keys, plus 1.
+ * The last root task of `run` and the keys of its tasks, with the value of `more` when it is given. They come from one
+ * read of the store: harness writes a task and its key in one commit, so the read sees both or neither. It throws
+ * `GoneRun` when the store is missing.
  */
-export async function keysOf(run: SavedRun): Promise<RunKeys> {
-	const numbers = await reading(run.store, new Map<number, number>(), async (store) => {
-		const found = new Map<number, number>();
+export async function lastTask<T = undefined>(
+	run: SavedRun,
+	more?: (store: Store) => Promise<T>,
+): Promise<LastTask<T>> {
+	const read = await reading(run.store, undefined, async (store) => ({
+		latest: taskOf((await runTasks(store)).get(run.id) ?? []),
+		keys: await runKeys(store, run.id),
+		more: await more?.(store),
+	}));
 
-		for (const [key, task] of await startedTasks(store)) {
-			const n = keyNumber(run.id, key);
+	if (read === undefined) throw new GoneRun(`run ${run.id} has no workflow`);
 
-			if (n !== undefined) found.set(task, n);
-		}
+	return read;
+}
 
-		return found;
-	});
+/**
+ * The `start` keys of the tasks of the run `id` in `store`, from harness's map of keys. The key of a new task has the
+ * highest number of the run's keys, plus 1.
+ */
+async function runKeys(store: Store, id: string): Promise<RunKeys> {
+	const numbers = new Map<number, number>();
+
+	for (const [key, task] of await startedTasks(store)) {
+		const n = keyNumber(id, key);
+
+		if (n !== undefined) numbers.set(task, n);
+	}
 
 	const keyOf = (task: RunTask) => {
 		const n = numbers.get(task.id);
 
-		if (n === undefined) throw new Error(`run ${run.id} has no harness task key for its task ${task.id}`);
+		if (n === undefined) throw new Error(`run ${id} has no harness task key for its task ${task.id}`);
 
-		return taskKey(run.id, n);
+		return taskKey(id, n);
 	};
 
-	return { keyOf, next: taskKey(run.id, Math.max(0, ...numbers.values()) + 1) };
+	return { keyOf, next: taskKey(id, Math.max(0, ...numbers.values()) + 1) };
 }
 
 /** The saved input of the task `task` in the store of `run`, or undefined when the store has no such task. */

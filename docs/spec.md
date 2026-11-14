@@ -1251,9 +1251,17 @@ A run has one live task at a time. When the run's last task has not ended, becau
 the host to start, resume follows that task and prints its outcome. When the host runs, resume prints the progress
 lines of the task's current execution from its start. When no host runs, resume starts it and prints the progress
 lines that come after. A host that starts continues the unfinished runs of its project on its own. When resume starts
-a new task, it prints the progress lines of that task. When two resumes of a run start a new task at the same time,
-the first one gets the task. The other follows that task when it sent the same input, else it prints `workflows: run
-<run-id> was resumed by another command with another input: follow it with workflows wait <run-id>` and exits 1.
+a new task, it prints the progress lines of that task. Resume reads the run's tasks, their keys and the open `input`
+call in one read of the store. When two resumes of a run that ended run at the same time, there are two cases:
+
+- The other resume had not started its task when this resume read the store. Both ask for the same key, and the
+  first one gets the task. The other follows that task when it sent the same input, else it prints `workflows: run
+  <run-id> was resumed by another command with another input: follow it with workflows wait <run-id>` and exits 1.
+- The other resume had started its task. This resume acts as a resume that comes after the other one, and continues
+  from that task by the rules of this section. It follows the task when it has not ended, prints its outcome when it
+  ended with a result, and starts a new task when it ended without a result. When the task waits for an answer,
+  `--answer` answers it, and without `--answer` the resume asks for the answer as below. With `--answer` and a task
+  that does not wait, it gives the `does not wait for an answer` error below.
 
 A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows resume <run-id>`, and
 exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. The run's task ends as
@@ -1817,10 +1825,11 @@ directory, starts the host when none runs, asks it to start the run's task, and 
 - The run lists its sessions in the session-scoped document `workflows.sessions` of the project store, keyed by the
   root run ID. Each record has `run`, `conversation`, `task` and `label`, the role name that opened the
   session. A record that an earlier version saved can have no `label`. This `label` is not the call label of `show`.
-- Each try of a run is a task that harness starts with the key `wf:<run-id>#<n>`, from 1. A new task of a run gets
-  the highest `<n>` of the run's keys in harness's document of keys, plus 1. `stop`, and `resume` of a task that has not
-  ended, reach the task by its own key in that document. A task that has no key there, such as one that no `start`
-  created, fails them with `workflows: run <run-id> has no harness task key for its task <task-id>`.
+- Each try of a run is a task that harness starts with the key `wf:<run-id>#<n>`, from 1. A new task of a run gets the
+  highest `<n>` of the run's keys in harness's document of keys, plus 1. Resume reads these keys in the same read of the
+  store as the task that it continues. `stop`, and `resume` of a task that has not ended, reach the task by its own key
+  in that document. A task that has no key there, such as one that no `start` created, fails them with
+  `workflows: run <run-id> has no harness task key for its task <task-id>`.
 - The entry gives the host the catch-up hook `workflows.runs`. Before each input of the project agent, the host calls
   it with what it said the agent saw at the last catch-up, `{ lastTaskId, pending }`: the highest task ID of harness's
   document of keys, and the `workflows.run` tasks that were not terminal. The hook reads each task after `lastTaskId`,
