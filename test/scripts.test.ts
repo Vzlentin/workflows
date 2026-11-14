@@ -14,7 +14,7 @@ import { REMINDER } from "@vzlentin/harness/respond";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { AGENTS } from "../pi/run-view.ts";
+import { AGENT_ROWS } from "../pi/index.ts";
 import type { Choose } from "../src/cli/main.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { branchOf, renameBranch } from "../src/launch/worktree.ts";
@@ -613,7 +613,7 @@ describe("workflows show", () => {
 		const shown = await workflows(["show", id, "--agents"], { cwd: repo });
 
 		const printed = JSON.parse((await workflows(["show", id, "--agents", "--json"], { cwd: repo })).stdout[0] ?? "");
-		expect(Value.Check(AGENTS, printed)).toBe(true);
+		expect(Value.Check(AGENT_ROWS, printed)).toBe(true);
 		const { agents, ...head } = printed;
 
 		const child = String(agents.find((row: { kind: string }) => row.kind === "run")?.text).slice("run child ".length);

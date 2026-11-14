@@ -22,16 +22,12 @@ import { inHerdr } from "@vzlentin/harness/herdr";
 import type { TSchema } from "typebox";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import extension, { type workflowTool } from "../pi/index.ts";
-import { parseRun, RunView } from "../pi/run-view.ts";
 import workflowsEntry from "../src/entry.ts";
 import type { Host } from "../src/run/version.ts";
 import * as toolModule from "../src/tool.ts";
 import { hostModel, restoreEnvironment, sandbox, startHost } from "./support.ts";
 
 const run = promisify(execFile);
-
-/** The factory that `/workflows` gives `ctx.ui.custom`. */
-type CustomFactory = Parameters<ExtensionUIContext["custom"]>[0];
 
 type WidgetFactory = (tui: TUI, theme: Theme) => Component;
 
@@ -281,17 +277,16 @@ const endEntry = (runId: string): CustomEntry => ({
 
 /**
  * A fake UI that records each `setWidget`, `select` and `notify` call and each read of its theme. `setWidget` calls a
- * factory with a fake TUI that counts `requestRender`, and keeps its component. `select` gives the line at the index
- * that `choose` sets, or undefined.
+ * factory with a fake TUI that counts `requestRender`, and keeps its component. Each `select` gives the line at the next
+ * index that `choose` queued, or undefined when the index is undefined or the queue is empty.
  */
 function fakeUi() {
-	const views: RunView[] = [];
 	const widgets: [string, WidgetFactory, ExtensionWidgetOptions][] = [];
 	let widget: Component | undefined;
 	let renders = 0;
 	const selects: [string, string[]][] = [];
 	const notes: [string, string | undefined][] = [];
-	let chosen: number | undefined;
+	const chosen: (number | undefined)[] = [];
 	let reads = 0;
 
 	const fake = {
@@ -304,20 +299,13 @@ function fakeUi() {
 		select: async (title: string, lines: string[]) => {
 			selects.push([title, lines]);
 
-			return chosen === undefined ? undefined : lines[chosen];
+			const index = chosen.shift();
+
+			return index === undefined ? undefined : lines[index];
 		},
 		notify: (message: string, type?: string) => {
 			notes.push([message, type]);
 		},
-		custom: (factory: CustomFactory) =>
-			new Promise((resolve) => {
-				const keybindings = { matches: (data: string, binding: string) => binding === `tui.select.${data}` };
-				// SAFETY: the run view calls only `requestRender` of the TUI and `matches` of the keybindings.
-				const view = factory({ requestRender: () => {} } as never, theme, keybindings as never, resolve);
-
-				if (!(view instanceof RunView)) throw new Error("the command showed another component");
-				views.push(view);
-			}),
 		get theme() {
 			reads += 1;
 
@@ -327,7 +315,7 @@ function fakeUi() {
 
 	// SAFETY: the watcher calls `setWidget` only with a factory and its options, and its widget reads only the theme that
 	// the factory gets. The `/workflows` command
-	// calls only `select` with a title and lines, `notify` with a message and a type, and `custom` with a run view.
+	// calls only `select` with a title and lines, and `notify` with a message and a type.
 	return {
 		ui: fake as ExtensionUIContext,
 		widgets,
@@ -336,10 +324,9 @@ function fakeUi() {
 		renders: () => renders,
 		selects,
 		notes,
-		views,
 		reads: () => reads,
-		choose: (index: number | undefined) => {
-			chosen = index;
+		choose: (...indices: (number | undefined)[]) => {
+			chosen.push(...indices);
 		},
 	};
 }
@@ -906,6 +893,7 @@ describe("the /workflows command", () => {
 	const commands = async () => (await readFile(join(root, "args.log"), "utf8")).split("\n").filter(Boolean);
 
 	it("says that the project has no run, and shows no list", async () => {
+		await rm(join(root, "runs.json"));
 		const pi = fakePi();
 		const fake = fakeUi();
 		await pi.runCommand("workflows", fake.ui);
@@ -920,17 +908,24 @@ describe("the /workflows command", () => {
 		expect([fake.notes, fake.selects]).toEqual([[["workflows: no harness project", "error"]], []]);
 	});
 
-	/** An agent of `show --agents --json` that took `end` s. */
-	const agent = (conversation: number, text: string, mark: string, depth = 0, end = 31) => ({
+	/** An agent of `show --agents --json` on `model`. */
+	const agent = (conversation: number, text: string, mark: string, depth = 0, model = "sonnet") => ({
 		kind: "agent",
 		depth,
 		mark,
 		text,
+		phase: null,
+		model,
+		asks: 1,
 		conversation,
-		facts: `sonnet  1 ask  ${end}s`,
+		startedAt: "2026-10-24T22:34:28.000Z",
+		facts: [model, "1 ask", "31s"].filter(Boolean).join("  "),
 	});
 
-	/** The run `good`: a planner, two coordinators, the second of which works, and a child ship run with one agent. */
+	/**
+	 * The run `good`: a planner, a coordinator with no model, two coordinators with the same label, the second of which
+	 * works, and a child ship run with one agent.
+	 */
 	const shown = {
 		runId: good,
 		workflow: "mine",
@@ -941,189 +936,108 @@ describe("the /workflows command", () => {
 			{ kind: "phase", depth: 0, text: "plan" },
 			agent(1, "You plan the fleet.", "✓"),
 			{ kind: "phase", depth: 0, text: "work" },
-			agent(2, 'You coordinate "a".', "✗", 0, 32),
+			agent(2, 'You coordinate "a".', "✗", 0, ""),
 			agent(3, 'You coordinate "b".', "◉"),
+			agent(5, 'You coordinate "b".', "◉"),
 			{ kind: "run", depth: 0, mark: "◉", text: "run ship 20261025T120045-cccc3333" },
 			{ kind: "phase", depth: 1, text: "plan" },
 			agent(4, "Plan the item.", "✓", 1),
 		],
 	};
 
-	/**
-	 * Shows the run view of `/workflows` for the first run, and gives the view and the end of the command once the first
-	 * line of the view has `first`.
-	 */
-	const opened = async (fake: ReturnType<typeof fakeUi>, first: string = good) => {
-		const pi = fakePi();
-		fake.choose(0);
-		const before = fake.views.length;
-		await writeFile(join(root, "runs.json"), JSON.stringify(runs));
-		const ended = pi.runCommand("workflows", fake.ui);
-		await vi.waitFor(() => expect(fake.views).toHaveLength(before + 1));
-		const view = fake.views.at(-1);
+	const labels = [
+		"✓ You plan the fleet.  sonnet",
+		'✗ You coordinate "a".',
+		'◉ You coordinate "b".  sonnet',
+		'◉ You coordinate "b".  sonnet  #5',
+		"  ✓ Plan the item.  sonnet",
+	];
 
-		if (view === undefined) throw new Error("no run view");
-		await vi.waitFor(() => expect(view.render(200)[0]).toContain(first));
+	/** Runs `/workflows` with a fake UI whose selects take `indices`, and gives the fake. */
+	const picked = async (...indices: (number | undefined)[]) => {
+		const fake = fakeUi();
+		fake.choose(...indices);
+		await fakePi().runCommand("workflows", fake.ui);
 
-		return { view, ended };
+		return fake;
 	};
 
-	beforeEach(() => writeFile(join(root, "show.json"), JSON.stringify(shown)));
-
-	it("shows the phases, agents and child runs of the chosen run, and selects the agent that works", async () => {
-		const fake = fakeUi();
-		const { view, ended } = await opened(fake);
-		const lines = view.render(200);
-		expect(fake.selects).toEqual([["Show workflow run", listed]]);
-		expect(
-			lines.slice(0, -1).map((line) => line.replace(/ \S+$/, (time) => (line.includes("◉ You") ? " <time>" : time))),
-		).toEqual([
-			`mine ${good} running Mine`,
-			"  plan",
-			"    ✓ You plan the fleet.  sonnet  1 ask  31s",
-			"  work",
-			'    ✗ You coordinate "a".  sonnet  1 ask  32s',
-			'>   ◉ You coordinate "b".  sonnet  1 ask  <time>',
-			"    ◉ run ship 20261025T120045-cccc3333",
-			"      plan",
-			"        ✓ Plan the item.  sonnet  1 ask  31s",
-		]);
-		view.handleInput("cancel");
-		await ended;
-		expect((await commands()).slice(0, 2)).toEqual(["list --json", `show ${good} --agents --json`]);
-	});
-
-	it("attaches to the selected agent in herdr-app, or gives the command", async () => {
+	/** Runs `body` with `HC_TERMINAL_ID` set to `id`, or unset when `id` is undefined, and restores it after. */
+	const inTerminal = async (id: string | undefined, body: () => Promise<void>) => {
 		const saved = process.env.HC_TERMINAL_ID;
 
 		try {
-			process.env.HC_TERMINAL_ID = "t3";
-			const fake = fakeUi();
-			const herdr = await opened(fake);
-			herdr.view.handleInput("down");
-			herdr.view.handleInput("confirm");
-			await herdr.ended;
-			expect([(await commands()).at(-1), fake.notes]).toEqual([`attach ${good} --conversation 4`, []]);
-
-			delete process.env.HC_TERMINAL_ID;
-			const plain = await opened(fake);
-			plain.view.handleInput("up");
-			plain.view.handleInput("confirm");
-			await plain.ended;
-			expect((await commands()).filter((line) => line.startsWith("attach"))).toEqual([
-				`attach ${good} --conversation 4`,
-			]);
-			expect(fake.notes).toEqual([[`Run in another terminal: workflows attach ${good} --conversation 2`, "info"]]);
+			if (id === undefined) delete process.env.HC_TERMINAL_ID;
+			else process.env.HC_TERMINAL_ID = id;
+			await body();
 		} finally {
 			if (saved === undefined) delete process.env.HC_TERMINAL_ID;
 			else process.env.HC_TERMINAL_ID = saved;
 		}
+	};
+
+	beforeEach(async () => {
+		await writeFile(join(root, "runs.json"), JSON.stringify(runs));
+		await writeFile(join(root, "show.json"), JSON.stringify(shown));
 	});
 
-	it("shows the error of a first read that fails in place of the run", async () => {
-		await rm(join(root, "show.json"));
-		const fake = fakeUi();
-		const { view, ended } = await opened(fake, `workflows: no run ${good}`);
-		expect(view.render(200)).toEqual([`workflows: no run ${good}`]);
-		view.handleInput("cancel");
-		await ended;
+	it("picks a run, then one of its agents, labelled by depth, mark, text, model and a repeated conversation", async () => {
+		const fake = await picked(0, undefined);
+
+		expect(fake.selects).toEqual([
+			["Show workflow run", listed],
+			["Open an agent", labels],
+		]);
+		expect([await commands(), fake.notes]).toEqual([["list --json", `show ${good} --agents --json`], []]);
 	});
 
-	it("shows the error of a later read that fails or rejects under the tree, until a good read", async () => {
-		vi.useFakeTimers();
-
-		const agents = [{ kind: "agent", depth: 0, mark: "◉", text: "You plan.", conversation: 1, facts: "sonnet" }];
-
-		const json = JSON.stringify({
-			runId: good,
-			workflow: "mine",
-			title: "Mine",
-			status: "running",
-			ended: false,
-			agents,
+	it("attaches to the picked agent in herdr-app, or gives the command", async () => {
+		await inTerminal("t3", async () => {
+			expect((await picked(0, 4)).notes).toEqual([]);
+			expect((await picked(0, 3)).notes).toEqual([]);
+			expect((await commands()).filter((line) => line.startsWith("attach"))).toEqual([
+				`attach ${good} --conversation 4`,
+				`attach ${good} --conversation 5`,
+			]);
 		});
 
-		const tree = parseRun({ code: 0, stdout: [json], stderr: [] });
-
-		const reads = [
-			async () => tree,
-			async () => {
-				throw new Error("spawn workflows ENOENT");
-			},
-			async () => `workflows: no run ${good}`,
-			async () => tree,
-		];
-
-		const read = () => (reads.shift() ?? (async () => tree))();
-		const help = "up/down select an agent, enter attaches, escape closes";
-		const view = new RunView({ read, render: () => {}, theme, matches: () => false, done: () => {} });
-
-		try {
-			const rows = [`mine ${good} running Mine`, ">   ◉ You plan.  sonnet"];
-			await vi.advanceTimersByTimeAsync(0);
-			expect(view.render(200)).toEqual([...rows, help]);
-			await vi.advanceTimersByTimeAsync(2000);
-			expect(view.render(200)).toEqual([...rows, "spawn workflows ENOENT", help]);
-			await vi.advanceTimersByTimeAsync(2000);
-			expect(view.render(200)).toEqual([...rows, `workflows: no run ${good}`, help]);
-			await vi.advanceTimersByTimeAsync(2000);
-			expect(view.render(200)).toEqual([...rows, help]);
-		} finally {
-			view.dispose();
-			vi.useRealTimers();
-		}
+		await inTerminal(undefined, async () => {
+			expect((await picked(0, 1)).notes).toEqual([
+				[`Run in another terminal: workflows attach ${good} --conversation 2`, "info"],
+			]);
+			expect((await commands()).filter((line) => line.startsWith("attach"))).toHaveLength(2);
+		});
 	});
 
-	it("reads the run no more once a read shows that it ended", async () => {
-		vi.useFakeTimers();
+	it("says that a run with only phases and child runs has no agent, and shows no second list", async () => {
+		const rows = shown.agents.filter((row) => row.kind !== "agent");
+		await writeFile(join(root, "show.json"), JSON.stringify({ ...shown, agents: rows }));
+		const fake = await picked(0, 0);
+		expect([fake.notes, fake.selects.length]).toEqual([[[`Run ${good} has no agent`, "info"]], 1]);
+	});
 
-		const agents = [{ kind: "agent", depth: 0, mark: "✓", text: "You plan.", conversation: 1, facts: "sonnet" }];
-		const json = JSON.stringify({ runId: good, workflow: "mine", title: "Mine", status: "done", ended: true, agents });
-		const tree = parseRun({ code: 0, stdout: [json], stderr: [] });
-		let reads = 0;
+	it("gives the error of a show that fails or prints other JSON", async () => {
+		await rm(join(root, "show.json"));
+		const failed = await picked(0, 0);
+		expect([failed.notes, failed.selects.length]).toEqual([[[`workflows: no run ${good}`, "error"]], 1]);
 
-		const read = async () => {
-			reads++;
-
-			return tree;
-		};
-
-		const view = new RunView({ read, render: () => {}, theme, matches: () => false, done: () => {} });
-
-		try {
-			await vi.advanceTimersByTimeAsync(6000);
-			expect(reads).toBe(1);
-			expect(view.render(200)[0]).toBe(`mine ${good} done Mine`);
-		} finally {
-			view.dispose();
-			vi.useRealTimers();
-		}
+		await writeFile(join(root, "show.json"), "{}");
+		const other = await picked(0, 0);
+		expect(other.notes).toEqual([["workflows show did not print the expected JSON", "error"]]);
 	});
 
 	it("gives the error of an attach that fails", async () => {
-		const saved = process.env.HC_TERMINAL_ID;
 		await writeFile(join(root, "runs.json"), JSON.stringify([runs[1]]));
 		await writeFile(join(root, "show.json"), JSON.stringify({ ...shown, runId: bad }));
 
-		try {
-			process.env.HC_TERMINAL_ID = "t3";
-			const fake = fakeUi();
-			const pi = fakePi();
-			fake.choose(0);
-			const ended = pi.runCommand("workflows", fake.ui);
-			await vi.waitFor(() => expect(fake.views[0]?.render(200)[0]).toContain(bad));
-			fake.views[0]?.handleInput("confirm");
-			await ended;
-			expect(fake.notes).toEqual([
+		await inTerminal("t3", async () => {
+			expect((await picked(0, 2)).notes).toEqual([
 				[
 					`workflows: run ${bad} has no session. Run in another terminal: workflows attach ${bad} --conversation 3`,
 					"error",
 				],
 			]);
-		} finally {
-			if (saved === undefined) delete process.env.HC_TERMINAL_ID;
-			else process.env.HC_TERMINAL_ID = saved;
-		}
+		});
 	});
 });
 

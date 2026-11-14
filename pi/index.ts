@@ -16,15 +16,16 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	ExtensionUIContext,
 	RegisteredCommand,
 	Theme,
+	ThemeColor,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, type TUI } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Output, Saved, WorkflowCall, WorkflowOutcome } from "../src/tool.ts";
-import { MARKS, parseRun, RunView } from "./run-view.ts";
 
 const WORKFLOWS_PACKAGE = "@vzlentin/workflows";
 
@@ -213,6 +214,14 @@ function callLabel({ name, script, resume, save, args }: PartialCall): string {
 	return `${name} ${line.replace(/^#+/, "").trim().slice(0, 40)}`;
 }
 
+/** The theme color of each mark of a progress line. */
+const MARKS = new Map<string, ThemeColor>([
+	["✓", "success"],
+	["◉", "accent"],
+	["✗", "error"],
+	["·", "dim"],
+]);
+
 /**
  * The progress lines as the command drew them, with themed marks, then the report lines of a finished run, a line for a
  * run that started in the background, or the summary of a failed, detached or stopped one, or of one whose host stopped.
@@ -302,21 +311,75 @@ const LISTED = Type.Array(
 	Type.Object({ runId: Type.String(), workflow: Type.String(), status: Type.String(), title: Type.String() }),
 );
 
-const BINDINGS = {
-	up: "tui.select.up",
-	down: "tui.select.down",
-	confirm: "tui.select.confirm",
-	cancel: "tui.select.cancel",
-} as const;
+/**
+ * The stdout of `workflows show <run-id> --agents --json`, as far as the `/workflows` command reads it: the agents, and
+ * the phase lines and child runs between them.
+ */
+export const AGENT_ROWS = Type.Object({
+	agents: Type.Array(
+		Type.Union([
+			Type.Object({
+				kind: Type.Literal("agent"),
+				depth: Type.Number(),
+				mark: Type.String(),
+				text: Type.String(),
+				model: Type.String(),
+				conversation: Type.Number(),
+			}),
+			Type.Object({ kind: Type.Union([Type.Literal("phase"), Type.Literal("run")]) }),
+		]),
+	),
+});
+
+/** An agent row of `workflows show --agents --json`. */
+type AgentRow = Extract<Static<typeof AGENT_ROWS>["agents"][number], { kind: "agent" }>;
+
+/** The rows of a run from the output of `workflows show --agents --json`, or the error to show. */
+function agentsOf(output: Output): Static<typeof AGENT_ROWS> | string {
+	if (output.code !== 0) return output.stderr.join("\n") || `workflows show exited with ${output.code}`;
+	const invalid = "workflows show did not print the expected JSON";
+
+	try {
+		const shown: unknown = JSON.parse(output.stdout.join("\n"));
+
+		return Value.Check(AGENT_ROWS, shown) ? shown : invalid;
+	} catch {
+		return invalid;
+	}
+}
 
 /**
- * The `/workflows` command: it lists the runs of the project with `workflows list --json`, shows the chosen run in the
- * run view, and opens the chosen agent with `workflows attach --conversation` in herdr-app when `inHerdr` says that Pi
- * runs in an hc terminal, or says how to attach from another terminal.
+ * The lines of the agents for the `Open an agent` list, each with its conversation: `<indent><mark> <text>  <model>`,
+ * with two spaces of indent for each depth of child runs and no `  <model>` when the model is empty. A line that is the
+ * same as a line above it ends with `  #<conversation>`, so each line is distinct.
+ */
+function agentLines(agents: readonly AgentRow[]): Map<string, number> {
+	const lines = new Map<string, number>();
+
+	for (const { depth, mark, text, model, conversation } of agents) {
+		const line = `${"  ".repeat(depth)}${mark} ${text}${model === "" ? "" : `  ${model}`}`;
+		lines.set(lines.has(line) ? `${line}  #${conversation}` : line, conversation);
+	}
+
+	return lines;
+}
+
+/** Lets the user pick one of the lines of `options` under `title`, and gives its value, or nothing on Escape. */
+async function pick<T>(ui: ExtensionUIContext, title: string, options: Map<string, T>): Promise<T | undefined> {
+	const chosen = await ui.select(title, [...options.keys()]);
+
+	return chosen === undefined ? undefined : options.get(chosen);
+}
+
+/**
+ * The `/workflows` command: it lists the runs of the project with `workflows list --json`, lets the user pick a run,
+ * then one of its agents from `workflows show --agents --json`, and opens that agent with `workflows attach
+ * --conversation` in herdr-app when `inHerdr` says that Pi runs in an hc terminal, or says how to attach from another
+ * terminal.
  */
 export function workflowsCommand(command: readonly string[], inHerdr: InHerdr) {
 	return {
-		description: "Show a workflow run of this project, and attach to one of its agents in herdr-app",
+		description: "Pick a workflow run of this project, then one of its agents, and attach to it in herdr-app",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const listed = await runCli(command, ["list", "--json"], ctx.cwd, {});
 			const runs = listed.code === 0 ? JSON.parse(listed.stdout.join("\n")) : undefined;
@@ -333,25 +396,31 @@ export function workflowsCommand(command: readonly string[], inHerdr: InHerdr) {
 				return;
 			}
 
-			const lines = new Map(
-				runs.map((run) => [`${run.runId}  ${run.workflow}  ${run.status}  ${run.title}`, run.runId]),
+			const runId = await pick(
+				ctx.ui,
+				"Show workflow run",
+				new Map(runs.map((run) => [`${run.runId}  ${run.workflow}  ${run.status}  ${run.title}`, run.runId])),
 			);
-
-			const chosen = await ctx.ui.select("Show workflow run", [...lines.keys()]);
-			const runId = chosen === undefined ? undefined : lines.get(chosen);
 
 			if (runId === undefined) return;
 
-			const conversation = await ctx.ui.custom<number | undefined>(
-				(tui, theme, keybindings, done) =>
-					new RunView({
-						read: async () => parseRun(await runCli(command, ["show", runId, "--agents", "--json"], ctx.cwd, {})),
-						render: () => tui.requestRender(),
-						theme,
-						matches: (data, binding) => keybindings.matches(data, BINDINGS[binding]),
-						done,
-					}),
-			);
+			const shown = agentsOf(await runCli(command, ["show", runId, "--agents", "--json"], ctx.cwd, {}));
+
+			if (Value.Check(Type.String(), shown)) {
+				ctx.ui.notify(shown, "error");
+
+				return;
+			}
+
+			const agents = shown.agents.flatMap((row) => (row.kind === "agent" ? [row] : []));
+
+			if (agents.length === 0) {
+				ctx.ui.notify(`Run ${runId} has no agent`, "info");
+
+				return;
+			}
+
+			const conversation = await pick(ctx.ui, "Open an agent", agentLines(agents));
 
 			if (conversation === undefined) return;
 			const attach = ["attach", runId, "--conversation", String(conversation)];

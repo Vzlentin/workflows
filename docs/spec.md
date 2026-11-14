@@ -1511,8 +1511,7 @@ is `✓`: only the text shows it as `◉`. `phase` is `null` before the first ph
 `{ "runId", "result" }`, with the result of its child run. A `run` call whose child run started also has `todos`, the
 list of todos of the child run, and `calls`, the calls of the child run.
 
-With `--agents`, `show` prints the agents of the run, the tree that the [`/workflows`](#the-workflows-command) run
-view shows:
+With `--agents`, `show` prints the agents of the run:
 
 ```text
 run <run-id> <workflow> <status> <title>
@@ -2035,31 +2034,26 @@ text>`, or `run <run-id>: workflows exited with <code>` with no stderr, so the e
 `<run-id>  <workflow>  <status>  <title>`, under the title `Show workflow run`. With no run, it notifies
 `No workflow runs in this project`. When the list fails, it notifies its stderr as an error.
 
-The chosen run opens in the run view. It reads [`workflows show <run-id> --agents --json`](#show) at once, and again 2 s
-after each read ends, until a read shows that the run ended, and draws its tree:
+For the chosen run, it reads [`workflows show <run-id> --agents --json`](#show) once. When the `show` fails, it
+notifies its stderr as an error, such as `workflows: no run <run-id>`, or `workflows show exited with <code>` with no
+stderr. When its stdout is not the expected JSON, it notifies the error `workflows show did not print the expected
+JSON`. When the run has no agent, only phase lines and child runs, it notifies `Run <run-id> has no agent`.
+
+Else, it lists the agents of the run and of its child runs in the order of the JSON, one line each, under the title
+`Open an agent`:
 
 ```text
-<workflow> <run-id> <status> <title>
-  <phase line>
-    ✓ <agent text>  <model>  <n> asks  <duration>
->   ◉ <agent that works now>  <model>  1 ask  <duration>
-    ◉ run <workflow> <child run-id>
-      <phase line of the child run>
-        ✓ <agent text>  <model>  1 ask  <duration>
-up/down select an agent, enter attaches, escape closes
+<indent><mark> <agent text>  <model>
 ```
 
-The view shows at most 30 rows, around the selected agent. It first selects the last agent that works, else the last
-agent; a new read keeps the selected agent. A read that fails, or a `workflows` command that does not start, keeps the last tree and shows its
-error under the tree, above the help line, until the next good read. Before the first good read, the
-view shows `Reading the run...`, or the error of the last read in its place: the stderr of a `show` that fails, such as
-`workflows: no run <run-id>`, or `workflows show did not print the expected JSON`.
+The indent is two spaces for each depth of child runs. An agent with no model has no `  <model>`. When the line of an
+agent is the same as the line of an agent above it, it ends with `  #<conversation>`, so each line is distinct.
 
-Escape closes the view. Enter on an agent runs `workflows attach <run-id> --conversation <id>` when Pi runs in an hc
-terminal, as `inHerdr` of the harness of the workflows package tells from `HC_TERMINAL_ID`, which opens the agent in a
-herdr-app tab, as `workflows attach` does only there. Else, the command notifies `Run in another terminal: workflows attach <run-id> --conversation <id>`.
-When the attach fails, it notifies the error `<stderr>. Run in another terminal: workflows attach <run-id>
---conversation <id>`.
+Escape on either list ends the command. A chosen agent runs `workflows attach <run-id> --conversation <id>` when Pi runs
+in an hc terminal, as `inHerdr` of the harness of the workflows package tells from `HC_TERMINAL_ID`, which opens the
+agent in a herdr-app tab, as `workflows attach` does only there. Else, the command notifies `Run in another terminal:
+workflows attach <run-id> --conversation <id>`. When the attach fails, it notifies the error `<stderr>. Run in another
+terminal: workflows attach <run-id> --conversation <id>`.
 
 ## Run directory
 
