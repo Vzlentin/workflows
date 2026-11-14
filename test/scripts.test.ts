@@ -39,6 +39,7 @@ import {
 	setEntries,
 	startHost,
 	startList,
+	forgetResults,
 	storeOf,
 	untimed,
 	workflows,
@@ -163,9 +164,9 @@ const LIB_INTERNALS = [
 	"MEMO_INSTALL",
 	"MEMO",
 	"PLAIN",
-	"PLAIN_KEYS",
+	"NOTE_KEYS",
 	"COMPRESS_PASSES",
-	"plainAdds",
+	"noteAdds",
 	"NOTE_BYTES",
 	"memo",
 	"bytesOf",
@@ -1196,6 +1197,30 @@ return seen`,
 		expect(first.code).toBe(130);
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "ok"]);
+	});
+
+	it("commits once when commitAll runs again at resume", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const head = git(repo, "rev-parse", "HEAD");
+		await writeFile(join(repo, ".git", "info", "exclude"), "x.js\n");
+
+		await writeFile(
+			join(repo, "x.js"),
+			`await sh("echo new > new.txt")
+await commitAll("commit-once")
+await sh("${root}/gate.sh ${root}/g")
+return "done"`,
+		);
+
+		const first = await stopped(["x.js"], { gate: "../g" }, repo);
+		expect(first.code).toBe(130);
+		// The commit ran, but its result is not saved, as after a stop between the two.
+		expect(forgetResults("%commit-once%")).toBe(1);
+
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: repo });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "done"]);
+		expect(git(repo, "log", "--format=%s", `${head}..HEAD`)).toBe("commit-once");
 	});
 
 	it("runs every failed call again in one resume", async () => {

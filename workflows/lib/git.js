@@ -1,13 +1,12 @@
 // Script lib: Git steps.
 
 /**
- * Stages every change and commits it as `message` when something is staged. Safe to repeat: the check's result is
- * saved, so a commit that succeeded before a stop may run again with nothing staged.
+ * Stages every change and commits it as `message` when something is staged. Safe to repeat: the check and the commit
+ * are one command, so a repeat after a commit whose result was not saved finds nothing staged and makes no commit.
  */
 async function commitAll(message) {
 	await sh(["git", "add", "-A"]);
-
-	if (!(await ok(["git", "diff", "--cached", "--quiet"]))) await sh(["git", "commit", "--allow-empty", "-m", message]);
+	await sh(["sh", "-c", 'git diff --cached --quiet || git commit -q -m "$1"', "commit", message]);
 }
 
 /**

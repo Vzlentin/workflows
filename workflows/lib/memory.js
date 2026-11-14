@@ -12,14 +12,15 @@ const MEMO =
 // Without `memo`, the store is this file of `#<k> <note>` lines in the store folder, with no summaries.
 const PLAIN = "notes.txt";
 
-// The file of the keys of the plain notes, one line each: the number of a note is the line of its key, from 0.
-const PLAIN_KEYS = "notes.keys";
+// The file of the keys of the notes in a store, one line each. In a plain store, the number of a note is the line of
+// its key, from 0.
+const NOTE_KEYS = "notes.keys";
 
 // The most summaries that one note or wake answers before it fails.
 const COMPRESS_PASSES = 64;
 
-// The count of the plain notes that this run added, for the key `<runId>/<n>` of the next one.
-let plainAdds = 0;
+// The count of the notes that this run added, for the key `<runId>/<n>` of the next one.
+let noteAdds = 0;
 
 // The longest note that `memo note` and `memo nap` take, in UTF-8 bytes.
 const NOTE_BYTES = 280;
@@ -117,7 +118,22 @@ function optmemStore(path) {
 
 			return woken;
 		},
-		add: async (line) => compress(await memo(path, "note", line)),
+		// Writes the key `key` in `<path>/notes.keys` after the note `line`: an add that runs again finds its key and
+		// adds no note.
+		add: async (key, line) => {
+			const output = await sh([
+				"sh",
+				"-c",
+				`${MEMO} grep -qxF "$1" "$MEMORY_DIR/${NOTE_KEYS}" 2>/dev/null && exit 0; ` +
+					`"$m" note "$2" && printf "%s\\n" "$1" >> "$MEMORY_DIR/${NOTE_KEYS}"`,
+				"memo",
+				path,
+				key,
+				line,
+			]);
+
+			await compress(output);
+		},
 		// The notes as `#<k> <note>`, read from `LOG.txt`, whose fixed-width records of OptMem are `#<k> <date> <note>`
 		// padded with spaces: `memo recall` stops at 20000 bytes.
 		text: () => sh(["sh", "-c", `sed -e 's/ *$//' -e 's/^\\(#[0-9]*\\) [0-9-]* /\\1 /' "$1/LOG.txt"`, "memory", path]),
@@ -125,9 +141,9 @@ function optmemStore(path) {
 }
 
 /**
- * The plain store `path`: the file `<path>/notes.txt`, with one `#<k> <note>` line for each note. Each note has the key
- * `<runId>/<n>` in `<path>/notes.keys`, and `<k>` is the line of its key. An add that runs again finds its key and its
- * line, and an add that runs at the same time as another appends another key.
+ * The plain store `path`: the file `<path>/notes.txt`, with one `#<k> <note>` line for each note. `add(key, line)` writes
+ * `key` in `<path>/notes.keys`, and `<k>` is the line of its key. An add that runs again finds its key and its line, and
+ * an add that runs at the same time as another appends another key.
  */
 function plainStore(path) {
 	const file = `${path}/${PLAIN}`;
@@ -135,9 +151,7 @@ function plainStore(path) {
 
 	return {
 		wake: read,
-		add: async (line) => {
-			const key = `${runId}/${plainAdds++}`;
-
+		add: async (key, line) => {
 			await sh([
 				"sh",
 				"-c",
@@ -146,7 +160,7 @@ function plainStore(path) {
 					'grep -q "^#$k " "$1" || printf "#%d %s\\n" "$k" "$4" >> "$1"',
 				"memory",
 				file,
-				`${path}/${PLAIN_KEYS}`,
+				`${path}/${NOTE_KEYS}`,
 				key,
 				line,
 			]);
@@ -173,7 +187,7 @@ async function memory(ref = {}) {
 			if (line === "") continue;
 
 			const by = round === undefined ? author : `${author} r${round}`;
-			await store.add(cutNote(`${prefix}${by}: `, line));
+			await store.add(`${runId}/${noteAdds++}`, cutNote(`${prefix}${by}: `, line));
 		}
 	};
 

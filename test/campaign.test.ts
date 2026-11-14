@@ -703,7 +703,7 @@ describe("workflows campaign", () => {
 		});
 
 		expect(run.code).toBe(3);
-		const failed = /\n\nFix round: the fix round failed: child run \S+ failed: git commit failed: lint failed\n\n/;
+		const failed = /\n\nFix round: the fix round failed: child run \S+ failed: sh -c failed: lint failed\n\n/;
 		expect(run.stdout[1]).toMatch(failed);
 		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, "implement", "rundown"]);
 		const rundown = run.model.find("rundown")?.prompt;
@@ -744,7 +744,7 @@ describe("workflows campaign", () => {
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
 
 		expect(resumed.code).toBe(3);
-		const failed = /\n\nFix round: the fix round failed: child run \S+ failed: git commit failed: lint failed\n\n/;
+		const failed = /\n\nFix round: the fix round failed: child run \S+ failed: sh -c failed: lint failed\n\n/;
 		expect(resumed.stdout[1]).toMatch(failed);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["rundown"]);
 		expect(git(worktree, "reflog", "--format=%gs")).toBe(reflog);

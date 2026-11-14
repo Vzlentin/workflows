@@ -92,7 +92,16 @@ async function ship(item, extra) {
 	const shipped = { runId: result.runId, result, diff }
 
 	try {
-		await sh(["git", "-C", item.repo, "worktree", "remove", "--force", result.worktree])
+		// Skipped when the folder is gone and Git does not list the path, as after a removal whose result was not saved.
+		await sh([
+			"sh",
+			"-c",
+			'[ -e "$2" ] || git -C "$1" worktree list --porcelain | grep -qxF "worktree $2" || exit 0; ' +
+				'git -C "$1" worktree remove --force "$2"',
+			"remove",
+			item.repo,
+			result.worktree,
+		])
 	} catch (error) {
 		kept.push(`kept ${result.worktree}${branch === "" ? "" : ` on ${branch}`}: ${oneLine(error.message)}`)
 
@@ -102,7 +111,15 @@ async function ship(item, extra) {
 	if (branch === "") return shipped
 
 	try {
-		await sh(["git", "-C", item.repo, "branch", "-D", branch])
+		// Skipped when the branch is gone, as after a delete whose result was not saved.
+		await sh([
+			"sh",
+			"-c",
+			'git -C "$1" show-ref --verify --quiet "refs/heads/$2" || exit 0; git -C "$1" branch -D "$2"',
+			"delete",
+			item.repo,
+			branch,
+		])
 	} catch (error) {
 		kept.push(`kept branch ${branch}: ${oneLine(error.message)}`)
 	}

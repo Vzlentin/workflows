@@ -114,6 +114,26 @@ export const detached = (id: string | undefined) =>
 /** The project store of `project` in the sandbox. */
 export const storeOf = (project = "main") => join(statePaths(project).dir, "durable.sqlite");
 
+/**
+ * Deletes the saved result of each `sh` call that matches a pattern, as after a stop between the call and its save.
+ * Gives the count of deleted rows.
+ */
+export function forgetResults(...patterns: string[]): number {
+	const database = new DatabaseSync(storeOf());
+	const matches = patterns.map(() => `content LIKE '{"kind":"sh"' || ?`).join(" OR ");
+
+	const forgotten = database
+		.prepare(
+			`DELETE FROM document_revisions WHERE kind = 'delta' AND content LIKE '%"result"%' AND document_id IN
+			(SELECT document_id FROM document_revisions WHERE ${matches})`,
+		)
+		.run(...patterns);
+
+	database.close();
+
+	return Number(forgotten.changes);
+}
+
 /** The `workflows.run` tasks in the store of `project`. */
 async function runTasks(project: string) {
 	const storage = await openNodeSqliteStorage(storeOf(project));

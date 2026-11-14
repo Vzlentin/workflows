@@ -1,6 +1,5 @@
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
 	fake,
@@ -13,7 +12,7 @@ import {
 	runsOf,
 	sandbox,
 	statusesOf,
-	storeOf,
+	forgetResults,
 	workflows,
 	worktreeAt,
 } from "./support.ts";
@@ -35,10 +34,10 @@ afterEach(() => rm(root, { recursive: true, force: true }));
 
 const ITEM = "Fix the README typo";
 
-/** Replaces the fake `memo` with a shell script whose body is `body`. */
+/** Replaces the fake `memo` with a shell script whose body is `body`, after it makes the store as `memo init` does. */
 async function writeMemo(body: string): Promise<void> {
 	const memo = join(root, "home", ".optmem", "memo");
-	await writeFile(memo, `#!/bin/sh\n${body}\n`);
+	await writeFile(memo, `#!/bin/sh\nmkdir -p "$MEMORY_DIR"\n${body}\n`);
 	await chmod(memo, 0o755);
 }
 
@@ -167,18 +166,7 @@ describe("workflows thermoloop", () => {
 		expect(await readFile(notes, "utf8")).toBe("#0 reviewer r1: Handoff 1: one word changes.\n");
 
 		// The add ran, but its result is not saved, as after a stop between the two.
-		const database = new DatabaseSync(storeOf());
-
-		const forgotten = database
-			.prepare(
-				`DELETE FROM document_revisions WHERE kind = 'delta' AND content LIKE '%"result"%' AND document_id IN
-				(SELECT document_id FROM document_revisions WHERE content LIKE '{"kind":"sh"%reviewer r1: Handoff 1%')`,
-			)
-			.run();
-
-		database.close();
-
-		expect(forgotten.changes).toBe(1);
+		expect(forgetResults("%reviewer r1: Handoff 1%")).toBe(1);
 
 		const resumed = await workflows(["resume", first.id ?? ""], {
 			cwd: repo,
@@ -189,6 +177,34 @@ describe("workflows thermoloop", () => {
 		expect(await readFile(notes, "utf8")).toBe(
 			"#0 reviewer r1: Handoff 1: one word changes.\n#1 implementer r2: Implement 1: README.md had wrold.\n",
 		);
+	});
+
+	it("adds an OptMem note once when its add runs again at resume", async () => {
+		const first = await workflows(["thermoloop", "--item", ITEM], {
+			cwd: repo,
+			script: { edits: [THANKED], verdicts: ["FIX", "SHIP"], interruptAt: { kind: "implement", nth: 1 } },
+		});
+
+		expect(first.code).toBe(130);
+
+		// The note ran, but its result is not saved, as after a stop between the two.
+		expect(forgetResults("%reviewer r1: Handoff 1%")).toBe(1);
+
+		const resumed = await workflows(["resume", first.id ?? ""], {
+			cwd: repo,
+			script: { edits: [THANKED], verdicts: ["SHIP"] },
+		});
+
+		expect(resumed.code).toBe(0);
+		const log = await readFile(join(runsOf(root), first.id ?? "", "memory", "LOG.txt"), "utf8");
+		expect(log.match(/reviewer r1: Handoff 1/g)).toHaveLength(1);
+		const calls = (await readFile(join(root, "home", ".optmem", "calls.log"), "utf8")).trim().split("\n");
+
+		const notes = calls
+			.map((line) => JSON.parse(line).args)
+			.filter((args) => args[0] === "note" && String(args[1]).startsWith("reviewer r1: Handoff 1"));
+
+		expect(notes).toHaveLength(1);
 	});
 
 	it("fails with a clear error when memo asks for a compression without a nap block", async () => {

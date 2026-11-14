@@ -17,6 +17,7 @@ import {
 	runsOf,
 	type Script,
 	sandbox,
+	forgetResults,
 	workflows,
 } from "./support.ts";
 
@@ -300,14 +301,48 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 		const branch = git(path, "branch", "--show-current");
 		expect(branch).toMatch(/^own\//);
 		const kept = run.stdout.find((line) => line.startsWith(`kept ${path} `));
-		expect(kept).toMatch(new RegExp(`^kept \\S+ on ${branch}: git -C failed: fatal: cannot remove a locked`));
+		expect(kept).toMatch(new RegExp(`^kept \\S+ on ${branch}: sh -c failed: fatal: cannot remove a locked`));
 		// The worktree of the first ship is gone, and only its branch stays.
 		const line = run.stdout.find((text) => text.startsWith("kept branch ")) ?? "";
-		const first = /^kept branch (own\/\S+): git -C failed: /.exec(line)?.[1];
+		const first = /^kept branch (own\/\S+): sh -c failed: /.exec(line)?.[1];
 		expect(first).toBeDefined();
 		expect(first).not.toBe(branch);
 		const branches = git(repo, "branch", "--format=%(refname:short)").split("\n").toSorted();
 		expect(branches).toEqual(["main", branch, first ?? ""].toSorted());
+	}, 60_000);
+
+	it("finds nothing to remove when the removals of a ship worktree and its branch run again at resume", async () => {
+		const items = join(root, "items");
+		await mkdir(items);
+		await writeFile(
+			join(items, "one.md"),
+			`---\nrepo: ../repo\nstart: "${start}"\n---\n# One item\n\nFix the README.\n`,
+		);
+		const scripts = join(root, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+
+		await writeFile(
+			join(scripts, "ship.js"),
+			`export const meta = { args: { item: { type: "text", positional: true, required: true } }, worktree: true, exit: { blocked: 1 } }
+await sh(["git", "branch", "-m", \`own/\${runId}\`])
+return { status: "blocked", worktree: cwd, report: [] }`,
+		);
+
+		const first = await workflows(["optimize", "--workflow", "ship", "--items", "items"], {
+			cwd: root,
+			script: { inv: INV, interruptAt: { kind: "select", nth: 1 } },
+		});
+
+		expect(first.code).toBe(130);
+		// The removals ran, but their results are not saved, as after a stop between the two.
+		expect(forgetResults("%worktree%remove%", "%branch%-D%")).toBe(4);
+
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root, script: { select: ["tie"] } });
+		expect(resumed.code).toBe(0);
+		// The overlay's edit line also starts with `kept ->`.
+		expect(resumed.stdout.filter((line) => /^kept (\/|branch )/.test(line))).toEqual([]);
+		expect(git(repo, "worktree", "list", "--porcelain").split("\n\n")).toHaveLength(1);
+		expect(git(repo, "branch", "--format=%(refname:short)")).toBe("main");
 	}, 60_000);
 
 	it("harvests the lessons of a one-file overlay, and resumes an interrupted run to the same result", async () => {

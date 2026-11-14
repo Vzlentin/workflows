@@ -500,7 +500,7 @@ export default function ({ events }) {
 		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
 
 		const failed = [
-			expect.stringMatching(/^failed Fix the README typo: child run \S+ failed: git commit failed: lint failed$/),
+			expect.stringMatching(/^failed Fix the README typo: child run \S+ failed: sh -c failed: lint failed$/),
 			`continue with: workflows resume ${run.id}`,
 		];
 
@@ -992,8 +992,7 @@ describe("workflows show", () => {
 					...remembering("implementer", 1),
 					memo,
 					call("sh git add -A"),
-					call("ok git diff --cached --quiet"),
-					call("sh git commit --allow-empty -m Fix the README typo"),
+					call('sh sh -c git diff --cached --quiet \\|\\| git commit -q -m "\\$1" commit Fix the README t'),
 					notes,
 					call(`ok git diff --quiet ${start} HEAD`),
 					call(`sh git diff --shortstat ${start} HEAD`),
