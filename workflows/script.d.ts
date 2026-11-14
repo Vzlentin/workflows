@@ -239,14 +239,15 @@ declare function noteLines(notes: { readonly text: Promise<string> }): Promise<s
 
 /**
  * Stages every change, and commits it as `message` when something is staged. The check and the commit are one command,
- * so a repeat makes no second commit.
+ * so a repeat makes no second commit. The shell runs the commit with `exec`, so a stop of the run also stops the commit.
  */
 declare function commitAll(message: string): Promise<void>;
 
 /**
  * Squashes the commits since `start` into one commit with `message`, logs `commit <short> <subject>` and returns the
  * short head. When nothing changed since `start`, it makes no commit, logs `nothing to commit since <short>` and returns
- * the short head. Safe to repeat: it is one command, so a repeat resets a squash commit that was made but not saved.
+ * the short head. Safe to repeat: it is one command, so a repeat resets a squash commit that was made but not saved. The
+ * shell runs the commit with `exec`, so a stop of the run also stops the commit.
  */
 declare function squash(start: string, message: string, subject: string): Promise<string>;
 

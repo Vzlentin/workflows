@@ -2,24 +2,25 @@
 
 /**
  * Stages every change and commits it as `message` when something is staged. Safe to repeat: the check and the commit
- * are one command, so a repeat after a commit whose result was not saved finds nothing staged and makes no commit.
+ * are one command, so a repeat after a commit whose result was not saved finds nothing staged and makes no commit. The
+ * shell runs the commit with `exec`, so a stop of the run also stops the commit.
  */
 async function commitAll(message) {
 	await sh(["git", "add", "-A"]);
-	await sh(["sh", "-c", 'git diff --cached --quiet || git commit -q -m "$1"', "commit", message]);
+	await sh(["sh", "-c", 'git diff --cached --quiet || exec git commit -q -m "$1"', "commit", message]);
 }
 
 /**
  * Squashes the commits since `start` into one commit with `message`, logs `commit <short> <subject>` and returns the
  * short head. When nothing changed since `start`, it makes no commit, logs `nothing to commit since <short>` and returns
- * the short head, which is `start`.
+ * the short head, which is `start`. The shell runs the commit with `exec`, so a stop of the run also stops the commit.
  */
 async function squash(start, message, subject) {
 	// One command, so that a repeat resets a squash commit that was made but not saved.
 	const made = await sh([
 		"sh",
 		"-c",
-		'git reset -q --soft "$1" && if git diff --cached --quiet; then echo none; else git commit -q -m "$2"; fi',
+		'git reset -q --soft "$1" && if git diff --cached --quiet; then echo none; else exec git commit -q -m "$2"; fi',
 		"squash",
 		start,
 		message,

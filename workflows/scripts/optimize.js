@@ -96,7 +96,7 @@ async function ship(item, extra) {
 		await sh([
 			"sh",
 			"-c",
-			'[ -e "$2" ] || { git -C "$1" worktree prune; exit 0; }; git -C "$1" worktree remove --force "$2"',
+			'[ -e "$2" ] || { git -C "$1" worktree prune; exit 0; }; exec git -C "$1" worktree remove --force "$2"',
 			"remove",
 			item.repo,
 			result.worktree,
@@ -114,7 +114,7 @@ async function ship(item, extra) {
 		await sh([
 			"sh",
 			"-c",
-			'git -C "$1" show-ref --verify --quiet "refs/heads/$2" || exit 0; git -C "$1" branch -D "$2"',
+			'git -C "$1" show-ref --verify --quiet "refs/heads/$2" || exit 0; exec git -C "$1" branch -D "$2"',
 			"delete",
 			item.repo,
 			branch,

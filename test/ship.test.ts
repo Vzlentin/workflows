@@ -82,6 +82,17 @@ const NOTES = [
 /** The run memory of the first `n` notes of the fake model, as the start of a prompt. */
 const memory = (n: number) => `## memory\n${NOTES.slice(0, n).join("\n")}\n\n`;
 
+/** True while the process `pid` runs. */
+function running(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 describe("workflows ship", () => {
 	it("ships a work item file in two rounds and keeps the checkout", async () => {
 		await writeFile(join(repo, "AGENTS.md"), "Run the demo checks.\n");
@@ -992,7 +1003,7 @@ describe("workflows show", () => {
 					...remembering("implementer", 1),
 					memo,
 					call("sh git add -A"),
-					call('sh sh -c git diff --cached --quiet \\|\\| git commit -q -m "\\$1" commit Fix the README t'),
+					call('sh sh -c git diff --cached --quiet \\|\\| exec git commit -q -m "\\$1" commit Fix the REA'),
 					notes,
 					call(`ok git diff --quiet ${start} HEAD`),
 					call(`sh git diff --shortstat ${start} HEAD`),
@@ -1350,7 +1361,11 @@ describe("workflows resume of ship runs", () => {
 	it("continues a Git step interrupted between the implement and review sessions", async () => {
 		const hook = join(repo, ".git", "hooks", "pre-commit");
 		const gate = join(root, "gate");
-		await writeFile(hook, `#!/bin/sh\ntouch "${gate}.reached"\nwhile [ ! -f "${gate}.open" ]; do sleep 0.02; done\n`);
+		// Git runs the hook as its child, so the hook's parent is the `git commit` of the step.
+		await writeFile(
+			hook,
+			`#!/bin/sh\necho $PPID > "${gate}.git"\ntouch "${gate}.reached"\nwhile [ ! -f "${gate}.open" ]; do sleep 0.02; done\n`,
+		);
 		await chmod(hook, 0o755);
 		const interrupt = new AbortController();
 
@@ -1365,6 +1380,11 @@ describe("workflows resume of ship runs", () => {
 		// The command detaches and closes its host, which stops the Git step, before the gate opens.
 		const first = await pending;
 		await writeFile(`${gate}.open`, "");
+		// A `git commit` that the stop did not reach makes its commit before it ends.
+		const commit = Number(await readFile(`${gate}.git`, "utf8"));
+
+		while (running(commit)) await new Promise((resolve) => setTimeout(resolve, 10));
+
 		expect(first.code).toBe(130);
 		expect(first.model.calls.map((call) => call.kind)).toEqual(["research", "plan", "handoff", "implement"]);
 		expect(git(worktreeOf(first.id), "log", "--format=%s")).toBe("initial");
