@@ -506,8 +506,9 @@ class Watcher {
 	}
 
 	/**
-	 * The widget: no line when no run is followed, else a dim `workflows` header, then one line with the workflow name,
-	 * the short ID and the step of each followed run. `Text` pads and wraps the lines as Pi does for a widget of lines.
+	 * The widget: no line when no run is followed, else a dim `workflows` header, then one line for each followed run,
+	 * with its workflow name, its short ID and its step.
+	 * `Text` pads and wraps the lines as Pi does for a widget of lines.
 	 */
 	#widget(theme: Theme): Component {
 		const text = new Text("", 1, 0);
@@ -531,7 +532,7 @@ class Watcher {
 			return `${theme.fg("dim", `${workflow}:`)} ${short} ${steps.step}`;
 		});
 
-		return `${theme.fg("dim", "workflows")}\n${shown.join(theme.fg("dim", " | "))}`;
+		return [theme.fg("dim", "workflows"), ...shown].join("\n");
 	}
 
 	/**

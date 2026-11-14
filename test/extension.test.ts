@@ -842,14 +842,14 @@ describe("a background run of the workflow tool", () => {
 		expect(pi.entries[1]?.data).toEqual({ runId: id });
 	});
 
-	it("shows each run that a resume at start or a call follows, in one line under the header", async () => {
+	it("shows each run that a resume at start or a call follows, one line for each run under the header", async () => {
 		const first = "20261024T223428-aaaa1111";
 		const second = "20261024T223428-bb814010";
 		const pi = fakePi([startEntry(first, root, "ship")]);
 		const { ui, widgets, lines } = fakeUi();
 		await pi.fire("session_start", ui);
 		await pi.registered.execute("call-1", { resume: second, background: true }, undefined, undefined, contextOf(root));
-		expect(lines()).toEqual([" workflows", " ship: aaaa1111 starting | campaign: bb814010 starting"]);
+		expect(lines()).toEqual([" workflows", " ship: aaaa1111 starting", " campaign: bb814010 starting"]);
 
 		await writeFile(join(root, `go-${first}`), "");
 		await writeFile(join(root, `end-${first}`), "");

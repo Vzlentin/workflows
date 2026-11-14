@@ -2017,13 +2017,17 @@ second wait. `session_shutdown` sends SIGINT to the waits, which detach and post
 When the context of `session_start` has a UI (`hasUI`), the extension sets the widget `workflows` below the editor,
 one time at each `session_start`. It sits above the subagents widget of pi-agents, because `pi/package.json` lists
 `./index.ts` first. The widget shows a dim `workflows` header line, then the runs that the session follows, in the
-order that they started to be followed, on one line:
-`<workflow>: <id> <step> | <workflow>: <id> <step>`, such as
-`campaign: 935f6d89 item 2/3: Add a thanks line › round 1/3: review | ship: e235d11b plan`. The workflow is the one of the
-`workflow-background` entry, or `?` for an entry with no `workflow`. The short ID is the part of the run ID after its
-last `-`. The step is the `status` of the last progress line of the wait, see [Progress](#progress), else its last
-line, trimmed, with its mark, or `starting` before the first one; another stderr line does not change it. The
-widget redraws when a run starts to be followed, at each progress line,
+order that they started to be followed, one run on each line: `<workflow>: <id> <step>`, such as
+
+```text
+campaign: 935f6d89 item 2/3: Add a thanks line › round 1/3: review
+ship: e235d11b plan
+```
+
+The workflow is the one of the `workflow-background` entry, or `?` for an entry with no `workflow`. The short ID is
+the part of the run ID after its last `-`. The step is the `status` of the last progress line of the wait, see
+[Progress](#progress), else its last line, trimmed, with its mark, or `starting` before the first one; another stderr
+line does not change it. The widget redraws when a run starts to be followed, at each progress line,
 and at the end of each wait. When the session follows no run, the widget draws no line, and takes no space. After
 shutdown, the extension asks for no redraw. As `session_start` follows the pending runs again, they show again after a reload.
 
