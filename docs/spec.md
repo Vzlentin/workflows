@@ -615,8 +615,9 @@ Each item of a valid candidate then ships with the overlay:
 baseline ran again; an `--items` item has no `from`. So the overlay is the only difference with the baseline. The diff of each ship child run that optimize starts is
 `git diff <start> HEAD` in its worktree. Then its worktree and its branch are removed: the `worktree` of its result,
 and the `branch` of its result, or else the branch that the worktree is on, read with `git branch --show-current`. A
-removal that runs again finds nothing to remove and does nothing: the worktree removal when the folder is gone and
-`git worktree list` does not list the path, and the branch removal when the branch is gone. When
+removal that runs again finds nothing to remove: the worktree removal runs only `git worktree prune` when the folder
+is gone, which removes only the registrations whose folder is gone, and the branch removal does nothing when the
+branch is gone. When
 the worktree removal fails, the worktree and the branch stay, and the report gets the line
 `kept <worktree> on <branch>: <error>` before the last line. When only the branch removal fails, the branch stays, and
 the report gets the line `kept branch <branch>: <error>` before the last line. Its run directory stays. The worktrees and
@@ -771,9 +772,8 @@ export const meta = {
     the branch, then resume`, when the folder and the branch are both missing. Only the first task of the run, also
     when its phase runs again, makes the branch from the start commit.
 
-  When the folder is missing, the task removes the registration of a worktree at that one path with
-  `git worktree remove --force`, if Git lists one, and adds the worktree again on the branch. It removes no folder, and
-  leaves the registrations of other paths.
+  When the folder is missing, the task runs `git worktree prune`, which removes only the registrations whose folder is
+  gone, and adds the worktree again on the branch. It removes no folder.
 - `repo: true` adds `--repo <path>`, and shows `[--repo <repository>]` in the usage line. `<path>` is relative to the
   current directory and must be the top level of a local Git repository. The run's directory is that top level in
   place of the current directory, so `sh`, `ok`, the sessions and the child runs work in that checkout, as

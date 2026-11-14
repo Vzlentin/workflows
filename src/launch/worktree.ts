@@ -175,20 +175,16 @@ export async function renameBranch(path: string, from: string, to: string, signa
 	return (await exists(name)) ? { kind: "raced", name } : { kind: "refused", name };
 }
 
-/** A worktree that `repository` lists: its path, and the branch that it has checked out. */
-type Registered = { readonly path: string; readonly branch: string | undefined };
+/** The path of the worktree of `repository` that has `branch` checked out, or undefined when none has it. */
+async function checkedOutAt(repository: string, branch: string): Promise<string | undefined> {
+	let path: string | undefined;
 
-/** The worktrees that `repository` lists, from `git worktree list --porcelain`, whose entries blank lines separate. */
-async function registered(repository: string): Promise<Registered[]> {
-	const list = await git(repository, "worktree", "list", "--porcelain");
+	for (const line of (await git(repository, "worktree", "list", "--porcelain")).split("\n")) {
+		if (line.startsWith("worktree ")) path = line.slice("worktree ".length);
+		else if (line === `branch refs/heads/${branch}`) return path;
+	}
 
-	return list.split("\n\n").flatMap((entry) => {
-		const lines = entry.split("\n");
-		const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
-		const branch = lines.find((line) => line.startsWith("branch refs/heads/"))?.slice("branch refs/heads/".length);
-
-		return path === undefined ? [] : [{ path, branch }];
-	});
+	return undefined;
 }
 
 /** The realpath of the Git common directory of the repository or worktree at `path`. */
@@ -251,19 +247,18 @@ export async function checkWorktree(runId: string, worktree: Worktree, first: bo
 
 /**
  * The worktree of the run `runId`, after `checkWorktree`. Safe to repeat after an interruption at any point. An
- * existing worktree is kept. When the folder is missing, it removes the stale registration of its path, then adds the
- * worktree on the run's branch, and makes the branch from `start` only in the `first` task of the run. The repository's
- * checkout stays untouched. It throws when another worktree has the branch checked out.
+ * existing worktree is kept. When the folder is missing, it runs `git worktree prune`, which removes only the
+ * registrations whose folder is gone, then adds the worktree on the run's branch, and makes the branch from `start`
+ * only in the `first` task of the run. The repository's checkout stays untouched. It throws when another worktree has the branch checked out.
  */
 export async function ensureWorktree(runId: string, worktree: Worktree, first: boolean): Promise<void> {
 	if (await checkWorktree(runId, worktree, first)) return;
 	const { repository, path, branch, start } = worktree;
 
-	for (const entry of await registered(repository)) {
-		if (entry.path === path) await git(repository, "worktree", "remove", "--force", path);
-		else if (entry.branch === branch) throw new Error(`branch ${branch} is checked out at ${entry.path}`);
-	}
+	await git(repository, "worktree", "prune");
+	const holder = await checkedOutAt(repository, branch);
 
+	if (holder !== undefined) throw new Error(`branch ${branch} is checked out at ${holder}`);
 	const exists = await hasBranch(repository, branch);
 	await git(repository, "worktree", "add", ...(exists ? [path, branch] : ["-b", branch, path, start]));
 }

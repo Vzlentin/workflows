@@ -92,12 +92,11 @@ async function ship(item, extra) {
 	const shipped = { runId: result.runId, result, diff }
 
 	try {
-		// Skipped when the folder is gone and Git does not list the path, as after a removal whose result was not saved.
+		// Only prunes the stale registrations when the folder is gone, as after a removal whose result was not saved.
 		await sh([
 			"sh",
 			"-c",
-			'[ -e "$2" ] || git -C "$1" worktree list --porcelain | grep -qxF "worktree $2" || exit 0; ' +
-				'git -C "$1" worktree remove --force "$2"',
+			'[ -e "$2" ] || { git -C "$1" worktree prune; exit 0; }; git -C "$1" worktree remove --force "$2"',
 			"remove",
 			item.repo,
 			result.worktree,

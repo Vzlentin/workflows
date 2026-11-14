@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -1216,7 +1216,7 @@ return "done"`,
 		const first = await stopped(["x.js"], { gate: "../g" }, repo);
 		expect(first.code).toBe(130);
 		// The commit ran, but its result is not saved, as after a stop between the two.
-		expect(forgetResults("%commit-once%")).toBe(1);
+		expect(forgetResults("commit-once")).toBe(1);
 
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: repo });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "done"]);
@@ -1324,6 +1324,22 @@ return "done"`,
 		);
 		expect(await readFile(join(worktree, "notes.txt"), "utf8")).toBe("mine\n");
 		expect(await readFile(join(worktree, "log"), "utf8")).toBe("x\n");
+	});
+
+	it("adds a deleted worktree again when Git lists its stale registration at another path", async () => {
+		const repo = await worktreeScript(`await sh("echo x >> log")\nawait sh("ROOT/gate.sh ROOT/g")\nreturn "done"`);
+		// Git lists the canonical path of the worktree, not the saved path through the symlink.
+		await mkdir(join(root, "elsewhere"));
+		await symlink(join(root, "elsewhere"), join(dirname(await realpath(repo)), ".worktrees"));
+		const first = await stopped(["w", "--repo", "."], { gate: "../g" }, repo);
+		expect(first.code).toBe(130);
+		const id = first.id ?? "";
+		const worktree = worktreeAt(repo, id);
+		await rm(worktree, { recursive: true, force: true });
+
+		const resumed = await workflows(["resume", id], { cwd: repo });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "done"]);
+		expect(git(worktree, "branch", "--show-current")).toBe(`w/${id}`);
 	});
 
 	it("refuses to make the branch again after the first task, in the task and in resume", async () => {

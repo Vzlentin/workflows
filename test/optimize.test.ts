@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
@@ -335,11 +335,57 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 
 		expect(first.code).toBe(130);
 		// The removals ran, but their results are not saved, as after a stop between the two.
-		expect(forgetResults("%worktree%remove%", "%branch%-D%")).toBe(4);
+		expect(forgetResults("worktree remove --force", 'branch -D \\"$2\\"')).toBe(4);
 
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root, script: { select: ["tie"] } });
 		expect(resumed.code).toBe(0);
 		// The overlay's edit line also starts with `kept ->`.
+		expect(resumed.stdout.filter((line) => /^kept (\/|branch )/.test(line))).toEqual([]);
+		expect(git(repo, "worktree", "list", "--porcelain").split("\n\n")).toHaveLength(1);
+		expect(git(repo, "branch", "--format=%(refname:short)")).toBe("main");
+	}, 60_000);
+
+	it("removes the branch of a ship at resume when Git lists its stale worktree at another path", async () => {
+		const items = join(root, "items");
+		await mkdir(items);
+		await writeFile(
+			join(items, "one.md"),
+			`---\nrepo: ../repo\nstart: "${start}"\n---\n# One item\n\nFix the README.\n`,
+		);
+		// Git lists the canonical path of each ship worktree, not the saved path through the symlink.
+		await mkdir(join(root, "elsewhere"));
+		await symlink(join(root, "elsewhere"), join(dirname(await realpath(repo)), ".worktrees"));
+		const scripts = join(root, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		const ships = join(root, "ships");
+		// A ship that does not ship, and writes its worktree and its branch to the file `ships`.
+		await writeFile(
+			join(scripts, "ship.js"),
+			`export const meta = { args: { item: { type: "text", positional: true, required: true } }, worktree: true, exit: { blocked: 1 } }
+await sh(["git", "branch", "-m", \`own/\${runId}\`])
+await sh(["sh", "-c", 'echo "$1 $2" >> "$3"', "log", cwd, \`own/\${runId}\`, "${ships}"])
+return { status: "blocked", worktree: cwd, report: [] }`,
+		);
+
+		const first = await workflows(["optimize", "--workflow", "ship", "--items", "items"], {
+			cwd: root,
+			script: { inv: INV, interruptAt: { kind: "select", nth: 1 } },
+		});
+
+		expect(first.code).toBe(130);
+		// The removals ran, but their results are not saved, and Git still lists each worktree, whose folder is gone.
+		expect(forgetResults("worktree remove --force", 'branch -D \\"$2\\"')).toBe(4);
+		const shipped = (await readFile(ships, "utf8")).trimEnd().split("\n");
+		expect(shipped).toHaveLength(2);
+
+		for (const line of shipped) {
+			const [path = "", branch = ""] = line.split(" ");
+			git(repo, "worktree", "add", "-q", "-b", branch, path, start);
+			await rm(path, { recursive: true, force: true });
+		}
+
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root, script: { select: ["tie"] } });
+		expect(resumed.code).toBe(0);
 		expect(resumed.stdout.filter((line) => /^kept (\/|branch )/.test(line))).toEqual([]);
 		expect(git(repo, "worktree", "list", "--porcelain").split("\n\n")).toHaveLength(1);
 		expect(git(repo, "branch", "--format=%(refname:short)")).toBe("main");
