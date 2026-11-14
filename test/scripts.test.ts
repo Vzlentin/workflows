@@ -1522,82 +1522,29 @@ return { branch: await sh(["git", "branch", "--show-current"]), start: args.star
 		expect(run.stderr).toContainEqual(expect.stringContaining(`nothing to commit since ${short}`));
 	});
 
-	it("starts the pick loop once in hc on the worktree of a root run that an hc terminal started", async () => {
+	it("starts no hc terminal and records no caller for a run that an hc terminal started", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
 		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
-		await writeFile(join(scripts, "w.js"), 'export const meta = { worktree: true }\nawait agent("Script: one")');
-		const log = join(root, "hc.log");
-		const started = async () => (await readFile(log, "utf8")).split("\n").filter((line) => line.startsWith("run "));
+		await writeFile(join(scripts, "w.js"), "export const meta = { worktree: true }\nreturn 1");
 
 		process.env.HC_TERMINAL_ID = "t3";
 		const run = await workflows(["w"], { cwd: repo });
-		expect(run.code).toBe(0);
-		const id = run.id ?? "";
-		const path = worktreeAt(repo, id);
-		const loop = `while c=$(workflows show ${id} --pick); do workflows attach ${id} --conversation "$c" --side; done`;
-		const labels = `--label herdr.space=${id} --label herdr.tab=${id}`;
-		expect(await started()).toEqual([`run --bg --keep --no-parent --cwd ${path} ${labels} -- sh -c ${loop}`]);
-
-		// A resume finds the worktree, and starts no second loop.
-		await rm(log);
-		const stopped = await workflows(["w"], { cwd: repo, script: { interruptAt: { kind: "script", nth: 1 } } });
-		expect(stopped.code).toBe(130);
-		const resumed = await workflows(["resume", stopped.id ?? ""], { cwd: repo });
-		expect(resumed.code).toBe(0);
-		expect((await started()).length).toBe(1);
-
-		// A failed `hc run` leaves the run going.
-		await rm(log);
-		await writeFile(join(root, "bin", "hc"), `#!/bin/sh\necho "$@" >> "${log}"\nexit 1\n`, { mode: 0o755 });
-		const failed = await workflows(["w"], { cwd: repo });
-		expect([failed.code, (await started()).length]).toEqual([0, 1]);
-	});
-
-	it("records the hc terminal that started a run, in list and show", async () => {
-		const repo = join(root, "repo");
-		await repository(repo);
-		const scripts = join(repo, ".workflows", "scripts");
-		await mkdir(scripts, { recursive: true });
-		await writeFile(join(scripts, "w.js"), "return 1");
-
-		const plain = await workflows(["w"], { cwd: repo });
-		process.env.HC_TERMINAL_ID = "t3";
-		const called = await workflows(["w"], { cwd: repo });
 		delete process.env.HC_TERMINAL_ID;
-		expect([plain.code, called.code]).toEqual([0, 0]);
+		expect(run.code).toBe(0);
+		expect(existsSync(join(root, "hc.log"))).toBe(false);
 
 		const listed = JSON.parse((await workflows(["list", "--json"], { cwd: repo })).stdout[0] ?? "");
-		const callers = Object.fromEntries(listed.map((row: { runId: string; caller?: string }) => [row.runId, row]));
-		expect(callers[called.id ?? ""].caller).toBe("t3");
-		expect("caller" in callers[plain.id ?? ""]).toBe(false);
+		const row = listed.find((entry: { runId: string }) => entry.runId === run.id);
+		expect(row).toBeDefined();
+		expect("caller" in row).toBe(false);
 
 		for (const form of [["--json"], ["--agents", "--json"]]) {
-			const shown = JSON.parse((await workflows(["show", called.id ?? "", ...form], { cwd: repo })).stdout[0] ?? "");
-			const other = JSON.parse((await workflows(["show", plain.id ?? "", ...form], { cwd: repo })).stdout[0] ?? "");
-			expect([shown.caller, "caller" in other]).toEqual(["t3", false]);
+			const shown = JSON.parse((await workflows(["show", run.id ?? "", ...form], { cwd: repo })).stdout[0] ?? "");
+			expect(shown.runId).toBe(run.id);
+			expect("caller" in shown).toBe(false);
 		}
-
-		// A run without a worktree starts no loop.
-		expect(existsSync(join(root, "hc.log"))).toBe(false);
-	});
-
-	it("starts no pick loop for the worktree of a child run, and none without an hc terminal", async () => {
-		const repo = join(root, "repo");
-		await repository(repo);
-		const scripts = join(repo, ".workflows", "scripts");
-		await mkdir(scripts, { recursive: true });
-		await writeFile(join(scripts, "parent.js"), 'return await run("child", { repo: "." })');
-		await writeFile(join(scripts, "child.js"), "export const meta = { worktree: true }\nreturn cwd");
-		await writeFile(join(scripts, "w.js"), "export const meta = { worktree: true }\nreturn cwd");
-
-		const plain = await workflows(["w"], { cwd: repo });
-		expect(plain.code).toBe(0);
-		process.env.HC_TERMINAL_ID = "t3";
-		const run = await workflows(["parent"], { cwd: repo });
-		expect(run.code).toBe(0);
-		expect(existsSync(join(root, "hc.log"))).toBe(false);
 	});
 
 	it("fails a child run on a branch that another worktree has checked out", async () => {

@@ -9,7 +9,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import type { TaskId, TaskRecord } from "@earendil-works/pi-durable";
 import { statePaths } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
-import { inputString, progressEvents, reading, runTasks, startedTasks } from "../records/store.ts";
+import { inputName, progressEvents, reading, runTasks, startedTasks } from "../records/store.ts";
 import { hasEnded, type RunStatus, type RunTask, runStatus, savedInput, savedLater, taskOutcome } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
 import { SHOWN_INPUT, type ShownInput, statusOf } from "../run/result.ts";
@@ -183,7 +183,7 @@ function otherVersion(latest: RunTask, id: string, verb: string): OtherVersion {
 /** The workflow of the task `latest` of any version, and whether the version that saved it is later than this one. */
 export function savedBy(latest: TaskRecord<JsonValue, JsonValue, JsonValue>) {
 	// A script task names its workflow in its input; an earlier task kind names it in the kind.
-	const name = inputString(latest.input, "name") ?? latest.kind.slice(PREFIX.length);
+	const name = inputName(latest.input) ?? latest.kind.slice(PREFIX.length);
 
 	return { name, later: savedLater(latest) };
 }

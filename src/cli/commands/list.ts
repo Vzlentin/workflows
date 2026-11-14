@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { resolveProject } from "@vzlentin/harness/projects";
 import { statePaths } from "@vzlentin/harness/protocol";
 import { type Mark, Progress } from "../../records/steps.ts";
-import { inputString, inputWorktree, progressEvents, reading, runTasks, type Store } from "../../records/store.ts";
+import { inputWorktree, progressEvents, reading, runTasks, type Store } from "../../records/store.ts";
 import { type RunStatus, type RunTask, runStatus, savedInput, taskOf } from "../../run/past.ts";
 import { SHOWN_INPUT, title as titleOf } from "../../run/result.ts";
 import { UsageError } from "../../workflow/find.ts";
@@ -21,8 +21,6 @@ type Listed = {
 	readonly title: string;
 	readonly status: string;
 	readonly repository: string | null;
-	/** The hc terminal that started the run, when it started in one. */
-	readonly caller?: string;
 };
 
 /** A listed run, with its run status `run`, which orders it in the picker and gives its mark, and which JSON leaves out. */
@@ -97,7 +95,6 @@ async function listedRuns(store: Store, runs: ReadonlyMap<string, readonly RunTa
 		const run = runStatus(task);
 		const status = shownStatus(task, run);
 		const repository = inputWorktree(task.input)?.repository ?? null;
-		const caller = inputString(task.input, "caller");
 
 		// A task of every version whose input has the fields of a title gets its title; another keeps its workflow name.
 		const input = savedInput(SHOWN_INPUT, task.input);
@@ -105,7 +102,7 @@ async function listedRuns(store: Store, runs: ReadonlyMap<string, readonly RunTa
 		const title = input === undefined ? workflow : titleOf(input, await progressEvents(store, id));
 		const row = { runId: id, workflow, title, status, repository, run };
 
-		listed.push(caller === undefined ? row : { ...row, caller });
+		listed.push(row);
 	}
 
 	return listed;

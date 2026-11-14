@@ -46,8 +46,6 @@ export type ScriptRun = {
 	readonly session: string | undefined;
 	/** The answer to the `input` call with the document key `call`, from `resume --answer`. */
 	readonly answer: { readonly call: string; readonly text: string } | undefined;
-	/** The hc terminal that started the root run, from the saved input, which its child runs keep. */
-	readonly caller: string | undefined;
 	/** The task of every script run, which the child runs of the `run` calls are tasks of. */
 	readonly definition: ScriptTask;
 };

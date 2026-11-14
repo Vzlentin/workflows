@@ -7,7 +7,6 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { startPickLoop } from "../herdr.ts";
 import type { ScriptInput } from "../launch/input.ts";
 import { branchOf, ensureWorktree, type Renamed, renameBranch } from "../launch/worktree.ts";
 import { outcomeText, type WorkflowOutcome } from "../tool.ts";
@@ -146,10 +145,7 @@ async function runPhase(
 
 		if (worktree !== undefined) {
 			const { repository, path, branch, start } = worktree;
-			const made = await ensureWorktree(repository, path, branch, start);
-
-			// A root run started in an hc terminal shows its agents beside its steps in herdr-app, once: not on a resume.
-			if (made && parent === null && input.caller !== undefined) await startPickLoop(path, runId);
+			await ensureWorktree(repository, path, branch, start);
 		}
 
 		const ran = await runScript(runtime, context, cwd, host, {
@@ -163,7 +159,6 @@ async function runPhase(
 			session: input.parent,
 			answer: input.answer,
 			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },
-			caller: input.caller,
 			definition,
 		});
 

@@ -752,8 +752,7 @@ export const meta = {
   is checked out at <path>` before Git makes anything. The worktree is `<parent>/.worktrees/<name>/<run-id>`, where `<parent>` is the folder that holds the
   repository and `<name>` is the repository folder's name: `~/code/app` gets `~/code/.worktrees/app/<run-id>`, and the
   clone of a GitHub repository gets `<run-directory>/.worktrees/repository/<run-id>`. Git creates the worktree with
-  `git worktree add`. When the run made the worktree of a root run that an hc terminal started, it starts the pick loop
-  in hc: see [hc and herdr-app](#hc-and-herdr-app). At the end, the run names the branch: see
+  `git worktree add`. At the end, the run names the branch: see
   [Branch name](#branch-name).
 - `repo: true` adds `--repo <path>`, and shows `[--repo <repository>]` in the usage line. `<path>` is relative to the
   current directory and must be the top level of a local Git repository. The run's directory is that top level in
@@ -1332,28 +1331,6 @@ agents, and opens the agent in a new tab:
 id=$(workflows list --pick) && c=$(workflows show "$id" --pick) && workflows attach "$id" --conversation "$c"
 ```
 
-A run that a command started in an hc terminal, with `HC_TERMINAL_ID` set and not empty, saves that terminal ID as
-`caller` in its input, and its child runs get the same `caller`. `list --json` and `show --json` give it: see
-[List](#list) and [Show](#show).
-
-When such a root run makes its worktree, it starts the pick loop in a background hc terminal:
-
-```sh
-hc run --bg --keep --no-parent --cwd <worktree> --label herdr.space=<run-id> --label herdr.tab=<run-id> -- sh -c '<loop>'
-```
-
-where `<loop>` is:
-
-```sh
-while c=$(workflows show <run-id> --pick); do workflows attach <run-id> --conversation "$c" --side; done
-```
-
-herdr-app shows the terminal in the space `<run-id>`, so the space shows the steps of the run, and each pick opens its
-agent in a new pane beside the steps. Escape or Ctrl+C in the pick ends the loop. hc gives the loop the environment of
-the hc server, so the loop needs `workflows` on the `PATH` of that server, and the same `XDG_STATE_HOME` and
-`XDG_CONFIG_HOME` as the run. A failure of `hc run` starts nothing, and the run goes on. A resume, which finds the
-worktree, starts no second loop. A child run starts no loop.
-
 `attach` opens Pi in herdr-app when `HC_TERMINAL_ID` is set: see [Attach](#attach). `prune --yes` removes the hc
 terminals of a run with its worktree: see [Prune](#prune).
 
@@ -1406,8 +1383,7 @@ version saved has its title as a run of this version has it, when its saved inpu
 run ID, the script name, the arguments, and the `args` and `exit` of its `meta`); a run whose input does not have them
 has its workflow name as its title. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status", "repository" }`.
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
-without a worktree. A run that an hc terminal started also has `"caller"`, the ID of that terminal, also for a run of
-another version; other runs have no `caller` key.
+without a worktree.
 Only the runs that have a run directory with a `project` file are listed. The command writes that file before it
 prepares the run, so a run directory of the project whose run has no task is listed as `<run-id> - unstarted -`, and
 with `--json` as `{ "runId", "workflow": "-", "title": "-", "status": "unstarted", "repository": null }`: its run is
@@ -1450,7 +1426,7 @@ it removes anything: a failed `gh` call, or a missing `gh`, prints `workflows: <
 
 With `--yes`, `prune` removes each merged worktree in order, and prints its line after the removal. It first runs
 `hc ls --all --json --label herdr.space=<run-id>`, and `hc kill <address>` then `hc rm <address>` for each terminal in
-its `terminals`, such as the pick loop of the run. A missing `hc` command removes no terminal; any other `hc` failure
+its `terminals`. A missing `hc` command removes no terminal; any other `hc` failure
 fails the removal of the run. Then it runs `git worktree remove <worktree>` in the run's repository, without `--force`,
 and deletes the branch with `git branch -D <branch>` when the branch still exists. Before
 it removes anything of a run, it writes the marker `runs/<run-id>/pruning`, a JSON object `{ "branch", "repository",
@@ -1526,8 +1502,7 @@ run <run-id> <workflow> <status> <title>
   its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
-object with both trees: `{ "runId", "workflow", "caller"?, "title", "status", "report"?, "error"?, "todos", "steps", "calls" }`, where `caller` is the hc
-terminal that started the run, as in [List](#list),
+object with both trees: `{ "runId", "workflow", "title", "status", "report"?, "error"?, "todos", "steps", "calls" }`, where
 `todos` is the list of todos of the run, as in [Todos](#todos): an array of `{ "id", "text", "state" }` in ID order,
 or `[]` when the run has no todo, also for a run that an earlier version saved, and
 `steps` has the step lines of the text, without the first line and the footer. Each call is
@@ -1559,7 +1534,7 @@ run <run-id> <workflow> <status> <title>
 - A phase line comes before the first agent or child run under it. Other calls, such as `sh`, are not in the tree. The
   rows of a child run are indented by 4 more under its `run` line.
 
-With `--agents --json`, the command prints one JSON object `{ "runId", "workflow", "caller"?, "title", "status",
+With `--agents --json`, the command prints one JSON object `{ "runId", "workflow", "title", "status",
 "ended", "agents" }`, where `ended` is true when the run has ended, also when it waits for an answer.
 `agents` has one object for each line of the tree, in order: `{ "kind": "phase", "depth", "text" }`, `{ "kind": "run",
 "depth", "mark", "text" }` with the text `run <workflow> <child run-id>`, or `{ "kind": "agent", "depth", "mark", "text",
@@ -2162,7 +2137,7 @@ The engine files in `src/`:
 - `launch/args.ts`: the `meta.args` values of the command line, and the texts that they name, and the args of a
   `run()` call, with one check of both against `meta.args`.
 - `launch/worktree.ts`: repository selection, the worktree of a run, made by Git, and the name of its branch.
-- `herdr.ts`: the hc commands: the pick loop of a run in herdr-app, and the removal of the hc terminals of a run.
+- `herdr.ts`: the hc commands: the removal of the hc terminals of a run.
 - `run/result.ts`: the title of a run, and the status, report lines and exit code of its result.
 - `workflow/meta.ts`: read and check the `meta` of a workflow script.
 - `workflow/find.ts`: find a script, list the scripts, help and usage, usage errors, and the terminal input and output.

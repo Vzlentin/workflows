@@ -298,7 +298,7 @@ exit 0
 
 	for (const name of [
 		"HARNESS_PROJECT",
-		// This would make a run start its pick loop, and `attach` open herdr-app.
+		// This would make `attach` open herdr-app.
 		"HC_TERMINAL_ID",
 		"PI_SESSION_ID",
 		"PI_PROVIDER",

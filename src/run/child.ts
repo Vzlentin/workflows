@@ -68,9 +68,8 @@ async function startChild(
 	try {
 		const run = { id, directory, cwd, root: script.root };
 		const own = await childInput({ name, args, bundle, agents: script.agents, overlay: script.overlay }, run);
-		const { session: parent, caller, definition } = script;
-		const parented = parent === undefined ? own : { ...own, parent };
-		const input = caller === undefined ? parented : { ...parented, caller };
+		const { session: parent, definition } = script;
+		const input = parent === undefined ? own : { ...own, parent };
 		await runtime.commit(async (tx) => {
 			const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 			const doc = await tx.doc(CallDoc, key, null);

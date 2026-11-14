@@ -170,7 +170,7 @@ exit 0
 		expect(run.code).toBe(0);
 		id = run.id ?? "";
 		worktree = worktreeAt(repo, id);
-		// Only now: the host shares this environment, and a run started in an hc terminal starts its pick loop.
+		// Only now: the host shares this environment, so the setup run sees no hc terminal.
 		process.env.HC_TERMINAL_ID = "t3";
 		await hc();
 	});

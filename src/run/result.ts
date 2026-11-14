@@ -17,7 +17,6 @@ export const SHOWN_INPUT = Type.Object({
 		args: Type.Record(Type.String(), Type.Object({ type: Type.String() })),
 		exit: Type.Record(Type.String(), Type.Integer()),
 	}),
-	caller: Type.Optional(Type.String()),
 });
 
 export type ShownInput = Static<typeof SHOWN_INPUT>;

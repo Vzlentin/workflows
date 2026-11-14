@@ -192,21 +192,13 @@ async function checkedOutAt(repository: string, branch: string): Promise<string 
  * A worktree at `path` on `branch`, created from `start` when the branch is new. Safe to repeat after an interruption
  * at any point: an existing worktree is kept, and each attempt starts from a clean path, with no folder and no stale
  * registration. The repository's checkout stays untouched. It throws when another worktree has `branch` checked out.
- * It gives true when it made the worktree, and false when the worktree was already there.
  */
-export async function ensureWorktree(
-	repository: string,
-	path: string,
-	branch: string,
-	start: string,
-): Promise<boolean> {
-	if ((await repositoryAt(path)) !== undefined) return false;
+export async function ensureWorktree(repository: string, path: string, branch: string, start: string): Promise<void> {
+	if ((await repositoryAt(path)) !== undefined) return;
 	await clearWorktree(repository, path);
 	const holder = await checkedOutAt(repository, branch);
 
 	if (holder !== undefined) throw new Error(`branch ${branch} is checked out at ${holder}`);
 	const exists = await gitSucceeds(repository, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`);
 	await git(repository, "worktree", "add", ...(exists ? [path, branch] : ["-b", branch, path, start]));
-
-	return true;
 }

@@ -63,8 +63,7 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 	const shown = await readRun(await savedRun(id, SHOW), mode !== "steps" || json, "be shown");
 	const { input, title, status, head, ended, todos, calls, progress, footer, end } = shown;
 	const now = Date.now();
-	const named = { runId: id, workflow: input.name };
-	const run = input.caller === undefined ? named : { ...named, caller: input.caller };
+	const run = { runId: id, workflow: input.name };
 
 	if (mode === "agents" && json) {
 		const agents = agentRows(calls, 0, now);
