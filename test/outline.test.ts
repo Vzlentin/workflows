@@ -225,6 +225,18 @@ describe("workflows outline", () => {
 		expect([existsSync(runsOf(root)), existsSync(storeOf()), shown.model.calls]).toEqual([false, false, []]);
 	});
 
+	it("fails every command that loads the scripts for a project script with the name of a command", async () => {
+		const scripts = join(root, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "log.js"), "return 1");
+		const error = `workflows: ${join(scripts, "log.js")} has the name of the command log; rename the script`;
+
+		for (const argv of [[], ["outline", "--json"]]) {
+			const run = await workflows(argv, { cwd: root });
+			expect([run.code, run.stderr], argv.join(" ")).toEqual([1, [error]]);
+		}
+	});
+
 	it("gives an error entry for a script with a bad meta, and the full entry of each other script", async () => {
 		const scripts = join(root, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });

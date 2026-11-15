@@ -389,12 +389,13 @@ async function pick<T>(ui: ExtensionUIContext, title: string, options: Map<strin
 /**
  * The `/workflows` command: it lists the runs of the project with `workflows list --json`, lets the user pick a run,
  * then one of its agents from `workflows show --agents --json`, and opens that agent with `workflows attach
- * --conversation` in herdr-app when `inHerdr` says that Pi runs in an hc terminal, or says how to attach from another
- * terminal.
+ * --conversation --side` in a herdr-app pane to the right when `inHerdr` says that Pi runs in an hc terminal, or says
+ * how to attach from another terminal.
  */
 export function workflowsCommand(command: readonly string[], inHerdr: InHerdr, tool: ToolModule) {
 	return {
-		description: "Pick a workflow run of this project, then one of its agents, and attach to it in herdr-app",
+		description:
+			"Pick a workflow run of this project, then one of its agents, and attach to it in a herdr-app pane to the right",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const listed = await runCli(command, ["list", "--json"], ctx.cwd, {});
 			const runs = listed.code === 0 ? JSON.parse(listed.stdout.join("\n")) : undefined;
@@ -446,14 +447,14 @@ export function workflowsCommand(command: readonly string[], inHerdr: InHerdr, t
 			const attach = ["attach", runId, "--conversation", String(conversation)];
 			const hint = `Run in another terminal: workflows ${attach.join(" ")}`;
 
-			// `workflows attach` opens a herdr-app tab only in an hc terminal.
+			// `workflows attach --side` opens a herdr-app pane only in an hc terminal, and else runs Pi in place.
 			if (!inHerdr(process.env)) {
 				ctx.ui.notify(hint, "info");
 
 				return;
 			}
 
-			const output = await runCli(command, attach, ctx.cwd, {});
+			const output = await runCli(command, [...attach, "--side"], ctx.cwd, {});
 
 			if (output.code !== 0) ctx.ui.notify(`${output.stderr.join("\n")}. ${hint}`, "error");
 		},

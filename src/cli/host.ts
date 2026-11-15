@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Client, connect, hostStopped } from "@vzlentin/harness/client";
 import { setEntry } from "@vzlentin/harness/entries";
-import type { TaskInfo } from "@vzlentin/harness/protocol";
+import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
 import type { TaskEnd } from "../run/past.ts";
 import { TASK } from "../run/version.ts";
@@ -17,7 +17,12 @@ import type { Terminal } from "./main.ts";
 const ENTRY = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../entry.ts" : "../entry.js", import.meta.url));
 
 /** The file name of the project store in the state folder of a project. */
-export const STORE_FILE = "durable.sqlite";
+const STORE_FILE = "durable.sqlite";
+
+/** The path of the project store of `project`. */
+export function storeOf(project: string): string {
+	return join(statePaths(project).dir, STORE_FILE);
+}
 
 /**
  * A connection to the host of `project`. With `start`, it starts the host when none runs; without, it is undefined

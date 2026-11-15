@@ -25,6 +25,28 @@ export const JSON_VALUE = Type.Cyclic(
 	"Json",
 );
 
+/** The names of the commands of `workflows`. No workflow can have one of these names. */
+export const COMMAND_NAMES = [
+	"list",
+	"resume",
+	"wait",
+	"stop",
+	"show",
+	"log",
+	"attach",
+	"save",
+	"prune",
+	"check",
+	"outline",
+] as const;
+
+export type CommandName = (typeof COMMAND_NAMES)[number];
+
+/** Whether `name` is the name of a command. */
+export function isCommand(name: string): name is CommandName {
+	return COMMAND_NAMES.some((command) => command === name);
+}
+
 export const SAVE = Type.Object(
 	{
 		runId: Type.String(),
@@ -35,7 +57,12 @@ export const SAVE = Type.Object(
 );
 
 export const PARAMETERS = Type.Object({
-	name: Type.Optional(Type.String({ description: "`ship`, `campaign`, `optimize`, or the name of a workflow script" })),
+	name: Type.Optional(
+		Type.String({
+			description:
+				"`ship`, `campaign`, `optimize`, or the name of a workflow script; not a command such as `list` or `prune`",
+		}),
+	),
 	script: Type.Optional(Type.String({ description: "An inline workflow script" })),
 	resume: Type.Optional(Type.String({ description: "The ID of a run to continue" })),
 	answer: Type.Optional(Type.String({ description: "With `resume`: the answer to the question of a waiting run" })),
@@ -231,6 +258,10 @@ function argsOf({ name, script, resume, answer, save, serves, args = {}, backgro
 	if (serves !== undefined && (resume !== undefined || save !== undefined)) {
 		throw new Error("serves works only with name or script");
 	}
+
+	if (name !== undefined && isCommand(name)) throw new Error(`${name} is a command, not a workflow`);
+
+	if (name?.startsWith("-")) throw new Error(`${name} is not a workflow name`);
 
 	const json = background ? ["--background", "--json"] : ["--json"];
 

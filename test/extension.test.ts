@@ -380,6 +380,12 @@ describe("the workflow tool", () => {
 		expect(existsSync(join(root, "args.log"))).toBe(false);
 	});
 
+	it("refuses a command name, or a name that starts with -, and runs no command", async () => {
+		await expect(call({ name: "prune" })).rejects.toThrow("prune is a command, not a workflow");
+		await expect(call({ name: "-x" })).rejects.toThrow("-x is not a workflow name");
+		expect(existsSync(join(root, "args.log"))).toBe(false);
+	});
+
 	it("sends a script on stdin, passes every argument as a flag", async () => {
 		const script = await call({ script: "return 'hi'", args: { word: "a", all: true } });
 		expect(script.result.structuredContent).toEqual({
@@ -1104,13 +1110,13 @@ describe("the /workflows command", () => {
 		expect([await commands(), fake.notes]).toEqual([["list --json", `show ${good} --agents --json`], []]);
 	});
 
-	it("attaches to the picked agent in herdr-app, or gives the command", async () => {
+	it("attaches to the picked agent in a herdr-app pane to the right, or gives the command", async () => {
 		await inTerminal("t3", async () => {
 			expect((await picked(0, 4)).notes).toEqual([]);
 			expect((await picked(0, 3)).notes).toEqual([]);
 			expect((await commands()).filter((line) => line.startsWith("attach"))).toEqual([
-				`attach ${good} --conversation 4`,
-				`attach ${good} --conversation 5`,
+				`attach ${good} --conversation 4 --side`,
+				`attach ${good} --conversation 5 --side`,
 			]);
 		});
 

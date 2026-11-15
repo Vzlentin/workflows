@@ -327,9 +327,12 @@ describe("usage errors", () => {
 			[["resume", "a/b"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
 			[["resume", "--background"], "usage: workflows resume <run-id> [--answer <text>] [--background] [--json]"],
 			[["wait", "r1", "r2"], "usage: workflows wait <run-id> [--json]"],
-			[["show", "r1", "r2"], "usage: workflows show <run-id> [--pick | [--agents] [--json]]"],
-			[["show", ".."], "usage: workflows show <run-id> [--pick | [--agents] [--json]]"],
-			[["list", "x"], "usage: workflows list [--pick] [--json]"],
+			[["show", "r1", "r2"], "usage: workflows show (<run-id> [--agents] [--json] | [<run-id>] --pick)"],
+			[["show", ".."], "usage: workflows show (<run-id> [--agents] [--json] | [<run-id>] --pick)"],
+			[["show"], "usage: workflows show (<run-id> [--agents] [--json] | [<run-id>] --pick)"],
+			[["show", "a", "b", "--pick"], "usage: workflows show (<run-id> [--agents] [--json] | [<run-id>] --pick)"],
+			[["list", "x"], "usage: workflows list [--json]"],
+			[["list", "--pick"], "usage: workflows list [--json]"],
 			[["check"], "usage: workflows check <workflow>"],
 			[["outline", "ship", "judge"], "usage: workflows outline [<workflow>] [--json]"],
 			[["outline", "--x"], "usage: workflows outline [<workflow>] [--json]"],
@@ -343,7 +346,10 @@ describe("usage errors", () => {
 
 	it("refuse show --calls, which log replaces", async () => {
 		const run = await workflows(["show", "r1", "--calls"], { cwd: root });
-		expect([run.code, run.stderr[1]]).toEqual([2, "usage: workflows show <run-id> [--pick | [--agents] [--json]]"]);
+		expect([run.code, run.stderr[1]]).toEqual([
+			2,
+			"usage: workflows show (<run-id> [--agents] [--json] | [<run-id>] --pick)",
+		]);
 		expect(run.stderr[0]).toMatch(/^workflows: Unknown option '--calls'/);
 	});
 });

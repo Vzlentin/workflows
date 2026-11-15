@@ -1,9 +1,8 @@
 /** How the command line follows a run to its outcome, and the Ctrl+C presses of the command line. */
 
-import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type Client, hostStopped } from "@vzlentin/harness/client";
-import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
+import type { TaskInfo } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
 import { endMark } from "../records/steps.ts";
 import { openReadOnly, progressEvents } from "../records/store.ts";
@@ -11,7 +10,7 @@ import { type EndedOutcome, ending, hasEnded, type RunTask, runOutcome, runStatu
 import type { ProgressEvent } from "../run/progress.ts";
 import { title as titleOf } from "../run/result.ts";
 import type { WorkflowOutcome } from "../tool.ts";
-import { abortRun, STORE_FILE } from "./host.ts";
+import { abortRun, storeOf } from "./host.ts";
 import type { Terminal } from "./main.ts";
 import { display, programStatus } from "./terminal/redraw.ts";
 
@@ -159,7 +158,7 @@ export async function follow(
 		else for (const line of footer) terminal.stderr(line);
 	};
 
-	const opened = await openReadOnly(join(statePaths(run.project).dir, STORE_FILE)).catch((cause: unknown) => {
+	const opened = await openReadOnly(storeOf(run.project)).catch((cause: unknown) => {
 		client.close();
 		terminal.following(false);
 		throw cause;

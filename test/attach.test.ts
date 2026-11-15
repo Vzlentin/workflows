@@ -1,9 +1,9 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { Choose } from "../src/cli/main.ts";
-import { conversationOf, repository, runsOf, sandbox, workflows, worktreeAt } from "./support.ts";
+import { conversationOf, runsOf, sandbox, workflows } from "./support.ts";
 
 let root: string;
 
@@ -91,34 +91,46 @@ describe("attach", () => {
 	});
 });
 
-describe("list --pick", () => {
-	it("prints the run ID that the pick takes, the runs that run first, each with its steps that run", async () => {
+describe("show --pick", () => {
+	/** The value of the first item that has one. */
+	const first = <T>(items: readonly { readonly value?: T | undefined }[]) => items.find((item) => item.value)?.value;
+
+	it("asks for a run, the runs that run first, each with its steps that run, then for an agent of it", async () => {
 		await ran('phase("a")\nawait agent("Script: done")');
 		await writeFile(join(root, "y.js"), 'phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")');
-		const running = await workflows(["y.js"], { cwd: root, script: { interruptAt: { kind: "script", nth: 2 } } });
+		await workflows(["y.js"], { cwd: root, script: { interruptAt: { kind: "script", nth: 2 } } });
+		const one = await conversationOf(/Script: one/);
 		const asked: string[][] = [];
 
 		const choose: Choose = async (question, items) => {
 			asked.push([question, ...items.map((item) => item.text)]);
 
-			return items[0]?.value;
+			return first(items);
 		};
 
-		const picked = await workflows(["list", "--pick"], { cwd: root, choose });
-		expect(asked).toEqual([["Pick a run:", "◉ y  y running: talk", "· x  x done, exit 0"]]);
-		expect([picked.code, picked.stdout]).toEqual([0, [running.id]]);
-		const cancelled = await workflows(["list", "--pick"], { cwd: root, choose: async () => undefined });
+		const picked = await workflows(["show", "--pick"], { cwd: root, choose });
+		expect(asked[0]).toEqual(["Pick a run:", "◉ y  y running: talk", "· x  x done, exit 0"]);
+		expect(asked.map(([question]) => question)).toEqual(["Pick a run:", "Pick an agent:"]);
+		expect([picked.code, picked.stdout]).toEqual([0, [String(one)]]);
+		const cancelled = await workflows(["show", "--pick"], { cwd: root, choose: async () => undefined });
 		expect([cancelled.code, cancelled.stdout, cancelled.stderr]).toEqual([130, [], []]);
-		expect((await workflows(["list", "--pick"], { cwd: root })).code).toBe(2);
+		expect((await workflows(["show", "--pick"], { cwd: root })).code).toBe(2);
+	});
+
+	it("fails with no runs", async () => {
+		const picked = await workflows(["show", "--pick"], { cwd: root, choose: async () => undefined });
+		expect([picked.code, picked.stderr]).toEqual([1, [`workflows: no runs in the project of ${root}`]]);
 	});
 
 	it("reads the runs again while the pick waits, with the run ID of each run as its value", async () => {
 		await writeFile(join(root, "y.js"), 'phase("talk")\nawait agent("Script: one")\nawait agent("Script: two")');
 		const running = await workflows(["y.js"], { cwd: root, script: { interruptAt: { kind: "script", nth: 2 } } });
 		const id = running.id ?? "";
+		const one = await conversationOf(/Script: one/);
 		const seen: string[][] = [];
 
-		const choose: Choose = async (_question, items, refresh) => {
+		const choose: Choose = async (question, items, refresh) => {
+			if (question !== "Pick a run:") return first(items);
 			seen.push(items.map((item) => item.text));
 			expect((await workflows(["resume", id], { cwd: root })).code).toBe(0);
 			const after = (await refresh?.()) ?? [];
@@ -127,9 +139,9 @@ describe("list --pick", () => {
 			return after[0]?.value;
 		};
 
-		const picked = await workflows(["list", "--pick"], { cwd: root, choose });
+		const picked = await workflows(["show", "--pick"], { cwd: root, choose });
 		expect(seen).toEqual([["◉ y  y running: talk"], ["· y  y done, exit 0"]]);
-		expect([picked.code, picked.stdout]).toEqual([0, [id]]);
+		expect([picked.code, picked.stdout]).toEqual([0, [String(one)]]);
 	});
 });
 
@@ -144,9 +156,8 @@ describe("wait", () => {
 });
 
 describe("attach in hc", () => {
-	let repo: string;
 	let id: string;
-	let worktree: string;
+	let conversation: number | undefined;
 
 	/** A fake hc that logs its arguments, and gives the terminal t3 the space s1 and the tab tb1. */
 	const hc = () =>
@@ -158,62 +169,43 @@ exit 0
 `,
 		);
 
-	const logged = async () => (await readFile(join(root, "hc.log"), "utf8")).trim().split("\n");
+	const logged = async () =>
+		existsSync(join(root, "hc.log")) ? (await readFile(join(root, "hc.log"), "utf8")).trim().split("\n") : undefined;
 
 	beforeEach(async () => {
-		repo = join(root, "repo");
-		await repository(repo);
-		const scripts = join(repo, ".workflows", "scripts");
-		await mkdir(scripts, { recursive: true });
-		await writeFile(join(scripts, "w.js"), 'export const meta = { worktree: true }\nawait agent("Script: one")');
-		const run = await workflows(["w"], { cwd: repo });
-		expect(run.code).toBe(0);
-		id = run.id ?? "";
-		worktree = worktreeAt(repo, id);
+		id = await ran('phase("a")\nawait agent("Script: one")');
+		conversation = await conversationOf(/Script: one/);
 		// Only now: the host shares this environment, so the setup run sees no hc terminal.
 		process.env.HC_TERMINAL_ID = "t3";
 		await hc();
 	});
 
-	it("opens the session in a new tab of the space of the run when its worktree exists", async () => {
-		const conversation = await conversationOf(/Script: one/);
-		const attached = await workflows(["attach", id], { cwd: repo });
-		expect(attached.code).toBe(0);
-		const lines = await logged();
-		expect(lines).toEqual([
-			expect.stringMatching(
-				new RegExp(
-					`^run --bg --keep --no-parent .* --label herdr\\.space=${id} -- .* attach --conversation ${conversation}$`,
-				),
-			),
-		]);
-		expect(await piLog()).toBeUndefined();
+	it("runs Pi in this terminal without --side", async () => {
+		const attached = await workflows(["attach", id], { cwd: root });
+		expect([attached.code, await piLog()]).toEqual([7, `--harness main --harness-conversation ${conversation}`]);
+		expect(await logged()).toBeUndefined();
 	});
 
 	it("opens the session in a new pane to the right of this terminal with --side", async () => {
-		const attached = await workflows(["attach", id, "--side"], { cwd: repo });
+		const attached = await workflows(["attach", id, "--side"], { cwd: root });
 		expect(attached.code).toBe(0);
-		const lines = await logged();
-		expect(lines[0]).toBe("get --json t3");
-		expect(lines[1]).toMatch(/^run .* --label herdr\.space=s1 --label herdr\.tab=tb1 -- /);
+
+		expect(await logged()).toEqual([
+			"get --json t3",
+			expect.stringMatching(
+				new RegExp(
+					`^run .* --label herdr\\.space=s1 --label herdr\\.tab=tb1 -- .* attach --conversation ${conversation}$`,
+				),
+			),
+		]);
+
 		expect(await piLog()).toBeUndefined();
 	});
 
-	it("opens the session in a new tab of the space of this terminal when the worktree is gone", async () => {
-		await rm(worktree, { recursive: true, force: true });
-		const attached = await workflows(["attach", id], { cwd: repo });
-		expect(attached.code).toBe(0);
-		const lines = await logged();
-		expect(lines[0]).toBe("get --json t3");
-		expect(lines[1]).toMatch(/^run .* --label herdr\.space=s1 -- /);
-		expect(lines[1]).not.toContain("herdr.tab");
-		expect(await piLog()).toBeUndefined();
-	});
-
-	it("fails when hc fails", async () => {
+	it("fails when hc fails with --side", async () => {
 		await fake("hc", "echo broken >&2\nexit 1\n");
-		const attached = await workflows(["attach", id], { cwd: repo });
-		expect([attached.code, attached.stderr]).toEqual([1, [expect.stringMatching(/^workflows: .*broken/)]]);
+		const attached = await workflows(["attach", id, "--side"], { cwd: root });
+		expect(attached.code).toBe(1);
 		expect(await piLog()).toBeUndefined();
 	});
 });

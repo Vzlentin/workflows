@@ -1,10 +1,11 @@
 /** `workflows show <run-id>`: the steps, the calls or the agents of a run. */
 import { parseArgs } from "node:util";
+import { resolveProject } from "@vzlentin/harness/projects";
 import { Todo } from "@vzlentin/harness/todo";
 import { type Static, Type } from "typebox";
 import { RUN_FIELDS, type TaskFields, taskFields } from "../../records/run.ts";
-import { endMark, type Progress } from "../../records/steps.ts";
-import { runRecords } from "../../records/store.ts";
+import { endMark, type Mark, Progress } from "../../records/steps.ts";
+import { progressEvents, reading, runRecords, runTasks } from "../../records/store.ts";
 import {
 	AGENT_ROW,
 	agentLines,
@@ -16,16 +17,17 @@ import {
 	showEntries,
 	type TreeEntry,
 } from "../../records/tree.ts";
-import { hasEnded, type RunTask, runOutcome, taskOf } from "../../run/past.ts";
+import { hasEnded, type RunStatus, type RunTask, runOutcome, taskOf } from "../../run/past.ts";
 import { type ShownInput, title as titleOf } from "../../run/result.ts";
 import { stateText } from "../../tool.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin, endOf } from "../follow.ts";
+import { storeOf } from "../host.ts";
 import type { Choose, Terminal } from "../main.ts";
-import { oneRunId, readable, type SavedRun, savedRun } from "../saved.ts";
+import { listedRuns, oneRunId, readable, type Row, type SavedRun, savedRun } from "../saved.ts";
 import type { PickItem } from "../terminal/pick.ts";
 
-export const SHOW = "workflows show <run-id> [--pick | [--agents] [--json]]";
+export const SHOW = "workflows show (<run-id> [--agents] [--json] | [<run-id>] --pick)";
 
 /**
  * The agent of a run, as `harness attach` opens it: its conversation, and the project of the run, whose host has it.
@@ -74,9 +76,9 @@ const PICK_POLL_MS = 1000;
 
 /**
  * Prints the steps of a run as a tree, or with `--agents` its agents, then its report lines, or how it ended. A run
- * without steps prints its calls. With `--pick`, it asks on the terminal for a line, and prints the conversation
- * of the agent of that line. It reads the task records, the progress, and the call records when it needs them, from
- * the project store only.
+ * without steps prints its calls. With `--pick`, it asks on the terminal for a run when no run ID is given, then for a
+ * line of that run, and prints the conversation of the agent of that line. It reads the task records, the progress, and
+ * the call records when it needs them, from the project store only.
  */
 export async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const { values, positionals } = withUsage(
@@ -94,14 +96,18 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 		throw new UsageError("give --pick without --agents or --json", SHOW);
 	}
 
-	const id = oneRunId(positionals, SHOW);
-
 	if (values.pick) {
-		if (terminal.choose === undefined) throw new UsageError("--pick needs a terminal on stdin and stderr", SHOW);
+		if (positionals.length > 1) throw new UsageError("give at most one run ID with --pick", SHOW);
 
-		return pickAgent(await savedRun(id, SHOW), terminal, terminal.choose);
+		if (terminal.choose === undefined) throw new UsageError("--pick needs a terminal on stdin and stderr", SHOW);
+		const picked = positionals[0] ?? (await pickRun(terminal, terminal.choose));
+
+		if (picked === undefined) return 130;
+
+		return pickAgent(await savedRun(picked, SHOW), terminal, terminal.choose);
 	}
 
+	const id = oneRunId(positionals, SHOW);
 	const agents = values.agents === true;
 	const shown = await readRun(await savedRun(id, SHOW), agents || json, "be shown");
 	const { input, title, head, ended, todos, calls, progress, footer, end } = shown;
@@ -246,4 +252,63 @@ async function pickAgent(run: SavedRun, terminal: Terminal, choose: Choose): Pro
 /** The items of the agent picker: the lines of `entries`, each with the conversation of its agent as its value. */
 function agentItems(entries: readonly TreeEntry[]): PickItem<number>[] {
 	return entries.map(({ text, conversation }) => ({ text, value: conversation }));
+}
+
+/**
+ * Asks on the terminal which run of the project of the current directory to take, and gives its run ID, or undefined
+ * when the person cancels. The runs that have not ended come first, each with the steps that run now. While it waits,
+ * it reads the runs again every second.
+ */
+async function pickRun(terminal: Terminal, choose: Choose): Promise<string | undefined> {
+	const items = await runItems(terminal);
+
+	if (items.length === 0) throw new Error(`no runs in the project of ${terminal.cwd}`);
+
+	return choose("Pick a run:", items, () => runItems(terminal));
+}
+
+/** The items of the run picker, from the project store of the current directory, each with its run ID as its value. */
+async function runItems(terminal: Terminal): Promise<PickItem<string>[]> {
+	const empty = { runs: [], steps: new Map<string, string>() };
+
+	const { runs, steps } = await reading(storeOf(resolveProject(process.env, terminal.cwd)), empty, async (store) => {
+		// The runs that have not ended come first in the picker.
+		const live = ({ state }: Row) => state === "running" || state === "waiting";
+		// A stable sort keeps the newest first within each group.
+		const tasks = await runTasks(store);
+		const sorted = (await listedRuns(store, tasks)).toSorted((a, b) => Number(live(b)) - Number(live(a)));
+		const found = new Map<string, string>();
+
+		for (const { runId } of sorted.filter((each) => each.state === "running")) {
+			const progress = new Progress();
+
+			for (const event of await progressEvents(store, runId)) progress.add(event);
+			const status = progress.status();
+
+			if (status !== undefined) found.set(runId, status);
+		}
+
+		return { runs: sorted, steps: found };
+	});
+
+	return runs.map(({ runId, title, workflow, state, result }) => {
+		const step = steps.get(runId);
+		const text = `${markOf(state)} ${title}  ${workflow} ${stateText(state, result)}${step === undefined ? "" : `: ${step}`}`;
+
+		return { text, value: runId };
+	});
+}
+
+/**
+ * The mark of a run in the picker by its state: `◉` running, `?` waiting for an answer, `·` done or of another version,
+ * else the mark of the steps of a run that ended in that state.
+ */
+function markOf(state: RunStatus): Mark | "?" {
+	if (state === "running") return "◉";
+
+	if (state === "waiting") return "?";
+
+	if (state === "done" || !hasEnded(state)) return "·";
+
+	return endMark(state);
 }

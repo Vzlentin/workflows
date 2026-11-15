@@ -236,40 +236,17 @@ describe("workflows prune", () => {
 		expect(existsSync(brokenRun)).toBe(true);
 	});
 
-	it("kills and removes the hc terminals of the run before its worktree", async () => {
-		const { id, worktree } = await mergedRun();
-		await fake(
-			"hc",
-			`echo "$@" >> "${root}/hc.log"
-[ "$1" = ls ] && echo '{"terminals":[{"address":"t5"},{"address":"m1/t6"}],"hidden_finished":0}'
-exit 0
-`,
-		);
+	it("removes the worktree and the branch with no hc call", async () => {
+		const { worktree } = await mergedRun();
+		await fake("hc", `echo "$@" >> "${root}/hc.log"\nexit 0\n`);
 
 		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
 		expect(pruned.code).toBe(0);
-		expect((await readFile(join(root, "hc.log"), "utf8")).trim().split("\n")).toEqual([
-			`ls --all --json --label herdr.space=${id}`,
-			"kill t5",
-			"rm t5",
-			"kill m1/t6",
-			"rm m1/t6",
+		expect([existsSync(worktree), hasBranch("feat/x"), existsSync(join(root, "hc.log"))]).toEqual([
+			false,
+			false,
+			false,
 		]);
-		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([false, false]);
-	});
-
-	it("keeps the worktree, and exits 1, when hc fails", async () => {
-		const { id, worktree } = await mergedRun();
-		await fake("hc", 'echo "hc: no server" >&2\nexit 1\n');
-
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout, pruned.stderr]).toEqual([
-			1,
-			[],
-			[`workflows: cannot prune ${id}: hc: no server`],
-		]);
-		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([true, true]);
-		expect(existsSync(join(runsOf(root), id, "pruning"))).toBe(false);
 	});
 
 	it("takes a run whose HEAD is in origin/main as merged, with no gh call", async () => {

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Overlay } from "@vzlentin/harness/overlay";
 import { git } from "../git.ts";
+import { isCommand } from "../tool.ts";
 import { mergeRoles, type Roles, readRoles, userTablePath } from "./roles.ts";
 
 /**
@@ -48,14 +49,15 @@ export async function readFolder(base: string, folder: string, extension: string
 	return Object.fromEntries(entries);
 }
 
-/** `<folder>/*<extension>` of the package, and of the project, whose files replace the package files of their name. */
-async function readMerged(project: string, folder: string, extension: string): Promise<Record<string, string>> {
-	const [own, local] = await Promise.all([
-		readFolder(PACKAGE, folder, extension),
-		readFolder(project, folder, extension),
-	]);
+/** `<folder>/*<extension>` of the package, merged with the project files `local`, which replace those of their name. */
+async function readMerged(
+	folder: string,
+	extension: string,
+	local: Promise<Record<string, string>>,
+): Promise<Record<string, string>> {
+	const [own, mine] = await Promise.all([readFolder(PACKAGE, folder, extension), local]);
 
-	return { ...own, ...local };
+	return { ...own, ...mine };
 }
 
 /** The `<name>.md` files of `folder`, each of which must replace a template of `templates`. */
@@ -89,7 +91,7 @@ export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle
 
 	const [scripts, merged, layers, lib, declarations] = await Promise.all([
 		loadScripts(project),
-		readMerged(project, "prompts", ".md"),
+		readMerged("prompts", ".md", readFolder(project, "prompts", ".md")),
 		Promise.all(tables.map(readRoles)),
 		readFolder(PACKAGE, "lib", ".js"),
 		readFile(join(PACKAGE, "script.d.ts"), "utf8"),
@@ -123,9 +125,26 @@ function wrapLib(code: string, declarations: string): string {
 	return `const { ${list} } = (() => {\n${code}\nreturn { ${list} };\n})();`;
 }
 
-/** The scripts of the package and of the project folder `project`, where a project script replaces the package script of its name. */
+/**
+ * The scripts of the package and of the project folder `project`, where a project script replaces the package script
+ * of its name. Throws for a project script with the name of a command.
+ */
 export function loadScripts(project: string): Promise<Record<string, string>> {
-	return readMerged(project, "scripts", ".js");
+	return readMerged("scripts", ".js", projectScripts(project));
+}
+
+/** The scripts of the project folder `project`. Throws for a script with the name of a command. */
+async function projectScripts(project: string): Promise<Record<string, string>> {
+	const local = await readFolder(project, "scripts", ".js");
+	const clash = Object.keys(local).find(isCommand);
+
+	if (clash !== undefined) {
+		throw new Error(
+			`${join(project, "scripts", `${clash}.js`)} has the name of the command ${clash}; rename the script`,
+		);
+	}
+
+	return local;
 }
 
 /** `.workflows/` at the root of the Git repository of `cwd`, or in `cwd` outside a repository. */

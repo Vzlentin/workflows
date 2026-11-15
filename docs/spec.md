@@ -711,9 +711,12 @@ workflows check audit
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`resume`, `wait`, `stop`, `list`, `show`, `log`, `attach`, `save`, `prune`, `check` and `outline` are commands, so no
-script of these names can run. Bad usage of a command prints `workflows: <error>`, then `usage:` and the usage line of
-that command, such as `usage: workflows show <run-id> [--pick | [--agents] [--json]]`, and exits 2.
+`list`, `resume`, `wait`, `stop`, `show`, `log`, `attach`, `save`, `prune`, `check` and `outline` are commands,
+`COMMAND_NAMES` of `src/tool.ts`, so no script of these names can run. A project script with one of these names fails
+every command that loads the scripts of the project, also `workflows` and `outline --json`, with `workflows:
+<project>/scripts/<name>.js has the name of the command <name>; rename the script`, and exit 1. Bad usage of a command
+prints `workflows: <error>`, then `usage:` and the usage line of that command, such as `usage: workflows show (<run-id>
+[--agents] [--json] | [<run-id>] --pick)`, and exits 2.
 
 `workflows --version` prints the version of the package, from its `package.json`, and exits 0. It ignores any other
 argument.
@@ -926,7 +929,7 @@ without the time between, and prints nothing. Any other `phase` line starts a ne
 
 The status of the run is the text of each step that runs, outermost first, joined with ` › `, such as
 `item 2/5: Add a thanks line › round 1/3: review`; child runs that run at once join with `, `. Only the `--json` line,
-the [Pi widget](#background-runs-in-pi) and `list --pick` show it.
+the [Pi widget](#background-runs-in-pi) and `show --pick` show it.
 
 When the run ends, the steps that still run become `✓` when the run is `done` or `waiting`, `·` when it was
 `aborted`, and `✗` when it `failed` or was `orphaned`. The end event of an aborted run is saved with `aborted: true`,
@@ -1426,15 +1429,15 @@ on in the host. A second Ctrl+C exits and never stops the run. Bad usage prints 
 
 ## hc and herdr-app
 
-`workflows` binds no key. A key or a shell composes the commands instead, such as one that picks a run, then one of its
-agents, and opens the agent in a new tab:
+`workflows` binds no key and opens no hc terminal. It gives the facts and one picker, and harness opens the agent. A
+key or a shell composes the commands, such as one that picks a run, then one of its agents, and opens the agent in a
+new herdr-app pane to the right:
 
 ```sh
-id=$(workflows list --pick) && c=$(workflows show "$id" --pick) && workflows attach "$id" --conversation "$c"
+c=$(workflows show --pick) && harness attach --conversation "$c" --side
 ```
 
-`attach` opens Pi in herdr-app when `HC_TERMINAL_ID` is set: see [Attach](#attach). `prune --yes` removes the hc
-terminals of a run with its worktree: see [Prune](#prune).
+`attach --side` opens Pi in a herdr-app pane when `HC_TERMINAL_ID` is set: see [Attach](#attach).
 
 ## JSON output
 
@@ -1480,7 +1483,6 @@ no outcome line, prints `workflows: <error>` and exits 1, and the run goes on in
 ```sh
 workflows list
 workflows list --json
-workflows list --pick
 ```
 
 `workflows list` prints one line for each run of the harness project of the current directory, newest run ID first:
@@ -1512,15 +1514,7 @@ Only the runs that have a run directory with a `project` file are listed. The co
 prepares the run, so a run directory of the project whose run has no task is listed as `<run-id> - unstarted -`, and
 with `--json` as `{ "runId", "state": "unstarted", "repository": null }`, with no other field: its run is about to
 start, or its command stopped before the host created the task. `LISTED` is the union of these two strict shapes,
-`ROW` of `src/cli/commands/list.ts` for a run with a task and the shape of an unstarted run. `--pick` leaves these out.
-
-With `--pick`, on a terminal, the command asks `Pick a run:` with the runs that run or wait first, each as `<mark>
-<title>  <workflow> <state>`, with `: <status of the run>` of [Progress](#progress) for a running run. The mark is `◉` running, `?` waiting,
-`✗` failed or orphaned (a task that ended without a result, not a result whose `status` is `failed`), else `·`. Typing filters by each word, in any case; the arrows move, Enter prints the run ID, and Esc or
-Ctrl+C exits 130. So commands compose: `workflows wait "$(workflows list --pick)"`. While the pick waits for a key, the
-command reads the runs again 1 s after each read ends and draws the new lines, with the typed filter kept and the cursor
-on the same run, else on the first match. A read that fails keeps the lines it has, and a read that finds no run shows
-`nothing matches`. A project with no run at the first read exits 1, and `--pick` without a terminal exits 2.
+`ROW` of `src/cli/saved.ts` for a run with a task and the shape of an unstarted run. `list` takes no argument.
 
 `list` reads the project store file read-only and does not start the host, so no run continues. It takes no lock that
 the host waits for, and runs no checkpoint of the file. A store whose schema pi-durable must update first cannot open
@@ -1551,23 +1545,20 @@ worktree, and a branch is merged when one pull request in the list has the commi
 back in a later run, with a merged pull request of an earlier commit, is not merged. `prune` runs every `gh` call before
 it removes anything: a failed `gh` call, or a missing `gh`, prints `workflows: <error>`, removes nothing and exits 1.
 
-With `--yes`, `prune` removes each merged worktree in order, and prints its line after the removal. It first runs
-`hc ls --all --json --label herdr.space=<run-id>`, and `hc kill <address>` then `hc rm <address>` for each terminal in
-its `terminals`. A missing `hc` command removes no terminal; any other `hc` failure
-fails the removal of the run. Then it runs `git worktree remove <worktree>` in the run's repository, without `--force`,
-and deletes the branch with `git branch -D <branch>` when the branch still exists. Before
-it removes anything of a run, `prune` reads the root tasks of the run from the store again. When the last task has not
-ended now, such as a resume that started during a `gh` call, it prints `workflows: skips <run-id>: its run has a task
-that has not ended; prune it after the run ends` on stderr, removes nothing of the run, leaves it out of stdout and the
-JSON, and goes on with the next run; the exit code does not change. Then it writes the marker `runs/<run-id>/pruning`,
-a JSON object `{ "branch", "repository", "path" }`, and it deletes the marker when the worktree and the branch are gone.
-An ended run with a marker is a candidate with no other check and no `gh` call, so a `prune` that stopped after the
-worktree removal is finished by the next one. A run with a marker whose last task has not ended is not a candidate, and
-each new task of a run deletes its marker before its worktree step. A removal
-that fails, such as of a worktree with changes, prints `workflows: cannot prune <run-id>: <error>` on stderr, leaves the
-run out of stdout and the JSON, and goes on with the next run; `prune` then exits 1. A failed worktree removal deletes the
-marker, as the worktree can get more work, and so does a failed `hc` call; a failed branch removal keeps it. The run directory and the run's records
-stay, so `list` and `show` still show the run.
+With `--yes`, `prune` removes each merged worktree in order, and prints its line after the removal. It runs
+`git worktree remove <worktree>` in the run's repository, without `--force`, and deletes the branch with
+`git branch -D <branch>` when the branch still exists. Before it removes anything of a run, `prune` reads the root tasks
+of the run from the store again. When the last task has not ended now, such as a resume that started during a `gh` call,
+it prints `workflows: skips <run-id>: its run has a task that has not ended; prune it after the run ends` on stderr,
+removes nothing of the run, leaves it out of stdout and the JSON, and goes on with the next run; the exit code does not
+change. Then it writes the marker `runs/<run-id>/pruning`, a JSON object `{ "branch", "repository", "path" }`, and it
+deletes the marker when the worktree and the branch are gone. An ended run with a marker is a candidate with no other
+check and no `gh` call, so a `prune` that stopped after the worktree removal is finished by the next one. A run with a
+marker whose last task has not ended is not a candidate, and each new task of a run deletes its marker before its
+worktree step. A removal that fails, such as of a worktree with changes, prints
+`workflows: cannot prune <run-id>: <error>` on stderr, leaves the run out of stdout and the JSON, and goes on with the
+next run; `prune` then exits 1. A failed worktree removal deletes the marker, as the worktree can get more work; a
+failed branch removal keeps it. The run directory and the run's records stay, so `list` and `show` still show the run.
 
 `prune` also prints one line `<run-id> unstarted <run directory>` for each run directory of the project whose run has
 no task (the `unstarted` runs of `list`) and whose `project` file is more than 1 hour old, after the merged runs. With
@@ -1596,7 +1587,7 @@ hook exists, it writes nothing, prints an error with the line to add, and exits 
 workflows show <run-id>
 workflows show <run-id> --agents [--json]
 workflows show <run-id> --json
-workflows show <run-id> --pick
+workflows show [<run-id>] --pick
 ```
 
 `workflows show` prints one run from the store of its project: the line `run <run-id> <workflow> <state> <title>`,
@@ -1691,9 +1682,20 @@ line, `model` is `{ "provider", "model", "thinking"? }`, the model that the sess
 the agent works, and `facts` is the text after the agent text in its line, such as `claude-opus-5-5  1 ask  31s`.
 `depth` is the nesting of child runs.
 
-With `--pick`, on a terminal, the command asks `Pick an agent:` with the lines that `show` prints: the first line, the
-steps, or the calls of a run without steps, then the footer. It prints the conversation ID of the agent of the line
-that the pick takes, for [`attach --conversation`](#attach). Only a line with an agent can be taken; Enter on another
+With `--pick` and no run ID, on a terminal, the command first asks `Pick a run:` with the runs that run or wait first,
+each as `<mark> <title>  <workflow> <state>`, with `: <status of the run>` of [Progress](#progress) for a running run.
+The runs are those of `list` without the unstarted ones. The mark is `◉` running, `?` waiting, `✗` failed or orphaned
+(a task that ended without a result, not a result whose `status` is `failed`), else `·`. Typing filters by each word,
+in any case; the arrows move, Enter takes the run, and Esc or Ctrl+C exits 130. While the pick waits for a key, the
+command reads the runs again 1 s after each read ends and draws the new lines, with the typed filter kept and the cursor
+on the same run, else on the first match. A read that fails keeps the lines it has, and a read that finds no run shows
+`nothing matches`. A project with no run at the first read prints `workflows: no runs in the project of <cwd>` and
+exits 1.
+
+With `--pick`, on a terminal, the command then asks `Pick an agent:` with the lines that `show` prints of the run: the
+first line, the steps, or the calls of a run without steps, then the footer. It prints the conversation ID of the agent
+of the line that the pick takes, for [`attach --conversation`](#attach) or `harness attach --conversation`, in both
+forms. Only a line with an agent can be taken; Enter on another
 line keeps the pick open. The cursor starts on the first line with an agent, also after each change of the typed
 filter. While the pick waits for a key, the command reads the run again 1 s after each read ends and draws the new
 lines, such as new steps, new marks and elapsed times, with the typed filter kept. The cursor stays on a line with the
@@ -1710,7 +1712,8 @@ first line with an agent. A read that fails keeps the lines it has.
 
 While no line has an agent and the run's task has not ended, the command reads the store again every second, and
 Ctrl+C exits 130. A run that ended with no agent prints `workflows: run <run-id> has no agent` and exits 1. A cancel of
-the pick exits 130. `--pick` without a terminal, or with `--agents` or `--json`, is bad usage.
+the pick exits 130. `--pick` without a terminal, with `--agents` or `--json`, or with more than one run ID, is bad
+usage.
 
 `show` exits 0 for every run it can show. It reads the project store through pi-durable's storage functions, as `list`
 does, and does not start the host. It reads the file read-only as `list` does. An unknown run ID, or a run directory
@@ -1720,7 +1723,8 @@ has the fields of a title, as `list` reads them. `show` and `attach` read such a
 refuse it. Another run that another version saved, such as a run whose task has not ended, prints `workflows: run
 <run-id> was saved by an earlier version of <workflow> and cannot be shown`, or `workflows: run <run-id> was saved by
 a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
-as no run ID, prints `usage: workflows show <run-id> [--pick | [--agents] [--json]]` and exits 2.
+as no run ID without `--pick`, prints `usage: workflows show (<run-id> [--agents] [--json] | [<run-id>] --pick)` and
+exits 2.
 
 ## Log
 
@@ -1821,21 +1825,17 @@ workflows attach <run-id> [--conversation <id>] [--side]
   as `show --json` and `show --pick` give it.
 - The command opens the session that works now, as `show --agents` marks it `◉`. When no session works, it opens the
   last session that started. `show --json` gives the same session as its `agent`.
-- It connects to the host of the run's project, and starts the host when none runs. It sends `watch` for the
-  conversation of the session, so an unknown conversation fails before Pi starts.
-- Outside an hc terminal (`HC_TERMINAL_ID` not set), it runs `harness --project <project> attach --conversation <id>`
-  in this terminal, and exits with its code. A child that a signal ends exits 1.
-- In an hc terminal, it opens Pi in a background hc terminal that herdr-app shows, with `openConversationPane` of
-  harness, and exits 0. With `--side`, the terminal gets the `herdr.space` and `herdr.tab` labels of this terminal, as
-  `hc get --json $HC_TERMINAL_ID` gives them, and herdr-app shows it in a new pane to the right. Else, when the run's
-  worktree exists, it gets the label `herdr.space=<run-id>`, a new tab of the space of the run. Else it gets the
-  `herdr.space` label of this terminal. A label that this terminal does not have fails the attach.
+- It runs `harness --project <project> attach --conversation <id>`, with `--side` when given, with the harness CLI of
+  this install, in this terminal, and exits with its code. A child that a signal ends exits 1. Harness owns the open:
+  it starts the host of the run's project when none runs, checks the conversation before Pi starts, and runs Pi in
+  this terminal. With `--side` in an hc terminal (`HC_TERMINAL_ID` is set), it opens Pi in a new herdr-app pane to the
+  right of this terminal instead, and exits 0. See the harness spec, Open in Pi.
 
 A run with no session prints `workflows: run <run-id> has no session`. A conversation that is not a session of the run prints
 `workflows: run <run-id> has no session with conversation <id>`. An unknown run ID prints the `no run` error of `resume`, and a run
-of another version that `show` cannot show prints the error of `show` with `cannot be attached`. An hc failure prints
-`workflows: <error>`. These exit 1. Bad usage, such as no run ID or a second argument, prints `usage: workflows attach <run-id> [--conversation <id>]
-[--side]` and
+of another version that `show` cannot show prints the error of `show` with `cannot be attached`. These exit 1. An
+error of harness, such as an unknown conversation or an hc failure, is the stderr of harness, and exits 1. Bad usage,
+such as no run ID or a second argument, prints `usage: workflows attach <run-id> [--conversation <id>] [--side]` and
 exits 2.
 
 ## Save
@@ -1852,7 +1852,8 @@ with its `export const meta` header. Only the script is saved: no prompts, agent
 - The name is lowercase letters, digits and `-`, and starts with a letter or a digit. Another name, not exactly one
   run ID and one name, or another flag, prints the error, then `usage: workflows save <run-id> <name> [--force]`, and
   exits 2.
-- A command name prints `workflows: <name> is a command and cannot be a workflow name` and exits 1.
+- A command name, one of `COMMAND_NAMES` of `src/tool.ts`, prints `workflows: <name> is a command and cannot be a
+  workflow name` and exits 1.
 - An unknown run ID, or the ID of a child run, prints the `no run` error of `resume`. A run saved by an earlier
   version prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot be saved`, and a
   run saved by a later version prints the same with `a later version`. These exit 1.
@@ -2084,7 +2085,9 @@ The tool takes one of `name`, `script`, `resume` or `save`, plus `args` with `na
   `workflows ship --item=Fix the README typo --rounds=2 --json`. An arg that the script's `meta` does not declare is
   bad usage, so no run starts.
   `{ name: "optimize", args: { workflow: "ship", items: "items/" } }` runs
-  `workflows optimize --workflow=ship --items=items/ --json`.
+  `workflows optimize --workflow=ship --items=items/ --json`. A command name, one of `COMMAND_NAMES`, is the error
+  `<name> is a command, not a workflow`, and a name that starts with `-` is the error `<name> is not a workflow name`.
+  No command starts in either case.
 - `script` runs `workflows - --<key>=<value>... --json` with the script on stdin, and each arg as a flag as for `name`.
 - `resume` runs `workflows resume <run-id>`. `answer`, with `resume` only, adds `--answer=<text>` and answers the
   ask of a waiting run (see [Input](#input)). With `name`, `script` or `save`, it is the error `answer works only with resume`, and no
@@ -2233,11 +2236,11 @@ The indent is two spaces for each depth of child runs. `<model>` is the model ID
 model has no `  <model>`. When the line of an
 agent is the same as the line of an agent above it, it ends with `  #<conversation>`, so each line is distinct.
 
-Escape on either list ends the command. A chosen agent runs `workflows attach <run-id> --conversation <id>` when Pi runs
-in an hc terminal, as `inHerdr` of the harness of the workflows package tells from `HC_TERMINAL_ID`, which opens the
-agent in a herdr-app tab, as `workflows attach` does only there. Else, the command notifies `Run in another terminal:
-workflows attach <run-id> --conversation <id>`. When the attach fails, it notifies the error `<stderr>. Run in another
-terminal: workflows attach <run-id> --conversation <id>`.
+Escape on either list ends the command. A chosen agent runs `workflows attach <run-id> --conversation <id> --side`
+when Pi runs in an hc terminal, as `inHerdr` of the harness of the workflows package tells from `HC_TERMINAL_ID`, which
+opens the agent in a herdr-app pane to the right. Outside an hc terminal, `--side` would run Pi in place, under Pi, so
+the command notifies `Run in another terminal: workflows attach <run-id> --conversation <id>` instead. When the
+attach fails, it notifies the error `<stderr>. Run in another terminal: workflows attach <run-id> --conversation <id>`.
 
 ## Run directory
 
@@ -2300,7 +2303,7 @@ The engine files in `src/`:
 - `cli/commands/`: one file for each command: `start.ts`, `resume.ts` (also `wait`), `stop.ts`, `list.ts`, `show.ts`,
   `attach.ts`, `save.ts`, `prune.ts` and `outline.ts`.
 - `command.ts`: the `workflows` command of the package as a child process, for the `workflow` tool of the host.
-- `cli/terminal/pick.ts` and `cli/terminal/keys.ts`: the picker of `list --pick` and `show --pick`, and its keys.
+- `cli/terminal/pick.ts` and `cli/terminal/keys.ts`: the picker of `show --pick`, and its keys.
 - `entry.ts`: the entry that the harness host loads, with the script task and the catch-up hook.
 - `records/tree.ts`: the call tree of a saved run, its lines and agent rows for `show` and `attach`, and the lines of
   `show` with the agent of each step, for `show --pick`.
@@ -2315,7 +2318,6 @@ The engine files in `src/`:
 - `launch/args.ts`: the `meta.args` values of the command line, and the texts that they name, and the args of a
   `run()` call, with one check of both against `meta.args`.
 - `launch/worktree.ts`: repository selection, the worktree of a run, made by Git, and the name of its branch.
-- `herdr.ts`: the hc commands: the removal of the hc terminals of a run.
 - `run/result.ts`: the title of a run, the status, report lines and exit code of its result, and its branch.
 - `workflow/meta.ts`: read and check the `meta` of a workflow script.
 - `workflow/find.ts`: find a script, list the scripts, help and usage, usage errors, and the terminal input and output.

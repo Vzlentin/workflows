@@ -2,20 +2,30 @@
  * The saved runs of the command line: their run directory, their root tasks with their keys, their status and their
  * progress, read from the project store.
  */
+import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { TaskId, TaskRecord } from "@earendil-works/pi-durable";
-import { statePaths } from "@vzlentin/harness/protocol";
+import { type Static, Type } from "typebox";
 import { readProject, type ScriptInput } from "../launch/input.ts";
-import { inputName, progressEvents, reading, runTasks, type Store, startedTasks } from "../records/store.ts";
+import { RUN_FIELDS, taskFields } from "../records/run.ts";
+import {
+	inputName,
+	inputWorktree,
+	progressEvents,
+	reading,
+	runTasks,
+	type Store,
+	startedTasks,
+} from "../records/store.ts";
 import { hasEnded, type RunTask, runStatus, savedInput, savedLater, taskOf } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
-import { SHOWN_INPUT, type ShownInput } from "../run/result.ts";
+import { SHOWN_INPUT, type ShownInput, title as titleOf } from "../run/result.ts";
 import { current } from "../run/version.ts";
 import { UsageError } from "../workflow/find.ts";
-import { keyNumber, runsDirectory, STORE_FILE, taskKey } from "./host.ts";
+import { keyNumber, runsDirectory, storeOf, taskKey } from "./host.ts";
 
 /** The one run ID of `args`. Bad usage prints `usage`. */
 export function oneRunId(args: readonly string[], usage: string): string {
@@ -42,7 +52,38 @@ export async function savedRun(id: string, usage: string): Promise<SavedRun> {
 		throw new GoneRun(`no run ${id} in ${runsDirectory()}`);
 	});
 
-	return { id, project, store: join(statePaths(project).dir, STORE_FILE) };
+	return { id, project, store: storeOf(project) };
+}
+
+/**
+ * A run of the project store that has a task and a run directory: the run fields, and the repository of its worktree,
+ * or null for a run without a worktree.
+ */
+export const ROW = Type.Object(
+	{ ...RUN_FIELDS, repository: Type.Union([Type.String(), Type.Null()]) },
+	{ additionalProperties: false },
+);
+
+export type Row = Static<typeof ROW>;
+
+/** The runs `runs` of the open project store `store` that have a run directory, newest run ID first. */
+export async function listedRuns(store: Store, runs: ReadonlyMap<string, readonly RunTask[]>): Promise<Row[]> {
+	const listed: Row[] = [];
+
+	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
+		const task = taskOf(tasks);
+
+		if (task === undefined || !existsSync(join(runsDirectory(), id, "project"))) continue;
+		const repository = inputWorktree(task.input)?.repository ?? null;
+
+		// A task of every version whose input has the fields of a title gets its title; another keeps its workflow name.
+		const input = savedInput(SHOWN_INPUT, task.input);
+		const workflow = savedBy(task).name;
+		const title = input === undefined ? workflow : titleOf(input, await progressEvents(store, id));
+		listed.push({ runId: id, workflow, title, ...taskFields(tasks, task), repository });
+	}
+
+	return listed;
 }
 
 /**

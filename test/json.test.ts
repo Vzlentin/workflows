@@ -5,8 +5,9 @@ import { AskWrite, type Request, type ServesInput } from "@vzlentin/harness/prot
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { LISTED, ROW } from "../src/cli/commands/list.ts";
+import { LISTED } from "../src/cli/commands/list.ts";
 import { SHOWN, SHOWN_AGENTS } from "../src/cli/commands/show.ts";
+import { ROW } from "../src/cli/saved.ts";
 import { LABELS, type Labels } from "../src/records/tree.ts";
 import type { CallKind } from "../src/run/calls.ts";
 import { conversationOf, hostModel, inputsOf, sandbox, startHost, workflows } from "./support.ts";

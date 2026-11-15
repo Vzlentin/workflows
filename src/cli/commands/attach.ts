@@ -1,15 +1,10 @@
 /** `workflows attach <run-id>`: opens a session of a run in Pi. */
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { type ConversationPlace, inHerdr, openConversationPane } from "@vzlentin/harness/herdr";
 import { cliPath } from "@vzlentin/harness/protocol";
-import { inputWorktree } from "../../records/store.ts";
 import { agentRows, runAgent } from "../../records/tree.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
-import { connectTo } from "../host.ts";
-import type { Terminal } from "../main.ts";
 import { oneRunId, savedRun } from "../saved.ts";
 import { readRun } from "./show.ts";
 
@@ -17,11 +12,11 @@ export const ATTACH = "workflows attach <run-id> [--conversation <id>] [--side]"
 
 /**
  * Opens a session of a run in Pi: the session that works now, else the last session to start, or the session of
- * `--conversation` when one is given. In an hc terminal, it opens Pi in herdr-app: in a new tab of the space of the
- * run when its worktree exists, else of the space of this terminal; with `--side`, in a new pane to the right of this
- * terminal. Else, it runs Pi in this terminal and exits with its code.
+ * `--conversation` when one is given. It runs `harness attach --conversation` of this install for the project of the
+ * run, with `--side` when given, and exits with its code. Harness checks the conversation and opens Pi: in this
+ * terminal, or with `--side` in an hc terminal, in a new herdr-app pane to the right of this terminal.
  */
-export async function attach(args: readonly string[], terminal: Terminal): Promise<number> {
+export async function attach(args: readonly string[]): Promise<number> {
 	const { values, positionals } = withUsage(
 		() =>
 			parseArgs({
@@ -43,7 +38,7 @@ export async function attach(args: readonly string[], terminal: Terminal): Promi
 	const conversation = wanted === undefined ? undefined : Number(wanted);
 
 	const run = await savedRun(id, ATTACH);
-	const { task, calls } = await readRun(run, true, "be attached");
+	const { calls } = await readRun(run, true, "be attached");
 
 	const session = runAgent(
 		agentRows(calls, 0, Date.now()),
@@ -56,27 +51,13 @@ export async function attach(args: readonly string[], terminal: Terminal): Promi
 		);
 	}
 
-	const client = await connectTo(terminal, run.project, true);
+	const argv = [cliPath(), "--project", run.project, "attach", "--conversation", String(session.conversation)];
+	const side = values.side ? ["--side"] : [];
 
-	try {
-		// The watch fails here for a conversation that the host does not know, and gives the child that hc opens.
-		const watched = String(session.conversation);
-		const { child } = await client.request({ type: "watch", conversation: watched });
+	const [code]: (number | null)[] = await once(
+		spawn(process.execPath, [...argv, ...side], { stdio: "inherit" }),
+		"exit",
+	);
 
-		if (inHerdr(process.env)) {
-			const worktree = inputWorktree(task.input);
-			const open = worktree !== undefined && existsSync(worktree.path);
-			const place: ConversationPlace = values.side ? { side: true } : open ? { space: id } : {};
-			await openConversationPane(child, place, { ...process.env, HARNESS_PROJECT: run.project });
-
-			return 0;
-		}
-
-		const argv = [cliPath(), "--project", run.project, "attach", "--conversation", watched];
-		const [code]: (number | null)[] = await once(spawn(process.execPath, argv, { stdio: "inherit" }), "exit");
-
-		return code ?? 1;
-	} finally {
-		client.close();
-	}
+	return code ?? 1;
 }

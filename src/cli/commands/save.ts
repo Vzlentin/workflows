@@ -3,29 +3,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { taskOf } from "../../run/past.ts";
+import { isCommand } from "../../tool.ts";
 import { loadScripts, projectFolder } from "../../workflow/bundle.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import type { Terminal } from "../main.ts";
 import { checked, savedRun, tasksOf } from "../saved.ts";
 
 export const SAVE = "workflows save <run-id> <name> [--force]";
-
-/** The names of the commands. No script can have one of these names. */
-const COMMAND_NAMES = [
-	"list",
-	"resume",
-	"wait",
-	"stop",
-	"show",
-	"log",
-	"attach",
-	"save",
-	"prune",
-	"check",
-	"outline",
-] as const;
-
-export type CommandName = (typeof COMMAND_NAMES)[number];
 
 /** Writes the script of a saved run to `workflows/<name>.js` of the project folder, and prints the file's path. */
 export async function save(args: readonly string[], terminal: Terminal): Promise<number> {
@@ -44,8 +28,7 @@ export async function save(args: readonly string[], terminal: Terminal): Promise
 		throw new UsageError(`${name} is not a workflow name: use lowercase letters, digits and -`, SAVE);
 	}
 
-	if (COMMAND_NAMES.some((command) => command === name))
-		throw new Error(`${name} is a command and cannot be a workflow name`);
+	if (isCommand(name)) throw new Error(`${name} is a command and cannot be a workflow name`);
 	const run = await savedRun(id, SAVE);
 	const { input } = checked(taskOf(await tasksOf(run)), id, "be saved");
 	const project = await projectFolder(terminal.cwd);
