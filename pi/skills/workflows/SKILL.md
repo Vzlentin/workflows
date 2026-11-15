@@ -9,8 +9,8 @@ and judge. A run costs minutes and model calls.
 
 ## The rule
 
-- Start a run, or resume one, only when the user asks for it in his message. To answer a question about workflows or
-  about a run, read; do not start a run.
+- Start a run, or resume one, only when the user asks for that run in his message. A contract or a goal file is not a
+  go. To answer a question about workflows or about a run, read; do not start a run.
 - Never plan, edit or commit in the run's worktree yourself while the run goes on. Never merge, push or delete its
   branch.
 - Call the tool once for each run. Do not poll it, and do not call it again while it follows the run.

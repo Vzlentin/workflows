@@ -76,7 +76,8 @@ export type WorkflowOutcome = Static<typeof OUTCOME>;
 export type OutcomeStatus = WorkflowOutcome["status"];
 
 export const DESCRIPTION =
-	"Run a durable workflow and wait for its result. Give exactly one of: `name` (a workflow script such as " +
+	"Run a durable workflow and wait for its result. Start or resume a run only when the user asks for that run in " +
+	"his message: a contract or a goal file is not a go. Give exactly one of: `name` (a workflow script such as " +
 	"`ship`, `campaign` or `optimize`), `script` (the body of an inline workflow script), `resume` (a run " +
 	"ID), or `save` (keeps the script of a run as a named workflow of the project). `args` are the arguments of " +
 	"`name` or `script`, each passed as `--<key>`; a script's `meta` declares them. Every run also takes `agents`, " +

@@ -1857,7 +1857,9 @@ directory, starts the host when none runs, asks it to start the run's task, and 
 The entry also gives the conversations of the host the `workflow` tool: the project agent, its subagents, and the
 subagents of sessions. The sessions of a run do not get it. `src/tool.ts` defines it once for the host and for Pi: its
 description, its parameters, its output schema, the command arguments of a call, and the text and the outcome of a
-result. The host tool has no prompt guidelines. It takes the parameters of [The `workflow` tool](#the-workflow-tool) of
+result. The description tells the model to start or resume a run only when the user asks for that run in his
+message, and that a contract or a goal file is not a go; the skill gives the same rule. The host tool has no prompt
+guidelines. It takes the parameters of [The `workflow` tool](#the-workflow-tool) of
 Pi, and runs the `workflows` command of the same install as a child process with the Node of the host, in the
 conversation's directory, with `--json`. `args.agents` reaches the command as `--agents=<text>`, so a bad part is the
 error result of the command's usage error, before a run exists. It sets `HARNESS_PROJECT` to the project of the host and
@@ -1929,8 +1931,9 @@ pi-agents at the same two places, `../pi-agents/skills` and `./node_modules/@vzl
 the resource types that a manifest names, and it loads pi-agents through the path of its extension, so the skills of
 pi-agents need these paths too. Pi skips the one that does not exist, and loads a skill file with the same real path
 once. The skill tells the model how to start and follow the runs of ship, campaign, rpi, thermoloop and judge with the
-`workflow` tool, and to start or resume a run only when the user asks for one in his message. `/skill:workflows
-<workflow> <input>` asks for a run: the first word is the workflow, and the rest is its input.
+`workflow` tool, and to start or resume a run only when the user asks for one in his message; a contract or a goal file
+is not a go. `/skill:workflows <workflow> <input>` asks for a run: the first word is the workflow, and the rest is its
+input.
 
 When Pi loads the extension, it resolves `@vzlentin/workflows/package.json` from its own folder, and:
 

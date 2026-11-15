@@ -651,6 +651,16 @@ describe("the workflow tool", () => {
 		expect(hostTool?.parameters).toEqual(tool.parameters);
 		expect(hostTool?.structuredOutputSchema).toEqual(tool.outputSchema);
 	});
+
+	it("tells the model in its description to start a run only when the user asks for it", () => {
+		const rule =
+			"Start or resume a run only when the user asks for that run in his message: a contract or a goal file is not a go.";
+
+		// SAFETY: the entry reads the host only when a tool call or a task runs, and this test runs neither.
+		const [hostTool] = workflowsEntry({} as Host).extensions[0]?.tools ?? [];
+		expect(hostTool?.description).toContain(rule);
+		expect(tool.description).toContain(rule);
+	});
 });
 
 describe("a background run of the workflow tool", () => {
