@@ -186,15 +186,24 @@ function callLines(root: string, node: CallNode, indent: string): LogLine[] {
 	// A call prints again in `log --follow` when its state changes.
 	const lines = [{ item: `${key}:${state}`, text }];
 
-	if (record.end?.kind === "failed") {
-		const tail = linesOf(record.end.error.trimEnd()).slice(-TAIL_LINES);
-
-		for (const [n, line] of tail.entries()) {
-			lines.push({ item: `${key}#${n}`, text: `${NO_TIME}  ${indent}    | ${line.slice(0, TAIL_WIDTH)}` });
-		}
-	}
+	if (record.end?.kind === "failed") lines.push(...tailLines(key, record.end.error, indent));
 
 	return lines;
+}
+
+/** The last lines of `error` at `indent`, each cut at its width, as items `<item>#<n>`. */
+function tailLines(item: string, error: string, indent: string): LogLine[] {
+	const tail = linesOf(error.trimEnd()).slice(-TAIL_LINES);
+
+	return tail.map((line, n) => ({
+		item: `${item}#${n}`,
+		text: `${NO_TIME}  ${indent}    | ${line.slice(0, TAIL_WIDTH)}`,
+	}));
+}
+
+/** The last lines of `error`, the error of the root run `runId`, under its end line. None when it has no error. */
+export function errorLines(runId: string, error: string | undefined): LogLine[] {
+	return error === undefined ? [] : tailLines(`end:${runId}`, error, "");
 }
 
 /**

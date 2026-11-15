@@ -919,11 +919,13 @@ describe("runs in the harness host", () => {
 			0,
 			expect.objectContaining({ state: "orphaned", error: outcome.error }),
 		]);
+		expect(outcome.error).not.toContain("\n");
 		const logged = await workflows(["log", id], { cwd: root });
-		expect([logged.code, logged.stdout[0], logged.stdout.at(-1)]).toEqual([
+		expect([logged.code, logged.stdout[0], logged.stdout.at(-2), logged.stdout.at(-1)]).toEqual([
 			0,
 			`run ${id} x orphaned`,
 			expect.stringMatching(/ {2}end orphaned$/),
+			`${" ".repeat(14)}| ${outcome.error}`,
 		]);
 	});
 

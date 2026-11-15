@@ -1,9 +1,27 @@
 /** `workflows log <run-id>`: the short log of a run, the full output of one call, or the log as the run goes on. */
 import { parseArgs } from "node:util";
-import { callKey, callText, findCall, isStepName, type RunProgress, runLines, stepLog } from "../../records/log.ts";
+import {
+	callKey,
+	callText,
+	errorLines,
+	findCall,
+	isStepName,
+	type RunProgress,
+	runLines,
+	stepLog,
+} from "../../records/log.ts";
 import { runRecords } from "../../records/store.ts";
 import { type CallNode, callNodes } from "../../records/tree.ts";
-import { hasEnded, type RunStatus, runStatus, taskOf, taskResult } from "../../run/past.ts";
+import {
+	endedOutcome,
+	hasEnded,
+	type RunStatus,
+	type RunTask,
+	runStatus,
+	taskOf,
+	taskOutcome,
+	taskResult,
+} from "../../run/past.ts";
 import { stateText } from "../../tool.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin } from "../follow.ts";
@@ -62,7 +80,12 @@ export async function log(args: readonly string[], terminal: Terminal, json: boo
 
 	for (;;) {
 		const read = await readLog(run);
-		const lines = [{ item: "run", text: read.head }, ...runLines(id, id, read.status, read.progress, read.calls, "")];
+
+		const lines = [
+			{ item: "run", text: read.head },
+			...runLines(id, id, read.status, read.progress, read.calls, ""),
+			...errorLines(id, read.error),
+		];
 
 		for (const { item, text } of lines) {
 			if (printed.has(item)) continue;
@@ -76,12 +99,16 @@ export async function log(args: readonly string[], terminal: Terminal, json: boo
 	}
 }
 
-/** A run as `log` reads it: its head line, its call tree, its progress, and the status of its task, if it has one. */
+/**
+ * A run as `log` reads it: its head line, its call tree, its progress, the status of its task, if it has one, and the
+ * error of the task when it ended with one.
+ */
 type ReadLog = {
 	readonly head: string;
 	readonly calls: CallNode[];
 	readonly progress: RunProgress;
 	readonly status: RunStatus | undefined;
+	readonly error: string | undefined;
 };
 
 /** Reads the root tasks, the progress and the call records of `run` in one read. */
@@ -103,5 +130,15 @@ async function readLog(run: SavedRun): Promise<ReadLog> {
 			? `run ${id}`
 			: `run ${id} ${savedBy(task).name} ${stateText(status, taskResult(task))}`;
 
-	return { head, calls, progress: read, status };
+	return { head, calls, progress: read, status, error: errorOf(id, task) };
+}
+
+/** The error of the task `task` of the run `id`, when it ended with one: failed, faulted or orphaned. */
+function errorOf(id: string, task: RunTask | undefined): string | undefined {
+	const outcome = task === undefined ? undefined : taskOutcome(task);
+
+	if (outcome === undefined || outcome.status === "completed") return undefined;
+	const ended = endedOutcome(id, outcome);
+
+	return ended.state === "aborted" ? undefined : ended.error;
 }

@@ -230,15 +230,16 @@ describe("the catch-up of workflows runs", () => {
 			`- ${orphaned} (e): orphaned`,
 		]);
 
-		for (const [id, state] of [
-			[faulted, "failed"],
-			[orphaned, "orphaned"],
+		for (const [id, state, error] of [
+			[faulted, "failed", "no"],
+			[orphaned, "orphaned", "no definition"],
 		]) {
 			const logged = await workflows(["log", id ?? ""], { cwd: root });
-			expect([logged.code, logged.stdout[0], logged.stdout.at(-1)]).toEqual([
+			expect([logged.code, logged.stdout[0], logged.stdout.at(-2), logged.stdout.at(-1)]).toEqual([
 				0,
 				`run ${id} e ${state}`,
 				expect.stringMatching(new RegExp(` {2}end ${state}$`)),
+				`${" ".repeat(14)}| ${error}`,
 			]);
 		}
 	});

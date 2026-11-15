@@ -1012,6 +1012,18 @@ describe("workflows log", () => {
 			),
 			...["196", "197", "198", "199", "200"].map((n) => `${" ".repeat(14)}| ${n}`),
 			expect.stringMatching(/^\d\d:\d\d:\d\d {2}end failed$/),
+			...["196", "197", "198", "199", "200"].map((n) => `${" ".repeat(14)}| ${n}`),
+		]);
+	});
+
+	it("logs the last lines of the error of a failed run under its end line", async () => {
+		await writeFile(join(root, "x.js"), 'throw new Error("no")');
+		const id = (await workflows(["x.js"], { cwd: root })).id ?? "";
+		const logged = await workflows(["log", id], { cwd: root });
+		expect([logged.code, logged.stdout.at(-2), logged.stdout.at(-1)]).toEqual([
+			0,
+			logLine("end failed"),
+			`${" ".repeat(14)}| no`,
 		]);
 	});
 

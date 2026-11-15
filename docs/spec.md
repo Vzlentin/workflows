@@ -1781,8 +1781,11 @@ HH:MM:SS    ✓ run <workflow> <child run-id>  <duration>  <size>  <call>
 HH:MM:SS      <phase text of the child run>  <n> calls  <size>  <child run-id>/s1
 HH:MM:SS        ◉ <kind> <label>  running  <call>
 HH:MM:SS      end done
-HH:MM:SS  end done
+HH:MM:SS  end failed
+              | <last lines of the error of the run>
 ```
+
+The `| ` lines under the last end line are only under `end failed` or `end orphaned`.
 
 - The first line has the workflow and the state as `list` gives them, for a task of any version. A run with no task
   has only the run ID in it.
@@ -1814,6 +1817,9 @@ HH:MM:SS  end done
   `run` call. The time is that of the last end event of the run, when its last start or end event is an end, else
   blank. Each task of a run, a resume too, starts it again, so a run that failed and then ended after a resume has one
   end line, its last one. Once the run has ended, its steps that still ran take the end mark of [Show](#show).
+- A root run that ended `failed` or `orphaned` has the last 5 lines of the error of its last task under its end line,
+  each as `| <line>`, cut at 120 characters. The error is the one that `show` gives. A child run has none: the error
+  of its `run` call is under that call.
 
 The name of a step is `s<n>`, where `n` counts the steps of the run from 1, for a step of the root run, and
 `<child run-id>/s<n>` for a step of a child run. `workflows log <run-id> <step>` prints the line of the step, then the
