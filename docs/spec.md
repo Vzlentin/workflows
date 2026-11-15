@@ -2053,12 +2053,12 @@ error result of the command's usage error, before a run exists. It sets `HARNESS
   error and no command starts. The result is the outcome with `follow: "started"`, which is not an error: `run <run-id> started in the
   background; its result comes as a message in this conversation when it ends; follow it with resume: "<run-id>", or
   stop it with the command workflows stop <run-id>`.
-- A task whose input has `notify` posts its outcome to the conversation `parent` when it ends, after it ends its
-  sessions and before its end commits. The post is a follow-up input of the entry kind `workflows.result`, with the
+- A task whose input has `notify` posts its outcome to the conversation `parent` in the commit that ends its task,
+  after it ends its sessions. An end commit that fails posts nothing, so the post is always the outcome that the task
+  ends with. The post is a follow-up input of the entry kind `workflows.result`, with the
   data `{ runId, state }` and the text of the tool result for that outcome, which the same builder as the command
   makes from the end of the task: `done` with the report lines (with the limit on the summary above), `waiting` with
-  the question and how to answer it, `failed` with the error, or `aborted`. Its request ID is `workflows.result:<run-id>/<task-id>`, so a rerun of the
-  phase posts once, and each later task of the run posts again. A child run never has `notify`. Nothing is posted
+  the question and how to answer it, `failed` with the error, or `aborted`. Its request ID is `workflows.result:<run-id>/<task-id>`, so each later task of the run posts again. A child run never has `notify`. Nothing is posted
   when `parent` is not a conversation ID of the host, such as the session ID of Pi, or when the host stops: the task
   stays pending and posts when it ends after the restart. A failed post goes to the host's report and does not
   change the outcome of the run. A `background` resume of a task that has not ended, such as a run that a call

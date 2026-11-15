@@ -22,7 +22,7 @@ import { newRunId } from "../src/launch/input.ts";
 import { SessionsDoc } from "../src/run/sessions.ts";
 import { TASK } from "../src/run/version.ts";
 import { OUTCOME, OUTPUT_BYTES } from "../src/tool.ts";
-import { stopAfterPost } from "./stop-entry.ts";
+import { failEnd } from "./failing-end-entry.ts";
 import {
 	detached,
 	escAgent,
@@ -2114,37 +2114,30 @@ return "done"`;
 		}
 	});
 
-	it("posts the outcome once when the host stops after the post and before the end of the task", async () => {
-		await setEntries({ workflows: fileURLToPath(new URL("stop-entry.ts", import.meta.url)) });
+	it("a failed end commit posts nothing, and the outcome that commits is the one posted", async () => {
+		await setEntries({ workflows: fileURLToPath(new URL("failing-end-entry.ts", import.meta.url)) });
 		const host = await startHost("main", hostModel().models);
-		let id = "";
 
 		try {
 			const script = `await sh(${JSON.stringify(`cd ${root} && ./gate.sh g`)})\nreturn "done"`;
 			await tellAgent(`Script workflow: ${JSON.stringify({ script, background: true })}`);
-			id = /^run (\S+) /.exec((await nextResult(0)).text)?.[1] ?? "";
+			const id = /^run (\S+) /.exec((await nextResult(0)).text)?.[1] ?? "";
 			await reached("g");
-			stopAfterPost.host = host;
+			failEnd.armed = true;
 			await writeFile(join(root, "g.open"), "");
-			await host.closed;
-			expect(await postedResults()).toHaveLength(1);
-			expect((await rootTasks(id))[0]?.status).not.toBe("terminal");
-		} finally {
-			stopAfterPost.host = undefined;
-			await host.close();
-		}
-
-		const model = hostModel();
-		const again = await startHost("main", model.models);
-
-		try {
 			await until(async () => (await rootTasks(id))[0]?.status === "terminal");
+			expect(failEnd.armed).toBe(false);
 			expect(await postedResults()).toEqual([
-				{ text: `run ${id} done, exit 0: "done"\ndone`, data: { runId: id, state: "done" }, conversation: 1 },
+				{
+					text: `run ${id} failed: the end did not commit; continue it with resume: "${id}"`,
+					data: { runId: id, state: "failed" },
+					conversation: 1,
+				},
 			]);
-			expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
+			expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "failed" }]);
 		} finally {
-			await again.close();
+			failEnd.armed = false;
+			await host.close();
 		}
 	});
 });
