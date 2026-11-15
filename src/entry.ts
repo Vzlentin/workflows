@@ -15,7 +15,7 @@ import { TOOL_EXTENSION } from "./run/sessions.ts";
 import { scriptTask } from "./run/task.ts";
 import type { Host } from "./run/version.ts";
 import {
-	cliArgs,
+	commandOf,
 	DESCRIPTION,
 	OUTCOME,
 	outcomeOf,
@@ -75,7 +75,7 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 	const { cwd } = await api.agent(context);
 
 	if (api.env === undefined || cwd === undefined) throw new Error("the workflow tool needs a working directory");
-	const args = cliArgs(params);
+	const { args, cwd: directory } = await commandOf(params, cwd);
 
 	const env = {
 		...process.env,
@@ -88,7 +88,7 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 	let named = false;
 	let details = Promise.resolve();
 
-	const output = await runCli(args, cwd, {
+	const output = await runCli(args, directory, {
 		env,
 		stdin: params.script,
 		signal: context.abortSignal,

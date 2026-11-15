@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { copyFile, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -40,6 +40,7 @@ let tool: Tool;
 const FAKE = `#!/bin/sh
 echo "$@" >> args.log
 case "$1 $3" in "resume --background") echo "run $2"; echo '{"runId":"'"$2"'","status":"started","workflow":"campaign"}'; exit 0 ;; esac
+case "$1 $2" in "gated --background") echo "run 20261115T000000-cc000001"; echo '{"runId":"20261115T000000-cc000001","status":"started","workflow":"gated"}'; exit 0 ;; esac
 case " $* " in *" --background "*) echo "run rb"; echo '{"runId":"rb","status":"started","workflow":"ship"}'; exit 0 ;; esac
 case "$1" in
 ok)
@@ -354,6 +355,28 @@ describe("the workflow tool", () => {
 		expect(result.isError).toBeUndefined();
 		expect(updates).toEqual(["◉ item 1/2: one", "◉ plan", "warning: slow disk", "◉ item 2/2: two", "✓ item 2/2: two"]);
 		expect(await readFile(join(root, "args.log"), "utf8")).toBe('ok --path=src --depth=2 --all --tags=["a"] --json\n');
+	});
+
+	it("runs the command in the cwd of the call", async () => {
+		const other = join(root, "other");
+		await mkdir(other);
+		const { result } = await call({ name: "ok", cwd: other });
+		expect(result.structuredContent).toMatchObject({ runId: "r1", status: "finished" });
+		expect(await readFile(join(other, "args.log"), "utf8")).toBe("ok --json\n");
+		expect(existsSync(join(root, "args.log"))).toBe(false);
+	});
+
+	it("refuses a cwd that is not an absolute directory, or with resume or save, and runs no command", async () => {
+		const missing = join(root, "missing");
+		await expect(call({ name: "ok", cwd: missing })).rejects.toThrow(`cwd is not a directory: ${missing}`);
+		await writeFile(join(root, "file"), "");
+		await expect(call({ name: "ok", cwd: join(root, "file") })).rejects.toThrow("cwd is not a directory");
+		await expect(call({ name: "ok", cwd: "other" })).rejects.toThrow("cwd must be an absolute path: other");
+		await expect(call({ resume: "r1", cwd: root })).rejects.toThrow("cwd works only with name or script");
+		await expect(call({ save: { runId: "r2", name: "fix" }, cwd: root })).rejects.toThrow(
+			"cwd works only with name or script",
+		);
+		expect(existsSync(join(root, "args.log"))).toBe(false);
 	});
 
 	it("sends a script on stdin, passes every argument as a flag", async () => {
@@ -704,6 +727,32 @@ describe("a background run of the workflow tool", () => {
 		expect(pi.entries[1]?.customType).toBe("workflow-background-end");
 		expect(pi.entries[1]?.data).toEqual({ runId: "rb" });
 		expect(await readFile(join(root, "args.log"), "utf8")).toBe("ship --background --json\nwait rb --json\n");
+	});
+
+	it("follows a run that started in the cwd of the call from the directory of the session, and posts its outcome", async () => {
+		const other = join(root, "other");
+		await mkdir(other);
+		const id = "20261115T000000-cc000001";
+		const pi = fakePi();
+		const { ui, lines } = fakeUi();
+		await pi.fire("session_start", ui);
+
+		const call = { name: "gated", background: true, cwd: other };
+		const result = await pi.registered.execute("call-1", call, undefined, undefined, contextOf(root));
+		expect(result.structuredContent).toEqual({ runId: id, status: "started", workflow: "gated" });
+		expect(await readFile(join(other, "args.log"), "utf8")).toBe("gated --background --json\n");
+		expect(pi.entries.map((entry) => [entry.customType, entry.data])).toEqual([
+			["workflow-background", { runId: id, cwd: root, workflow: "gated" }],
+		]);
+		expect(lines()).toEqual([" workflows", " gated: cc000001 starting"]);
+
+		// The wait of the fake runs in the directory of the session: it reads its `go-` and `end-` files there.
+		await writeFile(join(root, `go-${id}`), "");
+		await writeFile(join(root, `end-${id}`), "");
+		await vi.waitFor(() => expect(pi.messages).toHaveLength(1));
+		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: `run ${id} finished: 1\none` }]);
+		await vi.waitFor(() => expect(lines()).toEqual([]));
+		expect(await waits()).toEqual([`wait ${id} --json`]);
 	});
 
 	it("posts a failed or stopped run with the run ID to resume", async () => {

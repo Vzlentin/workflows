@@ -1340,6 +1340,62 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 		}
 	});
 
+	it("starts a run in the cwd of the call, and refuses a cwd that is not an absolute directory", async () => {
+		const other = join(root, "other");
+		await mkdir(join(other, ".workflows", "scripts"), { recursive: true });
+		await writeFile(
+			join(other, ".workflows", "scripts", "hello.js"),
+			'export const meta = { description: "Says hello" }\nreturn { report: ["hello"] }\n',
+		);
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			await tellAgent(`Script workflow: ${JSON.stringify({ name: "hello", cwd: other })}`);
+			const result = await nextResult(0);
+			expect(result).toMatchObject({ text: expect.stringMatching(/^run \S+ finished: .*\nhello$/), isError: false });
+			const id = /^run (\S+) /.exec(result.text)?.[1] ?? "";
+
+			const refused = [
+				[{ name: "hello", cwd: join(root, "missing") }, `cwd is not a directory: ${join(root, "missing")}`],
+				[{ name: "hello", cwd: "other" }, "cwd must be an absolute path: other"],
+				[{ resume: id, cwd: other }, "cwd works only with name or script"],
+			] as const;
+
+			for (const [index, [call, line]] of refused.entries()) {
+				await tellAgent(`Script workflow: ${JSON.stringify(call)}`);
+				expect(await nextResult(index + 1)).toEqual({
+					text: expect.stringContaining(line),
+					details: undefined,
+					isError: true,
+				});
+			}
+
+			expect(await readdir(runsOf(root))).toEqual([id]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("finds a run of another project by its ID, from the directory of any project", async () => {
+		await mkdir(join(root, "project"));
+		const project = addProject("demo", join(root, "project"));
+		await mkdir(join(project, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(project, ".workflows", "scripts", "ask.js"), 'return await input("which?")\n');
+		const asked = await workflows(["ask", "--json"], { cwd: project });
+		const id = asked.id ?? "";
+		expect([asked.code, await rootTasks(id, "demo")]).toEqual([3, [{ status: "terminal", outcome: "completed" }]]);
+
+		const waited = await workflows(["wait", id, "--json"], { cwd: root });
+		expect([waited.code, waited.stdout.at(-1)]).toEqual([3, asked.stdout.at(-1)]);
+		expect(asked.stdout.at(-1)).toContain(`"runId":"${id}"`);
+		const answered = await workflows(["resume", id, "--answer", "this", "--json"], { cwd: root });
+		expect([answered.code, answered.stdout.at(-1)]).toEqual([
+			0,
+			JSON.stringify({ runId: id, status: "finished", result: "this", report: ["this"] }),
+		]);
+		expect(await rootTasks(id, "demo")).toHaveLength(2);
+	});
+
 	it("gives the roles of the agents arg of the CLI and of the tool, above the tables and below the call", async () => {
 		await mkdir(join(root, ".workflows"), { recursive: true });
 		await writeFile(

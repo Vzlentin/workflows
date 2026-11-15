@@ -259,15 +259,17 @@ export function workflowTool(command: readonly string[], watcher: Watcher, tool:
 		parameters: tool.PARAMETERS,
 		outputSchema: tool.OUTCOME,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const { args, cwd: directory } = await tool.commandOf(params, ctx.cwd);
+
 			if (params.save !== undefined) {
-				const output = await runCli(command, tool.cliArgs(params), ctx.cwd, { signal });
+				const output = await runCli(command, args, directory, { signal });
 
 				return savedOf(tool.savedOutcome(output, params.save.runId));
 			}
 
 			const steps = new Steps();
 
-			const call = runCli(command, tool.cliArgs(params), ctx.cwd, {
+			const call = runCli(command, args, directory, {
 				stdin: params.script,
 				signal,
 				progress: (line, progress) => {
@@ -279,6 +281,7 @@ export function workflowTool(command: readonly string[], watcher: Watcher, tool:
 			if (params.resume !== undefined) watcher.foreground(params.resume, call);
 			const outcome = await call;
 
+			// The CLI finds a run by its ID from any directory, so the wait runs in the session's, also for a call with `cwd`.
 			if (outcome.status === "started") watcher.started(outcome.runId, ctx.cwd, outcome.workflow);
 
 			return resultOf(tool, outcome, steps.lines);

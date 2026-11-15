@@ -1,8 +1,11 @@
 /**
- * The one definition of the `workflow` tool: its description, parameters and output schema, the `workflows` arguments
+ * The one definition of the `workflow` tool: its description, parameters and output schema, the `workflows` command
  * of a call, and the outcome and text of a result. The tool of the harness host (`entry.ts`) and the tool of the Pi
- * extension (`pi/index.ts`, which loads `dist/tool.js`) both use it. It imports only `typebox` and `node:url`.
+ * extension (`pi/index.ts`, which loads `dist/tool.js`) both use it. It imports only `typebox`, `node:fs/promises`,
+ * `node:path` and `node:url`.
  */
+import { stat } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
@@ -42,6 +45,12 @@ export const PARAMETERS = Type.Object({
 		Type.Boolean({
 			description:
 				"With `name`, `script` or `resume`: start the run and return at once; its result comes as a message in this conversation",
+		}),
+	),
+	cwd: Type.Optional(
+		Type.String({
+			description:
+				"With `name` or `script`: the absolute path of the directory to start the run in, instead of the directory of this conversation",
 		}),
 	),
 });
@@ -96,7 +105,10 @@ export const DESCRIPTION =
 	"`background: true`, the call returns at once and the result of the run comes later as a message in this " +
 	"conversation: use it for long runs such as `campaign` or `optimize`, or for work that can go on while the " +
 	"conversation continues. `input(question)` stops the run, and the tool gives a `waiting` result with the " +
-	"question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` then returns the answer.";
+	"question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` then returns the answer. With " +
+	"`name` or `script`, `cwd` is the absolute path of the directory where the run starts: the project scripts, " +
+	"the `.workflows` configuration and the default repository of the run come from it; without it, the run " +
+	"starts in the directory of this conversation.";
 
 /** `workflows/script.d.ts` of this package: the script API, which the model reads before it writes a script. */
 const SCRIPT_TYPES = fileURLToPath(new URL("../workflows/script.d.ts", import.meta.url));
@@ -111,7 +123,7 @@ export const GUIDELINES = [
  * The `workflows` arguments of a tool call, with each arg as a flag, and `--json` for a run. The command rejects a flag
  * it does not know, so a mistyped arg fails before a run exists.
  */
-export function cliArgs({ name, script, resume, answer, save, args = {}, background }: WorkflowCall): string[] {
+function argsOf({ name, script, resume, answer, save, args = {}, background, cwd }: WorkflowCall): string[] {
 	const given = [name, script, resume, save].filter((value) => value !== undefined).length;
 
 	if (given !== 1) throw new Error("give exactly one of name, script, resume or save");
@@ -119,6 +131,11 @@ export function cliArgs({ name, script, resume, answer, save, args = {}, backgro
 	if (answer !== undefined && resume === undefined) throw new Error("answer works only with resume");
 
 	if (background && save !== undefined) throw new Error("background works only with name, script or resume");
+
+	if (cwd !== undefined && (resume !== undefined || save !== undefined)) {
+		throw new Error("cwd works only with name or script");
+	}
+
 	const json = background ? ["--background", "--json"] : ["--json"];
 
 	if (resume !== undefined) return ["resume", resume, ...(answer === undefined ? [] : [`--answer=${answer}`]), ...json];
@@ -134,6 +151,24 @@ export function cliArgs({ name, script, resume, answer, save, args = {}, backgro
 	});
 
 	return [name ?? "-", ...flags, ...json];
+}
+
+/**
+ * The `workflows` command of a tool call: its arguments, from `argsOf`, and the directory where it runs, the `cwd` of
+ * the call, else `conversation`, the directory of the conversation. Throws on a bad call before it reads the file
+ * system, and when `cwd` is not the absolute path of a directory.
+ */
+export async function commandOf(call: WorkflowCall, conversation: string): Promise<{ args: string[]; cwd: string }> {
+	const args = argsOf(call);
+
+	if (call.cwd !== undefined) {
+		if (!isAbsolute(call.cwd)) throw new Error(`cwd must be an absolute path: ${call.cwd}`);
+		const info = await stat(call.cwd).catch(() => undefined);
+
+		if (info === undefined || !info.isDirectory()) throw new Error(`cwd is not a directory: ${call.cwd}`);
+	}
+
+	return { args, cwd: call.cwd ?? conversation };
 }
 
 /** What the `workflows` command of a call printed, line by line, and its exit code. */

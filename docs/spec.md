@@ -1808,8 +1808,8 @@ workflows, `src/entry.ts`. harness picks the project from the current directory 
 with one store, `$XDG_STATE_HOME/harness/<project>/durable.sqlite`, that holds the project agent, its subagents, and
 the runs of the project with their saved calls and sessions. The command is a client: it prepares the run (the
 arguments, the run ID, the run directory and the worktree), writes the project to the `project` file of the run
-directory, starts the host when none runs, asks it to start the run's task, and follows the run. `resume`, `stop`,
-`show` and `save` read the `project` file, so they reach the run's project from any directory.
+directory, starts the host when none runs, asks it to start the run's task, and follows the run. `resume`, `wait`,
+`stop`, `show` and `save` read the `project` file, so they reach the run's project from any directory.
 
 - The host loads its entries when it starts: the `piDurable` entries of the packages in Pi's settings, and the entries
   of harness's `entries.json`. Each command that can start a host sets the entry `workflows` there to `dist/entry.js`
@@ -1861,7 +1861,7 @@ result. The description tells the model to start or resume a run only when the u
 message, and that a contract or a goal file is not a go; the skill gives the same rule. The host tool has no prompt
 guidelines. It takes the parameters of [The `workflow` tool](#the-workflow-tool) of
 Pi, and runs the `workflows` command of the same install as a child process with the Node of the host, in the
-conversation's directory, with `--json`. `args.agents` reaches the command as `--agents=<text>`, so a bad part is the
+`cwd` of the call, else the directory of the conversation, with `--json`. `args.agents` reaches the command as `--agents=<text>`, so a bad part is the
 error result of the command's usage error, before a run exists. It sets `HARNESS_PROJECT` to the project of the host and
 `PI_SESSION_ID` to the conversation ID.
 
@@ -1951,8 +1951,8 @@ When `@vzlentin/workflows` does not resolve, the load fails and Pi reports the e
 checkout through the link `pi/node_modules/@vzlentin/workflows`, see the README.
 
 The extension runs each workflow as a child process of the `workflows` command of its dependency
-(`<package>/dist/cli.js`), with the Node that runs Pi, in the session's directory, always with `--json`. With `background`, the call returns at once, and the extension posts the outcome of the run to the
-session as a message, see [Background runs in Pi](#background-runs-in-pi). So a run that starts in Pi is a normal run of the project of the session's directory, and `workflows resume`
+(`<package>/dist/cli.js`), with the Node that runs Pi, in the `cwd` of the call, else the directory of the session, always with `--json`. With `background`, the call returns at once, and the extension posts the outcome of the run to the
+session as a message, see [Background runs in Pi](#background-runs-in-pi). So a run that starts in Pi is a normal run of the project of that directory, and `workflows resume`
 follows or continues it from a terminal.
 
 ### The `workflow` tool
@@ -1974,6 +1974,14 @@ The tool takes one of `name`, `script`, `resume` or `save`, plus `args` with `na
   [Save](#save).
 - `background: true`, with `name`, `script` or `resume`, adds `--background` before `--json`. With `save`, it is the
   error `background works only with name, script or resume`, and no command starts.
+- `cwd`, with `name` or `script`, is the absolute path of the directory where the command starts, in place of the
+  directory of the conversation. The project scripts, the `.workflows` configuration and the default repository of the
+  run come from it. The harness project of the host tool stays the project of the host; the extension of Pi sets no
+  `HARNESS_PROJECT`, so its run is a run of the project of `cwd`. The commands that follow a run, `resume` and the
+  `wait` of a background run in Pi, run in the directory of the conversation, and find the run by its ID through the
+  `project` file of its run directory, as from any directory. With `resume` or `save`, it is
+  the error `cwd works only with name or script`. A relative path is the error `cwd must be an absolute path: <cwd>`,
+  and a path that is not a directory is the error `cwd is not a directory: <cwd>`. In each case, no command starts.
 
 The tool adds two guidelines to the system prompt. The first tells the model to read `workflows/script.d.ts` of the
 package before it writes a `script`, by the absolute path that the tool module computes from its own location. The
@@ -2022,7 +2030,9 @@ These are the fields of the JSON outcome line of the command.
 ### Background runs in Pi
 
 After a `started` result, the extension appends the session entry `workflow-background` with the data
-`{ runId, cwd, workflow }`, with the `workflow` of the outcome, and follows the run with `workflows wait <run-id> --json` in `cwd`. When the wait prints a
+`{ runId, cwd, workflow }`, with the directory of the session as `cwd`, also for a call with `cwd`, and the
+`workflow` of the outcome, and follows the run with `workflows wait <run-id> --json` in `cwd`. The wait finds the run
+by its ID, so it also follows a run of another project. When the wait prints a
 `finished`, `failed` or `stopped` outcome, the extension sends the message `workflow-result`, with the text of a
 call without `background` for that outcome (the summary, then the report lines of a finished run, with the limit on
 the summary of the host tool; for a waiting run,
