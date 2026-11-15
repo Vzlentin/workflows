@@ -1,5 +1,5 @@
 /**
- * `workflows prune`: removes the worktrees of the ended runs whose branch is merged, or of the given runs, and the old
+ * `workflows sweep`: removes the worktrees of the ended runs whose branch is merged, or of the given runs, and the old
  * run directories that have no task.
  */
 import { existsSync } from "node:fs";
@@ -7,50 +7,64 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { resolveProject } from "@vzlentin/harness/projects";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { failure, git, gitSucceeds, run as runCommand } from "../../git.ts";
-import { PRUNE_MARKER } from "../../launch/input.ts";
+import { SWEEP_MARKER } from "../../launch/input.ts";
 import { hasBranch, repositoryAt } from "../../launch/worktree.ts";
+import { SWEPT } from "../../records/run.ts";
 import { inputWorktree, reading, runTasks } from "../../records/store.ts";
 import { hasEnded, type RunTask, runStatus, taskOf } from "../../run/past.ts";
 import { withUsage } from "../../workflow/find.ts";
 import { runsDirectory, storeOf } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { savedBy, tasksOf, unstartedRuns } from "../saved.ts";
+import { SWEPT_FILE, savedBy, tasksOf, unstartedRuns } from "../saved.ts";
 
-export const PRUNE = "workflows prune [<run-id>...] [--yes] [--install-hook] [--json]";
+export const SWEEP = "workflows sweep [<run-id>...] [--yes] [--install-hook] [--json]";
 
-/** The line of the post-merge hook that `prune --install-hook` writes. */
-const HOOK_LINE = "workflows prune --yes >/dev/null 2>&1 &";
+/** The line of the post-merge hook that `sweep --install-hook` writes. */
+const HOOK_LINE = "workflows sweep --yes >/dev/null 2>&1 &";
 
-/** How old the `project` file of a run directory with no task must be before `prune` removes the directory. */
+/** How old the `project` file of a run directory with no task must be before `sweep` removes the directory. */
 const UNSTARTED_GRACE_MS = 60 * 60 * 1000;
 
-/** What a marker holds. */
-const MARKED = Type.Object({ branch: Type.String(), repository: Type.String(), path: Type.String() });
+/** What a marker holds: the branch, the repository and the worktree path of a run, and the word of its sweep. */
+const MARKED = Type.Object({ branch: Type.String(), repository: Type.String(), path: Type.String(), swept: SWEPT });
 
-/** A run that prune removes: its branch, its repository and the path of its worktree. */
-type Prunable = {
-	readonly runId: string;
-	readonly branch: string;
-	readonly repository: string;
-	readonly path: string;
-};
+/** A run that sweep removes, with the word that it writes to the `swept` file of the run. */
+type Swept = { readonly runId: string } & Readonly<Static<typeof MARKED>>;
+
+/** A run with a worktree on a branch: its branch, its repository and the path of its worktree. */
+type Sweepable = Omit<Swept, "swept">;
+
+/**
+ * The output of `sweep --json`: the removed worktrees, each with its word, then the removed run directories that have
+ * no task. Without `--yes`, the entries are what `--yes` would remove.
+ */
+export const SWEPT_RUNS = Type.Array(
+	Type.Union([
+		Type.Object(
+			{ runId: Type.String(), swept: SWEPT, branch: Type.String(), worktree: Type.String() },
+			{ additionalProperties: false },
+		),
+		Type.Object({ runId: Type.String(), directory: Type.String() }, { additionalProperties: false }),
+	]),
+);
 
 /**
  * Prints the ended runs of the project of the current directory whose worktree is on a merged branch: its HEAD is in
- * `origin/main`, or GitHub merged a pull request at its HEAD. With `--yes`, it removes their worktrees and branches.
- * It also prints the run directories of the project whose run has no task and whose `project` file is more
- * than an hour old, and `--yes` removes them. With run IDs, it takes only these runs, with no merge check, and each one
- * must be an ended run of the project with a worktree on a branch. With `--install-hook`, it writes a post-merge hook
- * that runs `prune --yes`. It reads the project store only, and runs every `gh` call before it removes anything. A run
- * whose run directory has a marker, which an interrupted `prune --yes` left, is pruned again with no merge check when it
- * has ended. It refuses to run without a project store, keeps an old run directory with a Git clone that has commits on
- * no remote, and skips a run whose task started again before its removal. It exits 1 when the removal of a run failed,
+ * `origin/main`, or GitHub merged a pull request at its HEAD. With `--yes`, it removes their worktrees and branches,
+ * and writes `landed` to the `swept` file of each run. It also prints the run directories of the project whose run has
+ * no task and whose `project` file is more than an hour old, and `--yes` removes them. With run IDs, it takes only
+ * these runs, and each one must be an ended run of the project with a worktree on a branch; a merged one gets `landed`
+ * and another one `dropped`. With `--install-hook`, it writes a post-merge hook that runs `sweep --yes`. It reads the
+ * project store only, and runs every `gh` call before it removes anything. A run whose run directory has a marker,
+ * which an interrupted `sweep --yes` left, is swept again with the word of the marker and no merge check when it has
+ * ended. It refuses to run without a project store, keeps an old run directory with a Git clone that has commits on no
+ * remote, and skips a run whose task started again before its removal. It exits 1 when the removal of a run failed,
  * after it tried the other runs.
  */
-export async function prune(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
+export async function sweep(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const { values, positionals } = withUsage(
 		() =>
 			parseArgs({
@@ -59,7 +73,7 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 				allowPositionals: true,
 				strict: true,
 			}),
-		PRUNE,
+		SWEEP,
 	);
 
 	if (values["install-hook"]) return installHook(terminal);
@@ -69,7 +83,7 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 
 	if (runs === undefined) {
 		throw new Error(
-			`cannot prune: the project store ${store} does not exist, so no run directory counts as unstarted; remove the run directories that you do not need from ${runsDirectory()} by hand`,
+			`cannot sweep: the project store ${store} does not exist, so no run directory counts as unstarted; remove the run directories that you do not need from ${runsDirectory()} by hand`,
 		);
 	}
 
@@ -87,8 +101,8 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 	// A run directory gets its task within moments of its `project` file, so a younger one may be a run that starts.
 	const unstarted = given ? [] : await unstartedRuns(project, runs);
 	const stale = unstarted.filter(({ since }) => Date.now() - since > UNSTARTED_GRACE_MS);
-	const line = ({ runId, branch, path }: Prunable) => `${runId} ${branch} ${path}`;
-	const pruned: Prunable[] = [];
+	const line = ({ runId, swept, branch, path }: Swept) => `${runId} ${swept} ${branch} ${path}`;
+	const removed: Swept[] = [];
 	let failed = false;
 
 	for (const found of taken) {
@@ -96,7 +110,7 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 			// The run can have started a new task since the first read, such as during a `gh` call.
 			if (endedTask(await tasksOf({ id: found.runId, project, store })) === undefined) {
 				terminal.stderr(
-					`workflows: skips ${found.runId}: its run has a task that has not ended; prune it after the run ends`,
+					`workflows: skips ${found.runId}: its run has a task that has not ended; sweep it after the run ends`,
 				);
 
 				continue;
@@ -106,14 +120,14 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 				await removeWorktree(found);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				terminal.stderr(`workflows: cannot prune ${found.runId}: ${message}`);
+				terminal.stderr(`workflows: cannot sweep ${found.runId}: ${message}`);
 				failed = true;
 
 				continue;
 			}
 		}
 
-		pruned.push(found);
+		removed.push(found);
 
 		if (!json) terminal.stdout(line(found));
 	}
@@ -136,8 +150,9 @@ export async function prune(args: readonly string[], terminal: Terminal, json: b
 	}
 
 	if (json) {
-		const worktrees = pruned.map(({ runId, branch, path }) => ({ runId, branch, worktree: path }));
-		terminal.stdout(JSON.stringify([...worktrees, ...unstartedShown]));
+		const worktrees = removed.map(({ runId, swept, branch, path }) => ({ runId, swept, branch, worktree: path }));
+		const shown: Static<typeof SWEPT_RUNS> = [...worktrees, ...unstartedShown];
+		terminal.stdout(JSON.stringify(shown));
 	}
 
 	return failed ? 1 : 0;
@@ -174,34 +189,35 @@ function endedTask(tasks: readonly RunTask[]): RunTask | undefined {
 	return task !== undefined && hasEnded(runStatus(task)) && !savedBy(task).later ? task : undefined;
 }
 
-/** The runs of `ended`, newest first, that have a marker, or that are prunable on a merged branch. */
-async function mergedRuns(ended: ReadonlyMap<string, RunTask>): Promise<Prunable[]> {
-	const merged: Prunable[] = [];
+/**
+ * The runs of `ended`, newest first, that have a marker, with its word, or that are sweepable on a merged branch, with
+ * `landed`.
+ */
+async function mergedRuns(ended: ReadonlyMap<string, RunTask>): Promise<Swept[]> {
+	const merged: Swept[] = [];
 
 	for (const [id, task] of [...ended].sort(([a], [b]) => b.localeCompare(a))) {
-		const marked = await markedRun(id);
-		const found = marked ?? (await prunable(id, task));
+		const found = await candidate(id, task, undefined);
 
-		if (found !== undefined && (marked !== undefined || (await isMerged(found)))) merged.push(found);
+		if (found !== undefined) merged.push(found);
 	}
 
 	return merged;
 }
 
 /**
- * The runs `ids`, in their order, each a root run of `ended` with a marker, or prunable. It throws for the first ID that
- * is neither, before anything is removed. It checks an ID against `ended` before it reads a marker, so an ID that is a
- * path reads no file.
+ * The runs `ids`, in their order, each a root run of `ended` with a marker, with its word, or sweepable, with `landed`
+ * when it is merged and `dropped` when it is not. It throws for the first ID that is neither, before anything is
+ * removed.
  */
-async function givenRuns(ids: readonly string[], ended: ReadonlyMap<string, RunTask>): Promise<Prunable[]> {
-	const found: Prunable[] = [];
+async function givenRuns(ids: readonly string[], ended: ReadonlyMap<string, RunTask>): Promise<Swept[]> {
+	const found: Swept[] = [];
 
 	for (const id of new Set(ids)) {
-		const task = ended.get(id);
-		const run = task === undefined ? undefined : ((await markedRun(id)) ?? (await prunable(id, task)));
+		const run = await candidate(id, ended.get(id), "dropped");
 
 		if (run === undefined) {
-			throw new Error(`cannot prune ${id}: not an ended run of this project with a worktree on a branch`);
+			throw new Error(`cannot sweep ${id}: not an ended run of this project with a worktree on a branch`);
 		}
 
 		found.push(run);
@@ -211,14 +227,36 @@ async function givenRuns(ids: readonly string[], ended: ReadonlyMap<string, RunT
 }
 
 /**
+ * The run `id`, whose ended task is `task`, with the word of its marker when it has one. Otherwise it is the sweepable
+ * run with `landed` when its branch is merged and `unmerged` when it is not, or undefined when it is not sweepable or
+ * `unmerged` is undefined. A task of undefined gives undefined and reads no file, so an ID that is a path reads none.
+ */
+async function candidate(
+	id: string,
+	task: RunTask | undefined,
+	unmerged: Static<typeof SWEPT> | undefined,
+): Promise<Swept | undefined> {
+	if (task === undefined) return undefined;
+	const marked = await markedRun(id);
+
+	if (marked !== undefined) return marked;
+	const found = await sweepable(id, task);
+
+	if (found === undefined) return undefined;
+	const swept = (await isMerged(found)) ? "landed" : unmerged;
+
+	return swept === undefined ? undefined : { ...found, swept };
+}
+
+/**
  * The run `id` that the marker of its run directory names, or undefined without a valid marker. A marker that a stop cut
  * while it was written comes before any removal, so the run is a candidate as any other run.
  */
-async function markedRun(id: string): Promise<Prunable | undefined> {
+async function markedRun(id: string): Promise<Swept | undefined> {
 	let parsed: unknown;
 
 	try {
-		parsed = JSON.parse(await readFile(join(runsDirectory(), id, PRUNE_MARKER), "utf8"));
+		parsed = JSON.parse(await readFile(join(runsDirectory(), id, SWEEP_MARKER), "utf8"));
 	} catch {
 		return undefined;
 	}
@@ -227,7 +265,7 @@ async function markedRun(id: string): Promise<Prunable | undefined> {
 }
 
 /** The run `id`, whose task `task` has ended, when it has a run directory and a worktree on a branch. */
-async function prunable(id: string, task: RunTask): Promise<Prunable | undefined> {
+async function sweepable(id: string, task: RunTask): Promise<Sweepable | undefined> {
 	if (!existsSync(join(runsDirectory(), id, "project"))) return undefined;
 	const worktree = inputWorktree(task.input);
 
@@ -244,7 +282,7 @@ const MERGED = Type.Array(Type.Object({ headRefOid: Type.String() }));
  * request from the branch at that commit. It calls `gh` only when the commit is not in `origin/main`. A branch name can
  * come back in a later run, so a merged pull request of an earlier commit does not count.
  */
-async function isMerged({ branch, path }: Prunable): Promise<boolean> {
+async function isMerged({ branch, path }: Sweepable): Promise<boolean> {
 	if (await gitSucceeds(path, "merge-base", "--is-ancestor", "HEAD", "origin/main")) return true;
 	const argv = ["pr", "list", "--head", branch, "--state", "merged", "--json", "headRefOid"];
 	const result = await runCommand("gh", argv, path);
@@ -259,14 +297,16 @@ async function isMerged({ branch, path }: Prunable): Promise<boolean> {
 }
 
 /**
- * Removes the worktree of `found`, and then its branch. It first writes the marker, so a later `prune` finishes the
- * work when this one stops after the worktree removal. A failed worktree removal drops the marker, as the worktree
- * stays and may get more work; a failed branch removal keeps it.
+ * Removes the worktree of `found`, then its branch, and writes its word to the `swept` file of the run. It first writes
+ * the marker, with the word, so a later `sweep` finishes the work when this one stops after the worktree removal. A
+ * failed worktree removal drops the marker and writes no word, as the worktree stays and may get more work; a failed
+ * branch removal keeps the marker.
  */
-async function removeWorktree(found: Prunable): Promise<void> {
-	const { runId, branch, repository, path } = found;
-	const marker = join(runsDirectory(), runId, PRUNE_MARKER);
-	await writeFile(marker, `${JSON.stringify({ branch, repository, path })}\n`);
+async function removeWorktree(found: Swept): Promise<void> {
+	const { runId, branch, repository, path, swept } = found;
+	const directory = join(runsDirectory(), runId);
+	const marker = join(directory, SWEEP_MARKER);
+	await writeFile(marker, `${JSON.stringify({ branch, repository, path, swept })}\n`);
 
 	try {
 		if ((await repositoryAt(path)) !== undefined) await git(repository, "worktree", "remove", path);
@@ -280,6 +320,7 @@ async function removeWorktree(found: Prunable): Promise<void> {
 		await git(repository, "branch", "-D", branch);
 	}
 
+	await writeFile(join(directory, SWEPT_FILE), `${swept}\n`);
 	await rm(marker, { force: true });
 }
 

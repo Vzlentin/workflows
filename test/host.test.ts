@@ -610,7 +610,7 @@ describe("runs in the harness host", () => {
 		expect(existsSync(join(runsOf(root), id, "project"))).toBe(true);
 	});
 
-	it("lists a run directory that has no task as unstarted, and prunes it once it is an hour old", async () => {
+	it("lists a run directory that has no task as unstarted, and sweeps it once it is an hour old", async () => {
 		const id = newRunId();
 		const directory = join(runsOf(root), id);
 		await mkdir(directory, { recursive: true });
@@ -628,17 +628,17 @@ describe("runs in the harness host", () => {
 		const stopped = await workflows(["stop", id], { cwd: root });
 		expect([stopped.code, stopped.stderr]).toEqual([4, [`workflows: run ${id} has no workflow`]]);
 
-		// prune needs the project store, which a run makes.
+		// sweep needs the project store, which a run makes.
 		await writeFile(join(root, "x.js"), 'return "done"');
 		expect((await workflows(["x.js"], { cwd: root })).code).toBe(0);
-		const young = await workflows(["prune", "--yes"], { cwd: root });
+		const young = await workflows(["sweep", "--yes"], { cwd: root });
 		expect([young.code, young.stdout, existsSync(directory)]).toEqual([0, [], true]);
 		const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
 		await utimes(join(directory, "project"), old, old);
-		const shown = await workflows(["prune", "--json"], { cwd: root });
+		const shown = await workflows(["sweep", "--json"], { cwd: root });
 		expect(JSON.parse(shown.stdout[0] ?? "")).toEqual([{ runId: id, directory }]);
-		const pruned = await workflows(["prune", "--yes"], { cwd: root });
-		expect([pruned.code, pruned.stdout, existsSync(directory)]).toEqual([0, [`${id} unstarted ${directory}`], false]);
+		const swept = await workflows(["sweep", "--yes"], { cwd: root });
+		expect([swept.code, swept.stdout, existsSync(directory)]).toEqual([0, [`${id} unstarted ${directory}`], false]);
 	});
 
 	it("reports a run as aborted when the host closes the connection after it took the stop", async () => {

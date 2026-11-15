@@ -3,7 +3,12 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { SHOWN } from "../src/cli/commands/show.ts";
+import { SWEPT_RUNS } from "../src/cli/commands/sweep.ts";
+import { ROW } from "../src/cli/saved.ts";
 import { newRunId } from "../src/launch/input.ts";
 import { TASK } from "../src/run/version.ts";
 import { git, repository, runsOf, sandbox, saveAs, storeOf, workflows, worktreeAt } from "./support.ts";
@@ -79,35 +84,54 @@ async function writeGated(): Promise<void> {
 	);
 }
 
-/** Writes the marker of an interrupted `prune --yes` in the run directory of `id`, for its worktree on feat/x. */
-async function writeMarker(id: string, worktree: string): Promise<string> {
-	const marker = join(runsOf(root), id, "pruning");
+/** The word in the `swept` file of the run `id`, or undefined without the file. */
+const sweptFile = (id: string | undefined) =>
+	readFile(join(runsOf(root), id ?? "", "swept"), "utf8").catch(() => undefined);
+
+/** The `swept` field of the run `id` in `list --json` and in `show --json`, after a check of both against their schema. */
+async function sweptFields(id: string): Promise<unknown[]> {
+	const listed: unknown = JSON.parse((await workflows(["list", "--json"], { cwd: repo })).stdout[0] ?? "");
+	const shown: unknown = JSON.parse((await workflows(["show", id, "--json"], { cwd: repo })).stdout[0] ?? "");
+
+	if (!Value.Check(Type.Array(ROW), listed) || !Value.Check(SHOWN, shown)) throw new Error("not a run of the schema");
+
+	return [listed.find((row) => row.runId === id)?.swept, shown.swept];
+}
+
+/** Writes the marker of an interrupted `sweep --yes` in the run directory of `id`, for its worktree on feat/x. */
+async function writeMarker(id: string, worktree: string, swept = "landed"): Promise<string> {
+	const marker = join(runsOf(root), id, "sweeping");
 	await writeFile(
 		marker,
-		`${JSON.stringify({ branch: "feat/x", repository: await realpath(repo), path: worktree })}\n`,
+		`${JSON.stringify({ branch: "feat/x", repository: await realpath(repo), path: worktree, swept })}\n`,
 	);
 
 	return marker;
 }
 
-describe("workflows prune", () => {
+describe("workflows sweep", () => {
 	it("lists the ended runs on a merged branch, and removes their worktree and branch with --yes", async () => {
 		const other = await workflows(["w"], { cwd: repo });
 		expect(other.code).toBe(0);
 		const { id, worktree } = await mergedRun();
 
-		const listed = await workflows(["prune"], { cwd: repo });
-		expect([listed.code, listed.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
-		const json = await workflows(["prune", "--json"], { cwd: repo });
-		expect(JSON.parse(json.stdout[0] ?? "")).toEqual([{ runId: id, branch: "feat/x", worktree }]);
+		const listed = await workflows(["sweep"], { cwd: repo });
+		expect([listed.code, listed.stdout]).toEqual([0, [`${id} landed feat/x ${worktree}`]]);
+		const json = await workflows(["sweep", "--json"], { cwd: repo });
+		const entries: unknown = JSON.parse(json.stdout[0] ?? "");
+		expect(entries).toEqual([{ runId: id, swept: "landed", branch: "feat/x", worktree }]);
+		expect(Value.Check(SWEPT_RUNS, entries)).toBe(true);
 		expect(existsSync(worktree)).toBe(true);
+		expect(await sweptFile(id)).toBeUndefined();
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([0, [`${id} landed feat/x ${worktree}`]]);
 		expect(existsSync(worktree)).toBe(false);
 		expect(hasBranch("feat/x")).toBe(false);
 		expect(existsSync(worktreeAt(repo, other.id))).toBe(true);
 		expect(existsSync(join(runsOf(root), id))).toBe(true);
+		expect(await sweptFile(id)).toBe("landed\n");
+		expect(await sweptFields(id)).toEqual(["landed", "landed"]);
 
 		const runs = await workflows(["list"], { cwd: repo });
 		expect(runs.stdout).toContain(`${id} w done, exit 0 w`);
@@ -131,13 +155,13 @@ describe("workflows prune", () => {
 			},
 		]);
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([0, [`${id} landed feat/x ${worktree}`]]);
 		expect(existsSync(worktree)).toBe(false);
 		expect(hasBranch("feat/x")).toBe(false);
 	});
 
-	it("resumes and prunes a run whose saved worktree is in its run directory", async () => {
+	it("resumes and sweeps a run whose saved worktree is in its run directory", async () => {
 		const scripts = join(repo, ".workflows", "scripts");
 		await writeFile(
 			join(scripts, "gated.js"),
@@ -162,8 +186,8 @@ describe("workflows prune", () => {
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, worktree]);
 		git(worktree, "branch", "-m", "feat/x");
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([0, [`${id} landed feat/x ${worktree}`]]);
 		expect(existsSync(worktree)).toBe(false);
 		expect(existsSync(runDir)).toBe(true);
 	});
@@ -192,8 +216,8 @@ describe("workflows prune", () => {
 
 		database.close();
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([0, [`${id} landed feat/x ${worktree}`]]);
 		expect(existsSync(worktree)).toBe(false);
 	});
 
@@ -201,8 +225,8 @@ describe("workflows prune", () => {
 		const { worktree } = await mergedRun();
 		saveAs(TASK.version + 1, false);
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout]).toEqual([0, []]);
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([0, []]);
 		expect(existsSync(worktree)).toBe(true);
 		expect(hasBranch("feat/x")).toBe(true);
 	});
@@ -213,8 +237,8 @@ describe("workflows prune", () => {
 		const worktree = worktreeAt(repo, run.id);
 		git(worktree, "branch", "-m", "feat/old");
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout]).toEqual([0, []]);
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([0, []]);
 		expect(existsSync(worktree)).toBe(true);
 		expect(hasBranch("feat/old")).toBe(true);
 	});
@@ -227,11 +251,11 @@ describe("workflows prune", () => {
 		git(root, "init", "-q", "-b", "feat/x");
 		const { id, worktree } = await mergedRun();
 
-		const listed = await workflows(["prune"], { cwd: repo });
-		expect([listed.code, listed.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		const listed = await workflows(["sweep"], { cwd: repo });
+		expect([listed.code, listed.stdout]).toEqual([0, [`${id} landed feat/x ${worktree}`]]);
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([0, [`${id} landed feat/x ${worktree}`]]);
 		expect(existsSync(worktree)).toBe(false);
 		expect(existsSync(brokenRun)).toBe(true);
 	});
@@ -240,8 +264,8 @@ describe("workflows prune", () => {
 		const { worktree } = await mergedRun();
 		await fake("hc", `echo "$@" >> "${root}/hc.log"\nexit 0\n`);
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect(pruned.code).toBe(0);
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect(swept.code).toBe(0);
 		expect([existsSync(worktree), hasBranch("feat/x"), existsSync(join(root, "hc.log"))]).toEqual([
 			false,
 			false,
@@ -260,29 +284,43 @@ describe("workflows prune", () => {
 		git(kept, "commit", "-q", "--allow-empty", "-m", "more");
 		git(repo, "update-ref", "refs/remotes/origin/main", git(worktree, "rev-parse", "HEAD"));
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout]).toEqual([0, [`${merged.id} feat/z ${worktree}`]]);
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([0, [`${merged.id} landed feat/z ${worktree}`]]);
 		expect([existsSync(worktree), existsSync(kept)]).toEqual([false, true]);
 		expect((await readFile(join(root, "gh.log"), "utf8")).trim().split("\n")).toEqual([
 			"pr list --head feat/w --state merged --json headRefOid",
 		]);
 	});
 
-	it("prunes only the given runs, with no merge check", async () => {
+	it("sweeps only the given runs, an unmerged one as dropped and a merged one as landed", async () => {
 		const other = await mergedRun();
+		git(other.worktree, "branch", "-m", "feat/y");
+		const kept = await mergedRun();
 		const run = await workflows(["w"], { cwd: repo });
 		expect(run.code).toBe(0);
 		const id = run.id ?? "";
 		const worktree = worktreeAt(repo, id);
 		git(worktree, "branch", "-m", "feat/z");
 
-		const listed = await workflows(["prune", id], { cwd: repo });
-		expect([listed.code, listed.stdout]).toEqual([0, [`${id} feat/z ${worktree}`]]);
-		const pruned = await workflows(["prune", id, "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/z ${worktree}`]]);
-		expect([existsSync(worktree), hasBranch("feat/z")]).toEqual([false, false]);
-		expect(existsSync(other.worktree)).toBe(true);
-		expect(existsSync(join(root, "gh.log"))).toBe(false);
+		const listed = await workflows(["sweep", id], { cwd: repo });
+		expect([listed.code, listed.stdout]).toEqual([0, [`${id} dropped feat/z ${worktree}`]]);
+		expect(await sweptFile(id)).toBeUndefined();
+		const swept = await workflows(["sweep", id, other.id, "--yes", "--json"], { cwd: repo });
+		expect(swept.code).toBe(0);
+		expect(JSON.parse(swept.stdout[0] ?? "")).toEqual([
+			{ runId: id, swept: "dropped", branch: "feat/z", worktree },
+			{ runId: other.id, swept: "landed", branch: "feat/y", worktree: other.worktree },
+		]);
+		expect([existsSync(worktree), hasBranch("feat/z"), existsSync(other.worktree)]).toEqual([false, false, false]);
+		expect(existsSync(kept.worktree)).toBe(true);
+		expect(await sweptFields(id)).toEqual(["dropped", "dropped"]);
+		expect(await sweptFields(other.id)).toEqual(["landed", "landed"]);
+		expect(await sweptFields(kept.id)).toEqual([undefined, undefined]);
+		expect((await readFile(join(root, "gh.log"), "utf8")).trim().split("\n")).toEqual([
+			"pr list --head feat/z --state merged --json headRefOid",
+			"pr list --head feat/z --state merged --json headRefOid",
+			"pr list --head feat/y --state merged --json headRefOid",
+		]);
 	});
 
 	it("removes nothing, and exits 1, when a given run is not an ended run of the project with a worktree", async () => {
@@ -291,11 +329,11 @@ describe("workflows prune", () => {
 		expect(slow.code).toBe(130);
 
 		for (const bad of [slow.id ?? "", "20990101T000000-00000000", "../x"]) {
-			const pruned = await workflows(["prune", id, bad, "--yes"], { cwd: repo });
-			expect([pruned.code, pruned.stdout, pruned.stderr]).toEqual([
+			const swept = await workflows(["sweep", id, bad, "--yes"], { cwd: repo });
+			expect([swept.code, swept.stdout, swept.stderr]).toEqual([
 				1,
 				[],
-				[`workflows: cannot prune ${bad}: not an ended run of this project with a worktree on a branch`],
+				[`workflows: cannot sweep ${bad}: not an ended run of this project with a worktree on a branch`],
 			]);
 		}
 
@@ -308,15 +346,15 @@ describe("workflows prune", () => {
 		const worktree = worktreeAt(repo, run.id);
 		git(worktree, "branch", "-m", "feat/x");
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout]).toEqual([0, []]);
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([0, []]);
 		expect(existsSync(worktree)).toBe(true);
 	});
 
-	it("finishes at the next prune the removal that stopped after the worktree, with no gh call", async () => {
+	it("finishes at the next sweep the removal that stopped after the worktree, with no gh call", async () => {
 		const { id, worktree } = await mergedRun();
 		const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
-		// The first `git branch -D` fails, as when prune stops after it removed the worktree.
+		// The first `git branch -D` fails, as when sweep stops after it removed the worktree.
 		await fake(
 			"git",
 			`case "$*" in
@@ -326,20 +364,35 @@ exec "${real}" "$@"
 `,
 		);
 
-		const stopped = await workflows(["prune", "--yes"], { cwd: repo });
+		const stopped = await workflows(["sweep", "--yes"], { cwd: repo });
 		expect([stopped.code, stopped.stdout]).toEqual([1, []]);
-		expect(stopped.stderr[0]).toMatch(new RegExp(`^workflows: cannot prune ${id}: git branch failed`));
+		expect(stopped.stderr[0]).toMatch(new RegExp(`^workflows: cannot sweep ${id}: git branch failed`));
 		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([false, true]);
 		await rm(join(root, "gh.log"));
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout]).toEqual([0, [`${id} feat/x ${worktree}`]]);
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([0, [`${id} landed feat/x ${worktree}`]]);
 		expect(hasBranch("feat/x")).toBe(false);
 		expect(existsSync(join(root, "gh.log"))).toBe(false);
-		expect(existsSync(join(runsOf(root), id, "pruning"))).toBe(false);
+		expect(existsSync(join(runsOf(root), id, "sweeping"))).toBe(false);
+		expect(await sweptFile(id)).toBe("landed\n");
 	});
 
-	it("reports a run whose removal fails, prunes the others, and exits 1", async () => {
+	it("takes the word of a marker, with no gh call", async () => {
+		const { id, worktree } = await mergedRun();
+		git(worktree, "branch", "-m", "feat/z");
+		await writeMarker(id, worktree, "dropped");
+
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([0, [`${id} dropped feat/x ${worktree}`]]);
+		expect([existsSync(worktree), await sweptFile(id), existsSync(join(root, "gh.log"))]).toEqual([
+			false,
+			"dropped\n",
+			false,
+		]);
+	});
+
+	it("reports a run whose removal fails, sweeps the others, and exits 1", async () => {
 		const dirty = await workflows(["w"], { cwd: repo });
 		expect(dirty.code).toBe(0);
 		const kept = worktreeAt(repo, dirty.id);
@@ -347,34 +400,35 @@ exec "${real}" "$@"
 		await writeFile(join(kept, "work.txt"), "more work\n");
 		const { id, worktree } = await mergedRun();
 
-		const pruned = await workflows(["prune", "--yes", "--json"], { cwd: repo });
-		expect(pruned.code).toBe(1);
-		expect(JSON.parse(pruned.stdout[0] ?? "")).toEqual([{ runId: id, branch: "feat/x", worktree }]);
-		expect(pruned.stderr[0]).toMatch(new RegExp(`^workflows: cannot prune ${dirty.id}: git worktree failed`));
+		const swept = await workflows(["sweep", "--yes", "--json"], { cwd: repo });
+		expect(swept.code).toBe(1);
+		expect(JSON.parse(swept.stdout[0] ?? "")).toEqual([{ runId: id, swept: "landed", branch: "feat/x", worktree }]);
+		expect(swept.stderr[0]).toMatch(new RegExp(`^workflows: cannot sweep ${dirty.id}: git worktree failed`));
 		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([false, false]);
 		expect([existsSync(kept), hasBranch("feat/y")]).toEqual([true, true]);
-		expect(existsSync(join(runsOf(root), dirty.id ?? "", "pruning"))).toBe(false);
+		expect(existsSync(join(runsOf(root), dirty.id ?? "", "sweeping"))).toBe(false);
+		expect([await sweptFile(dirty.id), await sweptFile(id)]).toEqual([undefined, "landed\n"]);
 	});
 
 	it("removes nothing when gh fails", async () => {
 		const { worktree } = await mergedRun();
 		await fake("gh", 'echo "gh: not logged in" >&2\nexit 1\n');
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect(pruned.code).toBe(1);
-		expect(pruned.stderr.join("\n")).toContain("gh: not logged in");
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect(swept.code).toBe(1);
+		expect(swept.stderr.join("\n")).toContain("gh: not logged in");
 		expect(existsSync(worktree)).toBe(true);
 	});
 
 	it("refuses, and removes nothing, when the project store does not exist", async () => {
 		const { directory } = await oldRunDirectory();
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout, pruned.stderr]).toEqual([
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout, swept.stderr]).toEqual([
 			1,
 			[],
 			[
-				`workflows: cannot prune: the project store ${storeOf()} does not exist, so no run directory counts as unstarted; remove the run directories that you do not need from ${runsOf(root)} by hand`,
+				`workflows: cannot sweep: the project store ${storeOf()} does not exist, so no run directory counts as unstarted; remove the run directories that you do not need from ${runsOf(root)} by hand`,
 			],
 		]);
 		expect(existsSync(directory)).toBe(true);
@@ -388,14 +442,14 @@ exec "${real}" "$@"
 		git(join(kept.directory, "repository"), "commit", "-q", "--allow-empty", "-m", "local");
 		git(root, "clone", "-q", repo, join(clean.directory, "repository"));
 
-		const pruned = await workflows(["prune", "--yes", "--json"], { cwd: repo });
-		expect([pruned.code, pruned.stderr]).toEqual([
+		const swept = await workflows(["sweep", "--yes", "--json"], { cwd: repo });
+		expect([swept.code, swept.stderr]).toEqual([
 			0,
 			[
 				`workflows: keeps ${kept.directory}: it holds a Git clone with commits that are on no remote, or one that Git cannot read; push them, or remove the directory by hand`,
 			],
 		]);
-		expect(JSON.parse(pruned.stdout[0] ?? "")).toEqual([{ runId: clean.id, directory: clean.directory }]);
+		expect(JSON.parse(swept.stdout[0] ?? "")).toEqual([{ runId: clean.id, directory: clean.directory }]);
 		expect([existsSync(kept.directory), existsSync(clean.directory)]).toEqual([true, false]);
 	});
 
@@ -406,8 +460,8 @@ exec "${real}" "$@"
 		git(worktree, "branch", "-m", "feat/x");
 		await writeMarker(run.id ?? "", worktree);
 
-		const pruned = await workflows(["prune", "--yes"], { cwd: repo });
-		expect([pruned.code, pruned.stdout]).toEqual([0, []]);
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([0, []]);
 		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([true, true]);
 	});
 
@@ -423,7 +477,7 @@ exec "${real}" "$@"
 		expect(existsSync(marker)).toBe(false);
 	});
 
-	it("skips a run whose new task started after prune read the store", async () => {
+	it("skips a run whose new task started after sweep read the store", async () => {
 		await writeGated();
 		const failed = await workflows(["gated"], { cwd: repo });
 		expect(failed.code).toBe(1);
@@ -439,7 +493,7 @@ echo "[{\\"headRefOid\\":\\"$(git rev-parse HEAD)\\"}]"
 `,
 		);
 
-		const pending = workflows(["prune", "--yes"], { cwd: repo });
+		const pending = workflows(["sweep", "--yes"], { cwd: repo });
 
 		while (!existsSync(join(root, "reached"))) await new Promise((resolve) => setTimeout(resolve, 10));
 		await writeFile(join(root, "go"), "");
@@ -447,31 +501,31 @@ echo "[{\\"headRefOid\\":\\"$(git rev-parse HEAD)\\"}]"
 		expect(resumed.code).toBe(130);
 		await writeFile(join(root, "open"), "");
 
-		const pruned = await pending;
-		expect([pruned.code, pruned.stdout, pruned.stderr]).toEqual([
+		const swept = await pending;
+		expect([swept.code, swept.stdout, swept.stderr]).toEqual([
 			0,
 			[],
-			[`workflows: skips ${id}: its run has a task that has not ended; prune it after the run ends`],
+			[`workflows: skips ${id}: its run has a task that has not ended; sweep it after the run ends`],
 		]);
 		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([true, true]);
 	});
 
 	it("installs a post-merge hook, and refuses to replace a hook or a hooks path", async () => {
-		const line = "workflows prune --yes >/dev/null 2>&1 &";
+		const line = "workflows sweep --yes >/dev/null 2>&1 &";
 		const hook = join(repo, ".git", "hooks", "post-merge");
 
-		const installed = await workflows(["prune", "--install-hook"], { cwd: repo });
+		const installed = await workflows(["sweep", "--install-hook"], { cwd: repo });
 		expect([installed.code, installed.stdout]).toEqual([0, [hook]]);
 		expect(await readFile(hook, "utf8")).toContain(line);
 		expect((await stat(hook)).mode & 0o111).toBe(0o111);
 
-		const again = await workflows(["prune", "--install-hook"], { cwd: repo });
+		const again = await workflows(["sweep", "--install-hook"], { cwd: repo });
 		expect(again.code).toBe(1);
 		expect(again.stderr.join("\n")).toContain(line);
 
 		await rm(hook);
 		git(repo, "config", "core.hooksPath", "x");
-		const refused = await workflows(["prune", "--install-hook"], { cwd: repo });
+		const refused = await workflows(["sweep", "--install-hook"], { cwd: repo });
 		expect(refused.code).toBe(1);
 		expect(refused.stderr.join("\n")).toContain(line);
 		expect(existsSync(hook)).toBe(false);

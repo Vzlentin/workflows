@@ -24,7 +24,7 @@ import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin, endOf } from "../follow.ts";
 import { storeOf } from "../host.ts";
 import type { Choose, Terminal } from "../main.ts";
-import { listedRuns, oneRunId, readable, type Row, type SavedRun, savedRun } from "../saved.ts";
+import { listedRuns, runFields, oneRunId, readable, type Row, type SavedRun, savedRun } from "../saved.ts";
 import type { PickItem } from "../terminal/pick.ts";
 
 export const SHOW = "workflows show (<run-id> [--agents] [--json] | [<run-id>] --pick)";
@@ -114,12 +114,12 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 	const now = Date.now();
 	const rows = agentRows(calls, 0, now);
 
-	const fields: Static<Type.TObject<typeof RUN_FIELDS>> & { agent?: Static<typeof RUN_AGENT> } = {
-		runId: id,
-		workflow: input.name,
+	const fields: Static<Type.TObject<typeof RUN_FIELDS>> & { agent?: Static<typeof RUN_AGENT> } = await runFields(
+		id,
+		input.name,
 		title,
-		...shown.fields,
-	};
+		shown.fields,
+	);
 
 	const agent = runAgent(rows);
 

@@ -8,7 +8,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import { PRUNE_MARKER, readProject, type ScriptInput } from "../launch/input.ts";
+import { SWEEP_MARKER, readProject, type ScriptInput } from "../launch/input.ts";
 import { branchOf, ensureWorktree, type Renamed, renameBranch } from "../launch/worktree.ts";
 import { outcomeText, waits } from "../tool.ts";
 import { firstTask, outcomeFrom, scanTasks, type TaskEnd } from "./past.ts";
@@ -152,8 +152,8 @@ async function runPhase(
 			await checkServes(await readProject(input.runDir), runId, input.serves, context.abortSignal);
 		}
 
-		// A new task of the run cancels the removal that an interrupted `prune --yes` left.
-		await rm(join(input.runDir, PRUNE_MARKER), { force: true });
+		// A new task of the run cancels the removal that an interrupted `sweep --yes` left.
+		await rm(join(input.runDir, SWEEP_MARKER), { force: true });
 
 		if (worktree !== undefined) {
 			// A rerun of the first task is still the first task, which may make the branch again.

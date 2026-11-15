@@ -35,7 +35,7 @@ export const COMMAND_NAMES = [
 	"log",
 	"attach",
 	"save",
-	"prune",
+	"sweep",
 	"check",
 	"outline",
 ] as const;
@@ -60,7 +60,7 @@ export const PARAMETERS = Type.Object({
 	name: Type.Optional(
 		Type.String({
 			description:
-				"`ship`, `campaign`, `optimize`, or the name of a workflow script; not a command such as `list` or `prune`",
+				"`ship`, `campaign`, `optimize`, or the name of a workflow script; not a command such as `list` or `sweep`",
 		}),
 	),
 	script: Type.Optional(Type.String({ description: "An inline workflow script" })),

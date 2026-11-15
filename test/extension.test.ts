@@ -381,7 +381,7 @@ describe("the workflow tool", () => {
 	});
 
 	it("refuses a command name, or a name that starts with -, and runs no command", async () => {
-		await expect(call({ name: "prune" })).rejects.toThrow("prune is a command, not a workflow");
+		await expect(call({ name: "sweep" })).rejects.toThrow("sweep is a command, not a workflow");
 		await expect(call({ name: "-x" })).rejects.toThrow("-x is not a workflow name");
 		expect(existsSync(join(root, "args.log"))).toBe(false);
 	});

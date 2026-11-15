@@ -5,7 +5,7 @@
  * project, `workflows show <run-id>` prints the steps or the calls of one run, `workflows log <run-id>` prints the
  * short log of one run or the output of one of its calls, `workflows attach <run-id>` opens a session of one run in
  * Pi, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow;
- * `workflows prune` removes the worktrees of the ended runs whose branch is merged. The project store holds the runs; a
+ * `workflows sweep` removes the worktrees of the ended runs whose branch is merged. The project store holds the runs; a
  * run directory holds the run's `project` file and whatever the workflow writes there.
  */
 import { readFile } from "node:fs/promises";
@@ -21,12 +21,12 @@ import { CHECK, check } from "./commands/check.ts";
 import { LIST, list } from "./commands/list.ts";
 import { LOG, log } from "./commands/log.ts";
 import { OUTLINE, outline } from "./commands/outline.ts";
-import { PRUNE, prune } from "./commands/prune.ts";
 import { RESUME, resume, WAIT } from "./commands/resume.ts";
 import { SAVE, save } from "./commands/save.ts";
 import { SHOW, show } from "./commands/show.ts";
 import { start } from "./commands/start.ts";
 import { STOP, stop } from "./commands/stop.ts";
+import { SWEEP, sweep } from "./commands/sweep.ts";
 import { GoneRun } from "./saved.ts";
 import type { PickItem } from "./terminal/pick.ts";
 
@@ -89,7 +89,7 @@ const COMMANDS = new Map<string, Command>(
 		log,
 		attach,
 		save,
-		prune,
+		sweep,
 		check,
 		outline,
 	} satisfies Record<CommandName, Command>),
@@ -111,7 +111,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		LOG,
 		ATTACH,
 		SAVE,
-		PRUNE,
+		SWEEP,
 		CHECK,
 		OUTLINE,
 		"workflows --version",

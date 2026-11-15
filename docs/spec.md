@@ -711,7 +711,7 @@ workflows check audit
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`list`, `resume`, `wait`, `stop`, `show`, `log`, `attach`, `save`, `prune`, `check` and `outline` are commands,
+`list`, `resume`, `wait`, `stop`, `show`, `log`, `attach`, `save`, `sweep`, `check` and `outline` are commands,
 `COMMAND_NAMES` of `src/tool.ts`, so no script of these names can run. A project script with one of these names fails
 every command that loads the scripts of the project, also `workflows` and `outline --json`, with `workflows:
 <project>/scripts/<name>.js has the name of the command <name>; rename the script`, and exit 1. Bad usage of a command
@@ -1499,15 +1499,17 @@ version saved has its title as a run of this version has it, when its saved inpu
 run ID, the script name, the arguments, and the `args` and `exit` of its `meta`); a run whose input does not have them
 has its workflow name as its title. With `--json`, the command prints one JSON array of
 `{ "runId", "workflow", "title", "state", "result"?, "question"?, "resumable", "branch"?, "startedAt"?, "serves"?,
-"repository" }`, with the schema `LISTED` of `src/cli/commands/list.ts`. The fields before `repository` are the run
-fields, `RUN_FIELDS` of `src/records/run.ts`, which `show --json` and `show --agents --json` give too. `result` is
+"swept"?, "repository" }`, with the schema `LISTED` of `src/cli/commands/list.ts`. The fields before `repository`
+are the run fields, `RUN_FIELDS` of `src/records/run.ts`, which `show --json` and `show --agents --json` give too. `result` is
 `{ "status"?, "code", "score"? }` as in [JSON output](#json-output), for a run that is `done` or `waiting` and whose saved input has the
 fields of a title. `question` is the question of a run that is `waiting`. `resumable` is true when this version of
 workflows saved the run's task, so that `resume` can take it; it is false for a run of another version. `branch` is
 the `branch` of the value of the result, the branch that the worktree ends on, else the branch of the run's worktree;
 `runBranch` of `src/run/result.ts` gives it, also for the catch-up. A run without a worktree and without a `branch` in
 its result has none. `startedAt` is the time when the first task of the run started, as an ISO string. `serves` is
-what the run serves (see [Serves](#serves)).
+what the run serves (see [Serves](#serves)). `swept` is the word in the `swept` file of the run directory, `landed` or
+`dropped`, which `sweep --yes` wrote when it removed the worktree of the run (see [Sweep](#sweep)). A run that no
+sweep removed has no `swept`.
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
 without a worktree.
 Only the runs that have a run directory with a `project` file are listed. The command writes that file before it
@@ -1521,63 +1523,70 @@ the host waits for, and runs no checkpoint of the file. A store whose schema pi-
 read-only: `list`, `show` and `save` then fail with `<store> needs a schema update that only its harness host makes:
 start the host once, such as with harness --project <project> host, and run the command again`.
 
-## Prune
+## Sweep
 
 ```sh
-workflows prune [<run-id>...] [--yes] [--install-hook] [--json]
+workflows sweep [<run-id>...] [--yes] [--install-hook] [--json]
 ```
 
-`workflows prune` prints one line `<run-id> <branch> <worktree>` for each run of the harness project of the current
-directory, newest run ID first, whose worktree is on a merged branch. With `--json`, it prints one
-JSON array of `{ "runId", "branch", "worktree" }`. A run is a candidate only when it has a run directory with a
-`project` file, its last task has ended, a task of this version or of an earlier version saved it, its saved input has a
-worktree, the worktree exists, and the worktree is on a branch. For a run of an earlier version, `prune` reads only the
-`worktree` of its saved input. A run of a later version, a run without a worktree, a run that has not ended, a detached
-worktree, and a worktree that is not a Git worktree of its own are never pruned. `prune` reads the project store file read-only, as `list` does, and does not
-start the host. When the project store file does not exist, `prune` prints `workflows: cannot prune: the project store
-<store> does not exist, so no run directory counts as unstarted; remove the run directories that you do not need from
-<runs directory> by hand`, removes nothing and exits 1, also without `--yes` and with run IDs.
+`workflows sweep` prints one line `<run-id> landed <branch> <worktree>` for each run of the harness project of the
+current directory, newest run ID first, whose worktree is on a merged branch. With `--json`, it prints one JSON array
+of `{ "runId", "swept", "branch", "worktree" }`, with the schema `SWEPT_RUNS` of `src/cli/commands/sweep.ts`. `swept`
+is the word that `--yes` writes for the run: `landed` for a merged branch, `dropped` for a branch that is not merged.
+Without `--yes`, each line and each entry shows the word that `--yes` would write. A run is a candidate only when it
+has a run directory with a `project` file, its last task has ended, a task of this version or of an earlier version
+saved it, its saved input has a worktree, the worktree exists, and the worktree is on a branch. For a run of an earlier
+version, `sweep` reads only the `worktree` of its saved input. A run of a later version, a run without a worktree, a
+run that has not ended, a detached worktree, and a worktree that is not a Git worktree of its own are never swept.
+`sweep` reads the project store file read-only, as `list` does, and does not start the host. When the project store
+file does not exist, `sweep` prints `workflows: cannot sweep: the project store <store> does not exist, so no run
+directory counts as unstarted; remove the run directories that you do not need from <runs directory> by hand`, removes
+nothing and exits 1, also without `--yes` and with run IDs.
 
-For each candidate, `prune` first runs `git merge-base --is-ancestor HEAD origin/main` in the worktree. A branch is
-merged when that succeeds: the commit that the worktree is on is in `origin/main`, which is also true of a worktree with
-no commit of its own. Otherwise `prune` runs `gh pr list --head <branch> --state merged --json headRefOid` in the
-worktree, and a branch is merged when one pull request in the list has the commit that the worktree is on as its head. A branch name that comes
-back in a later run, with a merged pull request of an earlier commit, is not merged. `prune` runs every `gh` call before
-it removes anything: a failed `gh` call, or a missing `gh`, prints `workflows: <error>`, removes nothing and exits 1.
+For each candidate, `sweep` first runs `git merge-base --is-ancestor HEAD origin/main` in the worktree. A branch is
+merged when that succeeds: the commit that the worktree is on is in `origin/main`, which is also true of a worktree
+with no commit of its own. Otherwise `sweep` runs `gh pr list --head <branch> --state merged --json headRefOid` in the
+worktree, and a branch is merged when one pull request in the list has the commit that the worktree is on as its head.
+A branch name that comes back in a later run, with a merged pull request of an earlier commit, is not merged. `sweep`
+runs every `gh` call before it removes anything: a failed `gh` call, or a missing `gh`, prints `workflows: <error>`,
+removes nothing and exits 1.
 
-With `--yes`, `prune` removes each merged worktree in order, and prints its line after the removal. It runs
+With `--yes`, `sweep` removes each worktree in order, and prints its line after the removal. It runs
 `git worktree remove <worktree>` in the run's repository, without `--force`, and deletes the branch with
-`git branch -D <branch>` when the branch still exists. Before it removes anything of a run, `prune` reads the root tasks
-of the run from the store again. When the last task has not ended now, such as a resume that started during a `gh` call,
-it prints `workflows: skips <run-id>: its run has a task that has not ended; prune it after the run ends` on stderr,
-removes nothing of the run, leaves it out of stdout and the JSON, and goes on with the next run; the exit code does not
-change. Then it writes the marker `runs/<run-id>/pruning`, a JSON object `{ "branch", "repository", "path" }`, and it
-deletes the marker when the worktree and the branch are gone. An ended run with a marker is a candidate with no other
-check and no `gh` call, so a `prune` that stopped after the worktree removal is finished by the next one. A run with a
-marker whose last task has not ended is not a candidate, and each new task of a run deletes its marker before its
-worktree step. A removal that fails, such as of a worktree with changes, prints
-`workflows: cannot prune <run-id>: <error>` on stderr, leaves the run out of stdout and the JSON, and goes on with the
-next run; `prune` then exits 1. A failed worktree removal deletes the marker, as the worktree can get more work; a
-failed branch removal keeps it. The run directory and the run's records stay, so `list` and `show` still show the run.
+`git branch -D <branch>` when the branch still exists. Before it removes anything of a run, `sweep` reads the root
+tasks of the run from the store again. When the last task has not ended now, such as a resume that started during a
+`gh` call, it prints `workflows: skips <run-id>: its run has a task that has not ended; sweep it after the run ends` on
+stderr, removes nothing of the run, leaves it out of stdout and the JSON, and goes on with the next run; the exit code
+does not change. Then it writes the marker `runs/<run-id>/sweeping`, a JSON object
+`{ "branch", "repository", "path", "swept" }`, removes the worktree, removes the branch, writes the word to the file
+`runs/<run-id>/swept`, `landed` or `dropped` and a newline, and deletes the marker. An ended run with a marker is a
+candidate with the word of its marker, with no other check and no `gh` call, so a `sweep` that stopped after the
+worktree removal is finished by the next one. A run with a marker whose last task has not ended is not a candidate,
+and each new task of a run deletes its marker before its worktree step. A removal that fails, such as of a worktree
+with changes, prints `workflows: cannot sweep <run-id>: <error>` on stderr, leaves the run out of stdout and the JSON,
+and goes on with the next run; `sweep` then exits 1. A failed worktree removal deletes the marker and writes no word,
+as the worktree can get more work; a failed branch removal keeps the marker. The run directory and the run's records
+stay, so `list` and `show` still show the run, and their JSON gives the word as `swept` (see [List](#list)).
 
-`prune` also prints one line `<run-id> unstarted <run directory>` for each run directory of the project whose run has
+`sweep` also prints one line `<run-id> unstarted <run directory>` for each run directory of the project whose run has
 no task (the `unstarted` runs of `list`) and whose `project` file is more than 1 hour old, after the merged runs. With
-`--json`, each is an object `{ "runId", "directory" }` in the same array. With `--yes`, after every `gh` call, `prune`
+`--json`, each is an object `{ "runId", "directory" }` in the same array. With `--yes`, after every `gh` call, `sweep`
 removes these run directories. A run directory with `repository/` or `.worktrees/` is kept when the clone in
 `repository/` has a commit that no remote branch reaches: `git rev-list -n 1 --branches <worktree HEADs> --not
---remotes`, with the HEADs from `git worktree list --porcelain`, prints a commit, or a Git call fails. `prune` then
+--remotes`, with the HEADs from `git worktree list --porcelain`, prints a commit, or a Git call fails. `sweep` then
 prints `workflows: keeps <run directory>: it holds a Git clone with commits that are on no remote, or one that Git
 cannot read; push them, or remove the directory by hand` on stderr, leaves the directory out of stdout and the JSON, and
 the exit code does not change.
 
-With run IDs, `prune` takes only these runs, in the given order, with no merge check and no `gh` call, and leaves the
-unstarted run directories. Each one must be a root run of the project store of the current directory that has a
-marker or is a candidate, such as a run whose branch went into another pull request. Before it removes anything,
-`prune` checks every ID: one that fails prints `workflows: cannot prune <run-id>: not an ended run of this project with
-a worktree on a branch`, removes nothing and exits 1.
+With run IDs, `sweep` takes only these runs, in the given order, and leaves the unstarted run directories. Each one
+must be a root run of the project store of the current directory that has a marker or is a candidate, such as a run
+whose branch went into another pull request. It runs the same merge test on each run without a marker: a merged one
+gets `landed`, and one that is not merged gets `dropped`. Before it removes anything, `sweep` checks every ID: one that
+fails prints `workflows: cannot sweep <run-id>: not an ended run of this project with a worktree on a branch`, removes
+nothing and exits 1.
 
 `--install-hook` writes the executable `post-merge` hook of the Git repository of the current directory, with the line
-`workflows prune --yes >/dev/null 2>&1 &`, and prints the hook's path. When `core.hooksPath` is set or a `post-merge`
+`workflows sweep --yes >/dev/null 2>&1 &`, and prints the hook's path. When `core.hooksPath` is set or a `post-merge`
 hook exists, it writes nothing, prints an error with the line to add, and exits 1. `--install-hook` ignores `--yes` and
 `--json`.
 
@@ -2247,6 +2256,8 @@ attach fails, it notifies the error `<stderr>. Run in another terminal: workflow
 Runs live in `$XDG_STATE_HOME/workflows/runs/<run-id>`, by default `~/.local/state/workflows/runs/<run-id>`:
 
 - `project`: the name of the harness project whose store holds the run: its saved inputs, calls, sessions and progress
+- `swept`: `landed` or `dropped`, after `sweep --yes` removed the worktree of the run (see [Sweep](#sweep))
+- `sweeping`: the marker of a removal of `sweep --yes` that has not finished
 
 The project store is `$XDG_STATE_HOME/harness/<project>/durable.sqlite`. See [Runs in the harness
 host](#runs-in-the-harness-host).
@@ -2301,7 +2312,7 @@ The engine files in `src/`:
   `list` and `show` print, and progress.
 - `cli/follow.ts`: how the command follows a run to its outcome, the answer of a waiting run, and the Ctrl+C presses.
 - `cli/commands/`: one file for each command: `start.ts`, `resume.ts` (also `wait`), `stop.ts`, `list.ts`, `show.ts`,
-  `attach.ts`, `save.ts`, `prune.ts` and `outline.ts`.
+  `attach.ts`, `save.ts`, `sweep.ts` and `outline.ts`.
 - `command.ts`: the `workflows` command of the package as a child process, for the `workflow` tool of the host.
 - `cli/terminal/pick.ts` and `cli/terminal/keys.ts`: the picker of `show --pick`, and its keys.
 - `entry.ts`: the entry that the harness host loads, with the script task and the catch-up hook.

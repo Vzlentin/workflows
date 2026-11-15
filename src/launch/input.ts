@@ -25,10 +25,10 @@ export function newRunId(): string {
 }
 
 /**
- * The file of a run directory that names the worktree and branch that `prune --yes` removes, until both are gone. A new
- * task of the run removes it.
+ * The file of a run directory that names the worktree and branch that `sweep --yes` removes, until both are gone, and
+ * the word that the sweep then writes to the `swept` file. A new task of the run removes it.
  */
-export const PRUNE_MARKER = "pruning";
+export const SWEEP_MARKER = "sweeping";
 
 /** What a run needs from the command line before it starts. */
 export type Run = { readonly id: string; readonly directory: string; readonly cwd: string };

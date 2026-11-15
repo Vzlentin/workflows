@@ -8,10 +8,17 @@ import { RUN_RESULT, RUN_STATE, waits } from "../tool.ts";
 import { inputWorktree } from "./store.ts";
 
 /**
+ * What `sweep --yes` did with the worktree of a run: `landed` when its branch was merged, `dropped` when it was not
+ * and the run was given by ID.
+ */
+export const SWEPT = Type.Union([Type.Literal("landed"), Type.Literal("dropped")]);
+
+/**
  * The fields of a run with a task. `result` is the result of a run that is `done` or `waiting`, and `question` the
  * question of a waiting run. `resumable` is true for a task of this version, which `resume` can continue. `branch` is
  * the branch of the run, from its result or its worktree, `startedAt` the time when its first task started, as an ISO
- * string, and `serves` the todo or the parley that the run builds, when its start named one.
+ * string, `serves` the todo or the parley that the run builds, when its start named one, and `swept` the word that
+ * `sweep --yes` wrote when it removed the worktree of the run.
  */
 export const RUN_FIELDS = {
 	runId: Type.String(),
@@ -24,10 +31,11 @@ export const RUN_FIELDS = {
 	branch: Type.Optional(Type.String()),
 	startedAt: Type.Optional(Type.String()),
 	serves: Type.Optional(ServesInput),
+	swept: Type.Optional(SWEPT),
 };
 
-/** The fields of a run that its root tasks give: all the run fields but its ID, workflow and title. */
-export type TaskFields = Omit<Static<Type.TObject<typeof RUN_FIELDS>>, "runId" | "workflow" | "title">;
+/** The fields of a run that its root tasks give: all the run fields but its ID, workflow, title and sweep word. */
+export type TaskFields = Omit<Static<Type.TObject<typeof RUN_FIELDS>>, "runId" | "workflow" | "title" | "swept">;
 
 const SERVES = Type.Object({ serves: ServesInput });
 

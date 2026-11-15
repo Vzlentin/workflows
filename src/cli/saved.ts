@@ -9,8 +9,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { TaskId, TaskRecord } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
+import { Value } from "typebox/value";
 import { readProject, type ScriptInput } from "../launch/input.ts";
-import { RUN_FIELDS, taskFields } from "../records/run.ts";
+import { RUN_FIELDS, SWEPT, type TaskFields, taskFields } from "../records/run.ts";
 import {
 	inputName,
 	inputWorktree,
@@ -80,10 +81,38 @@ export async function listedRuns(store: Store, runs: ReadonlyMap<string, readonl
 		const input = savedInput(SHOWN_INPUT, task.input);
 		const workflow = savedBy(task).name;
 		const title = input === undefined ? workflow : titleOf(input, await progressEvents(store, id));
-		listed.push({ runId: id, workflow, title, ...taskFields(tasks, task), repository });
+		listed.push({ ...(await runFields(id, workflow, title, taskFields(tasks, task))), repository });
 	}
 
 	return listed;
+}
+
+/** The file of a run directory that holds the word of `sweep --yes`, `landed` or `dropped`. */
+export const SWEPT_FILE = "swept";
+
+/**
+ * The run fields of the run `id`, with its workflow `workflow`, its title `title` and its task fields `fields`, and
+ * `swept` when the `swept` file of the run holds a word.
+ */
+export async function runFields(
+	id: string,
+	workflow: string,
+	title: string,
+	fields: TaskFields,
+): Promise<Static<Type.TObject<typeof RUN_FIELDS>>> {
+	const run: Static<Type.TObject<typeof RUN_FIELDS>> = { runId: id, workflow, title, ...fields };
+	const swept = await sweptOf(id);
+
+	if (swept !== undefined) run.swept = swept;
+
+	return run;
+}
+
+/** The word of the `swept` file of the run `id`, or undefined when the file is missing or holds another word. */
+async function sweptOf(id: string): Promise<Static<typeof SWEPT> | undefined> {
+	const word = (await readFile(join(runsDirectory(), id, SWEPT_FILE), "utf8").catch(() => undefined))?.trim();
+
+	return Value.Check(SWEPT, word) ? word : undefined;
 }
 
 /**

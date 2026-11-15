@@ -20,7 +20,7 @@ export async function start(
 	const project = resolveProject(process.env, terminal.cwd);
 	const key = taskKey(id, 1);
 	await mkdir(directory, { recursive: true });
-	// A run directory whose `project` names no task is an unstarted run, which `list` shows and `prune` removes.
+	// A run directory whose `project` names no task is an unstarted run, which `list` shows and `sweep` removes.
 	await writeFile(join(directory, "project"), `${project}\n`);
 	let client: Client | undefined;
 	let input: ScriptInput | undefined;
