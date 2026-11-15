@@ -822,8 +822,8 @@ export const meta = {
   A bad outline fails with `meta.outline<pointer> <problem>`, where `<pointer>` is the JSON pointer of the wrong
   value, such as `meta.outline/0/kind must be agent, run or loop`. The problems are `is not an array of steps`, `is not
   a step`, `must be agent, run or loop`, `must be a non-empty line`, `must have at least one step` and `is not an
-  outline field`. A run does not save the outline in its input. `workflows outline` prints it: see
-  [Outline](#outline).
+  outline field`. A run does not save the outline in its input. `workflows outline` prints it, and
+  `workflows outline --json` gives it with the rest of the checked `meta`: see [Outline](#outline).
 
 Every script also takes `--prompts <folder>`, as `ship` does, `--agents <name>=<provider>/<id>:<thinking>,...`, the
 run layer of the roles (see [Roles](#roles)), `--serves <todo-id | parley-slug>`, what the run builds (see
@@ -1885,14 +1885,21 @@ store and calls no model.
   thermoloop  review ─ fix, in rounds
   ```
 
-- With `--json`, the command prints one line: the object `{ "workflow", "steps" }` of `<workflow>`, or the array of
-  these objects for every script. `steps` is the outline as the script declares it, and `[]` for a script without an
-  outline.
+- With `--json`, the command prints one line: the catalog entry of `<workflow>`, or the array of the entries of every
+  script, with the schema `CATALOG_ENTRY` of `src/cli/commands/outline.ts`. An entry is
+  `{ "workflow", "description", "args", "placement", "exit", "outline", "usage" }`, the checked `meta` of the script:
+  `description` is `""` for a script without one, `args` maps each argument to its spec as `meta.args` gives it,
+  `placement` is `here`, `repo` (`repo: true`) or `worktree` (`worktree: true`), `exit` maps each status to its exit
+  code, `outline` is the outline as the script declares it, `[]` without one, and `usage` is the usage line of
+  `workflows <workflow> --help` without `usage: `. A script whose `meta` is bad gives the entry
+  `{ "workflow", "error" }` in its place, where `error` is the message of a run of it, `<name>: <problem>`, such as
+  `bad: meta.outline/0/kind must be agent, run or loop`; the other scripts keep their entries.
 
 An unknown name fails as it fails for `check`: `workflows: unknown command <name>`, then the usage lines, and exits 2.
-A bad `meta` of a script that the command reads prints `workflows: <name>: <problem>` and exits 1. More than one
-workflow, or another flag, prints the error, then `usage: workflows outline [<workflow>] [--json]`, and exits 2.
-`--background` has no effect. Else the command exits 0.
+In the text form, a bad `meta` of a script that the command reads prints `workflows: <name>: <problem>` and exits 1;
+with `--json`, it gives an error entry and the command exits 0. More than one workflow, or another flag, prints the
+error, then `usage: workflows outline [<workflow>] [--json]`, and exits 2. `--background` has no effect. Else the
+command exits 0.
 
 ## Install
 

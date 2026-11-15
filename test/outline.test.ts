@@ -1,8 +1,10 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { type OutlineStep, readMeta, readOutline } from "../src/workflow/meta.ts";
+import { CATALOG_ENTRY } from "../src/cli/commands/outline.ts";
+import { type OutlineStep, readDeclared, readMeta } from "../src/workflow/meta.ts";
 import { runsOf, sandbox, storeOf, workflows } from "./support.ts";
 
 let root: string;
@@ -64,6 +66,17 @@ const PACKAGE_LINES = [
 /** A script whose `meta` declares `outline`. */
 const metaOf = (outline: readonly OutlineStep[]) =>
 	`export const meta = { outline: ${JSON.stringify(outline)} }\nreturn 1`;
+
+/** The catalog entry of a script whose `meta` declares only `outline`. */
+const plainEntry = (workflow: string, outline: readonly OutlineStep[]) => ({
+	workflow,
+	description: "",
+	args: {},
+	placement: "here",
+	exit: {},
+	outline,
+	usage: `workflows ${workflow} [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] [--background] [--json]`,
+});
 
 describe("meta.outline", () => {
 	it("refuses a bad outline in a check and in a run, before the run starts", async () => {
@@ -165,7 +178,7 @@ return args.word`,
 	it("gives each package script its outline, which check passes", async () => {
 		for (const [name, outline] of Object.entries(OUTLINES)) {
 			const source = await readFile(new URL(`../workflows/scripts/${name}.js`, import.meta.url), "utf8");
-			expect(await readOutline(source, name), name).toEqual(outline);
+			expect((await readDeclared(source, name)).outline, name).toEqual(outline);
 			const checked = await workflows(["check", name], { cwd: root });
 			expect([checked.code, checked.stdout], name).toEqual([0, [`ok ${name}`]]);
 		}
@@ -175,22 +188,90 @@ return args.word`,
 		const source =
 			'export const meta = { description: "Plan.", outline: [{ kind: "agent", role: "planner", label: "plan" }] }\nreturn 1';
 
-		expect(await readOutline(source, "plan")).toEqual([agent("planner", "plan")]);
-		expect(await readMeta(source, "plan")).toEqual({ description: "Plan.", args: {}, placement: "here", exit: {} });
-		expect(await readOutline('export const meta = { description: "Plan." }\nreturn 1', "plan")).toEqual([]);
-		expect(await readOutline("return 1", "plan")).toEqual([]);
+		const meta = { description: "Plan.", args: {}, placement: "here", exit: {} };
+
+		expect(await readDeclared(source, "plan")).toEqual({ meta, outline: [agent("planner", "plan")] });
+		expect(await readMeta(source, "plan")).toEqual(meta);
+		expect(await readDeclared('export const meta = { description: "Plan." }\nreturn 1', "plan")).toEqual({
+			meta,
+			outline: [],
+		});
+		expect(await readDeclared("return 1", "plan")).toEqual({ meta: { ...meta, description: "" }, outline: [] });
 	});
 });
 
 describe("workflows outline", () => {
-	it("prints the outline of one script as one JSON line, with no run, no store and no model call", async () => {
+	it("prints the catalog entry of one script as one JSON line, with no run, no store and no model call", async () => {
 		const shown = await workflows(["outline", "ship", "--json"], { cwd: root });
-		expect([shown.code, shown.stdout.map((line) => JSON.parse(line)), shown.stderr]).toEqual([
-			0,
-			[{ workflow: "ship", steps: OUTLINES.ship }],
-			[],
+		expect([shown.code, shown.stderr]).toEqual([0, []]);
+		const entries = shown.stdout.map((line) => JSON.parse(line));
+		expect(entries).toEqual([
+			{
+				workflow: "ship",
+				description:
+					"Ship one work item onto a new branch: research, plan, implement, review rounds, one squashed commit, and judge.",
+				args: {
+					item: { type: "text", positional: true, label: "work item", required: true },
+					rounds: { type: "number", default: 3 },
+				},
+				placement: "worktree",
+				exit: { shipped: 0, rejected: 1, unjudged: 1, blocked: 1, stopped: 1 },
+				outline: OUTLINES.ship,
+				usage:
+					"workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] [<item.md> | <text>] [--background] [--json]",
+			},
 		]);
+		expect(entries.every((entry) => Value.Check(CATALOG_ENTRY, entry))).toBe(true);
 		expect([existsSync(runsOf(root)), existsSync(storeOf()), shown.model.calls]).toEqual([false, false, []]);
+	});
+
+	it("gives an error entry for a script with a bad meta, and the full entry of each other script", async () => {
+		const scripts = join(root, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "bad.js"),
+			'export const meta = { outline: [{ kind: "tool", label: "use" }] }\nreturn 1',
+		);
+		await writeFile(
+			join(scripts, "mine.js"),
+			`export const meta = {
+	description: "Mine.",
+	args: { path: { type: "string", positional: true, required: true }, all: { type: "boolean" } },
+	repo: true,
+	exit: { found: 0, missing: 4 },
+	outline: [{ kind: "agent", role: "reader", label: "read" }],
+}
+return 1`,
+		);
+		const bad = { workflow: "bad", error: "bad: meta.outline/0/kind must be agent, run or loop" };
+
+		const every = await workflows(["outline", "--json"], { cwd: root });
+		expect([every.code, every.stderr, every.stdout.length]).toEqual([0, [], 1]);
+		const entries: unknown = JSON.parse(every.stdout[0] ?? "");
+
+		if (!Array.isArray(entries)) throw new Error("outline --json printed no array");
+		expect(entries.every((entry) => Value.Check(CATALOG_ENTRY, entry))).toBe(true);
+		expect(entries.map(({ workflow }: { workflow: string }) => workflow)).toEqual([
+			...Object.keys(OUTLINES).toSorted(),
+			"bad",
+			"mine",
+		]);
+		expect(entries.slice(-2)).toEqual([
+			bad,
+			{
+				workflow: "mine",
+				description: "Mine.",
+				args: { path: { type: "string", positional: true, required: true }, all: { type: "boolean" } },
+				placement: "repo",
+				exit: { found: 0, missing: 4 },
+				outline: [agent("reader", "read")],
+				usage:
+					"workflows mine [--all] [--repo <repository>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] <path> [--background] [--json]",
+			},
+		]);
+
+		const one = await workflows(["outline", "bad", "--json"], { cwd: root });
+		expect([one.code, one.stdout.map((line) => JSON.parse(line)), one.stderr]).toEqual([0, [bad], []]);
 	});
 
 	it("prints one line for each script, with the names padded to the longest printed name", async () => {
@@ -228,34 +309,31 @@ describe("workflows outline", () => {
 			0,
 			[
 				[
-					{ workflow: "campaign", steps: OUTLINES.campaign },
-					{ workflow: "fix", steps: OUTLINES.fix },
-					{ workflow: "implement", steps: OUTLINES.implement },
-					{ workflow: "judge", steps: OUTLINES.judge },
-					{ workflow: "optimize", steps: OUTLINES.optimize },
-					{ workflow: "rpi", steps: OUTLINES.rpi },
-					{ workflow: "ship", steps: own },
-					{ workflow: "thermoloop", steps: OUTLINES.thermoloop },
-					{ workflow: "mine", steps: mine },
-					{ workflow: "plain", steps: [] },
+					...(["campaign", "fix", "implement", "judge", "optimize", "rpi"] as const).map((workflow) =>
+						expect.objectContaining({ workflow, outline: OUTLINES[workflow] }),
+					),
+					plainEntry("ship", own),
+					expect.objectContaining({ workflow: "thermoloop", outline: OUTLINES.thermoloop }),
+					plainEntry("mine", mine),
+					plainEntry("plain", []),
 				],
 			],
 		]);
 
-		for (const [word, outline] of [
-			["mine", { workflow: "mine", steps: mine }],
-			["x.js", { workflow: "x", steps: own }],
-			["-", { workflow: "stdin", steps: mine }],
+		for (const [word, entry] of [
+			["mine", plainEntry("mine", mine)],
+			["x.js", plainEntry("x", own)],
+			["-", plainEntry("stdin", mine)],
 		] as const) {
 			const shown = await workflows(["outline", word, "--json"], { cwd: root, stdin: metaOf(mine) });
-			expect([shown.code, shown.stdout.map((line) => JSON.parse(line))], word).toEqual([0, [outline]]);
+			expect([shown.code, shown.stdout.map((line) => JSON.parse(line))], word).toEqual([0, [entry]]);
 		}
 
 		const plain = await workflows(["outline", "plain"], { cwd: root });
 		expect([plain.code, plain.stdout]).toEqual([0, ["plain"]]);
 	});
 
-	it("fails on an unknown name as check does, and on a bad meta", async () => {
+	it("fails on an unknown name as check does, and on a bad meta in the text form", async () => {
 		const unknown = await workflows(["outline", "nope"], { cwd: root });
 		expect([unknown.code, unknown.stderr[0]]).toEqual([2, "workflows: unknown command nope"]);
 		const checked = await workflows(["check", "nope"], { cwd: root });
@@ -268,7 +346,7 @@ describe("workflows outline", () => {
 			'export const meta = { outline: [{ kind: "tool", label: "use" }] }\nreturn 1',
 		);
 
-		for (const argv of [["outline", "bad"], ["outline"], ["outline", "--json"]]) {
+		for (const argv of [["outline", "bad"], ["outline"]]) {
 			const bad = await workflows(argv, { cwd: root });
 			expect([bad.code, bad.stdout, bad.stderr], argv.join(" ")).toEqual([
 				1,

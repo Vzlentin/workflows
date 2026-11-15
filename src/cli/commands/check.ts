@@ -5,7 +5,7 @@
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { Bundle } from "../../workflow/bundle.ts";
 import { findScript, type Io, problem, UsageError } from "../../workflow/find.ts";
-import { type OutlineStep, readOutline } from "../../workflow/meta.ts";
+import { type OutlineStep, readDeclared } from "../../workflow/meta.ts";
 import { roleOf } from "../../workflow/roles.ts";
 
 export const CHECK = "workflows check <workflow>";
@@ -199,7 +199,7 @@ export async function check(
 
 	if (word === undefined || rest.length > 0) throw new UsageError("give one workflow to check", CHECK);
 	const found = await findScript(word, io);
-	const outline = await readOutline(found.source, found.name);
+	const { outline } = await readDeclared(found.source, found.name);
 	const workflow = unknownWorkflow(outline, found.bundle, "meta.outline");
 
 	if (workflow !== undefined) throw new Error(`${found.name}: ${workflow}`);
