@@ -185,10 +185,12 @@ function resumeArgs(args: readonly string[]) {
  */
 async function openAsk(store: Store, id: string): Promise<number | undefined> {
 	const open = [...(await callRecords(store, id))]
-		.filter(([key, record]) => key.startsWith(`${id}/`) && record.kind === "input" && record.endedAt === undefined)
-		.sort(([, a], [, b]) => a.startedAt.localeCompare(b.startedAt));
+		.flatMap(([key, record]) =>
+			key.startsWith(`${id}/`) && record.kind === "input" && record.end === undefined ? [record] : [],
+		)
+		.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
 
-	return open.at(-1)?.[1].ask;
+	return open.at(-1)?.ask;
 }
 
 /**

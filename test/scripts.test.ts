@@ -97,7 +97,8 @@ const probe = defineTask<{ key: string; value?: string }, { phase: "run" }, Json
 			const { key, value } = input;
 
 			if (value === undefined) {
-				const result = (await runtime.snapshot(CallDoc, key, context))?.result ?? null;
+				const end = (await runtime.snapshot(CallDoc, key, context))?.end;
+				const result = end?.kind === "done" ? end.result : null;
 				await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
 
 				return;
@@ -105,7 +106,13 @@ const probe = defineTask<{ key: string; value?: string }, { phase: "run" }, Json
 
 			await runtime.commit(async (tx) => {
 				const doc = await tx.doc(CallDoc, key, null);
-				Object.assign(doc, { kind: "sh", args: { cmd: "true" }, startedAt: "2026-01-01T00:00:00.000Z", result: value });
+				const at = "2026-01-01T00:00:00.000Z";
+				Object.assign(doc, {
+					kind: "sh",
+					args: { cmd: "true", check: true },
+					startedAt: at,
+					end: { kind: "done", at, result: value },
+				});
 
 				return { status: "terminal", outcome: { status: "failed", error: { message: "no" } } };
 			}, context);
@@ -366,7 +373,9 @@ describe("input", () => {
 				title: "x",
 				state: "waiting",
 				result: { status: "waiting", code: 3 },
+				question: "A?",
 				resumable: true,
+				startedAt: expect.any(String),
 				repository: null,
 			},
 		]);
@@ -651,17 +660,17 @@ describe("workflows show", () => {
 			title: "x",
 			state: "failed",
 			resumable: true,
+			startedAt: expect.any(String),
 			error: "sh exited with 3: exit 3",
 			todos: [],
 		});
 		expect(Value.Check(SHOWN, JSON.parse(shownJson.stdout[0] ?? ""))).toBe(true);
 		expect(json).toEqual(steps.stdout.slice(1, 3));
-		expect(
-			calls.map((call: { mark: string; result?: unknown; error?: string }) => [call.mark, call.result, call.error]),
-		).toEqual([
-			["✓", { code: 0, stdout: "a\n", stderr: "" }, undefined],
-			["✓", { code: 1, stdout: "", stderr: "" }, undefined],
-			["✗", undefined, "sh exited with 3: exit 3"],
+		const at = expect.any(String);
+		expect(calls.map((call: { mark: string; end?: unknown }) => [call.mark, call.end])).toEqual([
+			["✓", { kind: "done", at, result: { code: 0, stdout: "a\n", stderr: "" } }],
+			["✓", { kind: "done", at, result: { code: 1, stdout: "", stderr: "" } }],
+			["✗", { kind: "failed", at, error: "sh exited with 3: exit 3" }],
 		]);
 	});
 
@@ -733,7 +742,7 @@ describe("workflows show", () => {
 		const { agents, ...head } = printed;
 
 		const child = String(agents.find((row: { kind: string }) => row.kind === "run")?.text).slice("run child ".length);
-		const agent = (text: string) => new RegExp(`^ *\\u2713 ${text} {2}1 ask {2}\\d+s$`);
+		const agent = (text: string) => new RegExp(`^ *\\u2713 ${text} {2}claude-opus-5-5 {2}1 ask {2}\\d+s$`);
 		expect([shown.code, shown.stderr]).toEqual([0, []]);
 
 		expect(shown.stdout).toEqual([
@@ -756,6 +765,8 @@ describe("workflows show", () => {
 			state: "done",
 			result: { code: 0 },
 			resumable: true,
+			startedAt: expect.any(String),
+			agent: { conversation: await conversationOf(/Script: child/), project: expect.any(String) },
 			ended: true,
 		});
 		expect(agents[1]).toMatchObject({ kind: "agent", depth: 0, mark: "\u2713", text: "Script: plan.", asks: 1 });
@@ -2226,17 +2237,17 @@ return [one.reply, two.reply].join(", ")`,
 		]);
 		const plain = await workflows(["plain", "--help"], { cwd: root });
 		expect(plain.stdout).toEqual([
-			"usage: workflows plain [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--background] [--json]",
+			"usage: workflows plain [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] [--background] [--json]",
 		]);
 
 		const ship = await workflows(["ship", "--help"], { cwd: root });
 		expect([ship.code, ship.stdout[0]]).toEqual([
 			0,
-			"usage: workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [<item.md> | <text>] [--background] [--json]",
+			"usage: workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] [<item.md> | <text>] [--background] [--json]",
 		]);
 		const own = await workflows(["count.js", "--help"], { cwd: root });
 		expect(own.stdout).toEqual([
-			"usage: workflows count [--depth <n>] [--all] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] <path> [--background] [--json]",
+			"usage: workflows count [--depth <n>] [--all] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] <path> [--background] [--json]",
 			"Count words.",
 		]);
 
@@ -2271,7 +2282,7 @@ return [one.reply, two.reply].join(", ")`,
 		);
 
 		const usage =
-			"usage: workflows x [--depth <n>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] <path> [--background] [--json]";
+			"usage: workflows x [--depth <n>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] <path> [--background] [--json]";
 
 		const cases: [string[], string][] = [
 			[["x.js", "--depth", "two", "src"], "workflows: --depth must be a positive integer"],
@@ -2416,7 +2427,7 @@ return await todo.list()`,
 
 		const shown = JSON.parse((await workflows(["show", failed.id ?? "", "--json"], { cwd: root })).stdout[0] ?? "");
 		expect(shown.todos).toEqual(parent);
-		expect(shown.calls.find((call: { kind: string }) => call.kind === "run").todos).toEqual([
+		expect(shown.calls.find((call: { kind: string }) => call.kind === "run").child.todos).toEqual([
 			{ id: 1, text: "child", state: "done" },
 		]);
 	});
@@ -2438,7 +2449,7 @@ return await todo.list()`,
 
 		const shown = await workflows(["show", run.id ?? "", "--json"], { cwd: root });
 
-		type Call = { kind: string; todos?: unknown; calls?: Call[] };
+		type Call = { kind: string; child?: { todos: unknown; calls: Call[] } };
 
 		const { todos, calls } = JSON.parse(shown.stdout[0] ?? "");
 		expect(todos).toEqual([
@@ -2446,13 +2457,13 @@ return await todo.list()`,
 			{ id: 2, text: "two", state: "done" },
 		]);
 		const runs = calls.filter((call: Call) => call.kind === "run");
-		expect(runs.map((call: Call) => call.todos)).toEqual([[{ id: 1, text: "child", state: "doing" }], []]);
-		const grandchild = runs[0].calls.find((call: Call) => call.kind === "run");
-		expect(grandchild.todos).toEqual([{ id: 1, text: "grandchild", state: "open" }]);
+		expect(runs.map((call: Call) => call.child?.todos)).toEqual([[{ id: 1, text: "child", state: "doing" }], []]);
+		const grandchild = runs[0].child.calls.find((call: Call) => call.kind === "run");
+		expect(grandchild.child.todos).toEqual([{ id: 1, text: "grandchild", state: "open" }]);
 
-		const all = (list: Call[]): Call[] => list.flatMap((call) => [call, ...all(call.calls ?? [])]);
+		const all = (list: Call[]): Call[] => list.flatMap((call) => [call, ...all(call.child?.calls ?? [])]);
 
-		expect(all(calls).filter((call) => call.todos !== undefined)).toEqual([runs[0], grandchild, runs[1]]);
+		expect(all(calls).filter((call) => call.child !== undefined)).toEqual([runs[0], grandchild, runs[1]]);
 	});
 
 	it("fail with the errors of harness and of bad arguments", async () => {

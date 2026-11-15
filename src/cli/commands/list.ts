@@ -4,11 +4,12 @@ import { join } from "node:path";
 import { resolveProject } from "@vzlentin/harness/projects";
 import { statePaths } from "@vzlentin/harness/protocol";
 import { type Static, Type } from "typebox";
+import { RUN_FIELDS, taskFields } from "../../records/run.ts";
 import { endMark, type Mark, Progress } from "../../records/steps.ts";
 import { inputWorktree, progressEvents, reading, runTasks, type Store } from "../../records/store.ts";
-import { hasEnded, type RunStatus, type RunTask, runFields, savedInput, taskOf } from "../../run/past.ts";
+import { hasEnded, type RunStatus, type RunTask, savedInput, taskOf } from "../../run/past.ts";
 import { SHOWN_INPUT, title as titleOf } from "../../run/result.ts";
-import { RUN_RESULT, RUN_STATE, stateText } from "../../tool.ts";
+import { stateText } from "../../tool.ts";
 import { UsageError } from "../../workflow/find.ts";
 import { runsDirectory, STORE_FILE } from "../host.ts";
 import type { Choose, Terminal } from "../main.ts";
@@ -18,27 +19,29 @@ import type { PickItem } from "../terminal/pick.ts";
 export const LIST = "workflows list [--pick] [--json]";
 
 /**
- * A run of `list --json`. `state` is the state of the run, or `unstarted` for a run directory whose run has no task.
- * `result` is the result of a run that is `done` or `waiting`. `resumable` is true for a task of this version, which
- * `resume` can continue.
+ * A run of the project store that has a task and a run directory: the run fields, and the repository of its worktree,
+ * or null for a run without a worktree.
  */
-export const LISTED = Type.Object(
-	{
-		runId: Type.String(),
-		workflow: Type.String(),
-		title: Type.String(),
-		state: Type.Union([RUN_STATE, Type.Literal("unstarted")]),
-		result: Type.Optional(RUN_RESULT),
-		resumable: Type.Boolean(),
-		repository: Type.Union([Type.String(), Type.Null()]),
-	},
+export const ROW = Type.Object(
+	{ ...RUN_FIELDS, repository: Type.Union([Type.String(), Type.Null()]) },
 	{ additionalProperties: false },
 );
 
-type Listed = Static<typeof LISTED>;
+type Row = Static<typeof ROW>;
 
-/** A listed run that has a task, with its state, which orders it in the picker and gives its mark. */
-type Row = Listed & { readonly state: RunStatus };
+/** A run directory whose run has no task: its run ID, the state `unstarted`, and no repository. */
+const UNSTARTED = Type.Object(
+	{ runId: Type.String(), state: Type.Literal("unstarted"), repository: Type.Null() },
+	{ additionalProperties: false },
+);
+
+/**
+ * A run of `list --json`: a run with a task, with the run fields and the repository of its worktree, or a run directory
+ * whose run has no task.
+ */
+export const LISTED = Type.Union([ROW, UNSTARTED]);
+
+type Listed = Static<typeof LISTED>;
 
 /**
  * Prints the runs of the project of the current directory that have a run directory, newest run ID first, also the run
@@ -62,12 +65,19 @@ export async function list(args: readonly string[], terminal: Terminal, json: bo
 	const listed = await projectRuns(resolveProject(process.env, terminal.cwd));
 
 	if (json) terminal.stdout(JSON.stringify(listed));
-	else {
-		for (const run of listed)
-			terminal.stdout(`${run.runId} ${run.workflow} ${stateText(run.state, run.result)} ${run.title}`);
-	}
+	else for (const run of listed) terminal.stdout(listLine(run));
 
 	return 0;
+}
+
+/**
+ * The line of `run` in `list`: its run ID, workflow, state and title, with `-` for the workflow and the title of an
+ * unstarted run.
+ */
+function listLine(run: Listed): string {
+	if (run.state === "unstarted") return `${run.runId} - unstarted -`;
+
+	return `${run.runId} ${run.workflow} ${stateText(run.state, run.result)} ${run.title}`;
 }
 
 /**
@@ -87,10 +97,7 @@ async function projectRuns(project: string): Promise<Listed[]> {
 
 	const unstarted = (await unstartedRuns(project, runs)).map(({ runId }): Listed => ({
 		runId,
-		workflow: "-",
-		title: "-",
 		state: "unstarted",
-		resumable: false,
 		repository: null,
 	}));
 
@@ -111,7 +118,7 @@ async function listedRuns(store: Store, runs: ReadonlyMap<string, readonly RunTa
 		const input = savedInput(SHOWN_INPUT, task.input);
 		const workflow = savedBy(task).name;
 		const title = input === undefined ? workflow : titleOf(input, await progressEvents(store, id));
-		listed.push({ runId: id, workflow, title, ...runFields(task), repository });
+		listed.push({ runId: id, workflow, title, ...taskFields(tasks, task), repository });
 	}
 
 	return listed;

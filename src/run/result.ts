@@ -92,3 +92,16 @@ export function runResult({ status, code, score }: Report): RunResult {
 
 	return result;
 }
+
+const BRANCH = Type.Object({ branch: Type.String() });
+
+/**
+ * The branch of a run: the `branch` of the value `value` of its result, the branch that its worktree ends on, else the
+ * branch of its worktree `worktree`. Undefined for a run without either.
+ */
+export function runBranch(
+	value: JsonValue | undefined,
+	worktree: { readonly branch: string } | undefined,
+): string | undefined {
+	return Value.Check(BRANCH, value) ? value.branch : worktree?.branch;
+}

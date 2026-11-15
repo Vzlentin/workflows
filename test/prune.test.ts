@@ -125,6 +125,8 @@ describe("workflows prune", () => {
 				state: "done",
 				result: { code: 0 },
 				resumable: false,
+				branch: `w/${id}`,
+				startedAt: expect.any(String),
 				repository: await realpath(repo),
 			},
 		]);

@@ -40,6 +40,12 @@ export const PARAMETERS = Type.Object({
 	resume: Type.Optional(Type.String({ description: "The ID of a run to continue" })),
 	answer: Type.Optional(Type.String({ description: "With `resume`: the answer to the question of a waiting run" })),
 	save: Type.Optional(SAVE),
+	serves: Type.Optional(
+		Type.String({
+			description:
+				"With `name` or `script`: what the run builds, the ID of a todo of the list of the project or the slug of a parley",
+		}),
+	),
 	args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 	background: Type.Optional(
 		Type.Boolean({
@@ -170,7 +176,10 @@ export const DESCRIPTION =
 	"Run a durable workflow and wait for its result. Start or resume a run only when the user asks for that run in " +
 	"his message: a contract or a goal file is not a go. Give exactly one of: `name` (a workflow script such as " +
 	"`ship`, `campaign` or `optimize`), `script` (the body of an inline workflow script), `resume` (a run " +
-	"ID), or `save` (keeps the script of a run as a named workflow of the project). `args` are the arguments of " +
+	"ID), or `save` (keeps the script of a run as a named workflow of the project). With `name` or `script`, the " +
+	"optional `serves` names what the run builds: the ID of a todo of the list of the project, or the slug of an open " +
+	"parley or a contract; the run fails when the todo is done or dropped, or the parley is not open and not a contract. " +
+	"`args` are the arguments of " +
 	"`name` or `script`, each passed as `--<key>`; a script's `meta` declares them. Every run also takes `agents`, " +
 	"`<name>=<provider>/<id>:<thinking>,...` (`*` for every role), the models of its roles above the agents.json " +
 	"tables. For " +
@@ -206,7 +215,7 @@ export const GUIDELINES = [
  * The `workflows` arguments of a tool call, with each arg as a flag, and `--json` for a run. The command rejects a flag
  * it does not know, so a mistyped arg fails before a run exists.
  */
-function argsOf({ name, script, resume, answer, save, args = {}, background, cwd }: WorkflowCall): string[] {
+function argsOf({ name, script, resume, answer, save, serves, args = {}, background, cwd }: WorkflowCall): string[] {
 	const given = [name, script, resume, save].filter((value) => value !== undefined).length;
 
 	if (given !== 1) throw new Error("give exactly one of name, script, resume or save");
@@ -217,6 +226,10 @@ function argsOf({ name, script, resume, answer, save, args = {}, background, cwd
 
 	if (cwd !== undefined && (resume !== undefined || save !== undefined)) {
 		throw new Error("cwd works only with name or script");
+	}
+
+	if (serves !== undefined && (resume !== undefined || save !== undefined)) {
+		throw new Error("serves works only with name or script");
 	}
 
 	const json = background ? ["--background", "--json"] : ["--json"];
@@ -233,7 +246,9 @@ function argsOf({ name, script, resume, answer, save, args = {}, background, cwd
 		return [`--${key}=${Value.Check(Type.String(), flag) ? flag : JSON.stringify(flag)}`];
 	});
 
-	return [name ?? "-", ...flags, ...json];
+	const served = serves === undefined ? [] : [`--serves=${serves}`];
+
+	return [name ?? "-", ...flags, ...served, ...json];
 }
 
 /**

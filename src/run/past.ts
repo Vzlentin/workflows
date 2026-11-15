@@ -156,14 +156,6 @@ export function stateFields(task: RunTask): StateFields {
 	return fields;
 }
 
-/** The state fields of a run, and whether `resume` can continue its task: a task of this version. */
-export type RunFields = StateFields & { resumable: boolean };
-
-/** The run fields of the run whose task is `task`. */
-export function runFields(task: RunTask): RunFields {
-	return { ...stateFields(task), resumable: current(task) };
-}
-
 /**
  * The task of a run that the commands go by: its last task, unless that is a task of another version that ended after
  * a task of this version, as when the command refused the host's version and aborted it; then the last task of this

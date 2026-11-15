@@ -10,6 +10,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { RUN_RESULT, RUN_STATE, stateText } from "../tool.ts";
 import { stateFields } from "./past.ts";
+import { runBranch } from "./result.ts";
 import { SessionsDoc } from "./sessions.ts";
 import { type Host, TASK } from "./version.ts";
 
@@ -178,7 +179,7 @@ async function runState(
 	const facts: RunFacts = { task: id, runId: input.runId, workflow: input.name, ...stateFields(record), sessions };
 
 	if (result.subject !== undefined) facts.subject = result.subject;
-	const branch = result.branch ?? input.worktree?.branch;
+	const branch = runBranch(outcome.result, input.worktree);
 
 	if (branch !== undefined) facts.branch = branch;
 

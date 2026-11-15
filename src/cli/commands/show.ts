@@ -1,13 +1,24 @@
 /** `workflows show <run-id>`: the steps, the calls or the agents of a run. */
 import { parseArgs } from "node:util";
-import type { Todo } from "@vzlentin/harness/todo";
+import { Todo } from "@vzlentin/harness/todo";
 import { type Static, Type } from "typebox";
+import { RUN_FIELDS, type TaskFields, taskFields } from "../../records/run.ts";
 import { endMark, type Progress } from "../../records/steps.ts";
 import { runRecords } from "../../records/store.ts";
-import { agentLines, agentRows, callTree, type Shown, showEntries, type TreeEntry } from "../../records/tree.ts";
-import { hasEnded, type RunFields, type RunTask, runFields, runOutcome, taskOf } from "../../run/past.ts";
+import {
+	AGENT_ROW,
+	agentLines,
+	agentRows,
+	callTree,
+	runAgent,
+	SHOWN_CALL,
+	type Shown,
+	showEntries,
+	type TreeEntry,
+} from "../../records/tree.ts";
+import { hasEnded, type RunTask, runOutcome, taskOf } from "../../run/past.ts";
 import { type ShownInput, title as titleOf } from "../../run/result.ts";
-import { RUN_RESULT, RUN_STATE, stateText } from "../../tool.ts";
+import { stateText } from "../../tool.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin, endOf } from "../follow.ts";
 import type { Choose, Terminal } from "../main.ts";
@@ -17,37 +28,44 @@ import type { PickItem } from "../terminal/pick.ts";
 export const SHOW = "workflows show <run-id> [--pick | [--agents] [--json]]";
 
 /**
- * The fields of a run that `show --json` and `show --agents --json` both give. `result` is the result of a run that is
- * `done` or `waiting`, and `resumable` is true for a task of this version, which `resume` can continue.
+ * The agent of a run, as `harness attach` opens it: its conversation, and the project of the run, whose host has it.
  */
-const RUN_FIELDS = {
-	runId: Type.String(),
-	workflow: Type.String(),
-	title: Type.String(),
-	state: RUN_STATE,
-	result: Type.Optional(RUN_RESULT),
-	resumable: Type.Boolean(),
-};
+const RUN_AGENT = Type.Object({ conversation: Type.Number(), project: Type.String() }, { additionalProperties: false });
 
 /**
- * The run of `show --json`: its fields, the report lines of a run with a result or the error of a failed run, its
- * todos, its step lines and its calls.
+ * The fields of every run of `show --json`: the run fields, its agent when it has one, its todos, its step lines and
+ * its calls.
  */
-export const SHOWN = Type.Object(
-	{
-		...RUN_FIELDS,
-		report: Type.Optional(Type.Array(Type.String())),
-		error: Type.Optional(Type.String()),
-		todos: Type.Array(Type.Unknown()),
-		steps: Type.Array(Type.String()),
-		calls: Type.Array(Type.Unknown()),
-	},
-	{ additionalProperties: false },
-);
+const SHOWN_FIELDS = {
+	...RUN_FIELDS,
+	agent: Type.Optional(RUN_AGENT),
+	todos: Type.Array(Todo),
+	steps: Type.Array(Type.String()),
+	calls: Type.Array(SHOWN_CALL),
+};
 
-/** The run of `show --agents --json`: its fields, whether it ended, and its agents. */
+/** The report lines of a run with a result. */
+const REPORT_END = { report: Type.Array(Type.String()) };
+
+/** The error of a failed or orphaned run. */
+const ERROR_END = { error: Type.String() };
+
+/** How a run that ended ended: the report lines of a run with a result, or the error of a failed or orphaned run. */
+type ShownEnd = Static<Type.TObject<typeof REPORT_END>> | Static<Type.TObject<typeof ERROR_END>>;
+
+/**
+ * The run of `show --json`: the fields of every run, with the report lines of a run with a result, the error of a
+ * failed or orphaned run, or neither.
+ */
+export const SHOWN = Type.Union([
+	Type.Object(SHOWN_FIELDS, { additionalProperties: false }),
+	Type.Object({ ...SHOWN_FIELDS, ...REPORT_END }, { additionalProperties: false }),
+	Type.Object({ ...SHOWN_FIELDS, ...ERROR_END }, { additionalProperties: false }),
+]);
+
+/** The run of `show --agents --json`: the run fields, its agent when it has one, whether it ended, and its agents. */
 export const SHOWN_AGENTS = Type.Object(
-	{ ...RUN_FIELDS, ended: Type.Boolean(), agents: Type.Array(Type.Unknown()) },
+	{ ...RUN_FIELDS, agent: Type.Optional(RUN_AGENT), ended: Type.Boolean(), agents: Type.Array(AGENT_ROW) },
 	{ additionalProperties: false },
 );
 
@@ -88,13 +106,24 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 	const shown = await readRun(await savedRun(id, SHOW), agents || json, "be shown");
 	const { input, title, head, ended, todos, calls, progress, footer, end } = shown;
 	const now = Date.now();
-	const fields = { runId: id, workflow: input.name, title, ...shown.fields };
+	const rows = agentRows(calls, 0, now);
+
+	const fields: Static<Type.TObject<typeof RUN_FIELDS>> & { agent?: Static<typeof RUN_AGENT> } = {
+		runId: id,
+		workflow: input.name,
+		title,
+		...shown.fields,
+	};
+
+	const agent = runAgent(rows);
+
+	if (agent !== undefined) fields.agent = { conversation: agent.conversation, project: shown.project };
 
 	if (agents && json) {
-		const agentsShown: Static<typeof SHOWN_AGENTS> = { ...fields, ended, agents: agentRows(calls, 0, now) };
+		const agentsShown: Static<typeof SHOWN_AGENTS> = { ...fields, ended, agents: rows };
 		terminal.stdout(JSON.stringify(agentsShown));
 	} else if (agents) {
-		for (const line of [head, ...agentLines(agentRows(calls, 0, now)), ...footer]) terminal.stdout(line);
+		for (const line of [head, ...agentLines(rows), ...footer]) terminal.stdout(line);
 	} else if (json) {
 		const runShown: Static<typeof SHOWN> = { ...fields, ...end, todos, steps: progress.lines(), calls };
 		terminal.stdout(JSON.stringify(runShown));
@@ -113,14 +142,16 @@ type ShownRun = {
 	readonly task: RunTask;
 	readonly input: ShownInput;
 	readonly title: string;
-	readonly fields: RunFields;
+	readonly fields: TaskFields;
+	/** The project of the run, whose host has its agents. */
+	readonly project: string;
 	readonly head: string;
 	readonly ended: boolean;
 	readonly todos: Todo[];
 	readonly calls: Shown[];
 	readonly progress: Progress;
 	readonly footer: readonly string[];
-	readonly end: { report: string[] } | { error: string } | undefined;
+	readonly end: ShownEnd | undefined;
 };
 
 /**
@@ -135,12 +166,12 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 	const read = await runRecords(run.store, id, (progress) => withCalls || !progress.stepped);
 	const { events, progress, records, live, todos } = read;
 	const { task: checkedTask, input } = readable(taskOf(read.tasks), id, verb);
-	const fields = runFields(checkedTask);
+	const fields = taskFields(read.tasks, checkedTask);
 	const known = fields.state;
 	const ended = hasEnded(known);
 	const title = titleOf(input, events);
 	const footer: string[] = [];
-	let end: { report: string[] } | { error: string } | undefined;
+	let end: ShownEnd | undefined;
 
 	if (ended) {
 		const outcome = runOutcome(input, checkedTask);
@@ -166,6 +197,7 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 		input,
 		title,
 		fields,
+		project: run.project,
 		head,
 		ended,
 		todos: todos.get(id) ?? [],

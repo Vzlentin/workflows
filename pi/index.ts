@@ -338,7 +338,7 @@ export const AGENT_ROWS = Type.Object({
 				depth: Type.Number(),
 				mark: Type.String(),
 				text: Type.String(),
-				model: Type.String(),
+				model: Type.Optional(Type.Object({ model: Type.String() })),
 				conversation: Type.Number(),
 			}),
 			Type.Object({ kind: Type.Union([Type.Literal("phase"), Type.Literal("run")]) }),
@@ -365,14 +365,14 @@ function agentsOf(output: Output): Static<typeof AGENT_ROWS> | string {
 
 /**
  * The lines of the agents for the `Open an agent` list, each with its conversation: `<indent><mark> <text>  <model>`,
- * with two spaces of indent for each depth of child runs and no `  <model>` when the model is empty. A line that is the
- * same as a line above it ends with `  #<conversation>`, so each line is distinct.
+ * with two spaces of indent for each depth of child runs, `<model>` the model ID, and no `  <model>` for an agent
+ * without a model. A line that is the same as a line above it ends with `  #<conversation>`, so each line is distinct.
  */
 function agentLines(agents: readonly AgentRow[]): Map<string, number> {
 	const lines = new Map<string, number>();
 
 	for (const { depth, mark, text, model, conversation } of agents) {
-		const line = `${"  ".repeat(depth)}${mark} ${text}${model === "" ? "" : `  ${model}`}`;
+		const line = `${"  ".repeat(depth)}${mark} ${text}${model === undefined ? "" : `  ${model.model}`}`;
 		lines.set(lines.has(line) ? `${line}  #${conversation}` : line, conversation);
 	}
 

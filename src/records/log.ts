@@ -5,12 +5,12 @@
 import type { JsonValue } from "@earendil-works/chord/json";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import type { SavedCall } from "../run/calls.ts";
+import { childOf, type SavedCall } from "../run/calls.ts";
 import { hasEnded, type RunStatus } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
 import { duration, type Progress, type RunStep, stepIndexOf, stepTime } from "./steps.ts";
 import type { RunRecords } from "./store.ts";
-import { type CallNode, commandOf, conversationOf, markOf } from "./tree.ts";
+import { type CallNode, commandOf, conversationOf, endedAt, markOf } from "./tree.ts";
 
 /** How many lines of the error of a failed call the short log shows. */
 const TAIL_LINES = 5;
@@ -90,9 +90,9 @@ function sizeOf(bytes: number): string {
 
 /** The output of a `sh` or `ok` call that ended with a result, or undefined for another call. */
 function shellResult(record: SavedCall) {
-	return (record.kind === "sh" || record.kind === "ok") && Value.Check(SHELL_RESULT, record.result)
-		? record.result
-		: undefined;
+	const result = record.end?.kind === "done" ? record.end.result : undefined;
+
+	return (record.kind === "sh" || record.kind === "ok") && Value.Check(SHELL_RESULT, result) ? result : undefined;
 }
 
 /** The text of a result: a string as it is, else its JSON. */
@@ -106,9 +106,9 @@ function outputBytes(record: SavedCall): number | undefined {
 
 	if (shell !== undefined) return Buffer.byteLength(shell.stdout + shell.stderr);
 
-	if (record.result !== undefined) return Buffer.byteLength(resultText(record.result));
+	if (record.end?.kind === "done") return Buffer.byteLength(resultText(record.end.result));
 
-	return record.error === undefined ? undefined : Buffer.byteLength(record.error);
+	return record.end?.kind === "failed" ? Buffer.byteLength(record.end.error) : undefined;
 }
 
 /** The lines of `text`, without the empty line after a last newline. */
@@ -177,7 +177,8 @@ function stepLine(root: string, runId: string, group: StepGroup, end: number | u
 function callLines(root: string, node: CallNode, indent: string): LogLine[] {
 	const { record, state, key } = node;
 	const started = Date.parse(record.startedAt);
-	const time = record.endedAt === undefined ? state : duration(Date.parse(record.endedAt) - started);
+	const ended = endedAt(record.end);
+	const time = ended === undefined ? state : duration(Date.parse(ended) - started);
 	const shell = shellResult(record);
 	const exit = shell === undefined ? [] : [`exit ${shell.code}`];
 	const bytes = outputBytes(record);
@@ -186,8 +187,8 @@ function callLines(root: string, node: CallNode, indent: string): LogLine[] {
 	// A call prints again in `log --follow` when its state changes.
 	const lines = [{ item: `${key}:${state}`, text }];
 
-	if (state === "failed" && record.error !== undefined) {
-		const tail = linesOf(record.error.trimEnd()).slice(-TAIL_LINES);
+	if (record.end?.kind === "failed") {
+		const tail = linesOf(record.end.error.trimEnd()).slice(-TAIL_LINES);
 
 		for (const [n, line] of tail.entries()) {
 			lines.push({ item: `${key}#${n}`, text: `${NO_TIME}  ${indent}    | ${line.slice(0, TAIL_WIDTH)}` });
@@ -220,7 +221,7 @@ export function runLines(
 		for (const node of group.calls) {
 			if (node.state === "done" && node.record.kind !== "run") continue;
 			lines.push(...callLines(root, node, indent));
-			const child = node.record.child;
+			const child = childOf(node.record);
 
 			if (child !== undefined && node.calls !== undefined) {
 				const childState = read.states.get(child.task);
@@ -249,7 +250,7 @@ export function stepLog(
 ): string[] | undefined {
 	const [, child, n] = STEP_NAME.exec(name) ?? [];
 	const runId = child ?? root;
-	const own = runId === root ? calls : (findCall(calls, (node) => node.record.child?.runId === runId)?.calls ?? []);
+	const own = runId === root ? calls : (findCall(calls, (node) => childOf(node.record)?.runId === runId)?.calls ?? []);
 	const group = groupsOf(read.progress, runId, own).find((g) => String(g.n) === n);
 
 	if (group === undefined) return undefined;
@@ -276,14 +277,16 @@ export function findCall(calls: readonly CallNode[], test: (node: CallNode) => b
 export function callText(root: string, node: CallNode): string[] {
 	const { key, record, label } = node;
 	const { kind, args } = record;
-	const what = kind === "sh" || kind === "ok" ? commandOf(args) : label;
+	const what = record.kind === "sh" || record.kind === "ok" ? commandOf(record.args) : label;
 	const lines = [`call ${callName(root, key)}`, `${kind} ${what}`, `phase ${record.phase ?? "-"}`];
 	lines.push(`started ${record.startedAt}`);
 
-	if (record.endedAt === undefined) {
+	const ended = endedAt(record.end);
+
+	if (ended === undefined) {
 		lines.push("the call still runs; the store gets its output only when it ends");
 	} else {
-		lines.push(`ended ${record.endedAt}  ${duration(Date.parse(record.endedAt) - Date.parse(record.startedAt))}`);
+		lines.push(`ended ${ended}  ${duration(Date.parse(ended) - Date.parse(record.startedAt))}`);
 	}
 
 	const conversation = conversationOf(record);
@@ -304,9 +307,9 @@ export function callText(root: string, node: CallNode): string[] {
 
 	lines.push("--- args", JSON.stringify(args, null, 2));
 
-	if (record.result !== undefined) lines.push("--- result", ...linesOf(resultText(record.result)));
+	if (record.end?.kind === "done") lines.push("--- result", ...linesOf(resultText(record.end.result)));
 
-	if (record.error !== undefined) lines.push("--- error", ...linesOf(record.error));
+	if (record.end?.kind === "failed") lines.push("--- error", ...linesOf(record.end.error));
 
 	return lines;
 }

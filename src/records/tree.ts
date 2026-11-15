@@ -2,34 +2,78 @@
  * The calls of a saved run as `workflows show` and `workflows attach` read them: the call tree of a run and its child
  * runs, its lines for a run without steps, and its agent rows for `show --agents`.
  */
-import type { JsonValue } from "@earendil-works/chord/json";
-import type { Todo } from "@vzlentin/harness/todo";
-import { Type } from "typebox";
-import { Value } from "typebox/value";
-import type { SavedCall } from "../run/calls.ts";
+import { Todo } from "@vzlentin/harness/todo";
+import { type Static, Type } from "typebox";
+import {
+	CALL_END,
+	type CallEnd,
+	type CallKind,
+	callUnion,
+	childOf,
+	type SavedCall,
+	SESSION_MODEL,
+} from "../run/calls.ts";
 import { duration, type Progress, type StepView, stepIndexOf } from "./steps.ts";
 
 /** The mark of a call: running, done, or any other state. */
-export type CallMark = "✓" | "◉" | "✗";
+const CALL_MARK = Type.Union([Type.Literal("✓"), Type.Literal("◉"), Type.Literal("✗")]);
+
+export type CallMark = Static<typeof CALL_MARK>;
 
 /**
  * The state of a call: `done` or `failed` once it ended, `cancelled` when the end of its script cancelled it, `waiting`
  * for the open `input` call of a waiting run, `running` while its task runs, and `cut` when its task ended first.
  */
-export type CallState = "running" | "done" | "failed" | "cancelled" | "cut" | "waiting";
+const CALL_STATE = Type.Union([
+	Type.Literal("running"),
+	Type.Literal("done"),
+	Type.Literal("failed"),
+	Type.Literal("cancelled"),
+	Type.Literal("cut"),
+	Type.Literal("waiting"),
+]);
+
+export type CallState = Static<typeof CALL_STATE>;
 
 /**
- * One call of the run `runId` in `workflows show`. A `run` call whose child run started has the list of todos and the
- * calls of that child run.
+ * The fields of every call of `workflows show --json`: its run, label, phase, state, mark and start time, and the end
+ * of a call that ended, as its record saves it.
  */
-export type Shown = Omit<SavedCall, "child" | "task" | "cancelledAt" | "childRun"> & {
-	readonly runId: string;
-	readonly label: string;
-	readonly state: CallState;
-	readonly mark: CallMark;
-	readonly todos?: Todo[];
-	readonly calls?: Shown[];
+const SHOWN_FIELDS = {
+	runId: Type.String(),
+	label: Type.String(),
+	phase: Type.Union([Type.String(), Type.Null()]),
+	state: CALL_STATE,
+	mark: CALL_MARK,
+	startedAt: Type.String(),
+	end: Type.Optional(CALL_END),
 };
+
+/**
+ * One call of `workflows show --json`, one member for each kind. A `session` call has its conversation and the model
+ * that it used, an `input` call its ask, and a `run` call whose child run started its `child`: the list of todos and
+ * the calls of that child run.
+ */
+export const SHOWN_CALL = Type.Cyclic(
+	{
+		Call: callUnion(SHOWN_FIELDS, {
+			session: { conversation: Type.Optional(Type.Number()), model: Type.Optional(SESSION_MODEL) },
+			input: { ask: Type.Optional(Type.Number()) },
+			run: {
+				child: Type.Optional(
+					Type.Object(
+						{ todos: Type.Array(Todo), calls: Type.Array(Type.Ref("Call")) },
+						{ additionalProperties: false },
+					),
+				),
+			},
+		}),
+	},
+	"Call",
+);
+
+/** One call of the run `runId` in `workflows show`. */
+export type Shown = Static<typeof SHOWN_CALL>;
 
 /**
  * What the state of a call depends on: whether the root run `ended`, whether it `waiting` for an answer, and the IDs
@@ -42,15 +86,18 @@ export type RunState = { readonly ended: boolean; readonly waiting: boolean; rea
  * ended.
  */
 function stateOf(record: SavedCall, run: RunState): CallState {
-	if (record.endedAt !== undefined) return record.error === undefined ? "done" : "failed";
-
-	if (record.cancelledAt !== undefined) return "cancelled";
+	if (record.end !== undefined) return record.end.kind;
 
 	if (record.kind === "input" && run.waiting) return "waiting";
 
 	if (record.task === undefined) return run.ended ? "cut" : "running";
 
 	return run.live.has(record.task) ? "running" : "cut";
+}
+
+/** The time when the call that ended with `end` ended done or failed, or undefined for a call that did not. */
+export function endedAt(end: CallEnd | undefined): string | undefined {
+	return end === undefined || end.kind === "cancelled" ? undefined : end.at;
 }
 
 /** The mark of a call in `state`: `◉` running, `✓` done, else `✗`. */
@@ -79,8 +126,8 @@ export function callNodes(records: Map<string, SavedCall>, runId: string, run: R
 		.sort(([, a], [, b]) => a.startedAt.localeCompare(b.startedAt))
 		.map(([key, record]) => {
 			// A `run` call that failed before its child run started has no `child`.
-			const child = record.child?.runId;
-			const node = { key, runId, record, label: labelOf(record, child, records), state: stateOf(record, run) };
+			const child = childOf(record)?.runId;
+			const node = { key, runId, record, label: labelFor(record.kind, record, records), state: stateOf(record, run) };
 
 			return child === undefined ? node : { ...node, calls: callNodes(records, child, run) };
 		});
@@ -96,18 +143,76 @@ export function callTree(
 	runId: string,
 	run: RunState,
 ): Shown[] {
-	return shownCalls(callNodes(records, runId, run), todos);
+	return callNodes(records, runId, run).map((node) => shownCall(node, todos));
 }
 
-function shownCalls(nodes: readonly CallNode[], todos: ReadonlyMap<string, Todo[]>): Shown[] {
-	return nodes.map(({ record, runId, label, state, calls }) => {
-		const { child, task: _task, cancelledAt: _cancelled, childRun: _childRun, ...rest } = record;
-		const shown = { ...rest, runId, label, state, mark: markOf(state) } as const;
+/** The fields of every kind of call in `workflows show --json`. */
+type ShownFields = Static<Type.TObject<typeof SHOWN_FIELDS>>;
 
-		return child === undefined || calls === undefined
-			? shown
-			: { ...shown, todos: todos.get(child.runId) ?? [], calls: shownCalls(calls, todos) };
-	});
+/** The fields of every kind of the call `node`, with the end of a call that ended. */
+function shownFields({ record, runId, label, state }: CallNode): ShownFields {
+	const fields: ShownFields = {
+		runId,
+		label,
+		phase: record.phase,
+		state,
+		mark: markOf(state),
+		startedAt: record.startedAt,
+	};
+
+	if (record.end !== undefined) fields.end = record.end;
+
+	return fields;
+}
+
+/** The call `node` as `show` gives it, with the fields of its kind. */
+function shownCall(node: CallNode, todos: ReadonlyMap<string, Todo[]>): Shown {
+	const { record } = node;
+	const fields = shownFields(node);
+
+	switch (record.kind) {
+		case "session": {
+			const shown: Shown = { kind: record.kind, args: record.args, ...fields };
+
+			if (record.conversation !== undefined) shown.conversation = record.conversation;
+
+			if (record.model !== undefined) shown.model = record.model;
+
+			return shown;
+		}
+
+		case "input": {
+			const shown: Shown = { kind: record.kind, args: record.args, ...fields };
+
+			if (record.ask !== undefined) shown.ask = record.ask;
+
+			return shown;
+		}
+
+		case "run": {
+			const shown: Shown = { kind: record.kind, args: record.args, ...fields };
+
+			if (record.child !== undefined && node.calls !== undefined) {
+				const calls = node.calls.map((call) => shownCall(call, todos));
+				shown.child = { todos: todos.get(record.child.runId) ?? [], calls };
+			}
+
+			return shown;
+		}
+
+		case "ask":
+			return { kind: record.kind, args: record.args, ...fields };
+		case "sh":
+			return { kind: record.kind, args: record.args, ...fields };
+		case "ok":
+			return { kind: record.kind, args: record.args, ...fields };
+		case "pastRuns":
+			return { kind: record.kind, args: record.args, ...fields };
+		case "todo":
+			return { kind: record.kind, args: record.args, ...fields };
+		default:
+			return record satisfies never;
+	}
 }
 
 /** A line of `treeEntries`, with the conversation of its session or its ask. */
@@ -125,15 +230,18 @@ function treeEntries(calls: readonly Shown[], indent: string, now: number): Tree
 	for (const call of calls) {
 		if (call.phase !== null && call.phase !== phase) entries.push({ text: `${indent}${call.phase}` });
 		phase = call.phase;
-		const mark = works(call, calls) ? "◉" : call.mark;
-		const end = mark === "◉" ? now : call.endedAt === undefined ? undefined : Date.parse(call.endedAt);
+		const mark = call.kind === "session" && works(call, calls) ? "◉" : call.mark;
+		const ended = endedAt(call.end);
+		const end = mark === "◉" ? now : ended === undefined ? undefined : Date.parse(ended);
 		const time = end === undefined ? shownState(call.state) : `  ${duration(end - Date.parse(call.startedAt))}`;
 		const text = `${indent}  ${mark} ${call.kind} ${call.label}${time}`;
 		const conversation = conversationOf(call);
 
 		entries.push({ text, conversation });
 
-		if (call.calls !== undefined) entries.push(...treeEntries(call.calls, `${indent}    `, now));
+		const children = childCalls(call);
+
+		if (children !== undefined) entries.push(...treeEntries(children, `${indent}    `, now));
 	}
 
 	return entries;
@@ -144,16 +252,22 @@ function shownState(state: CallState): string {
 	return state === "cancelled" || state === "cut" || state === "waiting" ? `  ${state}` : "";
 }
 
+/** A `session` call of `workflows show --json`. */
+type ShownSession = Extract<Shown, { kind: "session" }>;
+
+/** The calls of the child run of `call`, when it is a `run` call whose child run started. */
+function childCalls(call: Shown): readonly Shown[] | undefined {
+	return call.kind === "run" ? call.child?.calls : undefined;
+}
+
 /** The conversation of `call`: the one that a session opened, or the one that an ask asks; else undefined. */
-export function conversationOf(call: Pick<SavedCall, "kind" | "args" | "conversation">): number | undefined {
+export function conversationOf(call: SavedCall | Shown): number | undefined {
 	return call.kind === "session" ? call.conversation : askedConversation(call);
 }
 
 /** The conversation that the ask `call` asks, or undefined for another call. */
-function askedConversation(call: Pick<SavedCall, "kind" | "args">): number | undefined {
-	const asked = call.args.conversation;
-
-	return call.kind === "ask" && Value.Check(Type.Number(), asked) ? asked : undefined;
+function askedConversation(call: SavedCall | Shown): number | undefined {
+	return call.kind === "ask" ? call.args.conversation : undefined;
 }
 
 /**
@@ -179,7 +293,7 @@ export function showEntries(calls: readonly Shown[], progress: Progress, now: nu
  * after the session whose note it compresses, so it is never the one.
  */
 function stepAgents(calls: readonly Shown[], steps: readonly StepView[]): Map<StepView, number> {
-	const sessions: { readonly call: Shown; readonly at: readonly StepView[] }[] = [];
+	const sessions: { readonly call: ShownSession; readonly at: readonly StepView[] }[] = [];
 	const byRun = Map.groupBy(steps, (step) => step.runId);
 
 	const visit = (shown: readonly Shown[], outer: readonly StepView[]) => {
@@ -190,7 +304,7 @@ function stepAgents(calls: readonly Shown[], steps: readonly StepView[]): Map<St
 			const at = step === undefined ? outer : [...outer, step];
 
 			if (call.kind === "session") sessions.push({ call, at });
-			visit(call.calls ?? [], at);
+			visit(childCalls(call) ?? [], at);
 		}
 	};
 
@@ -209,34 +323,48 @@ function stepAgents(calls: readonly Shown[], steps: readonly StepView[]): Map<St
 }
 
 /**
- * A row of `show --agents`: a phase line, an agent, or a child run. `depth` is the nesting of child runs. An agent has
- * the phase of its session, and no `endedAt` while it works. Its `facts` are its model, asks and time, as one text.
+ * A row of `show --agents --json`: a phase line, an agent, or a child run. `depth` is the nesting of child runs. An
+ * agent has the phase of its session, the model that its session used when the record has it, and no `endedAt` while
+ * it works. Its `facts` are its model ID, asks and time, as one text.
  */
-type AgentRow =
-	| { readonly kind: "phase"; readonly depth: number; readonly text: string }
-	| {
-			readonly kind: "agent";
-			readonly depth: number;
-			readonly mark: CallMark;
-			readonly text: string;
-			readonly phase: string | null;
-			readonly model: string;
-			readonly asks: number;
-			readonly conversation: number;
-			readonly startedAt: string;
-			readonly endedAt?: string;
-			readonly facts: string;
-	  }
-	| { readonly kind: "run"; readonly depth: number; readonly mark: CallMark; readonly text: string };
+export const AGENT_ROW = Type.Union([
+	Type.Object(
+		{ kind: Type.Literal("phase"), depth: Type.Integer(), text: Type.String() },
+		{ additionalProperties: false },
+	),
+	Type.Object(
+		{
+			kind: Type.Literal("agent"),
+			depth: Type.Integer(),
+			mark: CALL_MARK,
+			text: Type.String(),
+			phase: Type.Union([Type.String(), Type.Null()]),
+			model: Type.Optional(SESSION_MODEL),
+			asks: Type.Integer(),
+			conversation: Type.Number(),
+			startedAt: Type.String(),
+			endedAt: Type.Optional(Type.String()),
+			facts: Type.String(),
+		},
+		{ additionalProperties: false },
+	),
+	Type.Object(
+		{ kind: Type.Literal("run"), depth: Type.Integer(), mark: CALL_MARK, text: Type.String() },
+		{ additionalProperties: false },
+	),
+]);
+
+type AgentRow = Static<typeof AGENT_ROW>;
+
+/** An agent of `show --agents`. */
+type Agent = Extract<AgentRow, { kind: "agent" }>;
 
 /** The lines of `text` that are not blank, with their spaces collapsed. */
-function textLines(text: JsonValue | undefined): string[] {
-	return Value.Check(Type.String(), text)
-		? text
-				.split("\n")
-				.map((line) => line.replace(/\s+/g, " ").trim())
-				.filter((line) => line !== "")
-		: [];
+function textLines(text: string): string[] {
+	return text
+		.split("\n")
+		.map((line) => line.replace(/\s+/g, " ").trim())
+		.filter((line) => line !== "");
 }
 
 /**
@@ -248,10 +376,9 @@ export function agentRows(calls: readonly Shown[], depth: number, now: number): 
 	const prompts = new Map<number, string[]>();
 
 	for (const call of calls) {
-		const conversation = askedConversation(call);
-
-		if (conversation !== undefined && !prompts.has(conversation))
-			prompts.set(conversation, textLines(call.args.prompt));
+		if (call.kind === "ask" && !prompts.has(call.args.conversation)) {
+			prompts.set(call.args.conversation, textLines(call.args.prompt));
+		}
 	}
 
 	const textOf = (lines: readonly string[]): string | undefined => {
@@ -271,7 +398,7 @@ export function agentRows(calls: readonly Shown[], depth: number, now: number): 
 
 		if (call.kind === "run") {
 			rows.push({ kind: "run", depth, mark: call.mark, text: `run ${call.label}` });
-			rows.push(...agentRows(call.calls ?? [], depth + 1, now));
+			rows.push(...agentRows(call.child?.calls ?? [], depth + 1, now));
 			continue;
 		}
 
@@ -281,29 +408,43 @@ export function agentRows(calls: readonly Shown[], depth: number, now: number): 
 		const asks = calls.filter((ask) => askedConversation(ask) === conversation);
 		const working = works(call, calls);
 		const failed = call.mark === "✗" || asks.some((ask) => ask.mark === "✗");
-		const ends = [call, ...asks].flatMap(({ endedAt }) => (endedAt === undefined ? [] : [endedAt])).sort();
-		const endedAt = working ? undefined : ends.at(-1);
-		const model = Value.Check(Type.String(), call.args.model) ? call.args.model : "";
-		const end = endedAt === undefined ? now : Date.parse(endedAt);
+		const ends = [call, ...asks].flatMap(({ end }) => endedAt(end) ?? []).sort();
+		const ended = working ? undefined : ends.at(-1);
+		const end = ended === undefined ? now : Date.parse(ended);
 		const count = `${asks.length} ${asks.length === 1 ? "ask" : "asks"}`;
+		const facts = [call.model?.model, count, duration(end - Date.parse(call.startedAt))];
 
-		const row = {
+		const row: Agent = {
 			kind: "agent",
 			depth,
 			mark: working ? "◉" : failed ? "✗" : "✓",
 			text: textOf(prompts.get(conversation) ?? []) ?? call.label,
 			phase: call.phase,
-			model,
 			asks: asks.length,
 			conversation,
 			startedAt: call.startedAt,
-			facts: [model, count, duration(end - Date.parse(call.startedAt))].filter(Boolean).join("  "),
-		} as const;
+			facts: facts.filter((fact) => fact !== undefined && fact !== "").join("  "),
+		};
 
-		rows.push(endedAt === undefined ? row : { ...row, endedAt });
+		if (call.model !== undefined) row.model = call.model;
+
+		if (ended !== undefined) row.endedAt = ended;
+		rows.push(row);
 	}
 
 	return rows;
+}
+
+/**
+ * The agent of a run among `rows`, the rows of `agentRows`, whose conversation `wanted` takes: the agent that works now,
+ * else the last agent to start. Undefined when no agent of the rows is taken.
+ */
+export function runAgent(rows: readonly AgentRow[], wanted: (conversation: number) => boolean = () => true) {
+	const agents = rows
+		.flatMap((row) => (row.kind === "agent" && wanted(row.conversation) ? [row] : []))
+		.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+
+	return agents.findLast((row) => row.mark === "◉") ?? agents.at(-1);
 }
 
 /** The lines of `show --agents`: each row indented by its depth, an agent with its facts. */
@@ -320,59 +461,60 @@ export function agentLines(rows: readonly AgentRow[]): string[] {
 }
 
 /** Whether `call` is a session that one of its asks among `siblings` works in now. */
-function works(call: Shown, siblings: readonly Shown[]): boolean {
+function works(call: ShownSession, siblings: readonly Shown[]): boolean {
 	const { conversation } = call;
 
 	return (
-		call.kind === "session" &&
-		conversation !== undefined &&
-		siblings.some((ask) => ask.mark === "◉" && askedConversation(ask) === conversation)
+		conversation !== undefined && siblings.some((ask) => ask.mark === "◉" && askedConversation(ask) === conversation)
 	);
 }
 
 /** The whole command of the args of a `sh` or `ok` call. */
-export function commandOf(args: SavedCall["args"]): string {
-	const { cmd } = args;
-
-	return Array.isArray(cmd) ? cmd.join(" ") : String(cmd);
+export function commandOf({ cmd }: { readonly cmd: string | string[] }): string {
+	return Array.isArray(cmd) ? cmd.join(" ") : cmd;
 }
 
+/** A call record of the kind `K`. */
+type CallOf<K extends CallKind> = SavedCall & { readonly kind: K };
+
+/** The label of a call of each kind, from its record and the records of its run. */
+export type Labels = {
+	readonly [K in CallKind]: (record: CallOf<K>, records: ReadonlyMap<string, SavedCall>) => string;
+};
+
 /**
- * The role name and conversation of a session, the role name of the session for an ask, the command on one line for
- * `sh` and `ok`, the workflow and child run ID for `run`, the question on one line for `input`, and the action with its
- * text, or its ID and state, on one line for `todo`.
+ * The label of each kind of call: the role name and conversation of a session, the role name of the session for an
+ * ask, the command on one line for `sh` and `ok`, the workflow and child run ID for `run`, the question on one line
+ * for `input`, the workflow for `pastRuns`, and the action with its text, or its ID and state, on one line for `todo`.
+ * A kind without a label fails the type check.
  */
-function labelOf(
-	{ kind, args, conversation }: Pick<SavedCall, "kind" | "args" | "conversation">,
-	child: string | undefined,
-	records: Map<string, SavedCall>,
-): string {
-	if (kind === "sh" || kind === "ok") return labelLine(commandOf(args));
-
-	if (kind === "run") return [args.name, child].filter((value) => value !== undefined).join(" ");
-
-	if (kind === "input") return labelLine(String(args.question));
-
-	if (kind === "pastRuns") return String(args.workflow);
-
-	if (kind === "todo") {
-		const { action, text, id, state } = args;
-
-		if (action === "add") return labelLine(`add ${String(text)}`);
-
-		if (action === "set") return labelLine(`set ${String(id)} ${String(state)}`);
-
-		return labelLine(String(action));
-	}
-
-	if (kind === "session") {
-		return conversation === undefined ? String(args.profile) : `${String(args.profile)} conversation ${conversation}`;
-	}
-
+export const LABELS: Labels = {
+	session: ({ args, conversation }) =>
+		conversation === undefined ? args.profile : `${args.profile} conversation ${conversation}`,
 	// A linear scan for each ask; an index by conversation if runs get thousands of calls.
-	const session = [...records.values()].find((record) => record.conversation === args.conversation);
+	ask: ({ args }, records) =>
+		String(
+			[...records.values()].find(
+				(record): record is CallOf<"session"> => record.kind === "session" && record.conversation === args.conversation,
+			)?.args.profile,
+		),
+	sh: ({ args }) => labelLine(commandOf(args)),
+	ok: ({ args }) => labelLine(commandOf(args)),
+	run: ({ args, child }) => (child === undefined ? args.name : `${args.name} ${child.runId}`),
+	input: ({ args }) => labelLine(args.question),
+	pastRuns: ({ args }) => args.workflow,
+	todo: ({ args }) => {
+		if (args.action === "add") return labelLine(`add ${args.text}`);
 
-	return String(session?.args.profile);
+		if (args.action === "set") return labelLine(`set ${args.id} ${args.state}`);
+
+		return labelLine(args.action);
+	},
+};
+
+/** The label of the call of the kind `kind` with the record `record` among the records of its run, from `LABELS`. */
+function labelFor<K extends CallKind>(kind: K, record: CallOf<K>, records: ReadonlyMap<string, SavedCall>): string {
+	return LABELS[kind](record, records);
 }
 
 /** `text` as a label: on one line, cut at 80 characters. */

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { JsonObject } from "@earendil-works/pi-durable";
+import { SLUG, type ServesInput } from "@vzlentin/harness/protocol";
 import { Value } from "typebox/value";
 import { type Io, labelOf, UsageError, withUsage } from "../workflow/find.ts";
 import { ARG_VALUES, type ArgSpec, type Meta, PLACEMENT_OPTIONS, type PlacementOption } from "../workflow/meta.ts";
@@ -106,6 +107,7 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 	const options: Record<string, { type: "string" | "boolean" }> = {};
 	options.prompts = { type: "string" };
 	options.agents = { type: "string" };
+	options.serves = { type: "string" };
 	options.help = { type: "boolean" };
 	options.json = { type: "boolean" };
 
@@ -121,6 +123,7 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 
 	const { values } = parsed;
 	const agents = agentsOption(stringOption(values.agents), usage);
+	const serves = servesOption(stringOption(values.serves), usage);
 
 	if (positional !== undefined) {
 		const [arg, spec] = positional;
@@ -183,6 +186,7 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 		args,
 		prompts: stringOption(values.prompts),
 		agents,
+		serves,
 		repo: placedOption("repo"),
 		base: placedOption("base") ?? "main",
 		branch: placedOption("branch"),
@@ -198,6 +202,20 @@ function agentsOption(text: string | undefined, usage: string): Roles {
 	} catch (error) {
 		throw new UsageError(`--agents ${error instanceof Error ? error.message : String(error)}`, usage);
 	}
+}
+
+/**
+ * What the `--serves` text names: a todo of the list of the project for a text of only digits, else a parley by slug;
+ * undefined without it. A text that is neither throws `UsageError`.
+ */
+function servesOption(text: string | undefined, usage: string): ServesInput | undefined {
+	if (text === undefined) return undefined;
+
+	if (/^\d+$/.test(text)) return { todo: Number(text) };
+
+	if (!SLUG.test(text)) throw new UsageError(`--serves ${text} is not a todo ID or a parley slug`, usage);
+
+	return { parley: text };
 }
 
 /** The value of a `parseArgs` option of the type `string`, which is never a boolean. */

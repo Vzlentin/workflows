@@ -176,7 +176,7 @@ function checkMeta(value: unknown, name: string): asserts value is Literal {
 
 	if (!Value.Check(EXIT, value)) throw fail("meta.exit does not map statuses to integer exit codes");
 	const placement = placementOf(value);
-	const reserved = new Set(["prompts", "agents", "overlay", "checkout", "from", "help", "json"]);
+	const reserved = new Set(["prompts", "agents", "serves", "overlay", "checkout", "from", "help", "json"]);
 
 	for (const option of PLACEMENT_OPTIONS[placement]) reserved.add(option);
 

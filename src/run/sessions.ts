@@ -7,11 +7,11 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { AgentDoc, type ConversationId, defineDocFamily, type JsonObject } from "@earendil-works/pi-durable";
 import type { Failure, Owner, Spec } from "@vzlentin/harness/children";
 import { PROJECT_EXTENSION } from "@vzlentin/harness/protocol";
-import { type Static, Type } from "typebox";
+import type { Static } from "typebox";
 import type { ScriptInput } from "../launch/input.ts";
 import type { Writable } from "../workflow/bundle.ts";
 import { roleOf } from "../workflow/roles.ts";
-import { CallDoc, type Calls } from "./calls.ts";
+import { CallDoc, type Calls, callOfKind, type SESSION_ARGS } from "./calls.ts";
 import type { Host, Runtime } from "./version.ts";
 
 /** The extension of the `workflow` tool, which the entry gives every conversation of the host but the sessions. */
@@ -41,14 +41,6 @@ export const INSTRUCTIONS =
 	"You are a session of a workflows run, not the user's main agent. The run keeps its own memory in your prompts, so do\n" +
 	"not write to the user's memory or note tools, even when instructions ask every agent to.";
 
-/** The args of a `session` call: `profile`, the role name, and the fields that override its role. */
-export const SESSION_ARGS = Type.Object({
-	profile: Type.String(),
-	provider: Type.Optional(Type.String()),
-	model: Type.Optional(Type.String()),
-	thinking: Type.Optional(Type.String()),
-});
-
 type SessionArgs = Readonly<Static<typeof SESSION_ARGS>>;
 
 /**
@@ -72,7 +64,8 @@ async function treeOf(calls: Calls): Promise<{ parent: string } | { root: string
  * `INSTRUCTIONS`. Each field of `args` overrides the role of `args.profile` in the agents table of the bundle, and the
  * role fills the rest; a field that neither gives comes from the project agent. The session does not get the
  * `workflow` tool, nor harness's store tools `thread`, `rule`, `term`, `part` and `parley`. The commit that opens it
- * saves its conversation in the call record and in the sessions of the run. The same key again gives the same session.
+ * saves its conversation and the model that the library set in the call record, and its conversation in the sessions
+ * of the run. The same key again gives the same session.
  */
 export async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionArgs): Promise<JsonValue> {
 	const { runtime, context, host, script } = calls;
@@ -106,7 +99,18 @@ export async function sessionOf(calls: Calls, key: string, cwd: string, args: Se
 				agent.extensions = { ...selection, remove: [...(selection?.remove ?? []), TOOL_EXTENSION, PROJECT_EXTENSION] };
 			}
 
-			(await tx.doc(CallDoc, key, null)).conversation = conversation;
+			const call = callOfKind(await tx.doc(CallDoc, key, null), "session", key);
+			call.conversation = conversation;
+
+			if (agent.model !== undefined) {
+				const { provider, modelId } = agent.model;
+				const { thinkingLevel } = agent;
+				call.model =
+					thinkingLevel === undefined
+						? { provider, model: modelId }
+						: { provider, model: modelId, thinking: thinkingLevel };
+			}
+
 			const opened = await tx.doc(SessionsDoc, script.root, null);
 			const record: OpenedSession = { run: script.runId, conversation, task: runtime.taskId };
 

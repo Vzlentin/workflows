@@ -4,12 +4,16 @@ import { basename, dirname, join, resolve } from "node:path";
 import { git, gitSucceeds, run } from "../git.ts";
 import { UsageError } from "../workflow/find.ts";
 
-/** The worktree of a run: its repository, the commit it starts from, its branch and its path. */
+/**
+ * The worktree of a run: its repository, the commit it starts from, its branch and its path. `renames` is set when the
+ * branch is the default `<wf>/<run-id>`, which a result with a `subject` renames.
+ */
 export type Worktree = {
 	readonly repository: string;
 	readonly start: string;
 	readonly branch: string;
 	readonly path: string;
+	readonly renames?: true;
 };
 
 /** The top level of the Git repository at `path` itself, or undefined when `path` is not one. */
@@ -71,8 +75,8 @@ async function commitOf(repository: string, ref: string): Promise<string> {
 
 /**
  * The selected repository and its start commit, and the worktree path of the run `id` on the new branch `args.branch`,
- * or `<scriptName>/<id>`. The worktree is `.worktrees/<repository name>/<id>` next to the repository. `cwd` and `clone`
- * are as in `selectRepository`.
+ * or `<scriptName>/<id>`, the default branch, which the worktree `renames`. The worktree is
+ * `.worktrees/<repository name>/<id>` next to the repository. `cwd` and `clone` are as in `selectRepository`.
  */
 export async function prepareWorktree(
 	scriptName: string,
@@ -82,7 +86,7 @@ export async function prepareWorktree(
 	clone: string,
 ): Promise<Worktree> {
 	const repository = await selectRepository(cwd, args.repo, args.base, clone);
-	const { branch = `${scriptName}/${id}` } = args;
+	const branch = args.branch ?? `${scriptName}/${id}`;
 
 	if (!(await gitSucceeds(repository.path, "check-ref-format", "--branch", branch))) {
 		throw new UsageError(`--branch ${branch} is not a valid branch name`);
@@ -92,7 +96,14 @@ export async function prepareWorktree(
 		throw new UsageError(`--branch ${branch} exists`);
 	}
 
-	return { repository: repository.path, start: repository.start, branch, path: worktreePath(repository.path, id) };
+	const worktree = {
+		repository: repository.path,
+		start: repository.start,
+		branch,
+		path: worktreePath(repository.path, id),
+	};
+
+	return args.branch === undefined ? { ...worktree, renames: true } : worktree;
 }
 
 /**

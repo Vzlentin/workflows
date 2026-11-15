@@ -8,13 +8,23 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { childInput, newRunId, type ScriptInput } from "../launch/input.ts";
 import { mergeRoles, type Roles } from "../workflow/roles.ts";
-import { CallDoc, type Calls, type Child, type ScriptRun } from "./calls.ts";
+import { CallDoc, type CallRecord, type Calls, callOfKind, type Child, type ScriptRun } from "./calls.ts";
 import { hasEnded, hasResult, runStatus, savedBundle, scanRuns } from "./past.ts";
 import { current, type Runtime, type ScriptTask, TASK } from "./version.ts";
 
+/** The record of a `run` call. */
+type RunRecord = Extract<CallRecord, { kind: "run" }>;
+
+/** The record of the `run` call `key`, or undefined before the call started. */
+async function runRecord(runtime: Runtime, key: string, context: Context): Promise<Readonly<RunRecord> | undefined> {
+	const record = await runtime.snapshot(CallDoc, key, context);
+
+	return record === undefined ? undefined : callOfKind(record, "run", key);
+}
+
 /** The child run saved in the record of the `run` call `key`. */
 async function savedChild(runtime: Runtime, key: string, context: Context): Promise<Child> {
-	const child = (await runtime.snapshot(CallDoc, key, context))?.child;
+	const child = (await runRecord(runtime, key, context))?.child;
 
 	if (child === undefined) throw new Error(`the child run of ${key} is missing`);
 
@@ -67,13 +77,13 @@ async function startChild(
 
 	try {
 		const run = { id, directory, cwd, root: script.root };
-		const own = await childInput({ name, args, bundle, agents: script.agents, overlay: script.overlay }, run);
+		const { agents, serves, overlay } = script;
+		const own = await childInput({ name, args, bundle, agents, serves, overlay }, run);
 		const { session: parent, definition } = script;
 		const input = parent === undefined ? own : { ...own, parent };
 		await runtime.commit(async (tx) => {
 			const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
-			const doc = await tx.doc(CallDoc, key, null);
-			doc.child = { task, runId: id };
+			callOfKind(await tx.doc(CallDoc, key, null), "run", key).child = { task, runId: id };
 
 			return undefined;
 		}, context);
@@ -88,12 +98,12 @@ async function startChild(
 
 /** The run ID of the child run of the `run` call `key`: the `childRun` of its record, or a new one that it saves. */
 async function childRunId(runtime: Runtime, context: Context, key: string): Promise<string> {
-	const saved = (await runtime.snapshot(CallDoc, key, context))?.childRun;
+	const saved = (await runRecord(runtime, key, context))?.childRun;
 
 	if (saved !== undefined) return saved;
 	const id = newRunId();
 	await runtime.commit(async (tx) => {
-		(await tx.doc(CallDoc, key, null)).childRun = id;
+		callOfKind(await tx.doc(CallDoc, key, null), "run", key).childRun = id;
 
 		return undefined;
 	}, context);
@@ -124,8 +134,7 @@ async function restartChild(
 	const { input } = record;
 	await runtime.commit(async (tx) => {
 		const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
-		const doc = await tx.doc(CallDoc, key, null);
-		doc.child = { task, runId: input.runId };
+		callOfKind(await tx.doc(CallDoc, key, null), "run", key).child = { task, runId: input.runId };
 
 		return undefined;
 	}, context);
@@ -147,7 +156,7 @@ export async function childResult(
 	args: JsonObject,
 ): Promise<JsonValue> {
 	const { runtime, context, script } = calls;
-	const saved = (await runtime.snapshot(CallDoc, key, context))?.child;
+	const saved = (await runRecord(runtime, key, context))?.child;
 	const started = saved ?? (await startChild(runtime, context, script, cwd, key, name, args));
 	const record = await runtime.getTask(started.task, context);
 	const before = record === undefined ? undefined : runStatus(record);

@@ -156,7 +156,7 @@ return args.word`,
 		expect([help.code, help.stdout]).toEqual([
 			0,
 			[
-				"usage: workflows mine [--word <value>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--background] [--json]",
+				"usage: workflows mine [--word <value>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] [--background] [--json]",
 				"Mine.",
 			],
 		]);

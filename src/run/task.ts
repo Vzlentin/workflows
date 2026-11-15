@@ -9,12 +9,13 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { PRUNE_MARKER, type ScriptInput } from "../launch/input.ts";
+import { PRUNE_MARKER, readProject, type ScriptInput } from "../launch/input.ts";
 import { branchOf, ensureWorktree, type Renamed, renameBranch } from "../launch/worktree.ts";
 import { outcomeText, waits } from "../tool.ts";
 import { firstTask, outcomeFrom, scanTasks, type TaskEnd } from "./past.ts";
 import { addProgress } from "./progress.ts";
 import { runScript } from "./sandbox.ts";
+import { checkServes } from "./serves.ts";
 import { endSessions } from "./sessions.ts";
 import { type Checkpoint, current, type Host, type Runtime, type ScriptTask, TASK } from "./version.ts";
 
@@ -78,19 +79,21 @@ const NAMED = Type.Object({ subject: Type.String(), report: Type.Optional(Type.A
 
 /**
  * `result` of a run with a worktree of its own, with the branch that the worktree ends on. A result with a `subject`
- * renames the branch `<wf>/<run-id>` to the name of `subject`, and gets `branch` and the report line `branch <name>`.
- * A `--branch` worktree is not on `<wf>/<run-id>`, so it keeps its branch. Safe to repeat: a repeat finds the worktree
- * on the new branch.
+ * gets `branch` and the report line `branch <name>`. A worktree that `renames` its branch renames it to the name of
+ * `subject`; another worktree, such as one of `--branch`, keeps its branch. Safe to repeat: a repeat finds the
+ * worktree on the new branch.
  */
 async function named(input: ScriptInput, result: JsonValue, signal: AbortSignal): Promise<JsonValue> {
 	const { worktree } = input;
 
 	if (worktree === undefined || !Value.Check(NAMED, result)) return result;
 	const wanted = branchOf(result.subject);
-	const from = `${input.name}/${input.runId}`;
+	const from = worktree.branch;
 
 	const renamed: Renamed =
-		wanted === "" ? { kind: "on", branch: worktree.branch } : await renameBranch(worktree.path, from, wanted, signal);
+		wanted === "" || worktree.renames !== true
+			? { kind: "on", branch: from }
+			: await renameBranch(worktree.path, from, wanted, signal);
 
 	const { branch, line } = branchLine(renamed, from);
 
@@ -146,6 +149,11 @@ async function runPhase(
 			return undefined;
 		}, context);
 
+		// Each task of a root run checks what it serves, so a resume after the end of the todo or the parley fails.
+		if (task.owner === undefined && input.serves !== undefined) {
+			await checkServes(await readProject(input.runDir), runId, input.serves, context.abortSignal);
+		}
+
 		// A new task of the run cancels the removal that an interrupted `prune --yes` left.
 		await rm(join(input.runDir, PRUNE_MARKER), { force: true });
 
@@ -162,6 +170,7 @@ async function runPhase(
 			runDir: input.runDir,
 			bundle: input.bundle,
 			agents: input.agents,
+			serves: input.serves,
 			overlay: input.overlay,
 			session: input.parent,
 			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },

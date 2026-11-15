@@ -20,9 +20,11 @@ import {
 	type Calls,
 	callKey,
 	inputCall,
+	JSON_OBJECT,
 	memoized,
 	pastRunsCall,
 	type ScriptRun,
+	SESSION_ARGS,
 	shellCall,
 	todoCall,
 } from "./calls.ts";
@@ -30,7 +32,7 @@ import { childResult } from "./child.ts";
 import { PAST_OPTIONS } from "./past.ts";
 import { addProgress, type PhaseLines, phaseLine, takeLines } from "./progress.ts";
 import { statusOf } from "./result.ts";
-import { askTurn, ownerOf, SESSION_ARGS, sessionOf } from "./sessions.ts";
+import { askTurn, ownerOf, sessionOf } from "./sessions.ts";
 import type { Host, Runtime } from "./version.ts";
 
 /** The sandbox functions that are not host calls, and the script lib; `cwd` is the directory of the script calls. */
@@ -84,7 +86,6 @@ const run = async (name, args = {}) => {
 ${script.bundle.lib}`;
 }
 
-const JSON_OBJECT = Type.Record(Type.String(), JSON_VALUE);
 const ASK_ARGS = Type.Tuple([Type.Number(), Type.String(), Type.Union([JSON_OBJECT, Type.Null()])]);
 const SH_ARGS = Type.Tuple([Type.Union([Type.String(), Type.Array(Type.String())])]);
 const RUN_ARGS = Type.Tuple([Type.String(), JSON_OBJECT]);

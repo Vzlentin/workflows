@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import type { Overlay } from "@vzlentin/harness/overlay";
+import type { ServesInput } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { editBundle, loadBundle, type RunBundle } from "../workflow/bundle.ts";
@@ -95,6 +96,8 @@ type Args = {
 	readonly bundle: RunBundle;
 	/** The run layer of the roles, from `--agents`, which `bundle.agents` already has above the tables. */
 	readonly agents: Roles;
+	/** `--serves`: the todo of the list of the project or the parley that the run builds, which its child runs keep. */
+	readonly serves?: ServesInput;
 	/** The files that the run's sessions see in place of the disk, by path: see `Spec.overlay` of the children library. */
 	readonly overlay?: Overlay;
 	/**
@@ -138,7 +141,8 @@ export const USAGE = "workflows <workflow | file.js | -> [<text>] [--<arg> <valu
 export async function parse([word = "", ...argv]: readonly string[], io: Io): Promise<Args> {
 	const found = await findScript(word, io);
 	const meta = await readMeta(found.source, found.name);
-	const { args, prompts, agents, repo, base, branch } = await parseValues(meta, argv, io, usageOf(found.name, meta));
+	const values = await parseValues(meta, argv, io, usageOf(found.name, meta));
+	const { args, prompts, agents, serves, repo, base, branch } = values;
 	const bundle = prompts === undefined ? found.bundle : await loadBundle(io.cwd, resolve(io.cwd, prompts));
 	const failed = problem(found.source, found.name, bundle);
 
@@ -146,7 +150,9 @@ export async function parse([word = "", ...argv]: readonly string[], io: Io): Pr
 
 	const resolved = { ...bundle, agents: mergeRoles([agents, bundle.agents]), main: found.source };
 
-	return { name: found.name, args, meta, bundle: resolved, agents, repo, base, branch };
+	const parsed = { name: found.name, args, meta, bundle: resolved, agents, repo, base, branch };
+
+	return serves === undefined ? parsed : { ...parsed, serves };
 }
 
 /**
@@ -195,7 +201,7 @@ export async function prepare(
  * directory, and then needs `start` as a string. `runArgs` checks the declared args against `meta` before any worktree
  * exists. With `meta.worktree`, `checkArgs` first checks `repo`, `base`, `branch` and `start` as optional strings, with
  * the same wording. `prompts` and `overlay` edit the bundle as `editBundle` says. The child keeps `agents`, the caller's
- * run layer.
+ * run layer, and `serves`, what the caller serves.
  */
 export async function childInput(
 	request: {
@@ -203,11 +209,12 @@ export async function childInput(
 		readonly args: JsonObject;
 		readonly bundle: RunBundle;
 		readonly agents: Roles;
+		readonly serves: ServesInput | undefined;
 		readonly overlay?: Overlay | undefined;
 	},
 	run: Run & { readonly root: string },
 ): Promise<ScriptInput> {
-	const { name, bundle, agents } = request;
+	const { name, bundle, agents, serves } = request;
 	const source = Object.hasOwn(bundle.scripts, name) ? bundle.scripts[name] : undefined;
 
 	if (source === undefined) throw new Error(`no workflow ${name}`);
@@ -230,7 +237,8 @@ export async function childInput(
 		agents,
 	};
 
-	const script = Object.keys(edited.files).length === 0 ? bundled : { ...bundled, overlay: edited.files };
+	const served = serves === undefined ? bundled : { ...bundled, serves };
+	const script = Object.keys(edited.files).length === 0 ? served : { ...served, overlay: edited.files };
 
 	const here = { runId: run.id, root: run.root, runDir: run.directory, cwd: run.cwd };
 

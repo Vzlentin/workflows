@@ -26,7 +26,7 @@ import { readTodos, type Todo } from "@vzlentin/harness/todo";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { ScriptInput } from "../launch/input.ts";
-import { CALL_KIND, CALL_RECORD, type SavedCall } from "../run/calls.ts";
+import { CALL_KIND, CALL_RECORD, childOf, type SavedCall } from "../run/calls.ts";
 import { allPages, firstTask, type RunStatus, type RunTask, rootRuns, runStatus, savedInput } from "../run/past.ts";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "../run/progress.ts";
 import { TASK } from "../run/version.ts";
@@ -204,6 +204,7 @@ const WORKTREE = Type.Object({
 		start: Type.String(),
 		branch: Type.String(),
 		path: Type.String(),
+		renames: Type.Optional(Type.Literal(true)),
 	}),
 });
 
@@ -357,7 +358,9 @@ export async function callRecords(store: Store, runId: string): Promise<Map<stri
 			if (!Value.Check(CALL_RECORD, record)) continue;
 			records.set(key, record);
 
-			if (record.child !== undefined) runs.push(record.child.runId);
+			const child = childOf(record);
+
+			if (child !== undefined) runs.push(child.runId);
 		}
 	}
 
@@ -403,7 +406,7 @@ export async function runRecords(
 		const progress = progressOf(events);
 		const records = withCalls(progress) ? await callRecords(store, id) : new Map<string, SavedCall>();
 		const { tasks, runs, live } = await runTasksAndLive(store);
-		const children = [...records.values()].flatMap(({ child }) => (child === undefined ? [] : [child.runId]));
+		const children = [...records.values()].flatMap((record) => childOf(record)?.runId ?? []);
 
 		const todos = await todoLists(store, tasks, [id, ...children]);
 

@@ -449,7 +449,15 @@ describe("runs in the harness host", () => {
 		const listedJson = await workflows(["list", "--json"], { cwd: root });
 		const rows = JSON.parse(listedJson.stdout[0] ?? "");
 		expect(rows).toEqual([
-			{ runId: id, workflow: "gated", title: "gated", state: "aborted", resumable: true, repository: null },
+			{
+				runId: id,
+				workflow: "gated",
+				title: "gated",
+				state: "aborted",
+				resumable: true,
+				startedAt: expect.any(String),
+				repository: null,
+			},
 		]);
 		expect(Value.Check(Type.Array(LISTED), rows)).toBe(true);
 		const shownJson = await workflows(["show", id, "--json"], { cwd: root });
@@ -484,6 +492,7 @@ describe("runs in the harness host", () => {
 				state: "done",
 				result: { status: "stopped", code: 1 },
 				resumable: true,
+				startedAt: expect.any(String),
 				repository: null,
 			},
 		]);
@@ -532,6 +541,9 @@ describe("runs in the harness host", () => {
 			"  ✗ sh ./gate.sh g; touch late  cancelled",
 			expect.stringMatching(/^ {2}✗ sh sleep 0\.2; exit 3 {2}\d+s$/),
 		]);
+		const json = await workflows(["show", run.id ?? "", "--json"], { cwd: root });
+		const { calls } = JSON.parse(json.stdout[0] ?? "");
+		expect(calls[0]).toMatchObject({ state: "cancelled", end: { kind: "cancelled", at: expect.any(String) } });
 	});
 
 	it("leaves the run pending when its host stops while the command follows it", async () => {
@@ -607,9 +619,7 @@ describe("runs in the harness host", () => {
 		expect(listed.stdout).toEqual([`${id} - unstarted -`]);
 		const listedJson = await workflows(["list", "--json"], { cwd: root });
 		const rows = JSON.parse(listedJson.stdout[0] ?? "");
-		expect(rows).toEqual([
-			{ runId: id, workflow: "-", title: "-", state: "unstarted", resumable: false, repository: null },
-		]);
+		expect(rows).toEqual([{ runId: id, state: "unstarted", repository: null }]);
 		expect(Value.Check(Type.Array(LISTED), rows)).toBe(true);
 
 		// A command on a run with no task, or with no run directory, exits 4: the run is gone.
@@ -932,7 +942,15 @@ describe("runs in the harness host", () => {
 		expect(listed).toHaveLength(2);
 		expect(listed).toEqual(
 			expect.arrayContaining([
-				{ runId: thrownId, workflow: "thrown", title: "thrown", state: "failed", resumable: true, repository: null },
+				{
+					runId: thrownId,
+					workflow: "thrown",
+					title: "thrown",
+					state: "failed",
+					resumable: true,
+					startedAt: expect.any(String),
+					repository: null,
+				},
 				{
 					runId: resultId,
 					workflow: "result",
@@ -940,6 +958,7 @@ describe("runs in the harness host", () => {
 					state: "done",
 					result: { status: "failed", code: 1 },
 					resumable: true,
+					startedAt: expect.any(String),
 					repository: null,
 				},
 			]),
@@ -1460,6 +1479,30 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 		} finally {
 			await host.close();
 		}
+	});
+
+	it("starts a run without serves, and gives no serves in its JSON", async () => {
+		const host = await startHost("main", hostModel().models);
+		let id = "";
+
+		try {
+			await tellAgent(`Script workflow: ${JSON.stringify({ script: 'return "x"' })}`);
+			const result = await nextResult(0);
+			expect(result).toMatchObject({ text: expect.stringMatching(/^run \S+ done, exit 0: "x"\nx$/), isError: false });
+			id = /^run (\S+) /.exec(result.text)?.[1] ?? "";
+		} finally {
+			await host.close();
+		}
+
+		const listed = await workflows(["list", "--json"], { cwd: root });
+		const rows = JSON.parse(listed.stdout[0] ?? "");
+		expect(Value.Check(Type.Array(LISTED), rows)).toBe(true);
+		expect(rows).toEqual([expect.objectContaining({ runId: id, state: "done" })]);
+		expect(rows[0]).not.toHaveProperty("serves");
+		const shown = await workflows(["show", id, "--json"], { cwd: root });
+		const run = JSON.parse(shown.stdout[0] ?? "");
+		expect([Value.Check(SHOWN, run), run.state]).toEqual([true, "done"]);
+		expect(run).not.toHaveProperty("serves");
 	});
 
 	it("starts a run in the cwd of the call, and refuses a cwd that is not an absolute directory", async () => {

@@ -391,7 +391,7 @@ describe("the workflow tool", () => {
 		});
 		expect(await readFile(join(root, "stdin.js"), "utf8")).toBe("return 'hi'");
 
-		const ship = await call({ name: "ship", args: { item: "Fix the README typo", rounds: 2 } });
+		const ship = await call({ name: "ship", serves: "12", args: { item: "Fix the README typo", rounds: 2 } });
 		expect(ship.result.structuredContent).toEqual({
 			runId: "r5",
 			state: "done",
@@ -400,7 +400,7 @@ describe("the workflow tool", () => {
 			report: ["shipped Fix the README typo in 1 rounds, judge failed, abc"],
 		});
 
-		const campaign = await call({ name: "campaign", args: { base: "develop", goal: "goal.md" } });
+		const campaign = await call({ name: "campaign", serves: "docs-goal", args: { base: "develop", goal: "goal.md" } });
 		expect(campaign.result.structuredContent).toEqual({
 			runId: "r6",
 			state: "done",
@@ -418,8 +418,8 @@ describe("the workflow tool", () => {
 		});
 		expect((await readFile(join(root, "args.log"), "utf8")).split("\n")).toEqual([
 			"- --word=a --all --json",
-			"ship --item=Fix the README typo --rounds=2 --json",
-			"campaign --base=develop --goal=goal.md --json",
+			"ship --item=Fix the README typo --rounds=2 --serves=12 --json",
+			"campaign --base=develop --goal=goal.md --serves=docs-goal --json",
 			"optimize --workflow=ship --limit=4 --json",
 			"",
 		]);
@@ -606,6 +606,7 @@ describe("the workflow tool", () => {
 		const both = "give exactly one of name, script, resume or save";
 		await expect(call({ name: "ok", resume: "r1" })).rejects.toThrow(both);
 		await expect(call({ script: "return 1", save: { runId: "r2", name: "fix" } })).rejects.toThrow(both);
+		await expect(call({ resume: "r1", serves: "3" })).rejects.toThrow("serves works only with name or script");
 	});
 
 	it("throws the stderr text after the run ID when the run started and the command gave no outcome", async () => {
@@ -1016,19 +1017,22 @@ describe("the /workflows command", () => {
 		expect([fake.notes, fake.selects]).toEqual([[["workflows: no harness project", "error"]], []]);
 	});
 
-	/** An agent of `show --agents --json` on `model`. */
-	const agent = (conversation: number, text: string, mark: string, depth = 0, model = "sonnet") => ({
+	/** An agent of `show --agents --json` on the model `sonnet`. */
+	const agent = (conversation: number, text: string, mark: string, depth = 0) => ({
 		kind: "agent",
 		depth,
 		mark,
 		text,
 		phase: null,
-		model,
+		model: { provider: "anthropic", model: "sonnet" },
 		asks: 1,
 		conversation,
 		startedAt: "2026-10-24T22:34:28.000Z",
-		facts: [model, "1 ask", "31s"].filter(Boolean).join("  "),
+		facts: "sonnet  1 ask  31s",
 	});
+
+	/** An agent of `show --agents --json` with no model. */
+	const { model: _model, ...unmodelled } = { ...agent(2, 'You coordinate "a".', "✗"), facts: "1 ask  31s" };
 
 	/**
 	 * The run `good`: a planner, a coordinator with no model, two coordinators with the same label, the second of which
@@ -1045,7 +1049,7 @@ describe("the /workflows command", () => {
 			{ kind: "phase", depth: 0, text: "plan" },
 			agent(1, "You plan the fleet.", "✓"),
 			{ kind: "phase", depth: 0, text: "work" },
-			agent(2, 'You coordinate "a".', "✗", 0, ""),
+			unmodelled,
 			agent(3, 'You coordinate "b".', "◉"),
 			agent(5, 'You coordinate "b".', "◉"),
 			{ kind: "run", depth: 0, mark: "◉", text: "run ship 20261025T120045-cccc3333" },
@@ -1218,6 +1222,7 @@ describe("the installed extension", () => {
 
 	it("runs dist/cli.js of its workflows dependency", async () => {
 		const registered = await load();
+
 		const called = registered.execute("call-1", { name: "nope" }, undefined, undefined, contextOf(home));
 
 		// Only the CLI, after it read the scripts of the install, knows that no workflow has that name.

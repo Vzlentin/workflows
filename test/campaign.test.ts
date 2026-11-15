@@ -270,10 +270,10 @@ describe("workflows campaign", () => {
 			expect.stringMatching(/^judge \S+$/),
 		]);
 		// Each ship and the campaign judge keep their own list, with no todo.
-		expect(ran.map((call: { todos: unknown }) => call.todos)).toEqual([[], [], []]);
+		expect(ran.map((call: { child: { todos: unknown } }) => call.child.todos)).toEqual([[], [], []]);
 		const shipped = ran.slice(0, -1);
-		expect(shipped[0].calls[0]).toMatchObject({ kind: "run", label: expect.stringMatching(/^rpi \S+$/) });
-		expect(shipped[0].calls[0].calls[0]).toMatchObject({
+		expect(shipped[0].child.calls[0]).toMatchObject({ kind: "run", label: expect.stringMatching(/^rpi \S+$/) });
+		expect(shipped[0].child.calls[0].child.calls[0]).toMatchObject({
 			kind: "session",
 			label: `researcher conversation ${researchers[0]}`,
 			phase: "research",
@@ -281,8 +281,8 @@ describe("workflows campaign", () => {
 			conversation: researchers[0],
 		});
 		const { runId: _, ...first } = result.items[0].result;
-		expect(shipped[0].result).toMatchObject({ runId: children[0], result: first });
-		expect(shipped[0]).not.toHaveProperty("child");
+		expect(shipped[0].end.result).toMatchObject({ runId: children[0], result: first });
+		expect(Object.keys(shipped[0].child)).toEqual(["todos", "calls"]);
 	});
 
 	it("ships an item with a judge score of 0 after one fix round on the judge's findings", async () => {

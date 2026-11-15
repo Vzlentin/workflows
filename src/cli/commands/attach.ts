@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import { type ConversationPlace, inHerdr, openConversationPane } from "@vzlentin/harness/herdr";
 import { cliPath } from "@vzlentin/harness/protocol";
 import { inputWorktree } from "../../records/store.ts";
-import { agentRows } from "../../records/tree.ts";
+import { agentRows, runAgent } from "../../records/tree.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { connectTo } from "../host.ts";
 import type { Terminal } from "../main.ts";
@@ -45,12 +45,10 @@ export async function attach(args: readonly string[], terminal: Terminal): Promi
 	const run = await savedRun(id, ATTACH);
 	const { task, calls } = await readRun(run, true, "be attached");
 
-	const list = agentRows(calls, 0, Date.now())
-		.flatMap((row) => (row.kind === "agent" ? [row] : []))
-		.filter((row) => conversation === undefined || row.conversation === conversation)
-		.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
-
-	const session = list.findLast((row) => row.mark === "◉") ?? list.at(-1);
+	const session = runAgent(
+		agentRows(calls, 0, Date.now()),
+		(found) => conversation === undefined || found === conversation,
+	);
 
 	if (session === undefined) {
 		throw new Error(

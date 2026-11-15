@@ -826,7 +826,8 @@ export const meta = {
   [Outline](#outline).
 
 Every script also takes `--prompts <folder>`, as `ship` does, `--agents <name>=<provider>/<id>:<thinking>,...`, the
-run layer of the roles (see [Roles](#roles)), `--background`, `--json` and `--help`. `workflows <wf> --help` prints
+run layer of the roles (see [Roles](#roles)), `--serves <todo-id | parley-slug>`, what the run builds (see
+[Serves](#serves)), `--background`, `--json` and `--help`. `workflows <wf> --help` prints
 the usage line, built from `meta`, and `meta.description` when the script has one, and exits 0. Any other flag is bad usage. Bad usage prints
 `workflows: <error>` and the usage line of the script, and exits 2. A bad `meta` fails with
 `workflows: <name>: <problem>` and exits 1.
@@ -858,9 +859,12 @@ as each item of a campaign, names no branch. The name is `subject` as a branch n
 without a type gives the words alone. `feat(pi): Show the runs` gives `feat/show-the-runs`, and `Fix the README typo`
 gives `fix-the-readme-typo`. A subject without a letter or digit keeps `<wf>/<run-id>`.
 
-The run renames `<wf>/<run-id>` to the name, and adds `-2`, `-3` and so on when the name exists. It renames only when
-the worktree is on `<wf>/<run-id>`, so a repeat after the rename keeps the branch it renamed to, and a run on a
-`--branch` branch keeps it. The result gets `branch`, the branch that the worktree ends on, and the report gets the
+`prepareWorktree` of `src/launch/worktree.ts` is the one place that builds the default branch `<wf>/<run-id>`, and
+it marks that worktree with `renames: true` in the saved input. Only such a worktree renames its branch: a worktree on
+a `--branch` branch, or on the branch of `checkout`, keeps its branch, also on a detached HEAD, and its result gets
+`branch <branch>`. The run renames `<wf>/<run-id>` to the name, and adds `-2`, `-3` and so on when the name exists. It
+renames only when the worktree is on `<wf>/<run-id>`, so a repeat after the rename keeps the branch it renamed to. The
+result gets `branch`, the branch that the worktree ends on, and the report gets the
 last line `branch <branch>`. A name that Git refuses, such as `docs/typo` when a branch `docs` exists, keeps
 `<wf>/<run-id>`, and the last line is `branch <name> is in conflict with an existing branch; kept <wf>/<run-id>`.
 A branch `<name>` that another process creates while the run renames keeps `<wf>/<run-id>`, with the last line `branch
@@ -1176,7 +1180,7 @@ anthropic/nope`.
 
 Before the run starts, it saves the script, every `scripts/*.js` of the package and the project, the lib, the instructions
 of every prompt, the merged agents table, the run layer of `--agents` apart from it (`agents`, `{}` without the
-option), the args and the directory of the run: the current directory, or the repository of `--repo` with
+option), `serves` of `--serves` (none without the option), the args and the directory of the run: the current directory, or the repository of `--repo` with
 `repo: true`. Resume and `run()` use these saved
 inputs, so a later edit of a script, prompt or `agents.json`, in the package, the user folder or `.workflows/`,
 changes only new runs. The shared instructions of the sessions are not saved: a resume uses the text of the loaded
@@ -1185,9 +1189,17 @@ code.
 Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
 again. A call is known by its name, its arguments and its position among identical calls. A turn that was in progress
 continues in its session. A command that was in progress runs again, so commands must be safe to repeat. Each call
-records its kind, arguments, phase and start time when it starts, and its end time with its result or its error when
-it ends. It also records the task that started it, and for a `run` call the run ID of its child run before the
-child's run directory exists, so a rerun after a crash uses the same run ID and directory. A call that fails saves no
+records its kind, the arguments of its kind, its phase and its start time when it starts, and its `end` when it ends:
+`{ "kind": "done", "at", "result" }`, `{ "kind": "failed", "at", "error" }`, or `{ "kind": "cancelled", "at" }`. A
+call without `end` has not ended. The arguments of each kind are: `session` `{ "profile", "provider"?, "model"?,
+"thinking"? }`, `ask` `{ "conversation", "prompt", "schema" }` (`schema` is `null` without one), `sh` and `ok`
+`{ "cmd", "check" }`, `run` `{ "name", "args" }`, `input` `{ "question" }`, `pastRuns` `{ "workflow", "options" }`, and
+`todo` `{ "action": "add", "text" }`, `{ "action": "set", "id", "state", "text"? }` or `{ "action": "list" }`.
+`CALL_RECORD` of `src/run/calls.ts` is the schema of a record, one member for each kind. It also records the task that
+started it, for a `session` call its conversation and the model that the session used, `{ "provider", "model",
+"thinking"? }`, and for a `run` call the run ID of its child run before the child's run directory exists, so a rerun
+after a crash uses the same run ID and directory. `show`, `log` and `resume` read only the records that match the
+schema, so they skip the calls that an earlier version saved: `show` of such a run shows its steps with no calls. A call that fails saves no
 result, so every call that failed runs again, also one that the script caught. The
 saved results stay in the project store also after the run fails. `phase` and `log` lines are progress, not saved
 results. A resume prints the phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
@@ -1198,9 +1210,24 @@ wait again.
 
 When the script ends, by its result or by an error, the calls that it did not wait for are cancelled: a `sh` or `ok`
 command is killed, a `run()` call stops waiting for its child run, and an ask stops waiting for its turn. The script's
-task ends only once they stopped, so no call goes on after the run ended. A cancelled call records no end, and runs
-again on resume. It records the time of the cancel, so `show` shows it as `cancelled`; a call that a stop or a host
-stop cut records nothing more.
+task ends only once they stopped, so no call goes on after the run ended. A cancelled call records the end
+`cancelled`, with the time of the cancel and no result, so `show` shows it as `cancelled`, and it runs again on resume;
+a call that a stop or a host stop cut records nothing more.
+
+### Serves
+
+`--serves <value>` names what a run builds, apart from the text of the run: a value of digits only is the ID of a todo
+of the list of the project, and any other value is the slug of a parley. A value that is neither, such as `Bad_Slug`,
+is bad usage: `--serves <value> is not a todo ID or a parley slug`. The run saves it in its input as `serves`,
+`{ "todo": <id> }` or `{ "parley": "<slug>" }`, the `ServesInput` of harness, and its child runs keep it. `list --json`
+and `show --json` give it as `serves`; a run that names nothing has no `serves`.
+
+Each task of a root run, the first one and each resume, checks it when it starts, through the `todo list` and
+`parley read` requests of harness to the host of its project, with the rule of harness for what an agent serves. A
+todo that is not in the list fails the run with `Unknown todo: <id>`, and a todo that is done or dropped with `Todo
+<id> is <state>: a run cannot serve it`. A parley that the host does not know fails it with `Unknown parley: <slug>`,
+and a parley that is not open and not a contract with `Parley <slug> is <status>: a run cannot serve it`. So a resume
+after the end of the todo or the parley fails. `serves` is a reserved argument name.
 
 ### Input
 
@@ -1463,16 +1490,23 @@ another version of workflows saved is `earlier-version` or `later-version`: it c
 version saved has its title as a run of this version has it, when its saved input has the fields of a title (the
 run ID, the script name, the arguments, and the `args` and `exit` of its `meta`); a run whose input does not have them
 has its workflow name as its title. With `--json`, the command prints one JSON array of
-`{ "runId", "workflow", "title", "state", "result"?, "resumable", "repository" }`, with the schema `LISTED` of
-`src/cli/commands/list.ts`. `result` is `{ "status"?, "code", "score"? }` as in [JSON output](#json-output), for a run that is `done` or
-`waiting` and whose saved input has the fields of a title. `resumable` is true when this version of workflows saved
-the run's task, so that `resume` can take it; it is false for a run of another version.
+`{ "runId", "workflow", "title", "state", "result"?, "question"?, "resumable", "branch"?, "startedAt"?, "serves"?,
+"repository" }`, with the schema `LISTED` of `src/cli/commands/list.ts`. The fields before `repository` are the run
+fields, `RUN_FIELDS` of `src/records/run.ts`, which `show --json` and `show --agents --json` give too. `result` is
+`{ "status"?, "code", "score"? }` as in [JSON output](#json-output), for a run that is `done` or `waiting` and whose saved input has the
+fields of a title. `question` is the question of a run that is `waiting`. `resumable` is true when this version of
+workflows saved the run's task, so that `resume` can take it; it is false for a run of another version. `branch` is
+the `branch` of the value of the result, the branch that the worktree ends on, else the branch of the run's worktree;
+`runBranch` of `src/run/result.ts` gives it, also for the catch-up. A run without a worktree and without a `branch` in
+its result has none. `startedAt` is the time when the first task of the run started, as an ISO string. `serves` is
+what the run serves (see [Serves](#serves)).
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
 without a worktree.
 Only the runs that have a run directory with a `project` file are listed. The command writes that file before it
 prepares the run, so a run directory of the project whose run has no task is listed as `<run-id> - unstarted -`, and
-with `--json` as `{ "runId", "workflow": "-", "title": "-", "state": "unstarted", "resumable": false, "repository": null }`: its run is
-about to start, or its command stopped before the host created the task. `--pick` leaves these out.
+with `--json` as `{ "runId", "state": "unstarted", "repository": null }`, with no other field: its run is about to
+start, or its command stopped before the host created the task. `LISTED` is the union of these two strict shapes,
+`ROW` of `src/cli/commands/list.ts` for a run with a task and the shape of an unstarted run. `--pick` leaves these out.
 
 With `--pick`, on a terminal, the command asks `Pick a run:` with the runs that run or wait first, each as `<mark>
 <title>  <workflow> <state>`, with `: <status of the run>` of [Progress](#progress) for a running run. The mark is `◉` running, `?` waiting,
@@ -1575,7 +1609,7 @@ run <run-id> <workflow> <state> <title>
 
 - The calls are in the order they started. Each call is under the phase line that was current when it started, and is
   indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `sh`, `ok`,
-  `run`, `todo` or `input`. An `agent` call is a `session` call and an `ask` call.
+  `run`, `input`, `pastRuns` or `todo`. An `agent` call is a `session` call and an `ask` call.
 - Each call has a state. It is `done` or `failed` once it ended. A call that did not end is `cancelled` when the end of
   its script cancelled it, `waiting` when it is the open `input` call of a waiting run, `running` while the task that
   started it has not ended (it runs now, or the host stopped), and `cut` once that task ended. A call that an earlier
@@ -1586,7 +1620,7 @@ run <run-id> <workflow> <state> <title>
 - The label is `<role> conversation <id>` for a `session` that opened, with the role name and the conversation ID of
   the session, and the role name only for a `session` that did not open. For `ask`, it is the role name of its session. For
   `sh` and `ok`, it is the command on one line, cut at 80 characters. For `run`, it is the workflow name and the child
-  run ID. For `input`, it is the question on one line, cut at 80 characters. For `todo`, it is `add <text>`,
+  run ID. For `input`, it is the question on one line, cut at 80 characters. For `pastRuns`, it is the workflow. For `todo`, it is `add <text>`,
   `set <id> <state>` or `list`, on one line, cut at 80 characters. The phase lines and calls of the child run
   are indented by 2 more under the `run` line.
 - The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, also for a working session, it is
@@ -1598,17 +1632,25 @@ run <run-id> <workflow> <state> <title>
   its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
-object with both trees: `{ "runId", "workflow", "title", "state", "result"?, "resumable", "report"?, "error"?, "todos", "steps", "calls" }`,
-with the schema `SHOWN` of `src/cli/commands/show.ts`. `state`, `result` and `resumable` are those of
-[List](#list), `error` is the error of a failed run or the reason of an orphaned run, and
+object with both trees: `{ <run fields>, "agent"?, "todos", "steps", "calls" }`, with `report` for a run with a
+result or `error` for a failed or orphaned run, never both, with the schema `SHOWN` of `src/cli/commands/show.ts`, a
+union of these three strict shapes. The run fields are those of [List](#list). `agent` is
+`{ "conversation", "project" }`, what `harness attach` needs to open the agent of the run: the agent that works now,
+else the last agent to start, as [Attach](#attach) takes it (`runAgent` of `src/records/tree.ts`), and the project of
+the run; a run without an agent has none. `error` is the error of a failed run or the reason of an orphaned run, and
 `todos` is the list of todos of the run, as in [Todos](#todos): an array of `{ "id", "text", "state" }` in ID order,
 or `[]` when the run has no todo, also for a run that an earlier version saved, and
 `steps` has the step lines of the text, without the first line and the footer. Each call is
-`{ "kind", "runId", "label", "phase", "args", "state", "mark", "startedAt", "endedAt"?, "conversation"?, "result"?, "error"?, "todos"?, "calls"? }`,
-with ISO times. `runId` is the ID of the run that made the call. `conversation` is the conversation ID of a `session` that opened. The JSON `mark` of a working session
-is `✓`: only the text shows it as `◉`. `phase` is `null` before the first phase line. The `result` of a `run` call is
-`{ "runId", "result" }`, with the result of its child run. A `run` call whose child run started also has `todos`, the
-list of todos of the child run, and `calls`, the calls of the child run.
+`{ "kind", "args", "runId", "label", "phase", "state", "mark", "startedAt", "end"? }`, with
+ISO times and the arguments of its kind as in [Saved inputs and resume](#saved-inputs-and-resume), and the fields of
+its kind: a `session` call has `conversation`?, the conversation ID of a session that opened, and `model`?, the model
+that it used; an `input` call has `ask`?, the ID of its ask; a `run` call has `child`?. `SHOWN_CALL` of
+`src/records/tree.ts` is its schema, a strict union with one member for each kind, so a call has no other field. `end`
+is the end of a call that ended, as its record saves it: `{ "kind": "done", "at", "result" }`, `{ "kind": "failed",
+"at", "error" }` or `{ "kind": "cancelled", "at" }`. `runId` is the ID of the run that made the call. The JSON `mark`
+of a working session is `✓`: only the text shows it as `◉`. `phase` is `null` before the first phase line. The
+`result` of a `run` call is `{ "runId", "result" }`, with the result of its child run. A `run` call whose child run
+started also has `child`, `{ "todos", "calls" }`: the list of todos of the child run, and the calls of the child run.
 
 With `--agents`, `show` prints the agents of the run:
 
@@ -1626,18 +1668,22 @@ run <run-id> <workflow> <state> <title>
   blank. When other agents of the same run have the same first line, its text is the first line of its prompt that not
   all of them have, such as the region of one worker of a fleet. A session with no ask shows its label.
 - The mark is `◉` while one of its asks works, `✗` when it or one of its asks failed, and `✓` else. The model is the
-  model of the session; the line has no model when the session has none. The duration runs from its start to now while
+  model ID that the session used, as its `session` call recorded it; the line has no model when the record has none,
+  such as a session that an earlier version opened. The duration runs from its start to now while
   it works, else to the end of its last ask.
 - A phase line comes before the first agent or child run under it. Other calls, such as `sh`, are not in the tree. The
   rows of a child run are indented by 4 more under its `run` line.
 
-With `--agents --json`, the command prints one JSON object `{ "runId", "workflow", "title", "state", "result"?,
-"resumable", "ended", "agents" }`, with the schema `SHOWN_AGENTS` of `src/cli/commands/show.ts`, where `ended` is true when the run has ended, also when it waits for an answer.
-`agents` has one object for each line of the tree, in order: `{ "kind": "phase", "depth", "text" }`, `{ "kind": "run",
-"depth", "mark", "text" }` with the text `run <workflow> <child run-id>`, or `{ "kind": "agent", "depth", "mark", "text",
-"phase", "model", "asks", "conversation", "startedAt", "endedAt"?, "facts" }`, where `phase` is the phase line of the
-session, or `null` before the first phase line, `endedAt` is absent while the agent works, and `facts` is the text
-after the agent text in its line, such as `sonnet  1 ask  31s`. `depth` is the nesting of child runs.
+With `--agents --json`, the command prints one JSON object `{ <run fields>, "agent"?, "ended", "agents" }`, with the
+schema `SHOWN_AGENTS` of `src/cli/commands/show.ts`, where the run fields and `agent` are those of `show --json`, and
+`ended` is true when the run has ended, also when it waits for an answer.
+`agents` has one object for each line of the tree, in order, with the schema `AGENT_ROW` of `src/records/tree.ts`:
+`{ "kind": "phase", "depth", "text" }`, `{ "kind": "run", "depth", "mark", "text" }` with the text `run <workflow>
+<child run-id>`, or `{ "kind": "agent", "depth", "mark", "text", "phase", "model"?, "asks", "conversation",
+"startedAt", "endedAt"?, "facts" }`, where `phase` is the phase line of the session, or `null` before the first phase
+line, `model` is `{ "provider", "model", "thinking"? }`, the model that the session used, `endedAt` is absent while
+the agent works, and `facts` is the text after the agent text in its line, such as `claude-opus-5-5  1 ask  31s`.
+`depth` is the nesting of child runs.
 
 With `--pick`, on a terminal, the command asks `Pick an agent:` with the lines that `show` prints: the first line, the
 steps, or the calls of a run without steps, then the footer. It prints the conversation ID of the agent of the line
@@ -1768,7 +1814,7 @@ workflows attach <run-id> [--conversation <id>] [--side]
   conversation, in the order they started. With `--conversation <id>`, only the session of that conversation counts,
   as `show --json` and `show --pick` give it.
 - The command opens the session that works now, as `show --agents` marks it `◉`. When no session works, it opens the
-  last session that started.
+  last session that started. `show --json` gives the same session as its `agent`.
 - It connects to the host of the run's project, and starts the host when none runs. It sends `watch` for the
   conversation of the session, so an unknown conversation fails before Pi starts.
 - Outside an hc terminal (`HC_TERMINAL_ID` not set), it runs `harness --project <project> attach --conversation <id>`
@@ -2032,6 +2078,9 @@ The tool takes one of `name`, `script`, `resume` or `save`, plus `args` with `na
   command starts. `answer` works with `background`.
 - `save: { runId, name, force? }` runs `workflows save <run-id> <name>`, with `--force` when `force` is true. See
   [Save](#save).
+- `serves`, optional with `name` and `script`, names what the run builds: a todo ID or a parley slug adds
+  `--serves=<value>` before `--json` (see [Serves](#serves)). Without it, the run serves nothing and its JSON has no
+  `serves`. With `resume` or `save`, it is the error `serves works only with name or script`, and no command starts.
 - `background: true`, with `name`, `script` or `resume`, adds `--background` before `--json`. With `save`, it is the
   error `background works only with name, script or resume`, and no command starts.
 - `cwd`, with `name` or `script`, is the absolute path of the directory where the command starts, in place of the
@@ -2167,7 +2216,8 @@ Else, it lists the agents of the run and of its child runs in the order of the J
 <indent><mark> <agent text>  <model>
 ```
 
-The indent is two spaces for each depth of child runs. An agent with no model has no `  <model>`. When the line of an
+The indent is two spaces for each depth of child runs. `<model>` is the model ID of the agent, and an agent with no
+model has no `  <model>`. When the line of an
 agent is the same as the line of an agent above it, it ends with `  #<conversation>`, so each line is distinct.
 
 Escape on either list ends the command. A chosen agent runs `workflows attach <run-id> --conversation <id>` when Pi runs
@@ -2241,6 +2291,8 @@ The engine files in `src/`:
 - `entry.ts`: the entry that the harness host loads, with the script task and the catch-up hook.
 - `records/tree.ts`: the call tree of a saved run, its lines and agent rows for `show` and `attach`, and the lines of
   `show` with the agent of each step, for `show --pick`.
+- `records/run.ts`: the run fields that `list --json`, `show --json` and `show --agents --json` share, from the root
+  tasks of a run.
 - `records/steps.ts`: the tree of steps of a run.
 - `records/store.ts`: the command's read-only reads of the project store: the tasks of the runs, harness's task
   keys, their progress, calls and lists of todos.
@@ -2251,7 +2303,7 @@ The engine files in `src/`:
   `run()` call, with one check of both against `meta.args`.
 - `launch/worktree.ts`: repository selection, the worktree of a run, made by Git, and the name of its branch.
 - `herdr.ts`: the hc commands: the removal of the hc terminals of a run.
-- `run/result.ts`: the title of a run, and the status, report lines and exit code of its result.
+- `run/result.ts`: the title of a run, the status, report lines and exit code of its result, and its branch.
 - `workflow/meta.ts`: read and check the `meta` of a workflow script.
 - `workflow/find.ts`: find a script, list the scripts, help and usage, usage errors, and the terminal input and output.
 - `workflow/bundle.ts`: the bundle of a run (scripts, prompt templates, the merged agents table and the script lib), the
@@ -2266,6 +2318,8 @@ The engine files in `src/`:
 - `run/calls.ts`: the workflow script calls and their records in the project store.
 - `run/asks.ts`: the asks of the `input` calls in the store of the host: the asker and the title of an ask, its
   requests, the value of its answer, and the answer of `resume --answer`.
+- `run/serves.ts`: the check of what a run serves, a todo of the list of the project or a parley, in the store of the
+  host.
 - `run/sessions.ts`: the sessions on harness's children library, and the end of the sessions of a run.
 - `run/child.ts`: the child runs that the `run` calls start.
 - `run/sandbox.ts`: the run of a script in the sandbox, with its globals and prompts.

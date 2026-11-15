@@ -15,16 +15,16 @@ import {
 } from "@earendil-works/pi-durable";
 import type { Owner } from "@vzlentin/harness/children";
 import type { Overlay } from "@vzlentin/harness/overlay";
-import type { Ask } from "@vzlentin/harness/protocol";
-import { addTodo, readTodos, setTodo, type TodoOwner, type TodoState } from "@vzlentin/harness/todo";
-import { type Static, Type } from "typebox";
+import type { Ask, ServesInput } from "@vzlentin/harness/protocol";
+import { addTodo, readTodos, setTodo, type TodoOwner, TodoState } from "@vzlentin/harness/todo";
+import { type Static, type TLiteral, type TObject, type TProperties, type TUnion, Type } from "typebox";
 import { failure, run } from "../git.ts";
 import { readProject } from "../launch/input.ts";
 import { JSON_VALUE } from "../tool.ts";
 import type { RunBundle } from "../workflow/bundle.ts";
 import type { Roles } from "../workflow/roles.ts";
 import { answerOf, asksOf, newAsk, openAsk, plainText, readAsk } from "./asks.ts";
-import { firstTask, type PastOptions, pastRuns, scanRuns, scanTasks } from "./past.ts";
+import { firstTask, PAST_OPTIONS, type PastOptions, pastRuns, scanRuns, scanTasks } from "./past.ts";
 import { addProgress, checkpointWhen, type PhaseLines, takeLines } from "./progress.ts";
 import type { Host, Runtime, ScriptTask } from "./version.ts";
 
@@ -42,6 +42,8 @@ export type ScriptRun = {
 	readonly bundle: RunBundle;
 	/** The run layer of the roles, from `--agents`, which its child runs keep. */
 	readonly agents: Roles;
+	/** What the run serves, from the saved input, which its child runs keep. */
+	readonly serves: ServesInput | undefined;
 	readonly args: JsonObject;
 	/** The files that the sessions of the run see in place of the disk, from the saved input. */
 	readonly overlay: Overlay | undefined;
@@ -51,49 +53,186 @@ export type ScriptRun = {
 	readonly definition: ScriptTask;
 };
 
-const CALL_KINDS = Type.Union([
-	Type.Literal("session"),
-	Type.Literal("ask"),
-	Type.Literal("sh"),
-	Type.Literal("ok"),
-	Type.Literal("run"),
-	Type.Literal("input"),
-	Type.Literal("pastRuns"),
-	Type.Literal("todo"),
+/** The args of a `session` call: `profile`, the role name, and the fields that override its role. */
+export const SESSION_ARGS = Type.Object(
+	{
+		profile: Type.String(),
+		provider: Type.Optional(Type.String()),
+		model: Type.Optional(Type.String()),
+		thinking: Type.Optional(Type.String()),
+	},
+	{ additionalProperties: false },
+);
+
+/** A JSON object. */
+export const JSON_OBJECT = Type.Record(Type.String(), JSON_VALUE);
+
+/** The args of an `ask` call: the conversation of its session, its prompt, and the schema of its answer, if any. */
+export const ASK_ARGS = Type.Object(
+	{ conversation: Type.Number(), prompt: Type.String(), schema: Type.Union([JSON_OBJECT, Type.Null()]) },
+	{ additionalProperties: false },
+);
+
+/** The args of a `sh` or `ok` call: its command, and whether a non-zero exit throws. */
+export const SHELL_ARGS = Type.Object(
+	{ cmd: Type.Union([Type.String(), Type.Array(Type.String())]), check: Type.Boolean() },
+	{ additionalProperties: false },
+);
+
+/** The args of a `run` call: the workflow of the child run and its args. */
+export const RUN_ARGS = Type.Object({ name: Type.String(), args: JSON_OBJECT }, { additionalProperties: false });
+
+/** The args of an `input` call: its question. */
+export const INPUT_ARGS = Type.Object({ question: Type.String() }, { additionalProperties: false });
+
+/** The args of a `pastRuns` call: the workflow and the options. */
+export const PAST_RUNS_ARGS = Type.Object(
+	{ workflow: Type.String(), options: PAST_OPTIONS },
+	{ additionalProperties: false },
+);
+
+/** The args of a `todo` call: its action, and the values of the action. */
+export const TODO_ARGS = Type.Union([
+	Type.Object({ action: Type.Literal("add"), text: Type.String() }, { additionalProperties: false }),
+	Type.Object(
+		{
+			action: Type.Literal("set"),
+			id: Type.Integer({ minimum: 1 }),
+			state: TodoState,
+			text: Type.Optional(Type.String()),
+		},
+		{ additionalProperties: false },
+	),
+	Type.Object({ action: Type.Literal("list") }, { additionalProperties: false }),
 ]);
 
-/** The kinds of script calls. */
-export type CallKind = Static<typeof CALL_KINDS>;
+/** The args of a `todo` call. */
+export type TodoArgs = Readonly<Static<typeof TODO_ARGS>>;
+
+/** The model that a session used: its provider and model ID, and its thinking level when it has one. */
+export const SESSION_MODEL = Type.Object(
+	{ provider: Type.String(), model: Type.String(), thinking: Type.Optional(Type.String()) },
+	{ additionalProperties: false },
+);
 
 /**
- * One script call: its kind, its args, the phase line that was current when it started, its start and end times as ISO
- * strings, and its result or its error. A call that started and did not end has no `endedAt`. `task` is the task that
- * started it last, and `cancelledAt` the time when the end of its script cancelled it. The `conversation` of a
- * `session` call is its session, and the `child` of a `run` call is its child run, so a stopped call reuses them. The
- * `childRun` of a `run` call is the run ID of its child run, saved before the child run directory exists. The `ask` of
- * an `input` call is the ID of its ask in the store of the host.
+ * The end of a call: `done` with its result, `failed` with its error, or `cancelled` when the end of its script
+ * cancelled it, each with its time as an ISO string.
  */
-export const CALL_RECORD = Type.Object({
-	kind: CALL_KINDS,
-	args: Type.Record(Type.String(), JSON_VALUE),
+export const CALL_END = Type.Union([
+	Type.Object({ kind: Type.Literal("done"), at: Type.String(), result: JSON_VALUE }, { additionalProperties: false }),
+	Type.Object(
+		{ kind: Type.Literal("failed"), at: Type.String(), error: Type.String() },
+		{ additionalProperties: false },
+	),
+	Type.Object({ kind: Type.Literal("cancelled"), at: Type.String() }, { additionalProperties: false }),
+]);
+
+/**
+ * The fields of every call record: the phase line that was current when the call started, its start time as an ISO
+ * string, and its `end`; a call that started and did not end has no `end`. `task` is the task that started it last.
+ */
+const CALL_FIELDS = {
 	phase: Type.Union([Type.String(), Type.Null()]),
 	startedAt: Type.String(),
-	endedAt: Type.Optional(Type.String()),
-	result: Type.Optional(JSON_VALUE),
-	error: Type.Optional(Type.String()),
+	end: Type.Optional(CALL_END),
 	task: Type.Optional(Type.Number()),
-	cancelledAt: Type.Optional(Type.String()),
-	conversation: Type.Optional(Type.Number()),
-	child: Type.Optional(Type.Object({ task: Type.Number(), runId: Type.String() })),
-	childRun: Type.Optional(Type.String()),
-	ask: Type.Optional(Type.Number()),
+};
+
+/** The args of each kind of script call. */
+const CALL_ARGS = {
+	session: SESSION_ARGS,
+	ask: ASK_ARGS,
+	sh: SHELL_ARGS,
+	ok: SHELL_ARGS,
+	run: RUN_ARGS,
+	input: INPUT_ARGS,
+	pastRuns: PAST_RUNS_ARGS,
+	todo: TODO_ARGS,
+};
+
+/** The kinds of script calls. */
+export type CallKind = keyof typeof CALL_ARGS;
+
+/** The fields that only some kinds of a call union have, by kind. */
+type KindFields = { readonly [K in CallKind]?: TProperties };
+
+/** The member of the kind `K` in a call union: its kind, its args, the fields `F`, and the fields of `K` in `E`. */
+type CallMember<K extends CallKind, F extends TProperties, E extends KindFields> = TObject<
+	{ kind: TLiteral<K>; args: (typeof CALL_ARGS)[K] } & F & (K extends keyof E ? E[K] : unknown)
+>;
+
+/** A call union: one strict member for each kind. */
+export type CallUnion<F extends TProperties, E extends KindFields> = TUnion<
+	[{ [K in CallKind]: CallMember<K, F, E> }[CallKind]]
+>;
+
+/**
+ * A union of one strict object for each kind of call, from `CALL_ARGS`: its kind, its args, the fields `fields` of every
+ * kind, and the fields of its kind in `extra`.
+ */
+export function callUnion<F extends TProperties, E extends KindFields>(fields: F, extra: E): CallUnion<F, E> {
+	const extras: { readonly [kind: string]: TProperties | undefined } = extra;
+
+	const members = Object.entries(CALL_ARGS).map(([kind, args]) =>
+		Type.Object({ kind: Type.Literal(kind), args, ...fields, ...extras[kind] }, { additionalProperties: false }),
+	);
+
+	// SAFETY: `members` has one strict object for each entry of `CALL_ARGS`, with its kind, its args, `fields` and the
+	// fields of its kind in `extra`, which is `CallUnion`. TypeBox types a union only from a tuple, which `map` does
+	// not give.
+	return Type.Union(members) as CallUnion<F, E>;
+}
+
+/**
+ * One script call: its kind with the args of that kind, the fields of every call, and the fields of its kind. The
+ * `conversation` of a `session` call is its session, and `model` the model that it used. The `child` of a `run` call
+ * is its child run, so a stopped call reuses them, and `childRun` the run ID of its child run, saved before the child
+ * run directory exists. The `ask` of an `input` call is the ID of its ask in the store of the host.
+ */
+export const CALL_RECORD = callUnion(CALL_FIELDS, {
+	session: { conversation: Type.Optional(Type.Number()), model: Type.Optional(SESSION_MODEL) },
+	run: {
+		child: Type.Optional(Type.Object({ task: Type.Number(), runId: Type.String() }, { additionalProperties: false })),
+		childRun: Type.Optional(Type.String()),
+	},
+	input: { ask: Type.Optional(Type.Number()) },
 });
 
 /** A call record as the command reads it from the store file, where its IDs are plain numbers. */
 export type SavedCall = Static<typeof CALL_RECORD>;
 
+/** The end of a call. */
+export type CallEnd = Static<typeof CALL_END>;
+
+/** `T` with the pi-durable types of its IDs `conversation` and `child`. */
+type WithIds<T> = T extends unknown
+	? { [K in keyof T]: K extends "conversation" ? ConversationId : K extends "child" ? Child : T[K] }
+	: never;
+
 /** A call record, with the pi-durable types of its IDs. */
-export type CallRecord = Omit<SavedCall, "conversation" | "child"> & { conversation?: ConversationId; child?: Child };
+export type CallRecord = WithIds<SavedCall>;
+
+/** The record `record` of the call `key`, which must be a call of `kind`. */
+export function callOfKind<R extends CallRecord, K extends CallKind>(
+	record: R,
+	kind: K,
+	key: string,
+): Extract<R, { kind: K }> {
+	if (isKind(record, kind)) return record;
+
+	throw new Error(`the call ${key} is a ${record.kind} call, not a ${kind} call`);
+}
+
+/** Whether `record` is a call of `kind`. */
+function isKind<R extends CallRecord, K extends CallKind>(record: R, kind: K): record is Extract<R, { kind: K }> {
+	return record.kind === kind;
+}
+
+/** The child run that the saved call `record` started, when it is a `run` call whose child run started. */
+export function childOf(record: SavedCall): Extract<SavedCall, { kind: "run" }>["child"] {
+	return record.kind === "run" ? record.child : undefined;
+}
 
 /** The document kind of the call records. */
 export const CALL_KIND = "workflows.call";
@@ -107,7 +246,7 @@ export const CallDoc = defineDocFamily<CallRecord, null>({
 	version: 1,
 	scope: "session",
 	family: true,
-	initial: () => ({ kind: "sh", args: {}, phase: null, startedAt: "" }),
+	initial: () => ({ kind: "sh", args: { cmd: "", check: true }, phase: null, startedAt: "" }),
 	checkpointWhen,
 });
 
@@ -115,7 +254,7 @@ export const CallDoc = defineDocFamily<CallRecord, null>({
 export async function savedCall(runtime: Runtime, key: string, context: Context): Promise<JsonValue | undefined> {
 	const record = await runtime.snapshot(CallDoc, key, context);
 
-	return record !== undefined && "result" in record ? record.result : undefined;
+	return record?.end?.kind === "done" ? record.end.result : undefined;
 }
 
 /** `<sha256(name + JSON args), 16 hex>.<n>`, n counting identical calls in this execution. */
@@ -159,8 +298,11 @@ export function callKey(calls: Calls, name: string, args: JsonObject): string {
 	return `${calls.script.runId}/${keyOf(name, args, calls.counters)}`;
 }
 
-/** What a call records when it starts, and the ask of an `input` call. */
-type Start = { readonly kind: CallKind; readonly args: JsonObject; readonly ask?: number };
+/** What a call records when it starts: its kind with its args, and the ask of an `input` call. */
+type Start = PickEach<CallRecord, "kind" | "args" | "ask">;
+
+/** `T` with only those of the fields `K` that it has, for each member of a union. */
+type PickEach<T, K extends PropertyKey> = T extends unknown ? Pick<T, Extract<K, keyof T>> : never;
 
 /**
  * The result of the call `key`: its saved result, or the value of `effect`, which gets the key. The call records its
@@ -225,9 +367,7 @@ async function startCall(calls: Calls, key: string, start: Start): Promise<JsonV
 		await addProgress(tx, calls.script.root, events);
 		const doc = await tx.doc(CallDoc, key, null);
 		Object.assign(doc, { ...start, phase: progress.phase, startedAt: new Date().toISOString(), task: runtime.taskId });
-		delete doc.endedAt;
-		delete doc.error;
-		delete doc.cancelledAt;
+		delete doc.end;
 
 		return undefined;
 	}, context);
@@ -253,8 +393,7 @@ async function endCall(calls: Calls, key: string, result: (tx: Tx) => Promise<Js
 	await runtime.commit(async (tx) => {
 		value = await result(tx);
 		const doc = await tx.doc(CallDoc, key, null);
-		doc.result = value;
-		doc.endedAt = new Date().toISOString();
+		doc.end = { kind: "done", at: new Date().toISOString(), result: value };
 
 		return undefined;
 	}, context);
@@ -273,8 +412,7 @@ async function failCall(calls: Calls, key: string, kind: CallKind, cause: unknow
 
 		await runtime.commit(async (tx) => {
 			const doc = await tx.doc(CallDoc, key, null);
-			doc.error = message;
-			doc.endedAt = new Date().toISOString();
+			doc.end = { kind: "failed", at: new Date().toISOString(), error: message };
 
 			return undefined;
 		}, context);
@@ -287,7 +425,7 @@ async function failCall(calls: Calls, key: string, kind: CallKind, cause: unknow
 async function cancelCall(calls: Calls, key: string): Promise<void> {
 	await calls.runtime.commit(async (tx) => {
 		const doc = await tx.doc(CallDoc, key, null);
-		doc.cancelledAt = new Date().toISOString();
+		doc.end = { kind: "cancelled", at: new Date().toISOString() };
 
 		return undefined;
 	}, calls.phase);
@@ -330,7 +468,7 @@ export async function inputCall(calls: Calls, question: string, stop: () => void
 	const { script, runtime, context } = calls;
 	const record = await runtime.snapshot(CallDoc, key, context);
 
-	if (record !== undefined && "result" in record) return replayed(calls, record.result ?? null);
+	if (record?.end?.kind === "done") return replayed(calls, record.end.result);
 
 	if (script.parent !== null) {
 		return failInput(
@@ -345,7 +483,8 @@ export async function inputCall(calls: Calls, question: string, stop: () => void
 		return failInput(calls, key, args, new Error("input() needs a question that is not blank"));
 	}
 
-	const decided = calls.inputs.then(() => decide(calls, question, record?.ask));
+	const saved = record === undefined ? undefined : callOfKind(record, "input", key).ask;
+	const decided = calls.inputs.then(() => decide(calls, question, saved));
 	calls.inputs = decided.then(
 		() => undefined,
 		() => undefined,
@@ -381,7 +520,7 @@ export async function inputCall(calls: Calls, question: string, stop: () => void
 }
 
 /** Fails the `input` call `key` with `args` and the error `cause`, which its record keeps. */
-function failInput(calls: Calls, key: string, args: JsonObject, cause: unknown): Promise<JsonValue> {
+function failInput(calls: Calls, key: string, args: { question: string }, cause: unknown): Promise<JsonValue> {
 	return memoized(calls, key, { kind: "input", args }, () => Promise.reject(cause));
 }
 
@@ -428,12 +567,6 @@ export function pastRunsCall(calls: Calls, workflow: string, options: PastOption
 		pastRuns(await scanRuns(calls.runtime, calls.context), workflow, options),
 	);
 }
-
-/** The args of a `todo` call: its action, and the values of the action. */
-export type TodoArgs =
-	| { readonly action: "add"; readonly text: string }
-	| { readonly action: "set"; readonly id: number; readonly state: TodoState; readonly text?: string }
-	| { readonly action: "list" };
 
 /**
  * The list of todos of the run: the list of its first task, so every task of the run, and no other run, uses it. The

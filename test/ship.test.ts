@@ -56,8 +56,8 @@ type Stored = {
 	readonly kind: string;
 	readonly label: string;
 	readonly args: { readonly profile?: string; readonly cmd?: readonly string[] };
-	readonly calls?: readonly Stored[];
-	readonly result?: { readonly result?: object };
+	readonly child?: { readonly calls: readonly Stored[] };
+	readonly end?: { readonly result?: { readonly result?: object } };
 };
 
 const worktreeOf = (id: string | undefined) => worktreeAt(repo, id);
@@ -691,6 +691,8 @@ export default function ({ events }) {
 		expect(report).toEqual([expect.stringMatching(SHIPPED), "branch docs/typo"]);
 		expect(git(worktreeOf(run.id), "branch", "--show-current")).toBe("docs/typo");
 		expect(git(repo, "branch", "--format=%(refname:short)")).toBe("docs/typo\nmain");
+		const shown = JSON.parse((await workflows(["show", run.id ?? "", "--json"], { cwd: repo })).stdout[0] ?? "");
+		expect(shown.branch).toBe("docs/typo");
 	});
 
 	it("rejects a --branch name that is not valid or exists before the run", async () => {
@@ -1085,7 +1087,7 @@ describe("workflows show", () => {
 			resumable: true,
 			report: shown.stdout.slice(-2),
 		});
-		const flat = (calls: readonly Stored[]): Stored[] => calls.flatMap((c) => [c, ...flat(c.calls ?? [])]);
+		const flat = (calls: readonly Stored[]): Stored[] => calls.flatMap((c) => [c, ...flat(c.child?.calls ?? [])]);
 		const calls = flat(tree.calls);
 		// Each call is in the log of one step.
 		expect(calls).toHaveLength(logs);
@@ -1098,10 +1100,10 @@ describe("workflows show", () => {
 		const thermoloop = calls.find((c: Stored) => c.kind === "run" && c.label.startsWith("thermoloop "));
 
 		// The child runs of a ship get its memory, so only the ship distils lessons.
-		expect(rpi?.result).toMatchObject({ result: { status: "implemented" } });
-		expect(rpi?.result?.result).not.toHaveProperty("lessons");
-		expect(thermoloop?.result).toMatchObject({ result: { status: "approved" } });
-		expect(thermoloop?.result?.result).not.toHaveProperty("lessons");
+		expect(rpi?.end?.result).toMatchObject({ result: { status: "implemented" } });
+		expect(rpi?.end?.result?.result).not.toHaveProperty("lessons");
+		expect(thermoloop?.end?.result).toMatchObject({ result: { status: "approved" } });
+		expect(thermoloop?.end?.result?.result).not.toHaveProperty("lessons");
 		expect(run.model.count("harvest")).toBe(1);
 
 		expect(planner).toEqual({
@@ -1113,11 +1115,11 @@ describe("workflows show", () => {
 			state: "done",
 			mark: "✓",
 			startedAt: time,
-			endedAt: time,
+			end: { kind: "done", at: time, result: expect.any(Number) },
 			conversation,
-			result: expect.any(Number),
+			model: { provider: "anthropic", model: "claude-opus-5-5", thinking: "medium" },
 		});
-		expect(asked).toMatchObject({ result: "Problem: README.md says wrold." });
+		expect(asked).toMatchObject({ end: { result: "Problem: README.md says wrold." } });
 		expect(added).toMatchObject({ phase: null });
 		expect(added?.args).toEqual({ cmd: ["git", "add", "-A"], check: true });
 	});
@@ -1343,9 +1345,20 @@ describe("workflows resume of ship runs", () => {
 				state: "done",
 				result: { status: "shipped", code: 0, score: 5 / 6 },
 				resumable: true,
+				branch: "fix/correct-the-readme-typo",
+				startedAt: expect.any(String),
 				repository,
 			},
-			{ runId: stopped.id, workflow: "ship", title: "Second item", state: "running", resumable: true, repository },
+			{
+				runId: stopped.id,
+				workflow: "ship",
+				title: "Second item",
+				state: "running",
+				resumable: true,
+				branch: `ship/${stopped.id}`,
+				startedAt: expect.any(String),
+				repository,
+			},
 		].sort((a, b) => (b.runId ?? "").localeCompare(a.runId ?? ""));
 
 		expect(JSON.parse(listed.stdout[0] ?? "")).toEqual(runs);
