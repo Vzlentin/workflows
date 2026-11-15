@@ -78,7 +78,8 @@ See [Progress](#progress) for how the steps show. A resume prints the phase line
 a turn or a Git step, and the lines after it.
 
 Each implement step logs the size of the round's change, `+<insertions> -<deletions> in <n> file(s)` or `no new
-changes`; each review step logs `SHIP` or `FIX`. After the squash, the run logs `commit <commit> <subject>`, or
+changes`; each review step logs `SHIP` or `FIX`. A failed commit message turn logs `commit message failed on <subject>:
+<error>, so the message is the subject of the item`. After the squash, the run logs `commit <commit> <subject>`, or
 `nothing to commit since <commit>` when the work changed nothing since its start. Then the judge step logs
 `judge <score>`. See the example of [Campaign](#campaign).
 
@@ -153,7 +154,8 @@ The README said wrold. It now says world.
 
 When the body is empty, the message is `<subject>` alone. If the message turn fails or answers an empty `subject`, the
 message is the subject of the work item alone: its first non-empty line without leading `#`. A failed message turn
-prints nothing.
+prints `commit message failed on <subject>: <error>, so the message is the subject of the item` on stderr, and the
+report has that line too. The failure is the saved result of the turn, so a resume does not ask again.
 
 Then the run starts the child run `judge` in the worktree, with the work item and the start commit, so the judge
 judges the squashed commit and its message: see [Judge](#judge). If the judge fails or does not answer through
@@ -162,7 +164,8 @@ commit.
 
 The status of the run follows the judge: `shipped` when the score is above 0, `rejected` when it is 0, and `unjudged`
 when the judge failed. The command prints `<status> <subject> in <n> rounds, judge <score or failed>, <commit>`, then
-the line `branch <name>` of [Branch name](#branch-name). It exits 0 when `shipped`, and 1 when `rejected` or
+the line `commit message failed on ...` when the message turn failed, then the line `branch <name>` of
+[Branch name](#branch-name). It exits 0 when `shipped`, and 1 when `rejected` or
 `unjudged`; these two keep the squashed commit, the branch and the worktree.
 
 The result of the run, which `--json` prints, has `status` and `rounds`; `head`, `subject`, the subject of the
@@ -248,7 +251,8 @@ message (`%B`) as `HEAD` before the implement, the round is blocked: the run res
 The result is `{ "status": "judged", "shipped", "reply" }`, with `shipped` the result of `judgeCommit`: `{ "head",
 "subject", "score", "answers", "findings", "divergence" }`, `head` the short squashed commit and `subject` its subject.
 The command prints
-`judge <score>: <subject>` and one line `  <finding>` for each finding, and exits 0. A score of 0 gives the status
+`judge <score>: <subject>`, one line `  <finding>` for each finding, and the line `commit message failed on ...` of
+[Ship](#ship) when the message turn failed, and exits 0. A score of 0 gives the status
 `rejected` in place of `judged`, and exits 1. When the implement is blocked, because the item has no change from `--start`, or the
 round left the same tree and message as `HEAD` before it, the result is `{ "status": "blocked", "reply" }` and the command prints `blocked <subject>` and the reply. When the judge
 gives no score, the result is `{ "status": "unjudged", "judgeError", "shipped", "reply" }`, with `shipped` the result
@@ -1033,9 +1037,9 @@ and `phase`, `log` and `title` need no `await`.
 | `args` | The argument values of `meta.args`, and `start` with `worktree: true` |
 | `runId`, `runDir` | The run ID and the run directory. A script that `run()` starts gets its own values |
 | `cwd` | The directory where `sh` and `ok` run: the run's worktree, the repository of `--repo`, the caller's directory, or the directory of the command |
-| `await agent(prompt, { as, provider, model, thinking, schema })` | One turn in a new session of the role `as` (default `default`), with the model of [Roles](#roles). Returns the reply text, or the answer with `schema` |
-| `session(name)`, `session({ as, provider, model, thinking })` | A new session of the role `name` or `as` (default `default`), with the model of [Roles](#roles), returned at once. `await <session>.ask(prompt, { schema })` is one turn in it |
-| `await sh(cmd)` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>` |
+| `await agent(prompt, { as, provider, model, thinking, schema, settle })` | One turn in a new session of the role `as` (default `default`), with the model of [Roles](#roles). Returns the reply text, or the answer with `schema`. With `settle: true`, a failed turn returns `{ error }` with its message, and a resume returns the same `{ error }` |
+| `session(name)`, `session({ as, provider, model, thinking })` | A new session of the role `name` or `as` (default `default`), with the model of [Roles](#roles), returned at once. `await <session>.ask(prompt, { schema, settle })` is one turn in it, with `schema` and `settle` as for `agent` |
+| `await sh(cmd, { settle })` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>`. With `settle: true`, a failure returns `{ error }` with that message, and a resume returns the same `{ error }` |
 | `await ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
 | `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow` in the project store. See [Past runs](#past-runs) |
@@ -1112,9 +1116,9 @@ the run started with. A script's own declaration of the same name takes their pl
 | `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries, and in both stores `<path>/notes.keys`, the key `<run-id>/<n>` of each note, whose line is `<k>` in the plain store; an add whose key is there adds no note. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. A compression request without `nap <a>-<b>` fails with `memo asked for a compression without "nap <a>-<b>": <first line>`, and the 65th request in a row fails with `memo still asks for compressions after 64 summaries`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without its `report` and `memory` keys at any depth, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(name)` is a session of the role `name` whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the role name, and returns the text |
 | `await noteLines(notes)` | The `#<k> <note>` lines of `notes.text`, without empty lines |
 | `await commitAll(message)` | Stages every change, and commits it as `message` when something is staged, with the check and the commit in one command, so that a repeat makes no second commit. The shell runs the commit with `exec`, so a stop of the run also stops the commit |
-| `await squash(start, message, subject)` | Squashes the commits since `start` into one commit with `message`, logs `commit <short> <subject>` and returns the short head. When nothing changed since `start`, it makes no commit, logs `nothing to commit since <short>` and returns the short head. Safe to repeat: it is one command, so a repeat resets a squash commit that was made but not saved. The shell runs the commit with `exec`, so a stop of the run also stops the commit |
-| `await commitChange(item, start, findings)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base`, `head` and `findings`, the lines of `findings` (default `[]`) joined with newlines, squashes the change into one commit with it, and returns `{ head, subject }`, `head` the short head and `subject` the commit subject. When the turn fails or gives an empty subject, the message is the subject of `item` |
-| `await judgeCommit(item, start, committed)` | Runs the child run `judge` with `item` and `start`, and returns `committed`, the result of `commitChange`, with the judge fields `score`, `answers`, `findings`, `judgeError` and `divergence` |
+| `await squash(start, message, subject)` | Squashes the commits since `start` into one commit with `message`, logs `commit <short> <subject>` and returns the short head. When nothing changed since `start`, it makes no commit, logs `nothing to commit since <short>` and returns the short head. Safe to repeat: it is one command, so a repeat resets a squash commit that was made but not saved. The shell runs the commit in the background and kills it on `TERM`, so a stop of the run also stops the commit |
+| `await commitChange(item, start, findings)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base`, `head` and `findings`, the lines of `findings` (default `[]`) joined with newlines, squashes the change into one commit with it, and returns `{ head, subject, warnings }`, `head` the short head, `subject` the commit subject, and `warnings` the lines that it logged for a script's report. When the turn fails or gives an empty subject, the message is the subject of `item`. The turn has `settle: true`: a failed turn logs `commit message failed on <subject of item>: <error>, so the message is the subject of the item`, and `warnings` is that line; else `warnings` is `[]` |
+| `await judgeCommit(item, start, committed)` | Runs the child run `judge` with `item` and `start`, and returns `head` and `subject` of `committed`, the result of `commitChange`, with the judge fields `status`, `score`, `answers`, `findings`, `judgeError` and `divergence` |
 | `await writePatch(path, from)` | Writes `git diff --binary` from `from` to `HEAD` to the file `path`, and returns `path` |
 | `await changeOf(args, { wip })` | `{ start, intent, checkout, dirty }` of the change of a script's `args`. With `args.start`, it is `args.start` and `args.item`, not dirty, with no Git step. Else it is the change that `args.change` points at from `args.base`, with the rules of [Thermoloop](#thermoloop), and it calls `title` with the subject of the intent: `start` is the start commit, `intent` is `args.item` or the pull request or the commit messages, `checkout` is the branch of a change that must run in a worktree of its own, and `dirty` says that the checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip` |
 | `await inCheckout(name, change, args)` | Runs the script `name` again as a child run with `args`, the `item` and `start` of the change, and `checkout`, the branch of the change, and returns its result with the last report line `worktree <path>`, the worktree that has the branch |
@@ -1201,15 +1205,17 @@ continues in its session. A command that was in progress runs again, so commands
 records its kind, the arguments of its kind, its phase and its start time when it starts, and its `end` when it ends:
 `{ "kind": "done", "at", "result" }`, `{ "kind": "failed", "at", "error" }`, or `{ "kind": "cancelled", "at" }`. A
 call without `end` has not ended. The arguments of each kind are: `session` `{ "profile", "provider"?, "model"?,
-"thinking"? }`, `ask` `{ "conversation", "prompt", "schema" }` (`schema` is `null` without one), `sh` and `ok`
-`{ "cmd", "check" }`, `run` `{ "name", "args" }`, `input` `{ "question" }`, `pastRuns` `{ "workflow", "options" }`, and
+"thinking"? }`, `ask` `{ "conversation", "prompt", "schema", "settle"? }` (`schema` is `null` without one), `sh`
+`{ "cmd", "check", "settle"? }`, `ok` `{ "cmd", "check" }`, `run` `{ "name", "args" }`, `input` `{ "question" }`, `pastRuns` `{ "workflow", "options" }`, and
 `todo` `{ "action": "add", "text" }`, `{ "action": "set", "id", "state", "text"? }` or `{ "action": "list" }`.
 `CALL_RECORD` of `src/run/calls.ts` is the schema of a record, one member for each kind. It also records the task that
 started it, for a `session` call its conversation and the model that the session used, `{ "provider", "model",
 "thinking"? }`, and for a `run` call the run ID of its child run before the child's run directory exists, so a rerun
 after a crash uses the same run ID and directory. `show`, `log` and `resume` read only the records that match the
 schema, so they skip the calls that an earlier version saved: `show` of such a run shows its steps with no calls. A call that fails saves no
-result, so every call that failed runs again, also one that the script caught. The
+result unless `settle`, so every call that failed runs again, also one that the script caught. `settle` is `true` when
+present: an `ask` or `sh` call with `settle` saves its failure as the result `{ "error" }`, and a resume returns it. A
+call that the end of its script cancelled saves no result and runs again, also with `settle`. The
 saved results stay in the project store also after the run fails. `phase` and `log` lines are progress, not saved
 results. A resume prints the phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
 lines before it, and keeps the last `phase` line waiting for the next call that runs.

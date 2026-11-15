@@ -25,7 +25,9 @@ import {
 	pastRunsCall,
 	type ScriptRun,
 	SESSION_ARGS,
-	shellCall,
+	settleArgs,
+	shCall,
+	okCall,
 	todoCall,
 } from "./calls.ts";
 import { childResult } from "./child.ts";
@@ -63,10 +65,15 @@ function session(options = "default") {
 	if (model !== undefined) spec.model = model;
 	if (thinking !== undefined) spec.thinking = thinking;
 	const id = __session(spec);
-	return { ask: async (prompt, options = {}) => __ask(await id, await prompt, options.schema) };
+	return {
+		ask: async (prompt, options = {}) => __ask(await id, await prompt, options.schema, options.settle ?? false),
+	};
 }
-const agent = (prompt, { schema, ...options } = {}) => session(options).ask(prompt, { schema });
-const sh = async (cmd) => (await __sh(cmd)).stdout.replace(/\\n$/, "");
+const agent = (prompt, { schema, settle, ...options } = {}) => session(options).ask(prompt, { schema, settle });
+const sh = async (cmd, options = {}) => {
+	const result = await __sh(cmd, options.settle ?? false);
+	return "error" in result ? result : result.stdout.replace(/\\n$/, "");
+};
 const ok = async (cmd) => (await __ok(cmd)).code === 0;
 const input = (question) => {
 	const answer = __input(question);
@@ -86,8 +93,10 @@ const run = async (name, args = {}) => {
 ${script.bundle.lib}`;
 }
 
-const ASK_ARGS = Type.Tuple([Type.Number(), Type.String(), Type.Union([JSON_OBJECT, Type.Null()])]);
-const SH_ARGS = Type.Tuple([Type.Union([Type.String(), Type.Array(Type.String())])]);
+const ASK_ARGS = Type.Tuple([Type.Number(), Type.String(), Type.Union([JSON_OBJECT, Type.Null()]), Type.Boolean()]);
+const SHELL_CMD = Type.Union([Type.String(), Type.Array(Type.String())]);
+const SH_ARGS = Type.Tuple([SHELL_CMD, Type.Boolean()]);
+const OK_ARGS = Type.Tuple([SHELL_CMD]);
 const RUN_ARGS = Type.Tuple([Type.String(), JSON_OBJECT]);
 const INPUT_ARGS = Type.Tuple([Type.String()]);
 const PAST_ARGS = Type.Tuple([Type.String(), PAST_OPTIONS]);
@@ -188,15 +197,15 @@ export async function runScript(
 				),
 			),
 			// The sandbox sends a missing schema as null.
-			global("__ask", ASK_ARGS, ([conversation, prompt, schema]) => {
-				const args = { conversation, prompt, schema };
+			global("__ask", ASK_ARGS, ([conversation, prompt, schema, settle]) => {
+				const args = settleArgs({ conversation, prompt, schema }, settle);
 
 				return memoized(calls, callKey(calls, "ask", args), { kind: "ask", args }, (key) =>
 					askTurn(calls, key, conversation, prompt, schema),
 				);
 			}),
-			global("__sh", SH_ARGS, ([cmd]) => shellCall(calls, cwd, cmd, true)),
-			global("__ok", SH_ARGS, ([cmd]) => shellCall(calls, cwd, cmd, false)),
+			global("__sh", SH_ARGS, ([cmd, settle]) => shCall(calls, cwd, cmd, settle)),
+			global("__ok", OK_ARGS, ([cmd]) => okCall(calls, cwd, cmd)),
 			// The name and the args are in the key, so a resume that reorders different `run` calls keeps each child run.
 			// An unfinished saved child task is waited for again; a failed one gets a new child task.
 			global("__run", RUN_ARGS, ([name, values]) => {

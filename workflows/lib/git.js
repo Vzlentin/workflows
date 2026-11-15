@@ -17,16 +17,17 @@ async function commitAll(message) {
  */
 async function squash(start, message, subject) {
 	// One command, so that a repeat resets a squash commit that was made but not saved.
-	const made = await sh([
+	// The commit runs in the background under a trap, so that a stop of the call also stops it.
+	const output = await sh([
 		"sh",
 		"-c",
-		'git reset -q --soft "$1" && if git diff --cached --quiet; then echo none; else exec git commit -q -m "$2"; fi',
+		'git reset -q --soft "$1" || exit; if git diff --cached --quiet; then echo "none $(git rev-parse --short HEAD)"; else trap \'kill "$c"\' TERM; git commit -q -m "$2" & c=$!; wait "$c" || exit; echo "commit $(git rev-parse --short HEAD)"; fi',
 		"squash",
 		start,
 		message,
 	]);
 
-	const short = await sh(["git", "rev-parse", "--short", "HEAD"]);
+	const [made, short] = output.split("\n").at(-1).split(" ");
 
 	log(made === "none" ? `nothing to commit since ${short}` : `commit ${short} ${subject}`);
 
@@ -57,9 +58,14 @@ function prIntent(pr) {
 	return `# ${pr.title}\n\n${pr.body ?? ""}`.trim();
 }
 
-/** The PR of `ref` with the JSON `fields`, from `gh pr view`. Throws when `gh` fails. */
-async function prOf(ref, fields) {
-	return JSON.parse(await sh(["gh", "pr", "view", ref, "--json", fields]));
+/**
+ * The PR of `ref` with the JSON `fields`, from `gh pr view`. Throws when `gh` fails, or with `options.settle` returns
+ * `{ error }`, as `sh` does.
+ */
+async function prOf(ref, fields, options) {
+	const output = await sh(["gh", "pr", "view", ref, "--json", fields], options);
+
+	return output.error === undefined ? JSON.parse(output) : output;
 }
 
 /** True when `name` is a local branch. */
@@ -165,9 +171,13 @@ async function changeOf(args, { wip = false } = {}) {
 /** The intent of the PR of `branch`, else the commit messages of `range`. A detached `HEAD` (`branch` empty) has no PR. */
 async function intentOf(branch, range) {
 	// Without a PR, or without gh, the commit messages say what the change is for.
-	const pr = branch === "" ? undefined : await prOf(branch, "title,body").catch(() => undefined);
+	if (branch !== "") {
+		const pr = await prOf(branch, "title,body", { settle: true });
 
-	return pr === undefined ? await sh(["git", "log", "--reverse", "--format=%B", range]) : prIntent(pr);
+		if (pr.error === undefined) return prIntent(pr);
+	}
+
+	return await sh(["git", "log", "--reverse", "--format=%B", range]);
 }
 
 /**

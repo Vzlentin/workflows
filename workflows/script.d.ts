@@ -88,8 +88,14 @@ declare const prompts: Record<string, (inputs?: Record<string, string>) => Promi
  */
 type SessionOptions = { as?: string; provider?: string; model?: string; thinking?: string };
 
+/**
+ * The options of a turn. With `schema`, the answer is checked against that JSON Schema. With `settle: true`, a failed
+ * turn returns `{ error }` with its message in place of a throw, and a resume returns the same `{ error }`.
+ */
+type AskOptions = { schema?: object; settle?: true };
+
 /** One turn in a new session. Returns the reply text, or with `schema` the answer checked against that JSON Schema. */
-declare function agent(prompt: string | Promise<string>, options?: SessionOptions & { schema?: object }): Promise<any>;
+declare function agent(prompt: string | Promise<string>, options?: SessionOptions & AskOptions): Promise<any>;
 
 /**
  * A new session of a role name or of `options` (default `default`). Returns at once, and the session keeps its history:
@@ -97,13 +103,15 @@ declare function agent(prompt: string | Promise<string>, options?: SessionOption
  */
 declare function session(
 	options?: string | SessionOptions,
-): { ask(prompt: string | Promise<string>, options?: { schema?: object }): Promise<any> };
+): { ask(prompt: string | Promise<string>, options?: AskOptions): Promise<any> };
 
 /**
  * Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a
- * nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell.
+ * nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell. With `settle: true`, a
+ * failure returns `{ error }` with its message in place of a throw, and a resume returns the same `{ error }`.
  */
-declare function sh(cmd: string | readonly string[]): Promise<string>;
+declare function sh(cmd: string | readonly string[], options: { settle: true }): Promise<string | { error: string }>;
+declare function sh(cmd: string | readonly string[], options?: { settle?: false }): Promise<string>;
 
 /** Runs `cmd` as `sh` does. Returns true when the exit code is 0. */
 declare function ok(cmd: string | readonly string[]): Promise<boolean>;
@@ -226,7 +234,7 @@ declare function oneLine(text: string): string;
 
 /** A session whose first prompt starts with the notes of a memory. */
 type RememberingSession = {
-	ask(prompt: string | Promise<string>, options?: { schema?: object }): Promise<any>;
+	ask(prompt: string | Promise<string>, options?: AskOptions): Promise<any>;
 	/**
 	 * Asks for `{ text, notes }` with the answer rule `text is <rule>`, adds the notes under the role name at `round`, and
 	 * returns the text.
@@ -280,20 +288,22 @@ declare function commitAll(message: string): Promise<void>;
  * Squashes the commits since `start` into one commit with `message`, logs `commit <short> <subject>` and returns the
  * short head. When nothing changed since `start`, it makes no commit, logs `nothing to commit since <short>` and returns
  * the short head. Safe to repeat: it is one command, so a repeat resets a squash commit that was made but not saved. The
- * shell runs the commit with `exec`, so a stop of the run also stops the commit.
+ * shell runs the commit in the background and kills it on `TERM`, so a stop of the run also stops the commit.
  */
 declare function squash(start: string, message: string, subject: string): Promise<string>;
 
 /**
  * Writes the commit message of the change from `start` to `HEAD` in one turn of an `implementer` session, with the
- * judge's `findings` lines when there are some, and squashes the change into one commit with it. Returns the short head
- * and the commit subject. When the turn fails or gives an empty subject, the message is the subject of `item`.
+ * judge's `findings` lines when there are some, and squashes the change into one commit with it. Returns the short head,
+ * the commit subject, and `warnings`, the lines that it logged for a script's report. When the turn fails or gives an
+ * empty subject, the message is the subject of `item`. A failed turn logs `commit message failed on <subject>: <error>,
+ * so the message is the subject of the item`, and that line is the one warning; else `warnings` is empty.
  */
 declare function commitChange(
 	item: string,
 	start: string,
 	findings?: readonly string[],
-): Promise<{ head: string; subject: string }>;
+): Promise<{ head: string; subject: string; warnings: string[] }>;
 
 /** The judge fields of `judgeCommit`: the status of the judge with a score, or the error of the judge. */
 type JudgeFields =
@@ -314,12 +324,15 @@ type JudgeFields =
 			divergence?: undefined;
 	  };
 
-/** The child run `judge` on the squashed commit from `start`. Returns `committed` with the judge fields. */
-declare function judgeCommit<T extends { head: string; subject: string }>(
+/**
+ * The child run `judge` on the squashed commit from `start`. Returns `head` and `subject` of `committed` with the judge
+ * fields.
+ */
+declare function judgeCommit(
 	item: string,
 	start: string,
-	committed: T,
-): Promise<Omit<T, keyof JudgeFields> & JudgeFields>;
+	committed: { head: string; subject: string },
+): Promise<{ head: string; subject: string } & JudgeFields>;
 
 /** Writes the binary diff from `from` to `HEAD` to the file `path`, and returns `path`. */
 declare function writePatch(path: string, from: string): Promise<string>;

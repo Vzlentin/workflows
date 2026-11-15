@@ -291,6 +291,30 @@ echo '{"title":"Fix the typo of the README","body":"It says wrold."}'
 		expect(shown.stdout[0]).toBe(`run ${run.id} thermoloop done, result approved exit 0 Fix the typo of the README`);
 	});
 
+	it("keeps the commit messages as the intent on resume when gh failed at the start", async () => {
+		await fake(
+			root,
+			"gh",
+			`echo "$@" >> "${root}/gh.log"
+[ -f "${root}/gh.flag" ] || { touch "${root}/gh.flag"; exit 1; }
+echo '{"title":"Fix the typo of the README","body":"It says wrold."}'
+`,
+		);
+
+		const run = await workflows(["thermoloop"], {
+			cwd: repo,
+			stdin: "",
+			script: { verdicts: ["SHIP"], failAt: { kind: "review", nth: 1 } },
+		});
+
+		expect(run.code).toBe(1);
+
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: repo, script: { verdicts: ["SHIP"] } });
+		expect(resumed.code).toBe(0);
+		expect(resumed.model.find("review")?.prompt).toContain("## item\nfix the typo");
+		expect((await readFile(join(root, "gh.log"), "utf8")).trim().split("\n")).toHaveLength(1);
+	});
+
 	it("commits the changes of the checkout as wip, and reviews a ref with the commit messages as the intent", async () => {
 		await writeFile(join(repo, "NOTES.md"), "notes\n");
 

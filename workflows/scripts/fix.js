@@ -51,19 +51,23 @@ try {
 	if (sameTree && (await messageOf(before)) === (await messageOf("HEAD"))) {
 		await sh(["git", "reset", "-q", "--soft", before])
 
-		return { status: "blocked", reply, report: [`blocked ${subject}`, reply] }
+		return { status: "blocked", reply, report: [`blocked ${subject}`, ...committed.warnings, reply] }
 	}
 
 	const { status, ...shipped } = await judgeCommit(item, start, committed)
 	const { score, judgeError } = shipped
 
 	if (score === undefined) {
-		const report = [`judge failed on ${subject}: ${judgeError}`]
+		const report = [`judge failed on ${subject}: ${judgeError}`, ...committed.warnings]
 
 		return { status, judgeError, shipped, reply, report }
 	}
 
-	const report = [`judge ${score.toFixed(2)}: ${subject}`, ...shipped.findings.map((finding) => `  ${finding}`)]
+	const report = [
+		`judge ${score.toFixed(2)}: ${subject}`,
+		...shipped.findings.map((finding) => `  ${finding}`),
+		...committed.warnings,
+	]
 
 	return { status, shipped, reply, report }
 } catch (error) {

@@ -170,7 +170,8 @@ const NAMES = Type.Array(Type.String());
 async function declaredNames(): Promise<string[]> {
 	const declarations = await readFile("workflows/script.d.ts", "utf8");
 
-	return [...declarations.matchAll(/^declare (?:const|function) (\w+)/gm)].map(([, name]) => name ?? "");
+	// An overloaded function has one declaration for each overload.
+	return [...new Set([...declarations.matchAll(/^declare (?:const|function) (\w+)/gm)].map(([, name]) => name ?? ""))];
 }
 
 describe("workflows/script.d.ts", () => {
@@ -1544,6 +1545,46 @@ return seen`,
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "ok"]);
 	});
 
+	it("replays a settled failure of sh on resume", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const seen = await sh("test -f flag", { settle: true })
+await sh("touch flag")
+await sh("./gate.sh g")
+return JSON.stringify(seen)`,
+		);
+		const first = await stopped(["x.js"], { gate: "g" });
+		expect(first.code).toBe(130);
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([
+			0,
+			JSON.stringify({ error: "sh exited with 1: test -f flag" }),
+		]);
+	});
+
+	it("replays a settled failure of a turn on resume", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const seen = await agent("Script: one", { settle: true })
+await sh("./gate.sh g")
+return JSON.stringify(seen)`,
+		);
+		const interrupt = new AbortController();
+		const pending = workflows(["x.js"], { cwd: root, interrupt, script: { failAt: { kind: "script", nth: 1 } } });
+
+		while (!existsSync(join(root, "g.reached"))) await new Promise((resolve) => setTimeout(resolve, 10));
+		interrupt.abort();
+		const first = await pending;
+		await writeFile(join(root, "g.open"), "");
+		expect(first.code).toBe(130);
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+		expect(resumed.code).toBe(0);
+		expect(JSON.parse(resumed.stdout.at(-1) ?? "")).toEqual({
+			error: expect.stringMatching(/ turn was not answered: model_error "overloaded"$/),
+		});
+		expect(resumed.model.calls.filter((call) => call.kind === "script")).toEqual([]);
+	});
+
 	it("commits once when commitAll runs again at resume", async () => {
 		const repo = join(root, "repo");
 		await repository(repo);
@@ -2396,6 +2437,8 @@ return [one.reply, two.reply].join(", ")`,
 			['sh(["git", 1])', "sh got bad arguments: /0/1 must be string"],
 			["ok(1)", "ok got bad arguments: /0 must be string"],
 			["input(1)", "input got bad arguments: /0 must be string"],
+			['sh("true", { settle: "yes" })', "sh got bad arguments: /1 must be boolean"],
+			['agent("Script: one", { settle: "yes" })', "ask got bad arguments: /3 must be boolean"],
 		]) {
 			await writeFile(join(root, "bad.js"), `await ${code}`);
 			const run = await workflows(["bad.js"], { cwd: root });

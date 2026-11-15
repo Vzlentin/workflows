@@ -67,17 +67,30 @@ export const SESSION_ARGS = Type.Object(
 /** A JSON object. */
 export const JSON_OBJECT = Type.Record(Type.String(), JSON_VALUE);
 
-/** The args of an `ask` call: the conversation of its session, its prompt, and the schema of its answer, if any. */
+/**
+ * The args of an `ask` call: the conversation of its session, its prompt, the schema of its answer, if any, and
+ * `settle` when a failure of the call is its saved result.
+ */
 export const ASK_ARGS = Type.Object(
-	{ conversation: Type.Number(), prompt: Type.String(), schema: Type.Union([JSON_OBJECT, Type.Null()]) },
+	{
+		conversation: Type.Number(),
+		prompt: Type.String(),
+		schema: Type.Union([JSON_OBJECT, Type.Null()]),
+		settle: Type.Optional(Type.Literal(true)),
+	},
 	{ additionalProperties: false },
 );
 
-/** The args of a `sh` or `ok` call: its command, and whether a non-zero exit throws. */
-export const SHELL_ARGS = Type.Object(
-	{ cmd: Type.Union([Type.String(), Type.Array(Type.String())]), check: Type.Boolean() },
+const SHELL_CMD = Type.Union([Type.String(), Type.Array(Type.String())]);
+
+/** The args of a `sh` call: its command, whether a non-zero exit throws, and `settle` when a failure is its result. */
+export const SH_ARGS = Type.Object(
+	{ cmd: SHELL_CMD, check: Type.Boolean(), settle: Type.Optional(Type.Literal(true)) },
 	{ additionalProperties: false },
 );
+
+/** The args of an `ok` call: its command, and whether a non-zero exit throws. */
+export const OK_ARGS = Type.Object({ cmd: SHELL_CMD, check: Type.Boolean() }, { additionalProperties: false });
 
 /** The args of a `run` call: the workflow of the child run and its args. */
 export const RUN_ARGS = Type.Object({ name: Type.String(), args: JSON_OBJECT }, { additionalProperties: false });
@@ -143,8 +156,8 @@ const CALL_FIELDS = {
 const CALL_ARGS = {
 	session: SESSION_ARGS,
 	ask: ASK_ARGS,
-	sh: SHELL_ARGS,
-	ok: SHELL_ARGS,
+	sh: SH_ARGS,
+	ok: OK_ARGS,
 	run: RUN_ARGS,
 	input: INPUT_ARGS,
 	pastRuns: PAST_RUNS_ARGS,
@@ -307,8 +320,10 @@ type PickEach<T, K extends PropertyKey> = T extends unknown ? Pick<T, Extract<K,
 /**
  * The result of the call `key`: its saved result, or the value of `effect`, which gets the key. The call records its
  * start, with the waiting lines, before `effect`, and its end with the value or the error after it. A stopped call
- * records no end, and a call that throws saves no result, so both run again. A call with a saved result drops the log
- * lines and keeps the phase line, so a resume shows the phase of the first call that runs.
+ * records no end, and a call that throws saves no result, so both run again. A call whose args have `settle: true` and
+ * whose effect throws while the call context is not aborted saves `{ error }`, the message of the error, as its result,
+ * and returns it. A call with a saved result drops the log lines and keeps the phase line, so a resume shows the phase
+ * of the first call that runs.
  */
 export async function memoized(
 	calls: Calls,
@@ -324,7 +339,11 @@ export async function memoized(
 	try {
 		value = await effect(key);
 	} catch (error) {
-		return failCall(calls, key, start.kind, error);
+		if (!("settle" in start.args) || calls.context.abortSignal?.aborted) {
+			return failCall(calls, key, start.kind, error);
+		}
+
+		value = { error: messageOf(error) };
 	}
 
 	return endCall(calls, key, async () => value);
@@ -408,17 +427,25 @@ async function failCall(calls: Calls, key: string, kind: CallKind, cause: unknow
 	// A call that the end of its script or task cancelled did not fail, and runs again. The waiting `input` call ends by
 	// that cancel too, and stays open.
 	if (!context.abortSignal?.aborted) {
-		const message = cause instanceof Error ? cause.message : String(cause);
-
 		await runtime.commit(async (tx) => {
 			const doc = await tx.doc(CallDoc, key, null);
-			doc.end = { kind: "failed", at: new Date().toISOString(), error: message };
+			doc.end = { kind: "failed", at: new Date().toISOString(), error: messageOf(cause) };
 
 			return undefined;
 		}, context);
 	} else if (kind !== "input" && !runtime.signal.aborted) await cancelCall(calls, key);
 
 	throw cause;
+}
+
+/** The message of the error `cause`. */
+function messageOf(cause: unknown): string {
+	return cause instanceof Error ? cause.message : String(cause);
+}
+
+/** `args`, with `settle: true` when `settle` is true. */
+export function settleArgs<T extends object>(args: T, settle: boolean): T | (T & { settle: true }) {
+	return settle ? { ...args, settle: true as const } : args;
 }
 
 /** Records that the end of the script cancelled the call `key`, in the context of the phase, which still commits. */
@@ -446,13 +473,18 @@ async function shell(calls: Calls, cwd: string, cmd: string | string[], check: b
 	return result;
 }
 
-/** A `sh` call when `check` is true, else an `ok` call. */
-export function shellCall(calls: Calls, cwd: string, cmd: string | string[], check: boolean): Promise<JsonValue> {
-	const args = { cmd, check };
+/** A `sh` call, whose failure is its result with `settle`. */
+export function shCall(calls: Calls, cwd: string, cmd: string | string[], settle: boolean): Promise<JsonValue> {
+	const args = settleArgs({ cmd, check: true }, settle);
 
-	return memoized(calls, callKey(calls, "sh", args), { kind: check ? "sh" : "ok", args }, () =>
-		shell(calls, cwd, cmd, check),
-	);
+	return memoized(calls, callKey(calls, "sh", args), { kind: "sh", args }, () => shell(calls, cwd, cmd, true));
+}
+
+/** An `ok` call. */
+export function okCall(calls: Calls, cwd: string, cmd: string | string[]): Promise<JsonValue> {
+	const args = { cmd, check: false };
+
+	return memoized(calls, callKey(calls, "sh", args), { kind: "ok", args }, () => shell(calls, cwd, cmd, false));
 }
 
 /**

@@ -746,6 +746,23 @@ export default function ({ events }) {
 		expect(git(worktree, "branch", "--show-current")).toBe("fix-the-readme-typo");
 	});
 
+	it("logs and reports a failed commit message turn, and commits with the subject of the work item", async () => {
+		const run = await workflows(["ship", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED], failAt: { kind: "commit", nth: 1 } },
+		});
+
+		expect(run.code).toBe(0);
+
+		const failed = expect.stringMatching(
+			/^commit message failed on Fix the README typo: The \S+ turn was not answered: model_error "overloaded", so the message is the subject of the item$/,
+		);
+
+		expect(run.stderr).toContainEqual(failed);
+		expect(run.stdout).toEqual([`run ${run.id}`, expect.stringMatching(SHIPPED), failed, "branch fix-the-readme-typo"]);
+		expect(git(worktreeOf(run.id), "log", "-1", "--format=%B")).toBe("Fix the README typo");
+	});
+
 	it("gives the divergence of the judge answer in the result, on one line, and not in the commit", async () => {
 		const divergence = "The commit also fixes\n  the README title.";
 
@@ -1023,8 +1040,7 @@ describe("workflows show", () => {
 					call("run thermoloop \\S+"),
 					call("sh git rev-parse HEAD"),
 					...asks("implementer", 1),
-					call('sh sh -c git reset -q --soft "\\$1" && if git diff --cached --quiet; then echo none; '),
-					call("sh git rev-parse --short HEAD"),
+					call('sh sh -c git reset -q --soft "\\$1" \\|\\| exit; if git diff --cached --quiet; then echo '),
 					call("run judge \\S+"),
 					notes,
 					...asks("summarizer", 1),

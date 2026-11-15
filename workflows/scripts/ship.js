@@ -56,7 +56,8 @@ const reviewed = await run("thermoloop", { item, rounds, start, patches, plan, r
 
 if (reviewed.status !== "approved") return notes.finish(item, unshipped(reviewed))
 
-const { status: verdict, ...shipped } = await judgeCommit(item, start, await commitChange(item, start))
+const committed = await commitChange(item, start)
+const { status: verdict, ...shipped } = await judgeCommit(item, start, committed)
 const judged = shipped.score === undefined ? "failed" : shipped.score.toFixed(2)
 const status = verdict === "judged" ? "shipped" : verdict
 
@@ -66,5 +67,5 @@ return notes.finish(item, {
 	...shipped,
 	memory: reviewed.memory,
 	worktree,
-	report: [`${status} ${subject} in ${reviewed.rounds} rounds, judge ${judged}, ${shipped.head}`],
+	report: [`${status} ${subject} in ${reviewed.rounds} rounds, judge ${judged}, ${shipped.head}`, ...committed.warnings],
 })

@@ -326,6 +326,35 @@ describe("workflows campaign", () => {
 		]);
 	});
 
+	it("logs a failed commit message turn of the fix round, and squashes with the subject of the item", async () => {
+		const run = await workflows(["campaign", "--json", GOAL], {
+			cwd: repo,
+			script: {
+				items: [[FIRST]],
+				edits: [FIXED, FIX],
+				commit: [COMMIT],
+				judge: [ZERO],
+				failAt: { kind: "commit", nth: 2 },
+			},
+		});
+
+		expect(run.code).toBe(0);
+		const progress = progressOf(run.stderr);
+		const fix = progress.indexOf("  ✓ fix");
+		expect(progress.slice(fix + 1, fix + 4)).toEqual([
+			"    +1 -1 in 1 file",
+			expect.stringMatching(
+				/^ {4}commit message failed on Fix the README typo: The \S+ turn was not answered: model_error "overloaded", so the message is the subject of the item$/,
+			),
+			expect.stringMatching(/^ {4}commit [0-9a-f]+ Fix the README typo$/),
+		]);
+		expect(git(worktreeOf(run.id), "log", "-1", "--format=%B").trim()).toBe("Fix the README typo");
+		const { value: result } = JSON.parse(run.stdout[1] ?? "");
+		expect(result.items[0].result.report).toEqual([
+			expect.stringMatching(/^rejected Fix the README typo in 1 rounds, judge 0\.00, [0-9a-f]+$/),
+		]);
+	});
+
 	it("fixes an item whose commit message the judge fails, with no code change, and ships it as one commit", async () => {
 		const run = await workflows(["campaign", "--json", GOAL], {
 			cwd: repo,
