@@ -1041,7 +1041,7 @@ and `phase`, `log` and `title` need no `await`.
 | `cwd` | The directory where `sh` and `ok` run: the run's worktree, the repository of `--repo`, the caller's directory, or the directory of the command |
 | `await agent(prompt, { as, provider, model, thinking, schema, settle })` | One turn in a new session of the role `as` (default `default`), with the model of [Roles](#roles). Returns the reply text, or the answer with `schema`. With `settle: true`, a failed turn returns `{ error }` with its message, and a resume returns the same `{ error }`. The prompt is the `key` of its session |
 | `session(name)`, `session({ as, provider, model, thinking, key })` | A new session of the role `name` or `as` (default `default`), with the model of [Roles](#roles), returned at once. `await <session>.ask(prompt, { schema, settle })` is one turn in it, with `schema` and `settle` as for `agent`. `key`, a string, tells apart the sessions of the same options |
-| `await sh(cmd, { settle })` | Runs `sh -c <cmd>` in the current directory of the start, with no stdin: a command that reads stdin reads end of file. Returns stdout without the last newline, and throws on a nonzero exit code. The error is `sh exited with <code>: <cmd>`, then a newline and the stderr when it is not empty. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>`, with the stdout and the stderr as the output. In the error, output of more than 4096 UTF-8 bytes is cut to a note `[… <n> bytes cut; workflows log <root-run-id> <call> shows the call]`, a newline and the longest end of the output that fits, from a line start when that end has one, else from a character, together at most 4096 bytes. With `settle: true`, a failure returns `{ error }` with that message, and a resume returns the same `{ error }` |
+| `await sh(cmd, { settle })` | Runs `sh -c <cmd>` in the current directory of the start, with no stdin: a command that reads stdin reads end of file. Returns stdout without the last newline, and throws on a nonzero exit code. The error is `sh exited with <code>: <cmd>`, then a newline and the stderr when it is not empty. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>`, with the stdout and the stderr as the output. In the error, output of more than 4096 UTF-8 bytes is cut to a note `[… <n> bytes cut; workflows log <root-run-id> <call> shows the call]`, a newline and the longest end of the output that fits, from a line start when that end has one, else from a character, together at most 4096 bytes. The record of a failed call keeps its exit code, stdout and stderr, as [Saved inputs and resume](#saved-inputs-and-resume) says. With `settle: true`, a failure returns `{ error }` with that message, and a resume returns the same `{ error }` |
 | `await ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
 | `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow` in the project store. See [Past runs](#past-runs) |
@@ -1217,7 +1217,9 @@ call without `end` has not ended. The arguments of each kind are: `session` `{ "
 `todo` `{ "action": "add", "text" }`, `{ "action": "set", "id", "state", "text"? }` or `{ "action": "list" }`.
 `CALL_RECORD` of `src/run/calls.ts` is the schema of a record, one member for each kind. It also records the task that
 started it, for a `session` call its conversation and the model that the session used, `{ "provider", "model",
-"thinking"? }`, and for a `run` call the run ID of its child run before the child's run directory exists, so a rerun
+"thinking"? }`, for a `sh` call that failed with a nonzero exit code, with `settle` or not, `output`, `{ "code", "stdout", "stderr" }`, with the
+last 1 MiB (1048576 UTF-8 bytes) of each stream (a longer stream is cut to a note `[… <n> bytes cut]`, a newline and
+its end, together at most 1 MiB), which the call drops when it runs again, and for a `run` call the run ID of its child run before the child's run directory exists, so a rerun
 after a crash uses the same run ID and directory. `show`, `log` and `resume` read only the records that match the
 schema, so they skip the calls that an earlier version saved: `show` of such a run shows its steps with no calls. A call that fails saves no
 result unless `settle`, so every call that failed runs again, also one that the script caught. `settle` is `true` when
@@ -1667,7 +1669,8 @@ or `[]` when the run has no todo, also for a run that an earlier version saved, 
 `{ "kind", "args", "runId", "label", "phase", "state", "mark", "startedAt", "end"? }`, with
 ISO times and the arguments of its kind as in [Saved inputs and resume](#saved-inputs-and-resume), and the fields of
 its kind: a `session` call has `conversation`?, the conversation ID of a session that opened, and `model`?, the model
-that it used; an `input` call has `ask`?, the ID of its ask; a `run` call has `child`?. `SHOWN_CALL` of
+that it used; a `sh` call has `output`?, the exit code and the kept output of a failed call; an `input` call has
+`ask`?, the ID of its ask; a `run` call has `child`?. `SHOWN_CALL` of
 `src/records/tree.ts` is its schema, a strict union with one member for each kind, so a call has no other field. `end`
 is the end of a call that ended, as its record saves it: `{ "kind": "done", "at", "result" }`, `{ "kind": "failed",
 "at", "error" }` or `{ "kind": "cancelled", "at" }`. `runId` is the ID of the run that made the call. The JSON `mark`
@@ -1801,9 +1804,9 @@ HH:MM:SS  end done
 - A call line has its mark (`◉` for `running`, `✓` for `done`, and `✗` for every other state), and the kind and the
   label of the call tree of [Show](#show). A call that ended has its duration; a call that has not
   ended has its state word (`running`, `waiting`, `cancelled` or `cut`) in place of it, so that its line stays the same
-  while it runs. A `sh` or `ok` call with a result has `exit <code>`. A failed `sh` call has no exit code: the store
-  keeps only its error, with the output cut as the `sh` row of the script calls says. The size is the UTF-8 size of its output in `B`, `KB` or `MB`: the stdout and the stderr of a
-  `sh` or `ok` call, else its result (a string as it is, else its JSON) or its error. The last field is the name of
+  while it runs. A `sh` or `ok` call with a result, and a `sh` call whose record keeps its output, has `exit <code>`.
+  The size is the UTF-8 size of its output in `B`, `KB` or `MB`: the stdout and the stderr of such a
+  call, else its result (a string as it is, else its JSON) or its error. The last field is the name of
   the call.
 - A failed call has the last 5 lines of its error under it, each as `| <line>`, cut at 120 characters.
 - The last line of a run is its end, `end <state>`, with the state of its last task (`done`, `waiting`, `failed`,
@@ -1822,7 +1825,8 @@ a call of a child run. `workflows log <run-id> <call>` prints that call in full:
 whole command or its label, `phase <phase>` (`-` before the first phase), `started <ISO time>`, and `ended <ISO time>
 <duration>`. A `session` or an `ask` then has `conversation <id>: workflows attach <run-id> --conversation <id>`. A `sh`
 or `ok` call with a result then has `exit <code>`, `--- stdout (<size>)` with its whole stdout, and `--- stderr
-(<size>)` with its whole stderr. Another call has `--- args` with its args as JSON, then `--- result` or `--- error`. A
+(<size>)` with its whole stderr. A failed `sh` call whose record keeps its output has the same lines with the kept
+output, then `--- error` with its error. Another call has `--- args` with its args as JSON, then `--- result` or `--- error`. A
 call that has not ended has `the call still runs; the store gets its output only when it ends` in place of the
 `ended` line: the store has no partial output of a call.
 

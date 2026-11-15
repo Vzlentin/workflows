@@ -21,7 +21,7 @@ import type { Choose } from "../src/cli/main.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { branchOf, renameBranch } from "../src/launch/worktree.ts";
 import { callRecords, reading, runRecords, runTasks } from "../src/records/store.ts";
-import { CALL_KIND, CALL_RECORD, CallDoc, type SavedCall } from "../src/run/calls.ts";
+import { CALL_KIND, CALL_RECORD, CallDoc, KEPT_OUTPUT_BYTES, type SavedCall } from "../src/run/calls.ts";
 import { allPages, rootRuns, runStatus } from "../src/run/past.ts";
 import { RESULT_OBJECT } from "../src/run/result.ts";
 import { prelude } from "../src/run/sandbox.ts";
@@ -677,7 +677,7 @@ describe("workflows show", () => {
 			logLine("check  \\d+s  3 calls  \\d+ B  s1"),
 			logLine("  ✓ sh echo a  \\d+s  exit 0  2 B  [0-9a-f]{16}\\.1"),
 			logLine("  ✓ ok false  \\d+s  exit 1  0 B  [0-9a-f]{16}\\.1"),
-			logLine("  ✗ sh exit 3  \\d+s  \\d+ B  [0-9a-f]{16}\\.1"),
+			logLine("  ✗ sh exit 3  \\d+s  exit 3  0 B  [0-9a-f]{16}\\.1"),
 			`${" ".repeat(14)}| sh exited with 3: exit 3`,
 		]);
 		const shownJson = await workflows(["show", id, "--json"], { cwd: root });
@@ -1007,10 +1007,78 @@ describe("workflows log", () => {
 		expect(logged.code).toBe(0);
 		expect(logged.stdout.slice(1)).toEqual([
 			expect.stringMatching(/^\d\d:\d\d:\d\d {2}check {2}\d+s {2}2 calls {2}\d+ B {2}s1$/),
-			expect.stringMatching(/^\d\d:\d\d:\d\d {4}✗ sh seq 1 200 >&2; exit 3 {2}\d+s {2}\d+ B {2}[0-9a-f]{16}\.\d$/),
+			expect.stringMatching(
+				/^\d\d:\d\d:\d\d {4}✗ sh seq 1 200 >&2; exit 3 {2}\d+s {2}exit 3 {2}692 B {2}[0-9a-f]{16}\.\d$/,
+			),
 			...["196", "197", "198", "199", "200"].map((n) => `${" ".repeat(14)}| ${n}`),
 			expect.stringMatching(/^\d\d:\d\d:\d\d {2}end failed$/),
 		]);
+	});
+
+	it("keeps the exit code and the output of a failed sh in its record", async () => {
+		await writeFile(join(root, "x.js"), 'phase("check")\nawait sh("echo out; echo err >&2; exit 3")');
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(1);
+		const id = run.id ?? "";
+		const shown = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(Value.Check(SHOWN, shown)).toBe(true);
+		expect(shown.calls[0].output).toEqual({ code: 3, stdout: "out\n", stderr: "err\n" });
+		const step = await workflows(["log", id, "s1"], { cwd: root });
+		const line = step.stdout[1] ?? "";
+		expect(line).toMatch(/ {2}\d+s {2}exit 3 {2}8 B {2}[0-9a-f]{16}\.1$/);
+		const call = await workflows(["log", id, line.split("  ").at(-1) ?? ""], { cwd: root });
+		expect(call.code).toBe(0);
+		expect(call.stdout.slice(5)).toEqual([
+			"exit 3",
+			"--- stdout (4 B)",
+			"out",
+			"--- stderr (4 B)",
+			"err",
+			"--- error",
+			"sh exited with 3: echo out; echo err >&2; exit 3",
+			"err",
+		]);
+	});
+
+	it("keeps the output of a failed sh with settle in its record, and returns its error", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'return (await sh("echo out; echo err >&2; exit 3", { settle: true })).error.split("\\n")[0]',
+		);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, "sh exited with 3: echo out; echo err >&2; exit 3"]);
+		const shown = JSON.parse((await workflows(["show", run.id ?? "", "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(Value.Check(SHOWN, shown)).toBe(true);
+		expect(shown.calls[0].end.kind).toBe("done");
+		expect(shown.calls[0].output).toEqual({ code: 3, stdout: "out\n", stderr: "err\n" });
+	});
+
+	it("keeps a bounded tail of the output of a failed sh in its record", async () => {
+		const command = "head -c 1100000 /dev/zero | tr '\\0' 'x' | fold -w 99; echo last; exit 4";
+		await writeFile(join(root, "x.js"), `await sh(${JSON.stringify(command)})`);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(1);
+		const shown = JSON.parse((await workflows(["show", run.id ?? "", "--json"], { cwd: root })).stdout[0] ?? "");
+		const { code, stdout, stderr } = shown.calls[0].output;
+		expect([code, stderr]).toEqual([4, ""]);
+		expect(Buffer.byteLength(stdout)).toBeLessThanOrEqual(KEPT_OUTPUT_BYTES);
+		expect(stdout).toMatch(/^\[… \d+ bytes cut\]\n/);
+		expect(stdout).toMatch(/xlast\n$/);
+	});
+
+	it("keeps no output in the record of a sh that passes at resume", async () => {
+		await writeFile(join(root, "x.js"), 'await sh("echo try; test -f go")');
+		const first = await workflows(["x.js"], { cwd: root });
+		expect(first.code).toBe(1);
+		const id = first.id ?? "";
+		const failed = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(failed.calls[0].output).toEqual({ code: 1, stdout: "try\n", stderr: "" });
+		await writeFile(join(root, "go"), "");
+		expect((await workflows(["resume", id], { cwd: root })).code).toBe(0);
+		const shown = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(shown.calls).toHaveLength(1);
+		expect(shown.calls[0].end.kind).toBe("done");
+		expect(shown.calls[0]).not.toHaveProperty("output");
 	});
 
 	it("logs one end of a run that failed and then ended after a resume", async () => {

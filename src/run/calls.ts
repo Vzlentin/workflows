@@ -201,13 +201,24 @@ export function callUnion<F extends TProperties, E extends KindFields>(fields: F
 	return Type.Union(members) as CallUnion<F, E>;
 }
 
+/** The most UTF-8 bytes of each stream of a failed `sh` call that its record keeps. */
+export const KEPT_OUTPUT_BYTES = 1 << 20;
+
+/** The exit code and the output of a shell command: the result of a `sh` or `ok` call, or the kept output of a failed `sh` call. */
+export const SHELL_OUTPUT = Type.Object(
+	{ code: Type.Number(), stdout: Type.String(), stderr: Type.String() },
+	{ additionalProperties: false },
+);
+
 /**
  * One script call: its kind with the args of that kind, the fields of every call, and the fields of its kind. The
  * `conversation` of a `session` call is its session, and `model` the model that it used. The `child` of a `run` call
  * is its child run, so a stopped call reuses them, and `childRun` the run ID of its child run, saved before the child
- * run directory exists. The `ask` of an `input` call is the ID of its ask in the store of the host.
+ * run directory exists. The `ask` of an `input` call is the ID of its ask in the store of the host. The `output` of a
+ * failed `sh` call is its exit code with the last `KEPT_OUTPUT_BYTES` bytes of its stdout and of its stderr.
  */
 export const CALL_RECORD = callUnion(CALL_FIELDS, {
+	sh: { output: Type.Optional(SHELL_OUTPUT) },
 	session: { conversation: Type.Optional(Type.Number()), model: Type.Optional(SESSION_MODEL) },
 	run: {
 		child: Type.Optional(Type.Object({ task: Type.Number(), runId: Type.String() }, { additionalProperties: false })),
@@ -341,6 +352,7 @@ export async function memoized(
 
 	if (saved !== undefined) return saved;
 	let value: JsonValue;
+	let failure: ShFailure | undefined;
 
 	try {
 		value = await effect(key);
@@ -350,9 +362,10 @@ export async function memoized(
 		}
 
 		value = { error: messageOf(error) };
+		failure = error instanceof ShFailure ? error : undefined;
 	}
 
-	return endCall(calls, key, async () => value);
+	return endCall(calls, key, async () => value, failure);
 }
 
 /**
@@ -394,6 +407,8 @@ async function startCall(calls: Calls, key: string, start: Start): Promise<JsonV
 		Object.assign(doc, { ...start, phase: progress.phase, startedAt: new Date().toISOString(), task: runtime.taskId });
 		delete doc.end;
 
+		if (doc.kind === "sh") delete doc.output;
+
 		return undefined;
 	}, context);
 
@@ -410,8 +425,14 @@ function replayed(calls: Calls, saved: JsonValue): JsonValue {
 
 /**
  * Records the end of the call `key` with the value that `result` gives in the same commit, and gives the saved value.
+ * The value of a settled `sh` call is its failure `failure`, whose record keeps what a failed call keeps.
  */
-async function endCall(calls: Calls, key: string, result: (tx: Tx) => Promise<JsonValue>): Promise<JsonValue> {
+async function endCall(
+	calls: Calls,
+	key: string,
+	result: (tx: Tx) => Promise<JsonValue>,
+	failure?: ShFailure,
+): Promise<JsonValue> {
 	const { runtime, context } = calls;
 	let value: JsonValue = null;
 
@@ -419,6 +440,7 @@ async function endCall(calls: Calls, key: string, result: (tx: Tx) => Promise<Js
 		value = await result(tx);
 		const doc = await tx.doc(CallDoc, key, null);
 		doc.end = { kind: "done", at: new Date().toISOString(), result: value };
+		keepOutput(doc, failure);
 
 		return undefined;
 	}, context);
@@ -436,12 +458,18 @@ async function failCall(calls: Calls, key: string, kind: CallKind, cause: unknow
 		await runtime.commit(async (tx) => {
 			const doc = await tx.doc(CallDoc, key, null);
 			doc.end = { kind: "failed", at: new Date().toISOString(), error: messageOf(cause) };
+			keepOutput(doc, cause);
 
 			return undefined;
 		}, context);
 	} else if (kind !== "input" && !runtime.signal.aborted) await cancelCall(calls, key);
 
 	throw cause;
+}
+
+/** Keeps in the record `doc` the output of its `sh` call when the error `cause` of the call has it. */
+function keepOutput(doc: CallRecord, cause: unknown): void {
+	if (cause instanceof ShFailure && doc.kind === "sh") doc.output = cause.output;
 }
 
 /** The message of the error `cause`. */
@@ -482,6 +510,16 @@ function shError(calls: Calls, key: string, cmd: string | string[], result: Resu
 	return `sh exited with ${result.code}: ${cmd}${stderr === "" ? "" : `\n${cutTail(stderr, OUTPUT_BYTES, hint)}`}`;
 }
 
+/** The error of a `sh` call that exited with a non-zero code, with the output that its record keeps. */
+class ShFailure extends Error {
+	readonly output: Static<typeof SHELL_OUTPUT>;
+
+	constructor(message: string, { code, stdout, stderr }: Result) {
+		super(message);
+		this.output = { code, stdout: cutTail(stdout, KEPT_OUTPUT_BYTES), stderr: cutTail(stderr, KEPT_OUTPUT_BYTES) };
+	}
+}
+
 /** A `sh` call, whose failure is its result with `settle`. */
 export function shCall(calls: Calls, cwd: string, cmd: string | string[], settle: boolean): Promise<JsonValue> {
 	const args = settleArgs({ cmd, check: true }, settle);
@@ -489,7 +527,7 @@ export function shCall(calls: Calls, cwd: string, cmd: string | string[], settle
 	return memoized(calls, callKey(calls, "sh", args), { kind: "sh", args }, async (key) => {
 		const result = await shell(calls, cwd, cmd);
 
-		if (result.code !== 0) throw new Error(shError(calls, key, cmd, result));
+		if (result.code !== 0) throw new ShFailure(shError(calls, key, cmd, result), result);
 
 		return result;
 	});

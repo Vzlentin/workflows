@@ -12,6 +12,7 @@ import {
 	childOf,
 	type SavedCall,
 	SESSION_MODEL,
+	SHELL_OUTPUT,
 } from "../run/calls.ts";
 import { duration, type Progress, type StepView, stepIndexOf } from "./steps.ts";
 
@@ -59,6 +60,7 @@ export const SHOWN_CALL = Type.Cyclic(
 		Call: callUnion(SHOWN_FIELDS, {
 			session: { conversation: Type.Optional(Type.Number()), model: Type.Optional(SESSION_MODEL) },
 			input: { ask: Type.Optional(Type.Number()) },
+			sh: { output: Type.Optional(SHELL_OUTPUT) },
 			run: {
 				child: Type.Optional(
 					Type.Object(
@@ -202,8 +204,14 @@ function shownCall(node: CallNode, todos: ReadonlyMap<string, Todo[]>): Shown {
 
 		case "ask":
 			return { kind: record.kind, args: record.args, ...fields };
-		case "sh":
-			return { kind: record.kind, args: record.args, ...fields };
+		case "sh": {
+			const shown: Shown = { kind: record.kind, args: record.args, ...fields };
+
+			if (record.output !== undefined) shown.output = record.output;
+
+			return shown;
+		}
+
 		case "ok":
 			return { kind: record.kind, args: record.args, ...fields };
 		case "pastRuns":

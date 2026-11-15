@@ -5,7 +5,7 @@
 import type { JsonValue } from "@earendil-works/chord/json";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { childOf, type SavedCall } from "../run/calls.ts";
+import { childOf, type SavedCall, SHELL_OUTPUT } from "../run/calls.ts";
 import { hasEnded, type RunStatus } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
 import { duration, type Progress, type RunStep, stepIndexOf, stepTime } from "./steps.ts";
@@ -29,8 +29,6 @@ const NO_TIME = " ".repeat(8);
  * line that must print again when it changes has a new item then.
  */
 export type LogLine = { readonly item: string; readonly text: string };
-
-const SHELL_RESULT = Type.Object({ code: Type.Number(), stdout: Type.String(), stderr: Type.String() });
 
 /**
  * The calls of one step of a run: the step with its index `n` in `Progress.steps`, 1-based, or index 0 and no step for
@@ -88,11 +86,12 @@ function sizeOf(bytes: number): string {
 	return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** The output of a `sh` or `ok` call that ended with a result, or undefined for another call. */
+/** The output of a `sh` or `ok` call that ended with a result or of a failed `sh` call, or undefined for another call. */
 function shellResult(record: SavedCall) {
+	if (record.kind === "sh" && record.end?.kind === "failed") return record.output;
 	const result = record.end?.kind === "done" ? record.end.result : undefined;
 
-	return (record.kind === "sh" || record.kind === "ok") && Value.Check(SHELL_RESULT, result) ? result : undefined;
+	return (record.kind === "sh" || record.kind === "ok") && Value.Check(SHELL_OUTPUT, result) ? result : undefined;
 }
 
 /** The text of a result: a string as it is, else its JSON. */
@@ -301,13 +300,11 @@ export function callText(root: string, node: CallNode): string[] {
 		lines.push(`exit ${shell.code}`);
 		lines.push(`--- stdout (${size(shell.stdout)})`, ...linesOf(shell.stdout));
 		lines.push(`--- stderr (${size(shell.stderr)})`, ...linesOf(shell.stderr));
+	} else {
+		lines.push("--- args", JSON.stringify(args, null, 2));
 
-		return lines;
+		if (record.end?.kind === "done") lines.push("--- result", ...linesOf(resultText(record.end.result)));
 	}
-
-	lines.push("--- args", JSON.stringify(args, null, 2));
-
-	if (record.end?.kind === "done") lines.push("--- result", ...linesOf(resultText(record.end.result)));
 
 	if (record.end?.kind === "failed") lines.push("--- error", ...linesOf(record.end.error));
 
