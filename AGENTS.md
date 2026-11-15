@@ -46,3 +46,4 @@
 ## Tests
 
 - Tests must not call a real model, a real `gh`, a real `hc`, a real `npm`, the user's Pi or Git configuration, or the user's `memo`. Use `sandbox()` and the faux provider in `test/support.ts`. Each `workflows(...)` call of a test runs an in-process harness host with its own fake model, which loads the entry of this checkout from harness's `entries.json`, and closes it when the command ends, as a host stop does.
+- Never run the tests under `git rebase -x` or a Git hook: Git exports `GIT_DIR` and others to them. `test/setup.ts` removes them, and `test/git-environment.test.ts` checks it.
