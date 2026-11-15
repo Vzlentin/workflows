@@ -21,7 +21,7 @@ afterEach(() => rm(root, { recursive: true, force: true }));
 const ITEM = "Fix the README typo";
 
 describe("workflows judge", () => {
-	it("judges the branch from its merge base with the fixed rubric", async () => {
+	it("judges the branch from its merge base with the fixed rubric, and asks for every finding in one pass", async () => {
 		const run = await workflows(["judge", "--json", "--item", ITEM], { cwd: repo, script: { judge: PASSING_JUDGE } });
 
 		expect(run.code).toBe(0);
@@ -32,7 +32,14 @@ describe("workflows judge", () => {
 		expect(progressOf(run.stderr)).toEqual(["✓ judge", "  judge 0.83"]);
 		expect(run.model.calls.map((call) => call.kind)).toEqual(["judge"]);
 		const head = git(repo, "rev-parse", "HEAD");
-		expect(run.model.find("judge")?.prompt).toMatch(new RegExp(`## base\\n${start}\\n\\n## head\\n${head}$`));
+		const prompt = run.model.find("judge")?.prompt;
+		expect(prompt).toMatch(new RegExp(`## base\\n${start}\\n\\n## head\\n${head}$`));
+		expect(prompt).toContain(
+			"Check every question and every part of the work item before you answer, and list every finding in one pass, not only the first.",
+		);
+		expect(prompt).toContain(
+			"A finding is a term of the work item that the change does not meet, or a rule that it breaks, with its file and line.",
+		);
 	});
 
 	it("says that it does not judge the changes that are not committed, and commits nothing", async () => {

@@ -39,6 +39,8 @@ The worktree is at head. Read `git log base..head`, the commit messages, and `gi
 7. Test surface: new tests cross the module's interface; tests of replaced code are deleted.
 8. Rules: no AGENTS.md rule is broken, new names use CONTEXT.md terms, no ADR is relitigated.
 
-Answer with `respond`: `answers` holds eight `PASS` or `FAIL` values in question order, and `findings` holds one line per failed question, `<n> FAIL <file>:<line> <reason>`, and `divergence` holds one line on how the change differs from the work item, or exactly `none` when it does not.
+Check every question and every part of the work item before you answer, and list every finding in one pass, not only the first. A question can have more than one finding. A finding is a term of the work item that the change does not meet, or a rule that it breaks, with its file and line. A matter of taste is not a finding. Work that the work item does not ask for is not missing, so do not ask for it; code that the change adds without need stays a finding of question 3.
+
+Answer with `respond`: `answers` holds eight `PASS` or `FAIL` values in question order, and `findings` holds one line for each finding, `<n> FAIL <file>:<line> <reason>`, and `divergence` holds one line on how the change differs from the work item, or exactly `none` when it does not.
 
 $@

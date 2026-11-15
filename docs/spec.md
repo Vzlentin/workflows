@@ -351,12 +351,12 @@ not committed, it logs `uncommitted changes are not judged` and adds that line a
 run, it also takes `overlay`: see [Child runs](#child-runs).
 
 The judge session reads the commit messages and the diff of the change, and answers through `respond`: eight PASS or
-FAIL answers, one finding line for each failed question, and the divergence. If question 1 (complete) or 2 (correct)
-fails, the score is 0. Otherwise the score is the fraction of questions 3 to 8 that pass. The step logs `judge <score>`. The command prints `judge <score>: <subject>`, then one
-line `  <finding>` for each
-finding, and exits 0. The result is `{ "status": "judged", "score", "answers", "findings", "divergence" }`, with
-`divergence` the one line of the judge on how the change differs from its intent, or `none`, with its whitespace runs
-made one space. A score of 0 gives the status `rejected` in place of `judged`, and exits 1.
+FAIL answers, one line for each finding (a failed question can have several), and the divergence. If question 1
+(complete) or 2 (correct) fails, the score is 0. Otherwise the score is the fraction of questions 3 to 8 that pass. The
+step logs `judge <score>`. The command prints `judge <score>: <subject>`, then one line `  <finding>` for each finding,
+and exits 0. The result is `{ "status": "judged", "score", "answers", "findings", "divergence" }`, with `divergence`
+the one line of the judge on how the change differs from its intent, or `none`, with its whitespace runs made one space.
+A score of 0 gives the status `rejected` in place of `judged`, and exits 1.
 
 If the judge fails or does not answer through `respond`, the run logs and prints `judge failed on <subject>: <error>`,
 and exits 1. The result is `{ "status": "unjudged", "judgeError" }`.
