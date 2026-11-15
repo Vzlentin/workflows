@@ -1,5 +1,6 @@
 /** Git and other processes: run a command, and the trimmed output of a Git command. */
 import { execFile } from "node:child_process";
+import { cutTail, OUTPUT_BYTES } from "./tool.ts";
 
 export type Result = { readonly code: number; readonly stdout: string; readonly stderr: string };
 
@@ -15,9 +16,12 @@ export function run(command: string, args: readonly string[], cwd: string, signa
 	});
 }
 
-/** The error text of the failed command `argv`: its first two words and its output. */
-export function failure(argv: readonly string[], result: Result): string {
-	return `${argv.slice(0, 2).join(" ")} failed: ${result.stdout}${result.stderr}`.trim();
+/**
+ * The error text of the failed command `argv`: its first two words and its output, cut to {@link OUTPUT_BYTES} with
+ * `hint`.
+ */
+export function failure(argv: readonly string[], result: Result, hint?: string): string {
+	return `${argv.slice(0, 2).join(" ")} failed: ${cutTail(`${result.stdout}${result.stderr}`.trimEnd(), OUTPUT_BYTES, hint)}`.trim();
 }
 
 /** The trimmed stdout of `git <args>` in `cwd`; throws with the command output when git fails. */

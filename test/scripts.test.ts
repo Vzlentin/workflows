@@ -26,6 +26,7 @@ import { allPages, rootRuns, runStatus } from "../src/run/past.ts";
 import { RESULT_OBJECT } from "../src/run/result.ts";
 import { prelude } from "../src/run/sandbox.ts";
 import { TASK } from "../src/run/version.ts";
+import { OUTPUT_BYTES } from "../src/tool.ts";
 import { loadBundle, readFolder } from "../src/workflow/bundle.ts";
 import { readMeta } from "../src/workflow/meta.ts";
 import {
@@ -1634,6 +1635,34 @@ return JSON.stringify([read, empty])`,
 		);
 		const run = await workflows(["x.js"], { cwd: root });
 		expect([run.code, run.stdout.at(-1)]).toEqual([0, JSON.stringify([{ error: "sh exited with 1: read x" }, false])]);
+	});
+
+	it("bounds the output in the error of a failed sh, and names the call in the cut note", async () => {
+		const command = "head -c 100000 /dev/zero | tr '\\0' 'x' | fold -w 99 >&2; echo last >&2; exit 1";
+		await writeFile(
+			join(root, "x.js"),
+			`const array = await sh(${JSON.stringify(["sh", "-c", command])}, { settle: true })
+const string = await sh(${JSON.stringify(command)}, { settle: true })
+return JSON.stringify([array.error, string.error])`,
+		);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(0);
+		const errors: string[] = JSON.parse(run.stdout.at(-1) ?? "[]");
+		const heads = ["sh -c failed: ", `sh exited with 1: ${command}\n`];
+		expect(errors).toHaveLength(2);
+
+		for (const [index, error] of errors.entries()) {
+			const head = heads[index] ?? "";
+			expect(error.startsWith(head)).toBe(true);
+			const note = /^\[… \d+ bytes cut; workflows log (\S+) (\S+) shows the call\]\n/.exec(error.slice(head.length));
+			expect(note?.[1]).toBe(run.id);
+			expect(Buffer.byteLength(error)).toBeLessThanOrEqual(Buffer.byteLength(head) + OUTPUT_BYTES);
+			expect(error).toMatch(/xlast$/);
+			const logged = await workflows(["log", note?.[1] ?? "", note?.[2] ?? ""], { cwd: root });
+			expect(logged.code).toBe(0);
+			expect(logged.stdout[0]).toMatch(/^call \S+$/);
+			expect(logged.stdout[1]).toMatch(/^sh /);
+		}
 	});
 
 	it("replays a settled failure of sh on resume", async () => {

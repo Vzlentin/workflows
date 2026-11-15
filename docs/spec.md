@@ -1041,7 +1041,7 @@ and `phase`, `log` and `title` need no `await`.
 | `cwd` | The directory where `sh` and `ok` run: the run's worktree, the repository of `--repo`, the caller's directory, or the directory of the command |
 | `await agent(prompt, { as, provider, model, thinking, schema, settle })` | One turn in a new session of the role `as` (default `default`), with the model of [Roles](#roles). Returns the reply text, or the answer with `schema`. With `settle: true`, a failed turn returns `{ error }` with its message, and a resume returns the same `{ error }`. The prompt is the `key` of its session |
 | `session(name)`, `session({ as, provider, model, thinking, key })` | A new session of the role `name` or `as` (default `default`), with the model of [Roles](#roles), returned at once. `await <session>.ask(prompt, { schema, settle })` is one turn in it, with `schema` and `settle` as for `agent`. `key`, a string, tells apart the sessions of the same options |
-| `await sh(cmd, { settle })` | Runs `sh -c <cmd>` in the current directory of the start, with no stdin: a command that reads stdin reads end of file. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>`. With `settle: true`, a failure returns `{ error }` with that message, and a resume returns the same `{ error }` |
+| `await sh(cmd, { settle })` | Runs `sh -c <cmd>` in the current directory of the start, with no stdin: a command that reads stdin reads end of file. Returns stdout without the last newline, and throws on a nonzero exit code. The error is `sh exited with <code>: <cmd>`, then a newline and the stderr when it is not empty. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>`, with the stdout and the stderr as the output. In the error, output of more than 4096 UTF-8 bytes is cut to a note `[… <n> bytes cut; workflows log <root-run-id> <call> shows the call]`, a newline and the longest end of the output that fits, from a line start when that end has one, else from a character, together at most 4096 bytes. With `settle: true`, a failure returns `{ error }` with that message, and a resume returns the same `{ error }` |
 | `await ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
 | `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow` in the project store. See [Past runs](#past-runs) |
@@ -1354,8 +1354,9 @@ open `input` call in one read of the store, then the state of that ask from the 
 A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows resume <run-id>`, and
 exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. The run's task ends as
 failed. Resume runs the script again in a new task of the same run, with the same input: a failed Git step runs again,
-a failed turn is sent again in the same session, saved calls return their results, and child runs continue. A run whose
-task ended in another way, such as an aborted or orphaned task, or one that pi-durable faulted, resumes in the same way. An ask whose answer
+a failed turn is sent again in the same session, saved calls return their results, and child runs continue. The error of a failed Git command of the engine, and of a
+failed `gh` call of `sweep`, has the output of the command cut as the error of a failed `sh` call is, with no call in
+the note. A run whose task ended in another way, such as an aborted or orphaned task, or one that pi-durable faulted, resumes in the same way. An ask whose answer
 stopped for a reason other than its end, such as its length, fails its call, and a resume asks again. So does an ask
 whose answer did not call `respond`. A resumed ask never returns the answer of another ask in its session.
 
@@ -1801,7 +1802,7 @@ HH:MM:SS  end done
   label of the call tree of [Show](#show). A call that ended has its duration; a call that has not
   ended has its state word (`running`, `waiting`, `cancelled` or `cut`) in place of it, so that its line stays the same
   while it runs. A `sh` or `ok` call with a result has `exit <code>`. A failed `sh` call has no exit code: the store
-  keeps only its error. The size is the UTF-8 size of its output in `B`, `KB` or `MB`: the stdout and the stderr of a
+  keeps only its error, with the output cut as the `sh` row of the script calls says. The size is the UTF-8 size of its output in `B`, `KB` or `MB`: the stdout and the stderr of a
   `sh` or `ok` call, else its result (a string as it is, else its JSON) or its error. The last field is the name of
   the call.
 - A failed call has the last 5 lines of its error under it, each as `| <line>`, cut at 120 characters.

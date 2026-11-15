@@ -1,8 +1,8 @@
 /**
  * The one definition of the `workflow` tool: its description, parameters and output schema, the `workflows` command
- * of a call, and the outcome and text of a result. The tool of the harness host (`entry.ts`) and the tool of the Pi
- * extension (`pi/index.ts`, which loads `dist/tool.js`) both use it. It imports only `typebox`, `node:fs/promises`,
- * `node:path` and `node:url`.
+ * of a call, the outcome and text of a result, and the cut rule of long texts, which the error text of a failed command
+ * also uses. The tool of the harness host (`entry.ts`) and the tool of the Pi extension (`pi/index.ts`, which loads
+ * `dist/tool.js`) both use it. It imports only `typebox`, `node:fs/promises`, `node:path` and `node:url`.
  */
 import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
@@ -372,6 +372,9 @@ export function waits(result: unknown): result is Static<typeof WAITING> {
 /** The most UTF-8 bytes of a summary text. A longer text keeps its first line and its end, with a cut line between. */
 const OUTCOME_BYTES = 2000;
 
+/** The most UTF-8 bytes of command output in the error text of a failed command. */
+export const OUTPUT_BYTES = 4096;
+
 /** The most UTF-8 bytes of the first line of a cut summary text. */
 const HEAD_BYTES = 500;
 
@@ -450,14 +453,23 @@ function bounded(text: string, hint: string): string {
 	if (bytes.length <= OUTCOME_BYTES) return text;
 	const newline = bytes.indexOf(0x0a);
 	const head = prefix(bytes.subarray(0, newline === -1 ? bytes.length : newline), HEAD_BYTES);
-	// The cut count has at most as many digits as the text length, so this cut line is the longest one.
-	const room = OUTCOME_BYTES - head.length - ENCODER.encode(cutLine(bytes.length, hint)).length - 2;
-	const tail = suffix(bytes.subarray(head.length), room);
 	const decoder = new TextDecoder();
 
-	return [decoder.decode(head), cutLine(bytes.length - head.length - tail.length, hint), decoder.decode(tail)].join(
-		"\n",
-	);
+	return `${decoder.decode(head)}\n${cutTail(decoder.decode(bytes.subarray(head.length)), OUTCOME_BYTES - head.length - 1, hint)}`;
+}
+
+/**
+ * `text` when it fits in `max` UTF-8 bytes, else the cut line with `hint`, a newline, and the longest end of `text`
+ * that fits, together at most `max` bytes.
+ */
+export function cutTail(text: string, max: number, hint?: string): string {
+	const bytes = ENCODER.encode(text);
+
+	if (bytes.length <= max) return text;
+	// The cut count has at most as many digits as the text length, so this cut line is the longest one.
+	const tail = suffix(bytes, max - ENCODER.encode(cutLine(bytes.length, hint)).length - 1);
+
+	return `${cutLine(bytes.length - tail.length, hint)}\n${new TextDecoder().decode(tail)}`;
 }
 
 /** `line` when it fits in {@link REPORT_LINE_BYTES}, else its start, cut at a code point, and `…`. */
@@ -469,8 +481,8 @@ function reportLine(line: string): string {
 	return `${new TextDecoder().decode(prefix(bytes, REPORT_LINE_BYTES - ENCODER.encode("…").length))}…`;
 }
 
-function cutLine(cut: number, hint: string): string {
-	return `[… ${cut} bytes cut; ${hint}]`;
+function cutLine(cut: number, hint?: string): string {
+	return `[… ${cut} bytes cut${hint === undefined ? "" : `; ${hint}`}]`;
 }
 
 /** The longest start of `bytes` of at most `max` bytes that ends at a code point boundary. */

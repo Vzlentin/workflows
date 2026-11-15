@@ -21,7 +21,7 @@ import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { newRunId } from "../src/launch/input.ts";
 import { SessionsDoc } from "../src/run/sessions.ts";
 import { TASK } from "../src/run/version.ts";
-import { OUTCOME } from "../src/tool.ts";
+import { OUTCOME, OUTPUT_BYTES } from "../src/tool.ts";
 import { stopAfterPost } from "./stop-entry.ts";
 import {
 	detached,
@@ -1765,7 +1765,11 @@ return "done"`;
 			for (const text of texts) {
 				const id = /^run (\S+) /.exec(text)?.[1] ?? "";
 				const lines = text.split("\n");
-				expect(lines[0]).toBe(`run ${id} failed: sh -c failed: ${x}`);
+				expect(lines[0]).toMatch(
+					new RegExp(
+						`^run ${id} failed: sh -c failed: \\[… \\d+ bytes cut; workflows log ${id} ${id}/\\S+ shows the call\\]$`,
+					),
+				);
 				expect(lines[1]).toMatch(
 					new RegExp(
 						`^\\[… \\d+ bytes cut; the command workflows log ${id} shows the run and its calls, and workflows log ${id} <call> prints the whole output of a call\\]$`,
@@ -1797,7 +1801,14 @@ return "done"`;
 			const result = await nextResult(0, "demo");
 			const id = /^run (\S+) /.exec(result.text)?.[1] ?? "";
 			const lines = result.text.split("\n");
-			expect(lines[0]).toMatch(new RegExp(`^run ${id} failed: .*sh -c failed: x+$`));
+
+			// The cut note of the sh call names the root run and the call key of the child run.
+			const note = new RegExp(
+				`^run ${id} failed: .*sh -c failed: \\[… \\d+ bytes cut; workflows log ${id} (\\S+)/\\S+ shows the call\\]$`,
+			).exec(lines[0] ?? "");
+
+			expect(note?.[1]).toMatch(/^\d{8}T\d{6}-[0-9a-f]{8}$/);
+			expect(note?.[1]).not.toBe(id);
 			expect(lines[1]).toMatch(
 				new RegExp(`^\\[… \\d+ bytes cut; the command workflows log ${id} shows the run and its calls, `),
 			);
@@ -1833,7 +1844,7 @@ return "done"`;
 		}
 	});
 
-	it("keeps the whole long error in the --json outcome", async () => {
+	it("bounds the long error of a failed sh in the --json outcome", async () => {
 		const command = "head -c 100000 /dev/zero | tr '\\0' 'x' | fold -w 99 >&2; echo last >&2; exit 1";
 		await writeFile(join(root, "x.js"), `await sh(${JSON.stringify(["sh", "-c", command])})`);
 		const run = await workflows(["x.js", "--json"], { cwd: root });
@@ -1841,8 +1852,12 @@ return "done"`;
 		const outcome = JSON.parse(run.stdout.at(-1) ?? "null");
 		expect(outcome).toEqual({ runId: run.id, state: "failed", error: expect.stringMatching(/^sh -c failed: /) });
 		expect(Value.Check(OUTCOME, outcome)).toBe(true);
-		// fold writes 100000 x in lines of 99, then `last`.
-		expect(outcome.error.replaceAll("\n", "")).toMatch(/x{100000}last$/);
+		const head = "sh -c failed: ";
+		expect(outcome.error).toMatch(
+			new RegExp(`^${head}\\[… \\d+ bytes cut; workflows log ${run.id} ${run.id}/\\S+ shows the call\\]\n`),
+		);
+		expect(Buffer.byteLength(outcome.error)).toBeLessThanOrEqual(Buffer.byteLength(head) + OUTPUT_BYTES);
+		expect(outcome.error.replaceAll("\n", "")).toMatch(/xlast$/);
 	});
 
 	it("gives no workflow tool to a subagent of a session at the depth limit, and starts no run", async () => {

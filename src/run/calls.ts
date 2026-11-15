@@ -18,9 +18,9 @@ import type { Overlay } from "@vzlentin/harness/overlay";
 import type { Ask, ServesInput } from "@vzlentin/harness/protocol";
 import { addTodo, readTodos, setTodo, type TodoOwner, TodoState } from "@vzlentin/harness/todo";
 import { type Static, type TLiteral, type TObject, type TProperties, type TUnion, Type } from "typebox";
-import { failure, run } from "../git.ts";
+import { failure, type Result, run } from "../git.ts";
 import { readProject } from "../launch/input.ts";
-import { JSON_VALUE } from "../tool.ts";
+import { cutTail, JSON_VALUE, OUTPUT_BYTES } from "../tool.ts";
 import type { RunBundle } from "../workflow/bundle.ts";
 import type { Roles } from "../workflow/roles.ts";
 import { answerOf, asksOf, newAsk, openAsk, plainText, readAsk } from "./asks.ts";
@@ -464,33 +464,42 @@ async function cancelCall(calls: Calls, key: string): Promise<void> {
 	}, calls.phase);
 }
 
-/** The result of a shell command in `cwd`. With `check`, a non-zero exit throws. */
-async function shell(calls: Calls, cwd: string, cmd: string | string[], check: boolean): Promise<JsonValue> {
+/** The exit code and output of a shell command in `cwd`. */
+function shell(calls: Calls, cwd: string, cmd: string | string[]): Promise<Result> {
 	// A string is `sh -c <cmd>`; an array is the program `cmd[0]` with the arguments `cmd.slice(1)` and no shell.
 	const [file = "", ...rest] = Array.isArray(cmd) ? cmd : ["sh", "-c", cmd];
-	const result = await run(file, rest, cwd, calls.context.abortSignal);
 
-	if (check && result.code !== 0) {
-		if (Array.isArray(cmd)) throw new Error(failure(cmd, result));
-		const stderr = result.stderr.trim();
-		throw new Error(`sh exited with ${result.code}: ${cmd}${stderr === "" ? "" : `\n${stderr}`}`);
-	}
+	return run(file, rest, cwd, calls.context.abortSignal);
+}
 
-	return result;
+/** The error text of the `sh` call `key` that ran `cmd` and exited with a non-zero code. */
+function shError(calls: Calls, key: string, cmd: string | string[], result: Result): string {
+	const hint = `workflows log ${calls.script.root} ${key} shows the call`;
+
+	if (Array.isArray(cmd)) return failure(cmd, result, hint);
+	const stderr = result.stderr.trim();
+
+	return `sh exited with ${result.code}: ${cmd}${stderr === "" ? "" : `\n${cutTail(stderr, OUTPUT_BYTES, hint)}`}`;
 }
 
 /** A `sh` call, whose failure is its result with `settle`. */
 export function shCall(calls: Calls, cwd: string, cmd: string | string[], settle: boolean): Promise<JsonValue> {
 	const args = settleArgs({ cmd, check: true }, settle);
 
-	return memoized(calls, callKey(calls, "sh", args), { kind: "sh", args }, () => shell(calls, cwd, cmd, true));
+	return memoized(calls, callKey(calls, "sh", args), { kind: "sh", args }, async (key) => {
+		const result = await shell(calls, cwd, cmd);
+
+		if (result.code !== 0) throw new Error(shError(calls, key, cmd, result));
+
+		return result;
+	});
 }
 
 /** An `ok` call. */
 export function okCall(calls: Calls, cwd: string, cmd: string | string[]): Promise<JsonValue> {
 	const args = { cmd, check: false };
 
-	return memoized(calls, callKey(calls, "sh", args), { kind: "ok", args }, () => shell(calls, cwd, cmd, false));
+	return memoized(calls, callKey(calls, "sh", args), { kind: "ok", args }, () => shell(calls, cwd, cmd));
 }
 
 /**
