@@ -1138,8 +1138,11 @@ two reminders to call it, and then the call fails with `the answer did not call 
 only for the turn that gave it, and the limit of two reminders holds across an interruption and a resume.
 
 The script runs in the pi-codemode sandbox, with no time limit. It has no file system, network, modules or timers.
-Effects go through `sh` and `ok`. `Date`, `Date.now()` and `Math.random()` throw, so that a script makes
-the same calls each time it runs.
+Effects go through `sh` and `ok`. `Date`, `Date.now()` and `Math.random()` throw, also through `globalThis`, so that
+a script makes the same calls each time it runs. The other `Math` functions work. The lock covers only the names
+`Date`, `Math` and `globalThis` that a script uses: code that gets the real global object through `Function`, an
+indirect `eval` or the `constructor` of a function gets the real `Date` and `Math.random`. pi-codemode freezes its
+built-in globals before the prelude runs, so the prelude cannot replace them.
 
 ### Roles
 

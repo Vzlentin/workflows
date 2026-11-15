@@ -4,8 +4,9 @@
 // also a lib helper, returns a promise, so write `await` before it, as in `JSON.parse(await sh(cmd))`. `session`,
 // `phase`, `log` and `title` need no `await`.
 // A script has no file system, network, modules or timers, so its effects go through `sh` and `ok`. The sandbox
-// replaces Date and Math: `Date`, `Date.now()` and `Math.random()` throw, so that a script makes the same calls each
-// time it runs.
+// replaces Date and Math: `Date`, `Date.now()` and `Math.random()` throw, also through `globalThis`, so that a script
+// makes the same calls each time it runs. The other `Math` functions work. Code that gets the real global object
+// through `Function`, an indirect `eval` or the `constructor` of a function gets the real `Date` and `Math.random`.
 // A resume runs the script again from the top: a saved call returns its result, and a command that did not finish runs
 // again, so keep `sh` and `ok` commands safe to repeat.
 // To keep a script as a named workflow of the project, call the `workflow` tool with `save: { runId, name }` after its

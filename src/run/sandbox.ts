@@ -51,10 +51,14 @@ const cwd = ${JSON.stringify(cwd)};
 const __unavailable = (name) => function () {
 	throw new Error(name + " is not available in workflow scripts");
 };
+const __replaced = (real, overrides) =>
+	Object.freeze(Object.create(Object.getPrototypeOf(real), { ...Object.getOwnPropertyDescriptors(real), ...overrides }));
 const Date = Object.assign(__unavailable("Date"), { now: __unavailable("Date.now") });
-const Math = Object.freeze({
-	...Object.fromEntries(Object.getOwnPropertyNames(globalThis.Math).map((name) => [name, globalThis.Math[name]])),
-	random: __unavailable("Math.random"),
+const Math = __replaced(Function("return Math")(), { random: { value: __unavailable("Math.random") } });
+const globalThis = __replaced(Function("return globalThis")(), {
+	Date: { value: Date },
+	Math: { value: Math },
+	globalThis: { get: () => globalThis },
 });
 const prompts = Object.fromEntries(
 	${JSON.stringify(Object.keys(script.bundle.prompts))}.map((name) => [name, (inputs) => __prompt(name, inputs)]),

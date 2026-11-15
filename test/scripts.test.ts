@@ -2472,14 +2472,29 @@ return [one.reply, two.reply].join(", ")`,
 			["Date.now()", "Date.now"],
 			["new Date()", "Date"],
 			["Math.random()", "Math.random"],
+			["globalThis.Date.now()", "Date.now"],
+			["new globalThis.Date()", "Date"],
+			["globalThis.Math.random()", "Math.random"],
+			["globalThis.globalThis.Date.now()", "Date.now"],
 		]) {
-			await writeFile(join(root, "clock.js"), `return [Math.max(1, 2), ${code}]`);
+			await writeFile(join(root, "clock.js"), `return [globalThis.Math.max(1, 2), Math.max(1, 2), ${code}]`);
 			const clock = await workflows(["clock.js"], { cwd: root });
 			expect([clock.code, clock.stderr[0]], code).toEqual([
 				1,
 				`failed clock: ${name} is not available in workflow scripts`,
 			]);
 		}
+
+		await writeFile(join(root, "bypass.js"), 'return typeof Function("return Date")().now()');
+		const bypass = await workflows(["bypass.js"], { cwd: root });
+		expect([bypass.code, bypass.stdout.at(-1)], "a known limit of the lockdown; update docs/spec.md").toEqual([
+			0,
+			"number",
+		]);
+
+		await writeFile(join(root, "global.js"), "return typeof __global");
+		const global = await workflows(["global.js"], { cwd: root });
+		expect([global.code, global.stdout.at(-1)]).toEqual([0, "undefined"]);
 
 		await writeFile(join(root, "x.js"), 'await tools.read({ path: "x" })');
 		const tools = await workflows(["x.js"], { cwd: root });
