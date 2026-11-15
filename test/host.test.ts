@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, copyFile, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readdir, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -348,7 +348,14 @@ describe("runs in the harness host", () => {
 		const id = started.id ?? "";
 
 		try {
-			const line = JSON.stringify({ runId: id, state: "running", follow: "started", workflow: "gated" });
+			const line = JSON.stringify({
+				runId: id,
+				state: "running",
+				follow: "started",
+				workflow: "gated",
+				repository: root,
+			});
+
 			expect([started.code, started.stdout]).toEqual([0, [`run ${id}`, line]]);
 			expect(Value.Check(OUTCOME, JSON.parse(line))).toBe(true);
 			expect(await rootTasks(id)).toEqual([{ status: expect.stringMatching(/^(pending|running)$/) }]);
@@ -407,6 +414,28 @@ describe("runs in the harness host", () => {
 			await writeFile(join(root, "g.open"), "");
 			const done = await workflows(["wait", id], { cwd: root, host });
 			expect([done.code, done.stdout]).toEqual([0, [`run ${id}`, "done"]]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("gives the repository of the worktree of a run that it starts in the background, not the worktree", async () => {
+		await repository(join(root, "repo"));
+		const repo = await realpath(join(root, "repo"));
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "w.js"), "export const meta = { worktree: true }\nreturn cwd");
+		const started = await workflows(["w", "--background", "--json"], { cwd: repo, keepHost: true });
+		const { host } = started;
+
+		if (host === undefined) throw new Error("no host");
+
+		try {
+			const id = started.id ?? "";
+			const outcome: unknown = JSON.parse(started.stdout.at(-1) ?? "null");
+			expect(outcome).toEqual({ runId: id, state: "running", follow: "started", workflow: "w", repository: repo });
+			const waited = await workflows(["wait", id], { cwd: repo, host });
+			expect(waited.stdout.at(-1)).not.toBe(repo);
 		} finally {
 			await host.close();
 		}

@@ -170,13 +170,17 @@ export const OUTCOME = Type.Union([
 		{ additionalProperties: false },
 	),
 	Type.Object({ runId: Type.String(), state: Type.Literal("aborted") }, { additionalProperties: false }),
-	/** `workflow` is the name of the run's workflow, which a background run shows while it runs. */
+	/**
+	 * `workflow` is the name of the run's workflow, and `repository` the repository of its worktree, else its directory,
+	 * which a background run shows while it runs.
+	 */
 	Type.Object(
 		{
 			runId: Type.String(),
 			state: Type.Literal("running"),
 			follow: Type.Literal("started"),
 			workflow: Type.String(),
+			repository: Type.String(),
 		},
 		{ additionalProperties: false },
 	),

@@ -1311,8 +1311,8 @@ refuses, it prints `workflows: <line>`, exits 1 and starts no task.
 
 With `--background`, at any position before `--`, start and resume print `run <run-id>` once the host has the run's
 task, and exit 0 without following it. With `--json`, they also print
-`{"runId":"<run-id>","state":"running","follow":"started","workflow":"<workflow>"}`, where `<workflow>` is the name of the run's workflow,
-as `workflows show` gives it. A Ctrl+C after the host accepted the task does not change this. The other commands
+`{"runId":"<run-id>","state":"running","follow":"started","workflow":"<workflow>","repository":"<repository>"}`, where `<workflow>` is the name of the run's workflow,
+as `workflows show` gives it, and `<repository>` is the repository of the run's worktree, else the directory of the run. A Ctrl+C after the host accepted the task does not change this. The other commands
 ignore `--background`. Follow such a run with `workflows wait <run-id>` or `workflows resume <run-id>`. A start with `--background` saves `notify` in the
 input of the run. A resume that starts a new task saves `notify` only with `--background`, whatever the last task
 had. A resume that follows a task that has not ended does not change it. See
@@ -1464,8 +1464,9 @@ line of JSON in place of the report lines, for every outcome. Its `state` is the
 - `{ "runId", "state": "failed" | "orphaned", "error" }`: the task ended without a result. `error` is the error
   message, or the reason of the orphaned task.
 - `{ "runId", "state": "aborted" }`: a second Ctrl+C or `workflows stop` aborted the run.
-- `{ "runId", "state": "running", "follow": "started", "workflow" }`: with `--background`, the host has the run's
-  task, and the command does not follow it. `workflow` is the name of the run's workflow. The `workflow` tool of the
+- `{ "runId", "state": "running", "follow": "started", "workflow", "repository" }`: with `--background`, the host has
+  the run's task, and the command does not follow it. `workflow` is the name of the run's workflow, and `repository`
+  the repository of its worktree, else its directory. The `workflow` tool of the
   host and the `workflow` tool of Pi give it as a result that is not an error.
 - `{ "runId", "state": "running", "follow": "detached" }`: Ctrl+C detached the command, and the run goes on in the host.
 - `{ "runId", "state": "running", "follow": "host-stopped" }`: the host stopped while the command followed the run,
@@ -2169,8 +2170,8 @@ These are the fields of the JSON outcome line of the command.
 ### Background runs in Pi
 
 After a result with `follow: "started"`, the extension appends the session entry `workflow-background` with the data
-`{ runId, cwd, workflow }`, with the directory of the session as `cwd`, also for a call with `cwd`, and the
-`workflow` of the outcome, and follows the run with `workflows wait <run-id> --json` in `cwd`. The wait finds the run
+`{ runId, cwd, workflow, repository }`, with the directory of the session as `cwd`, also for a call with `cwd`, and the
+`workflow` and the `repository` of the outcome, and follows the run with `workflows wait <run-id> --json` in `cwd`. The wait finds the run
 by its ID, so it also follows a run of another project. When the wait prints an
 outcome whose `state` is not `running`, the extension sends the message `workflow-result`, with the text of a
 call without `background` for that outcome (the summary, then the report lines of a run that is `done`, with the limit on
@@ -2188,14 +2189,15 @@ second wait. `session_shutdown` sends SIGINT to the waits, which detach and post
 When the context of `session_start` has a UI (`hasUI`), the extension sets the widget `workflows` below the editor,
 one time at each `session_start`. It sits above the subagents widget of pi-agents, because `pi/package.json` lists
 `./index.ts` first. The widget shows a dim `workflows` header line, then the runs that the session follows, in the
-order that they started to be followed, one run on each line: `<workflow>: <id> <step>`, such as
+order that they started to be followed, one run on each line: `<workflow>: <repository> <id> <step>`, such as
 
 ```text
-campaign: 935f6d89 item 2/3: Add a thanks line › round 1/3: review
-ship: e235d11b plan
+campaign: harness 935f6d89 item 2/3: Add a thanks line › round 1/3: review
+ship: workflows e235d11b plan
 ```
 
-The workflow is the one of the `workflow-background` entry, or `?` for an entry with no `workflow`. The short ID is
+The workflow is the one of the `workflow-background` entry, or `?` for an entry with no `workflow`. The repository is
+the last part of the path of its `repository`; an entry with no `repository` shows none. The short ID is
 the part of the run ID after its last `-`. The step is the `status` of the last progress line of the wait, see
 [Progress](#progress), else its last line, trimmed, with its mark, or `starting` before the first one; another stderr
 line does not change it. The widget redraws when a run starts to be followed, at each progress line,

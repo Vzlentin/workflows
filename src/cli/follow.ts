@@ -136,7 +136,14 @@ export async function follow(
 		terminal.following(false);
 
 		if (json) {
-			const started: WorkflowOutcome = { runId: id, state: "running", follow: "started", workflow: input.name };
+			const started: WorkflowOutcome = {
+				runId: id,
+				state: "running",
+				follow: "started",
+				workflow: input.name,
+				repository: input.worktree?.repository ?? input.cwd,
+			};
+
 			terminal.stdout(JSON.stringify(started));
 		}
 

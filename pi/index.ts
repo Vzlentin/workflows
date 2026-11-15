@@ -54,8 +54,13 @@ const PROGRESS = Type.Object({ progress: Type.Array(Type.Unknown()), status: Typ
 const STARTED_ENTRY = Type.Object({
 	type: Type.Literal("custom"),
 	customType: Type.Literal("workflow-background"),
-	/** Without `workflow`, the widget shows `?` for the run. */
-	data: Type.Object({ runId: Type.String(), cwd: Type.String(), workflow: Type.Optional(Type.String()) }),
+	/** Without `workflow`, the widget shows `?` for the run; without `repository`, it shows no repository. */
+	data: Type.Object({
+		runId: Type.String(),
+		cwd: Type.String(),
+		workflow: Type.Optional(Type.String()),
+		repository: Type.Optional(Type.String()),
+	}),
 });
 
 /**
@@ -286,7 +291,8 @@ export function workflowTool(command: readonly string[], watcher: Watcher, tool:
 
 			// The CLI finds a run by its ID from any directory, so the wait runs in the session's, also for a call with `cwd`.
 			if (outcome.state === "running" && outcome.follow === "started") {
-				watcher.started(outcome.runId, ctx.cwd, outcome.workflow);
+				const { runId, workflow, repository } = outcome;
+				watcher.started(runId, { cwd: ctx.cwd, workflow, repository });
 			}
 
 			return resultOf(tool, outcome, steps.lines);
@@ -467,13 +473,17 @@ type Api = Pick<
 >;
 
 /**
- * A run that the watcher follows: its ID, its directory, its workflow name, or `?` when unknown, its steps, the
- * controller that is aborted when its end entry is recorded, and the foreground call of the tool that resumes it.
+ * What the start entry of a background run gives: the directory of the session, the workflow name, or `?` when unknown,
+ * and the repository of the run, when known.
  */
-type Followed = {
+type Background = { readonly cwd: string; readonly workflow: string; readonly repository?: string | undefined };
+
+/**
+ * A run that the watcher follows: its ID, its start entry, its steps, the controller that is aborted when its end entry
+ * is recorded, and the foreground call of the tool that resumes it.
+ */
+type Followed = Background & {
 	readonly runId: string;
-	readonly cwd: string;
-	readonly workflow: string;
 	readonly steps: Steps;
 	readonly done: AbortController;
 	foreground?: Promise<void>;
@@ -516,9 +526,9 @@ class Watcher {
 	}
 
 	/** Records the run that a call started in the background, and follows it. */
-	started(runId: string, cwd: string, workflow: string): void {
-		this.#pi.appendEntry("workflow-background", { runId, cwd, workflow });
-		this.#watch(runId, cwd, workflow);
+	started(runId: string, background: Background): void {
+		this.#pi.appendEntry("workflow-background", { runId, ...background });
+		this.#watch(runId, background);
 	}
 
 	/**
@@ -542,16 +552,16 @@ class Watcher {
 			);
 		}
 
-		const pending = new Map<string, { cwd: string; workflow: string }>();
+		const pending = new Map<string, Background>();
 
 		for (const entry of ctx.sessionManager.getEntries()) {
 			if (Value.Check(STARTED_ENTRY, entry)) {
-				const { runId, cwd, workflow = "?" } = entry.data;
-				pending.set(runId, { cwd, workflow });
+				const { runId, cwd, workflow = "?", repository } = entry.data;
+				pending.set(runId, { cwd, workflow, repository });
 			} else if (Value.Check(ENDED_ENTRY, entry)) pending.delete(entry.data.runId);
 		}
 
-		for (const [runId, { cwd, workflow }] of pending) this.#watch(runId, cwd, workflow);
+		for (const [runId, background] of pending) this.#watch(runId, background);
 		this.#draw();
 	}
 
@@ -577,9 +587,9 @@ class Watcher {
 		this.#tui = undefined;
 	}
 
-	#watch(runId: string, cwd: string, workflow: string): void {
+	#watch(runId: string, background: Background): void {
 		if (this.#watched.has(runId)) return;
-		const run: Followed = { runId, cwd, workflow, steps: new Steps(), done: new AbortController() };
+		const run: Followed = { ...background, runId, steps: new Steps(), done: new AbortController() };
 		this.#watched.set(runId, run);
 		this.#draw();
 		this.#post(run)
@@ -597,7 +607,7 @@ class Watcher {
 
 	/**
 	 * The widget: no line when no run is followed, else a dim `workflows` header, then one line for each followed run,
-	 * with its workflow name, its short ID and its step.
+	 * with its workflow name, the name of its repository when known, its short ID and its step.
 	 * `Text` pads and wraps the lines as Pi does for a widget of lines.
 	 */
 	#widget(theme: Theme): Component {
@@ -616,10 +626,11 @@ class Watcher {
 	#lines(theme: Theme): string {
 		if (this.#watched.size === 0) return "";
 
-		const shown = [...this.#watched.values()].map(({ runId, workflow, steps }) => {
+		const shown = [...this.#watched.values()].map(({ runId, workflow, repository, steps }) => {
 			const short = runId.slice(runId.lastIndexOf("-") + 1);
+			const words = repository === undefined ? [short] : [basename(repository), short];
 
-			return `${theme.fg("dim", `${workflow}:`)} ${short} ${steps.step}`;
+			return `${theme.fg("dim", `${workflow}:`)} ${words.join(" ")} ${steps.step}`;
 		});
 
 		return [theme.fg("dim", "workflows"), ...shown].join("\n");

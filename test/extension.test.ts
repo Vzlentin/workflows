@@ -39,9 +39,9 @@ let tool: Tool;
 /** A fake `workflows` command: its behavior comes from its arguments, which it appends to `args.log`. */
 const FAKE = `#!/bin/sh
 echo "$@" >> args.log
-case "$1 $3" in "resume --background") echo "run $2"; echo '{"runId":"'"$2"'","state":"running","follow":"started","workflow":"campaign"}'; exit 0 ;; esac
-case "$1 $2" in "gated --background") echo "run 20261115T000000-cc000001"; echo '{"runId":"20261115T000000-cc000001","state":"running","follow":"started","workflow":"gated"}'; exit 0 ;; esac
-case " $* " in *" --background "*) echo "run rb"; echo '{"runId":"rb","state":"running","follow":"started","workflow":"ship"}'; exit 0 ;; esac
+case "$1 $3" in "resume --background") echo "run $2"; echo '{"runId":"'"$2"'","state":"running","follow":"started","workflow":"campaign","repository":"/repos/orda"}'; exit 0 ;; esac
+case "$1 $2" in "gated --background") echo "run 20261115T000000-cc000001"; echo '{"runId":"20261115T000000-cc000001","state":"running","follow":"started","workflow":"gated","repository":"/repos/harness"}'; exit 0 ;; esac
+case " $* " in *" --background "*) echo "run rb"; echo '{"runId":"rb","state":"running","follow":"started","workflow":"ship","repository":"/repos/workflows"}'; exit 0 ;; esac
 case "$1" in
 ok)
 	echo "run r1"; echo '{"progress":["◉ item 1/2: one"]}' >&2
@@ -723,7 +723,13 @@ describe("a background run of the workflow tool", () => {
 			contextOf(root),
 		);
 
-		expect(result.structuredContent).toEqual({ runId: "rb", state: "running", follow: "started", workflow: "ship" });
+		expect(result.structuredContent).toEqual({
+			runId: "rb",
+			state: "running",
+			follow: "started",
+			workflow: "ship",
+			repository: "/repos/workflows",
+		});
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toEqual([
 			{
@@ -732,7 +738,7 @@ describe("a background run of the workflow tool", () => {
 			},
 		]);
 		expect(pi.entries.map((entry) => [entry.customType, entry.data])).toEqual([
-			["workflow-background", { runId: "rb", cwd: root, workflow: "ship" }],
+			["workflow-background", { runId: "rb", cwd: root, workflow: "ship", repository: "/repos/workflows" }],
 		]);
 		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
 		expect(pi.messages).toEqual([
@@ -764,12 +770,18 @@ describe("a background run of the workflow tool", () => {
 
 		const call = { name: "gated", background: true, cwd: other };
 		const result = await pi.registered.execute("call-1", call, undefined, undefined, contextOf(root));
-		expect(result.structuredContent).toEqual({ runId: id, state: "running", follow: "started", workflow: "gated" });
+		expect(result.structuredContent).toEqual({
+			runId: id,
+			state: "running",
+			follow: "started",
+			workflow: "gated",
+			repository: "/repos/harness",
+		});
 		expect(await readFile(join(other, "args.log"), "utf8")).toBe("gated --background --json\n");
 		expect(pi.entries.map((entry) => [entry.customType, entry.data])).toEqual([
-			["workflow-background", { runId: id, cwd: root, workflow: "gated" }],
+			["workflow-background", { runId: id, cwd: root, workflow: "gated", repository: "/repos/harness" }],
 		]);
-		expect(lines()).toEqual([" workflows", " gated: cc000001 starting"]);
+		expect(lines()).toEqual([" workflows", " gated: harness cc000001 starting"]);
 
 		// The wait of the fake runs in the directory of the session: it reads its `go-` and `end-` files there.
 		await writeFile(join(root, `go-${id}`), "");
@@ -900,14 +912,16 @@ describe("a background run of the workflow tool", () => {
 		expect(lines()).toEqual([]);
 		await pi.registered.execute("call-1", { resume: id, background: true }, undefined, undefined, contextOf(root));
 		expect(renders()).toBeGreaterThan(0);
-		await vi.waitFor(() => expect(lines()).toEqual([" workflows", " campaign: bb814010 starting"]));
+		await vi.waitFor(() => expect(lines()).toEqual([" workflows", " campaign: orda bb814010 starting"]));
 
 		await writeFile(join(root, `go-${id}`), "");
-		await vi.waitFor(() => expect(lines()).toEqual([" workflows", " campaign: bb814010 ◉ round 1: review"]));
+		await vi.waitFor(() => expect(lines()).toEqual([" workflows", " campaign: orda bb814010 ◉ round 1: review"]));
 
 		// The status of a progress line takes the place of its last line.
 		await writeFile(join(root, `status-${id}`), "");
-		await vi.waitFor(() => expect(lines()).toEqual([" workflows", " campaign: bb814010 item 2/5 › round 1/3: review"]));
+		await vi.waitFor(() =>
+			expect(lines()).toEqual([" workflows", " campaign: orda bb814010 item 2/5 › round 1/3: review"]),
+		);
 
 		await writeFile(join(root, `end-${id}`), "");
 		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
@@ -924,12 +938,12 @@ describe("a background run of the workflow tool", () => {
 		const { ui, widgets, lines } = fakeUi();
 		await pi.fire("session_start", ui);
 		await pi.registered.execute("call-1", { resume: second, background: true }, undefined, undefined, contextOf(root));
-		expect(lines()).toEqual([" workflows", " ship: aaaa1111 starting", " campaign: bb814010 starting"]);
+		expect(lines()).toEqual([" workflows", " ship: aaaa1111 starting", " campaign: orda bb814010 starting"]);
 
 		await writeFile(join(root, `go-${first}`), "");
 		await writeFile(join(root, `end-${first}`), "");
 		await vi.waitFor(() => expect(pi.messages).toHaveLength(1));
-		await vi.waitFor(() => expect(lines()).toEqual([" workflows", " campaign: bb814010 starting"]));
+		await vi.waitFor(() => expect(lines()).toEqual([" workflows", " campaign: orda bb814010 starting"]));
 
 		await writeFile(join(root, `go-${second}`), "");
 		await writeFile(join(root, `end-${second}`), "");
