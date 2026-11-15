@@ -1337,6 +1337,9 @@ describe("workflows resume of ship runs", () => {
 
 		const repository = git(repo, "rev-parse", "--show-toplevel");
 
+		const stepsOf = async (id: string | undefined) =>
+			JSON.parse((await workflows(["show", id ?? "", "--json"], { cwd: root })).stdout[0] ?? "").steps;
+
 		const runs = [
 			{
 				runId: shipped.id,
@@ -1348,6 +1351,7 @@ describe("workflows resume of ship runs", () => {
 				branch: "fix/correct-the-readme-typo",
 				startedAt: expect.any(String),
 				repository,
+				steps: await stepsOf(shipped.id),
 			},
 			{
 				runId: stopped.id,
@@ -1358,6 +1362,7 @@ describe("workflows resume of ship runs", () => {
 				branch: `ship/${stopped.id}`,
 				startedAt: expect.any(String),
 				repository,
+				steps: await stepsOf(stopped.id),
 			},
 		].sort((a, b) => (b.runId ?? "").localeCompare(a.runId ?? ""));
 

@@ -35,8 +35,8 @@ export const SHOW = "workflows show (<run-id> [--agents] [--json] | [<run-id>] -
 const RUN_AGENT = Type.Object({ conversation: Type.Number(), project: Type.String() }, { additionalProperties: false });
 
 /**
- * The fields of every run of `show --json`: the run fields, its agent when it has one, its todos, its step lines and
- * its calls.
+ * The fields of every run of `show --json`: the run fields, its agent when it has one, its todos, its step lines, its
+ * calls and its agents, as `show --agents --json` gives them.
  */
 const SHOWN_FIELDS = {
 	...RUN_FIELDS,
@@ -44,6 +44,7 @@ const SHOWN_FIELDS = {
 	todos: Type.Array(Todo),
 	steps: Type.Array(Type.String()),
 	calls: Type.Array(SHOWN_CALL),
+	agents: Type.Array(AGENT_ROW),
 };
 
 /** The report lines of a run with a result. */
@@ -131,7 +132,7 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 	} else if (agents) {
 		for (const line of [head, ...agentLines(rows), ...footer]) terminal.stdout(line);
 	} else if (json) {
-		const runShown: Static<typeof SHOWN> = { ...fields, ...end, todos, steps: progress.lines(), calls };
+		const runShown: Static<typeof SHOWN> = { ...fields, ...end, todos, steps: progress.lines(), calls, agents: rows };
 		terminal.stdout(JSON.stringify(runShown));
 	} else {
 		for (const entry of shownLines(shown, now)) terminal.stdout(entry.text);
@@ -191,9 +192,9 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 
 			if (shown.error !== undefined) end = { error: shown.error };
 		}
-
-		progress.stop(endMark(known));
 	}
+
+	progress.end(known);
 
 	const head = `run ${id} ${input.name} ${stateText(known, fields.result)} ${title}`;
 	const calls = callTree(records, todos, id, { ended, waiting: known === "waiting", live });

@@ -1499,7 +1499,7 @@ version saved has its title as a run of this version has it, when its saved inpu
 run ID, the script name, the arguments, and the `args` and `exit` of its `meta`); a run whose input does not have them
 has its workflow name as its title. With `--json`, the command prints one JSON array of
 `{ "runId", "workflow", "title", "state", "result"?, "question"?, "resumable", "branch"?, "startedAt"?, "serves"?,
-"swept"?, "repository" }`, with the schema `LISTED` of `src/cli/commands/list.ts`. The fields before `repository`
+"swept"?, "repository", "steps" }`, with the schema `LISTED` of `src/cli/commands/list.ts`. The fields before `repository`
 are the run fields, `RUN_FIELDS` of `src/records/run.ts`, which `show --json` and `show --agents --json` give too. `result` is
 `{ "status"?, "code", "score"? }` as in [JSON output](#json-output), for a run that is `done` or `waiting` and whose saved input has the
 fields of a title. `question` is the question of a run that is `waiting`. `resumable` is true when this version of
@@ -1512,6 +1512,8 @@ what the run serves (see [Serves](#serves)). `swept` is the word in the `swept` 
 sweep removed has no `swept`.
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
 without a worktree.
+`steps` has the step lines of the run, the same lines as the `steps` of `show <run-id> --json`: a step that still runs
+when the run ended gets the mark of its end.
 Only the runs that have a run directory with a `project` file are listed. The command writes that file before it
 prepares the run, so a run directory of the project whose run has no task is listed as `<run-id> - unstarted -`, and
 with `--json` as `{ "runId", "state": "unstarted", "repository": null }`, with no other field: its run is about to
@@ -1638,7 +1640,7 @@ run <run-id> <workflow> <state> <title>
   its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
-object with both trees: `{ <run fields>, "agent"?, "todos", "steps", "calls" }`, with `report` for a run with a
+object with both trees: `{ <run fields>, "agent"?, "todos", "steps", "calls", "agents" }`, with `report` for a run with a
 result or `error` for a failed or orphaned run, never both, with the schema `SHOWN` of `src/cli/commands/show.ts`, a
 union of these three strict shapes. The run fields are those of [List](#list). `agent` is
 `{ "conversation", "project" }`, what `harness attach` needs to open the agent of the run: the agent that works now,
@@ -1657,6 +1659,7 @@ is the end of a call that ended, as its record saves it: `{ "kind": "done", "at"
 of a working session is `✓`: only the text shows it as `◉`. `phase` is `null` before the first phase line. The
 `result` of a `run` call is `{ "runId", "result" }`, with the result of its child run. A `run` call whose child run
 started also has `child`, `{ "todos", "calls" }`: the list of todos of the child run, and the calls of the child run.
+`agents` is the array of agents of the run, the same as the `agents` of `show <run-id> --agents --json`.
 
 With `--agents`, `show` prints the agents of the run:
 

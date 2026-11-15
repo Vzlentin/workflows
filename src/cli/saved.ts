@@ -12,6 +12,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { readProject, type ScriptInput } from "../launch/input.ts";
 import { RUN_FIELDS, SWEPT, type TaskFields, taskFields } from "../records/run.ts";
+import { progressOf as stepsOf } from "../records/steps.ts";
 import {
 	inputName,
 	inputWorktree,
@@ -57,11 +58,11 @@ export async function savedRun(id: string, usage: string): Promise<SavedRun> {
 }
 
 /**
- * A run of the project store that has a task and a run directory: the run fields, and the repository of its worktree,
- * or null for a run without a worktree.
+ * A run of the project store that has a task and a run directory: the run fields, the repository of its worktree, or
+ * null for a run without a worktree, and its step lines, as `show --json` gives them.
  */
 export const ROW = Type.Object(
-	{ ...RUN_FIELDS, repository: Type.Union([Type.String(), Type.Null()]) },
+	{ ...RUN_FIELDS, repository: Type.Union([Type.String(), Type.Null()]), steps: Type.Array(Type.String()) },
 	{ additionalProperties: false },
 );
 
@@ -80,8 +81,13 @@ export async function listedRuns(store: Store, runs: ReadonlyMap<string, readonl
 		// A task of every version whose input has the fields of a title gets its title; another keeps its workflow name.
 		const input = savedInput(SHOWN_INPUT, task.input);
 		const workflow = savedBy(task).name;
-		const title = input === undefined ? workflow : titleOf(input, await progressEvents(store, id));
-		listed.push({ ...(await runFields(id, workflow, title, taskFields(tasks, task))), repository });
+		const events = await progressEvents(store, id);
+		const title = input === undefined ? workflow : titleOf(input, events);
+		const fields = taskFields(tasks, task);
+		const progress = stepsOf(events);
+
+		progress.end(fields.state);
+		listed.push({ ...(await runFields(id, workflow, title, fields)), repository, steps: progress.lines() });
 	}
 
 	return listed;

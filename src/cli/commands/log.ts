@@ -1,7 +1,6 @@
 /** `workflows log <run-id>`: the short log of a run, the full output of one call, or the log as the run goes on. */
 import { parseArgs } from "node:util";
 import { callKey, callText, findCall, isStepName, type RunProgress, runLines, stepLog } from "../../records/log.ts";
-import { endMark } from "../../records/steps.ts";
 import { runRecords } from "../../records/store.ts";
 import { type CallNode, callNodes } from "../../records/tree.ts";
 import { hasEnded, type RunStatus, runStatus, taskOf, taskResult } from "../../run/past.ts";
@@ -97,7 +96,7 @@ async function readLog(run: SavedRun): Promise<ReadLog> {
 	const ended = status === undefined || hasEnded(status);
 	const calls = callNodes(records, id, { ended, waiting: status === "waiting", live });
 
-	if (status !== undefined && hasEnded(status)) read.progress.stop(endMark(status));
+	if (status !== undefined) read.progress.end(status);
 
 	const head =
 		task === undefined || status === undefined

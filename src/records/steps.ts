@@ -4,7 +4,7 @@
  * comes. The command draws the tree on stderr, and the Pi tool draws the lines that the command sends with `--json`,
  * so both show the same steps.
  */
-import { type EndedStatus, ending, hasResult } from "../run/past.ts";
+import { type EndedStatus, ending, hasEnded, hasResult, type RunStatus } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
 
 /** The mark of a step: done, running, failed, or aborted. */
@@ -151,6 +151,11 @@ export class Progress {
 		};
 
 		visit(this.#top);
+	}
+
+	/** Gives each step that runs the end mark of `status` when the run has ended in it, and does nothing otherwise. */
+	end(status: RunStatus): void {
+		if (hasEnded(status)) this.stop(endMark(status));
 	}
 
 	/**

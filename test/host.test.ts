@@ -457,6 +457,7 @@ describe("runs in the harness host", () => {
 				resumable: true,
 				startedAt: expect.any(String),
 				repository: null,
+				steps: [],
 			},
 		]);
 		expect(Value.Check(Type.Array(LISTED), rows)).toBe(true);
@@ -494,6 +495,7 @@ describe("runs in the harness host", () => {
 				resumable: true,
 				startedAt: expect.any(String),
 				repository: null,
+				steps: [],
 			},
 		]);
 		expect(Value.Check(Type.Array(LISTED), rows)).toBe(true);
@@ -896,6 +898,53 @@ describe("runs in the harness host", () => {
 		]);
 	});
 
+	it("lists the step lines of an ended run as show --json gives them", async () => {
+		await writeFile(
+			join(root, "two.js"),
+			'phase("one")\nawait sh("true")\nphase("two")\nawait sh("true")\nreturn "done"',
+		);
+		const id = (await workflows(["two.js"], { cwd: root })).id ?? "";
+		const rows = JSON.parse((await workflows(["list", "--json"], { cwd: root })).stdout[0] ?? "");
+		const shown = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(rows[0].steps).toEqual(shown.steps);
+		expect(rows[0].steps.map(untimed)).toEqual(["✓ one", "✓ two"]);
+	});
+
+	it("lists the step that ran when a run was orphaned with the mark of its end, as show --json gives it", async () => {
+		await writeFile(join(root, "phased.js"), 'phase("wait")\nawait sh("./gate.sh g")\nphase("after")\nreturn "done"');
+		const { id, host } = await detachedRun("phased.js", ["wait"]);
+		await host.close();
+		saveAs(TASK.version - 1, false);
+		const stopped = await workflows(["stop", id], { cwd: root });
+		expect(stopped.code).toBe(0);
+		const rows = JSON.parse((await workflows(["list", "--json"], { cwd: root })).stdout[0] ?? "");
+		const shown = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
+		expect([rows[0].state, rows[0].steps]).toEqual(["orphaned", shown.steps]);
+		expect(rows[0].steps[0]).toMatch(/^✗ wait/);
+	});
+
+	it("lists the step that runs of a running run", async () => {
+		await writeFile(join(root, "phased.js"), 'phase("wait")\nawait sh("./gate.sh g")\nphase("after")\nreturn "done"');
+		const { host } = await detachedRun("phased.js", ["wait"]);
+
+		try {
+			const rows = JSON.parse((await workflows(["list", "--json"], { cwd: root, host })).stdout[0] ?? "");
+			expect([rows[0].state, rows[0].steps]).toEqual(["running", ["◉ wait"]]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("gives in show --json the agents of show --agents --json", async () => {
+		await writeFile(join(root, "asked.js"), 'await session().ask("Script: one")\nreturn "done"');
+		const id = (await workflows(["asked.js"], { cwd: root })).id ?? "";
+		const shown = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
+		const agents = JSON.parse((await workflows(["show", id, "--agents", "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(shown.agents).toEqual(agents.agents);
+		expect(shown.agents).not.toEqual([]);
+		expect([Value.Check(SHOWN, shown), Value.Check(SHOWN_AGENTS, agents)]).toEqual([true, true]);
+	});
+
 	it("gives the outcome aborted and logs end aborted for a run that workflows stop aborts", async () => {
 		const { id, host } = await detachedRun();
 
@@ -950,6 +999,7 @@ describe("runs in the harness host", () => {
 					resumable: true,
 					startedAt: expect.any(String),
 					repository: null,
+					steps: [],
 				},
 				{
 					runId: resultId,
@@ -960,6 +1010,7 @@ describe("runs in the harness host", () => {
 					resumable: true,
 					startedAt: expect.any(String),
 					repository: null,
+					steps: [],
 				},
 			]),
 		);

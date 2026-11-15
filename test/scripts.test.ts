@@ -390,6 +390,7 @@ describe("input", () => {
 				resumable: true,
 				startedAt: expect.any(String),
 				repository: null,
+				steps: [],
 			},
 		]);
 		const shown = await workflows(["show", id], { cwd: root });
@@ -685,6 +686,7 @@ describe("workflows show", () => {
 			startedAt: expect.any(String),
 			error: "sh exited with 3: exit 3",
 			todos: [],
+			agents: [],
 		});
 		expect(Value.Check(SHOWN, JSON.parse(shownJson.stdout[0] ?? ""))).toBe(true);
 		expect(json).toEqual(steps.stdout.slice(1, 3));

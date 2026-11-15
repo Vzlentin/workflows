@@ -140,6 +140,7 @@ describe("workflows sweep", () => {
 	it("removes the worktree and branch of a run that an earlier version saved", async () => {
 		const { id, worktree } = await mergedRun();
 		saveAs(TASK.version - 1, true);
+		const shown = JSON.parse((await workflows(["show", id, "--json"], { cwd: repo })).stdout[0] ?? "");
 		const listed = await workflows(["list", "--json"], { cwd: repo });
 		expect(JSON.parse(listed.stdout[0] ?? "")).toEqual([
 			{
@@ -152,6 +153,7 @@ describe("workflows sweep", () => {
 				branch: `w/${id}`,
 				startedAt: expect.any(String),
 				repository: await realpath(repo),
+				steps: shown.steps,
 			},
 		]);
 
