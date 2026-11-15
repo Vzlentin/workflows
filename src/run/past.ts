@@ -210,7 +210,7 @@ export async function allPages<T>(page: (cursor: Cursor | undefined) => Promise<
 
 /**
  * The tasks of `tasks` that no task owns, so not the tasks of child runs, by the run ID of their input, oldest first,
- * also of another version. `tasks` is in scan order.
+ * also of another version. `tasks` is in task ID order.
  */
 export function rootRuns(tasks: readonly RunTask[]): Map<string, RunTask[]> {
 	const runs = new Map<string, RunTask[]>();
@@ -230,7 +230,12 @@ export function rootRuns(tasks: readonly RunTask[]): Map<string, RunTask[]> {
  * whose saved input has the run ID. Its list of todos is the list of the run, which every later task of the run uses.
  */
 export function firstTask(tasks: readonly RunTask[], runId: string): RunTask | undefined {
-	return tasks.find((task) => savedInput(RUN_ID, task.input)?.runId === runId);
+	return tasks.find((task) => isOfRun(task, runId));
+}
+
+/** Whether the saved input of `task`, of any version, has the run ID `runId`. */
+export function isOfRun(task: RunTask, runId: string): boolean {
+	return savedInput(RUN_ID, task.input)?.runId === runId;
 }
 
 /**

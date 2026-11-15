@@ -190,7 +190,7 @@ export async function lastTask(run: SavedRun) {
 async function runKeys(store: Store, id: string): Promise<RunKeys> {
 	const numbers = new Map<number, number>();
 
-	for (const [key, task] of await startedTasks(store)) {
+	for (const [key, task] of (await startedTasks(store)) ?? []) {
 		const n = keyNumber(id, key);
 
 		if (n !== undefined) numbers.set(task, n);

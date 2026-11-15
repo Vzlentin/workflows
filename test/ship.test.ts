@@ -1237,8 +1237,8 @@ describe("workflows resume of ship runs", () => {
 	});
 
 	it("starts the host with a pending run of another version, and leaves that run pending", async () => {
-		const earlier = await saveRun(root, "workflows.run", TASK.version - 1, { name: "ship" });
-		const later = await saveRun(root, "workflows.run", TASK.version + 1, { name: "ship" });
+		const earlier = await saveRun(root, "workflows.run", TASK.version - 1, { name: "ship" }, { started: true });
+		const later = await saveRun(root, "workflows.run", TASK.version + 1, { name: "ship" }, { started: true });
 
 		const run = await workflows(["-"], { cwd: repo, stdin: 'return await agent("Script: one")' });
 		expect([run.code, run.stdout]).toEqual([0, [`run ${run.id}`, "Reply to one"]]);

@@ -31,6 +31,7 @@ import { type Host, runHost } from "@vzlentin/harness/host";
 import { projectDir } from "@vzlentin/harness/projects";
 import { AGENT_HANDLE, type Request, statePaths } from "@vzlentin/harness/protocol";
 import { REMINDER } from "@vzlentin/harness/respond";
+import { StartedTasks } from "@vzlentin/harness/tasks";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { expect } from "vite-plus/test";
@@ -190,13 +191,15 @@ type SavedInput = {
 
 /**
  * The ID of a new run of the `main` project of the sandbox `root` whose store holds one pending task of `kind` at
- * `version` with `input`, as a run that another version saved.
+ * `version` with `input`, as a run that another version saved. With `started`, the commit also writes the task's
+ * `start` key `wf:<id>#1` in harness's document of the keys, as the host's `start` does.
  */
 export async function saveRun(
 	root: string,
 	kind: string,
 	version: number,
 	input: SavedInput = { input: {} },
+	options: { readonly started?: true } = {},
 ): Promise<string> {
 	const id = newRunId();
 	const directory = join(runsOf(root), id);
@@ -222,10 +225,11 @@ export async function saveRun(
 		const conversation = await harness.root(BACKGROUND_CONTEXT);
 		// A script task of some earlier versions wrapped its input as `{ input }`.
 		const saved = "input" in input ? { input: { ...input.input, runId: id } } : { ...input, runId: id };
-		await conversation.commit(
-			(tx) => tx.createTask(task, saved, { ownership: { kind: "conversation" } }),
-			BACKGROUND_CONTEXT,
-		);
+		await conversation.commit(async (tx) => {
+			const taskId = await tx.createTask(task, saved, { ownership: { kind: "conversation" } });
+
+			if (options.started) (await tx.doc(StartedTasks)).tasks[`wf:${id}#1`] = taskId;
+		}, BACKGROUND_CONTEXT);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 	}

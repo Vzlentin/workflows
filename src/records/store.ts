@@ -14,6 +14,7 @@ import type {
 	JsonObject,
 	SessionDocFamilyToken,
 	SessionDocToken,
+	TaskId,
 } from "@earendil-works/pi-durable";
 import {
 	type SqliteDatabase,
@@ -22,12 +23,12 @@ import {
 	type SqliteValue,
 } from "@earendil-works/pi-durable/storage/sqlite";
 import { StartedTasks } from "@vzlentin/harness/tasks";
-import { readTodos, type Todo } from "@vzlentin/harness/todo";
+import { readTodos, TASK_TODO_LIST_KIND, type Todo } from "@vzlentin/harness/todo";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { ScriptInput } from "../launch/input.ts";
 import { CALL_KIND, CALL_RECORD, childOf, type SavedCall } from "../run/calls.ts";
-import { allPages, firstTask, type RunStatus, type RunTask, rootRuns, runStatus, savedInput } from "../run/past.ts";
+import { allPages, isOfRun, type RunStatus, type RunTask, rootRuns, runStatus, savedInput } from "../run/past.ts";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "../run/progress.ts";
 import { TASK } from "../run/version.ts";
 import { type Progress, progressOf } from "./steps.ts";
@@ -227,53 +228,105 @@ function scanRuns(store: Store): Promise<RunTask[]> {
 	return allPages((cursor) => store.scanTasks({ kind: TASK.name }, 256, cursor, BACKGROUND_CONTEXT));
 }
 
-/**
- * The tasks of the kind `workflows.run` that no task owns, so not the tasks of child runs, by run ID, oldest first,
- * also of another version.
- */
-export async function runTasks(store: Store): Promise<Map<string, RunTask[]>> {
-	return rootRuns(await scanRuns(store));
+/** The task `id` of the store when it is of the kind `workflows.run`, of any version. */
+async function taskById(store: Store, id: number): Promise<RunTask | undefined> {
+	// SAFETY: `id` is the ID of a task that harness or pi-durable wrote in this store.
+	const task = await store.task(id as TaskId, BACKGROUND_CONTEXT);
+
+	return task?.kind === TASK.name ? task : undefined;
 }
 
 /**
- * From one scan: the tasks of the kind `workflows.run`, root or child, in scan order, the root tasks as `runTasks`
- * gives them, and the IDs of the tasks, root or child, whose status is `running`.
+ * The root tasks of the kind `workflows.run` whose `start` key starts with `prefix`, by run ID, oldest first, also of
+ * another version. It reads the tasks of harness's keys only; without the document of the keys, it reads every task.
  */
-export async function runTasksAndLive(store: Store): Promise<{
-	readonly tasks: readonly RunTask[];
-	readonly runs: Map<string, RunTask[]>;
-	readonly live: Set<number>;
-}> {
-	const tasks = await scanRuns(store);
-	const live = new Set(tasks.flatMap((task) => (runStatus(task) === "running" ? [task.id] : [])));
+async function rootTasks(store: Store, prefix: string): Promise<Map<string, RunTask[]>> {
+	const started = await startedTasks(store);
 
-	return { tasks, runs: rootRuns(tasks), live };
-}
+	if (started === undefined) return rootRuns(await scanRuns(store));
+	const ids = new Set<number>();
 
-/**
- * The list of todos of each of `runIds`, root or child runs: the list of the first task of the run in `tasks`, as the
- * todo calls of its script change it, or empty when the run has no task or no list.
- */
-export async function todoLists(
-	store: Store,
-	tasks: readonly RunTask[],
-	runIds: Iterable<string>,
-): Promise<Map<string, Todo[]>> {
-	const reader = todoReader(store);
-	const lists = new Map<string, Todo[]>();
+	for (const [key, id] of started) if (key.startsWith(prefix)) ids.add(id);
+	const tasks: RunTask[] = [];
 
-	for (const runId of runIds) {
-		const first = firstTask(tasks, runId);
+	for (const id of [...ids].toSorted((a, b) => a - b)) {
+		const task = await taskById(store, id);
 
-		if (first === undefined) {
-			lists.set(runId, []);
-			continue;
-		}
-
-		lists.set(runId, (await readTodos(reader, { kind: "task", id: first.id }, BACKGROUND_CONTEXT)).todos);
+		if (task !== undefined) tasks.push(task);
 	}
 
-	return lists;
+	return rootRuns(tasks);
+}
+
+/** The IDs of the tasks of the kind `workflows.run`, root or child, whose status is `running`. */
+async function liveTasks(store: Store): Promise<Set<number>> {
+	const live = new Set<number>();
+
+	for (const status of ["pending", "running", "waiting", "sleeping"] as const) {
+		const query = { kind: TASK.name, status };
+		const tasks = await allPages((cursor) => store.scanTasks(query, 256, cursor, BACKGROUND_CONTEXT));
+
+		for (const task of tasks) if (runStatus(task) === "running") live.add(task.id);
+	}
+
+	return live;
+}
+
+/** The task IDs of harness's lists of todos of tasks, in ascending order. */
+async function todoTasks(store: Store): Promise<number[]> {
+	const query = { scope: { kind: "session" as const }, at: "current" as const, kind: TASK_TODO_LIST_KIND };
+	const records = await allPages((cursor) => store.scanDocuments(query, 256, cursor, BACKGROUND_CONTEXT));
+
+	return records.flatMap((record) => (record.key === undefined ? [] : [Number(record.key)])).toSorted((a, b) => a - b);
+}
+
+/**
+ * The list of todos of each child run of `children`, the task of its `run` record by run ID, in the order of
+ * `children`. The script of a child run writes its list to the first task of the run, which comes after `first`, the
+ * first task of the root run, and no later than the task of the `run` record: the list is the one of the first task in
+ * that range whose saved input has the run ID, or empty when no such task has a list.
+ */
+async function childTodos(
+	store: Store,
+	first: RunTask | undefined,
+	children: ReadonlyMap<string, number>,
+): Promise<Map<string, Todo[]>> {
+	const todos = new Map<string, Todo[]>();
+
+	if (children.size === 0) return todos;
+	const listed = await todoTasks(store);
+	const after = first?.id ?? 0;
+
+	for (const [runId, upTo] of children) {
+		let list: Todo[] = [];
+
+		for (const id of listed) {
+			if (id <= after || id > upTo) continue;
+			const task = await taskById(store, id);
+
+			if (task !== undefined && isOfRun(task, runId)) {
+				list = await todosOf(store, task);
+				break;
+			}
+		}
+
+		todos.set(runId, list);
+	}
+
+	return todos;
+}
+
+/**
+ * The tasks of the kind `workflows.run` that no task owns, so not the tasks of child runs, by run ID, oldest first,
+ * also of another version: the tasks of harness's `wf:` keys.
+ */
+export function runTasks(store: Store): Promise<Map<string, RunTask[]>> {
+	return rootTasks(store, "wf:");
+}
+
+/** The list of todos of the task `task`, or empty when it has no list. */
+async function todosOf(store: Store, task: RunTask): Promise<Todo[]> {
+	return (await readTodos(todoReader(store), { kind: "task", id: task.id }, BACKGROUND_CONTEXT)).todos;
 }
 
 /** The reader of `readTodos` over `store`: `readTodos` reads the list of a task, a document of a session family. */
@@ -285,11 +338,14 @@ function todoReader(store: Store): Pick<DocumentReader, "snapshot"> {
 	return { snapshot } as Pick<DocumentReader, "snapshot">;
 }
 
-/** The task ID of each `start` key of the host, from harness's document of the keys; empty when it has none. */
-export async function startedTasks(store: Store): Promise<Map<string, number>> {
+/**
+ * The task ID of each `start` key of the host, from harness's document of the keys; undefined when the store has no
+ * such document, or one of another version.
+ */
+export async function startedTasks(store: Store): Promise<ReadonlyMap<string, number> | undefined> {
 	const value = await sessionDocument(store, StartedTasks, undefined, BACKGROUND_CONTEXT);
 
-	return new Map(Object.entries(value?.tasks ?? {}));
+	return value === undefined ? undefined : new Map(Object.entries(value.tasks));
 }
 
 /**
@@ -369,8 +425,8 @@ export async function callRecords(store: Store, runId: string): Promise<Map<stri
 
 /**
  * What the store keeps of the root run `id`: its root tasks, oldest first, its progress events and their steps, its
- * call records and those of its child runs, the IDs of the tasks that run, the state of each task of the store by task
- * ID, and the list of todos of the run and of each child run in its call records.
+ * call records and those of its child runs, the IDs of the tasks that run, the state of its root tasks and of the task
+ * of each `run` record by task ID, and the list of todos of the run and of each child run in its call records.
  */
 export type RunRecords = {
 	readonly tasks: readonly RunTask[];
@@ -405,13 +461,26 @@ export async function runRecords(
 		const events = await progressEvents(store, id);
 		const progress = progressOf(events);
 		const records = withCalls(progress) ? await callRecords(store, id) : new Map<string, SavedCall>();
-		const { tasks, runs, live } = await runTasksAndLive(store);
-		const children = [...records.values()].flatMap((record) => childOf(record)?.runId ?? []);
+		const tasks = (await rootTasks(store, `wf:${id}#`)).get(id) ?? [];
+		const children = new Map<string, number>();
 
-		const todos = await todoLists(store, tasks, [id, ...children]);
+		for (const record of records.values()) {
+			const child = childOf(record);
+
+			if (child !== undefined) children.set(child.runId, child.task);
+		}
 
 		const states = new Map(tasks.map((task): [number, RunStatus] => [task.id, runStatus(task)]));
 
-		return { tasks: runs.get(id) ?? [], states, events, progress, records, live, todos };
+		for (const task of children.values()) {
+			const read = await taskById(store, task);
+
+			if (read !== undefined) states.set(task, runStatus(read));
+		}
+
+		const root = tasks[0] === undefined ? [] : await todosOf(store, tasks[0]);
+		const todos = new Map([[id, root], ...(await childTodos(store, tasks[0], children))]);
+
+		return { tasks, states, events, progress, records, live: await liveTasks(store), todos };
 	});
 }

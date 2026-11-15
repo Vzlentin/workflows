@@ -19,8 +19,9 @@ import { SHOWN, SHOWN_AGENTS } from "../src/cli/commands/show.ts";
 import type { Choose } from "../src/cli/main.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { branchOf, renameBranch } from "../src/launch/worktree.ts";
-import { callRecords, reading, runTasks } from "../src/records/store.ts";
+import { callRecords, reading, runRecords, runTasks } from "../src/records/store.ts";
 import { CallDoc, type SavedCall } from "../src/run/calls.ts";
+import { allPages, rootRuns, runStatus } from "../src/run/past.ts";
 import { RESULT_OBJECT } from "../src/run/result.ts";
 import { prelude } from "../src/run/sandbox.ts";
 import { TASK } from "../src/run/version.ts";
@@ -38,6 +39,7 @@ import {
 	rootTasks,
 	runsOf,
 	sandbox,
+	saveRun,
 	setEntries,
 	askHost,
 	startHost,
@@ -1066,6 +1068,115 @@ describe("workflows log", () => {
 				"usage: workflows log <run-id> [<step> | <call>] [--follow]",
 			],
 		]);
+	});
+});
+
+describe("store reads", () => {
+	/** A parent run with a todo, whose child run failed before its first todo and completed after a resume. */
+	async function parentAndChild(): Promise<string> {
+		await writeFile(join(root, "parent.js"), 'await todo.add("parent")\nreturn await run("child")');
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(
+			join(root, ".workflows", "scripts", "child.js"),
+			'await sh("test -f fixed")\nawait todo.add("child")\nreturn await todo.list()',
+		);
+		const failed = await workflows(["parent.js"], { cwd: root });
+		expect(failed.code).toBe(1);
+		await writeFile(join(root, "fixed"), "");
+		expect((await workflows(["resume", failed.id ?? ""], { cwd: root })).code).toBe(0);
+
+		return failed.id ?? "";
+	}
+
+	/** Replaces with `null` the record of each task of the `main` store that `where` selects, and gives back the old records. */
+	function damage(where: string, ...params: string[]): Array<{ id: number; record: string }> {
+		const database = new DatabaseSync(storeOf());
+
+		try {
+			const old = database.prepare(`SELECT id, record FROM tasks WHERE ${where}`).all(...params);
+			database.prepare(`UPDATE tasks SET record = 'null' WHERE ${where}`).run(...params);
+
+			return old.map((row) => ({ id: Number(row.id), record: String(row.record) }));
+		} finally {
+			database.close();
+		}
+	}
+
+	/** Writes back the records that `damage` replaced. */
+	function repair(old: ReadonlyArray<{ id: number; record: string }>): void {
+		const database = new DatabaseSync(storeOf());
+
+		try {
+			for (const { id, record } of old) database.prepare("UPDATE tasks SET record = ? WHERE id = ?").run(record, id);
+		} finally {
+			database.close();
+		}
+	}
+
+	it("give the root tasks, states, live tasks and todo lists of a full scan", async () => {
+		const id = await parentAndChild();
+		const current = await saveRun(root, "workflows.run", TASK.version, { name: "x" }, { started: true });
+		const earlier = await saveRun(root, "workflows.run", TASK.version - 1, { name: "x" }, { started: true });
+
+		const scanned = await reading(storeOf(), [], (store) =>
+			allPages((cursor) => store.scanTasks({ kind: TASK.name }, 256, cursor, BACKGROUND_CONTEXT)),
+		);
+
+		const roots = rootRuns(scanned);
+		expect([...roots.keys()].toSorted()).toEqual([id, current, earlier].toSorted());
+		expect(await reading(storeOf(), new Map(), runTasks)).toEqual(roots);
+
+		const read = await runRecords(storeOf(), id, () => true);
+		const [child] = await childTasks(id);
+		expect(read.tasks).toEqual(roots.get(id));
+		expect([...read.states]).toEqual(
+			scanned.flatMap((task) => (read.states.has(task.id) ? [[task.id, runStatus(task)]] : [])),
+		);
+		expect([...read.states.values()].toSorted()).toEqual(["done", "done", "failed"]);
+		expect([...read.live]).toEqual(roots.get(current)?.map((task) => task.id));
+		expect(read.todos).toEqual(
+			new Map([
+				[id, [{ id: 1, text: "parent", state: "open" }]],
+				[child?.runId, [{ id: 1, text: "child", state: "open" }]],
+			]),
+		);
+	});
+
+	it("read no task of another run for list and show", async () => {
+		const id = await parentAndChild();
+		await writeFile(join(root, "other.js"), "return 0");
+		const other = await workflows(["other.js"], { cwd: root });
+		expect(other.code).toBe(0);
+		const listed = await workflows(["list"], { cwd: root });
+		const shown = await workflows(["show", id, "--json"], { cwd: root });
+
+		const children = damage("record ->> '$.input.root' = ? AND record -> '$.owner' IS NOT NULL", id);
+		expect(children.length).toBe(2);
+		expect((await workflows(["list"], { cwd: root })).stdout).toEqual(listed.stdout);
+		repair(children);
+
+		const unrelated = damage("record ->> '$.input.runId' = ?", other.id ?? "");
+		expect(unrelated.length).toBe(1);
+		const again = await workflows(["show", id, "--json"], { cwd: root });
+		expect([again.code, again.stdout]).toEqual([0, shown.stdout]);
+		repair(unrelated);
+	});
+
+	it("list the runs of a store without harness's document of the keys", async () => {
+		await writeFile(join(root, "x.js"), "return 0");
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(0);
+		const database = new DatabaseSync(storeOf());
+
+		const removed = database
+			.prepare("DELETE FROM documents WHERE kind = ? RETURNING id")
+			.all(JSON.stringify("harness.tasks"));
+
+		database.close();
+		expect(removed.length).toBe(1);
+
+		const listed = await workflows(["list"], { cwd: root });
+		expect([listed.code, listed.stdout]).toEqual([0, [expect.stringContaining(run.id ?? "")]]);
 	});
 });
 
