@@ -19,8 +19,8 @@ const NOTE_KEYS = "notes.keys";
 // The most summaries that one note or wake answers before it fails.
 const COMPRESS_PASSES = 64;
 
-// The count of the notes that this run added, for the key `<runId>/<n>` of the next one.
-let noteAdds = 0;
+// The count of the adds of each stored note line in this execution, for the key `<runId>/<line>.<n>` of the next one.
+const noteAdds = new Map();
 
 // The longest note that `memo note` and `memo nap` take, in UTF-8 bytes.
 const NOTE_BYTES = 280;
@@ -187,7 +187,10 @@ async function memory(ref = {}) {
 			if (line === "") continue;
 
 			const by = round === undefined ? author : `${author} r${round}`;
-			await store.add(`${runId}/${noteAdds++}`, cutNote(`${prefix}${by}: `, line));
+			const stored = cutNote(`${prefix}${by}: `, line);
+			const n = (noteAdds.get(stored) ?? 0) + 1;
+			noteAdds.set(stored, n);
+			await store.add(`${runId}/${stored}.${n}`, stored);
 		}
 	};
 

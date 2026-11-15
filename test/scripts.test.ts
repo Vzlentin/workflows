@@ -1370,6 +1370,27 @@ return a + " | " + b`,
 		expect(resumed.model.calls).toEqual([]);
 	});
 
+	it.each([
+		["plain", true],
+		["OptMem", false],
+	])("adds each note of a %s store once when a resume adds the notes in another order", async (_kind, plain) => {
+		if (plain) await rm(join(root, "home", ".optmem", "memo"));
+		await writeFile(
+			join(root, "x.js"),
+			`const notes = await memory()
+for (const text of (await sh("cat order")).split(" ")) await notes.note("planner", undefined, [text])
+await sh("./gate.sh end")
+return (await noteLines(notes)).join(" | ")`,
+		);
+		await writeFile(join(root, "order"), "A");
+		const first = await stopped(["x.js"], { gate: "end" });
+		expect(first.code).toBe(130);
+		expect(forgetResults("cat order")).toBe(1);
+		await writeFile(join(root, "order"), "B A A");
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "#0 planner: A | #1 planner: B | #2 planner: A"]);
+	});
+
 	it("keeps each keyed session of a parallel branch when the branches open them in another order", async () => {
 		await writeFile(
 			join(root, "x.js"),
