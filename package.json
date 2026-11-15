@@ -34,7 +34,7 @@
 		"@earendil-works/pi-coding-agent": "1.5.2",
 		"@earendil-works/pi-durable": "1.5.2",
 		"@earendil-works/pi-tui": "1.5.2",
-		"@vzlentin/harness": "git+https://github.com/Vzlentin/harness.git#0d79ae2ea1a70708eba944d9ab20443ec2831a57",
+		"@vzlentin/harness": "git+https://github.com/Vzlentin/harness.git#3e50ec4a0431581850ac368f329fab0b98658710",
 		"typebox": "1.3.27"
 	},
 	"devDependencies": {

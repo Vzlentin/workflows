@@ -675,7 +675,8 @@ loads for the worktree, as harness gives its children: project skills only in a 
 The tools are `read`, `grep`, `find`, `ls`, `write`, `edit` and `bash`, harness's `subagent`, `todo` and `codemode` tools, and the tools of
 the packages in Pi's settings that declare `"piDurable": { "extensions": [...] }`, such as pi-ipython and pi-rlm. The
 host loads these packages once, when it starts, so a package installed later reaches the runs of a project after its
-host restarts. A subagent that a session spawns is a child of that session.
+host restarts. A session of a run gets none of harness's store tools (`thread`, `rule`, `term`, `part` and `parley`),
+in its model tools or in `codemode`. A subagent that a session spawns is a child of that session.
 
 A session of a run that a command starts is at depth 1 of harness's tree of children, in the tree
 `workflows:<root-run-id>`, and its subagents at depth 2, the deepest that harness allows. A run that the `workflow`

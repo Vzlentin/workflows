@@ -6,6 +6,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { AgentDoc, type ConversationId, defineDocFamily, type JsonObject } from "@earendil-works/pi-durable";
 import type { Failure, Owner, Spec } from "@vzlentin/harness/children";
+import { PROJECT_EXTENSION } from "@vzlentin/harness/protocol";
 import { type Static, Type } from "typebox";
 import type { ScriptInput } from "../launch/input.ts";
 import type { Writable } from "../workflow/bundle.ts";
@@ -70,8 +71,8 @@ async function treeOf(calls: Calls): Promise<{ parent: string } | { root: string
  * The session of the call `key`, opened in the children library under the key `wf:<key>` in `cwd`, with
  * `INSTRUCTIONS`. Each field of `args` overrides the role of `args.profile` in the agents table of the bundle, and the
  * role fills the rest; a field that neither gives comes from the project agent. The session does not get the
- * `workflow` tool. The commit that opens it saves its conversation in the call record and in the sessions of the run.
- * The same key again gives the same session.
+ * `workflow` tool, nor harness's store tools `thread`, `rule`, `term`, `part` and `parley`. The commit that opens it
+ * saves its conversation in the call record and in the sessions of the run. The same key again gives the same session.
  */
 export async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionArgs): Promise<JsonValue> {
 	const { runtime, context, host, script } = calls;
@@ -102,7 +103,7 @@ export async function sessionOf(calls: Calls, key: string, cwd: string, args: Se
 			const selection = agent.extensions;
 
 			if (!Array.isArray(selection)) {
-				agent.extensions = { ...selection, remove: [...(selection?.remove ?? []), TOOL_EXTENSION] };
+				agent.extensions = { ...selection, remove: [...(selection?.remove ?? []), TOOL_EXTENSION, PROJECT_EXTENSION] };
 			}
 
 			(await tx.doc(CallDoc, key, null)).conversation = conversation;
