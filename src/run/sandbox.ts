@@ -17,7 +17,6 @@ import { Value } from "typebox/value";
 import { JSON_VALUE } from "../tool.ts";
 import { type Bundle, META, render } from "../workflow/bundle.ts";
 import {
-	CallDoc,
 	type Calls,
 	callKey,
 	inputCall,
@@ -30,6 +29,7 @@ import {
 import { childResult } from "./child.ts";
 import { PAST_OPTIONS } from "./past.ts";
 import { addProgress, type PhaseLines, phaseLine, takeLines } from "./progress.ts";
+import { statusOf } from "./result.ts";
 import { askTurn, ownerOf, SESSION_ARGS, sessionOf } from "./sessions.ts";
 import type { Host, Runtime } from "./version.ts";
 
@@ -143,6 +143,7 @@ export async function runScript(
 		progress,
 		host,
 		owner,
+		inputs: Promise.resolve(),
 	};
 
 	const running = new Set<Promise<unknown>>();
@@ -265,13 +266,6 @@ export async function runScript(
 	// A second `input` call that would wait fails the run, also when the script caught its error.
 	if (calls.secondInput !== undefined) throw calls.secondInput;
 
-	// An answer to a question that this execution did not ask would be lost: the run fails, and a resume without the
-	// answer asks again.
-	if (script.answer !== undefined && calls.answered !== true && (calls.waiting !== undefined || result.ok)) {
-		const asked = (await runtime.snapshot(CallDoc, script.answer.call, context))?.args.question;
-		throw new Error(`resume --answer answered ${JSON.stringify(asked)}, which the run did not ask`);
-	}
-
 	if (calls.waiting !== undefined) {
 		const question = calls.waiting;
 
@@ -282,6 +276,10 @@ export async function runScript(
 		const value = result.value ?? null;
 
 		if (!Value.Check(JSON_VALUE, value)) throw new Error("the script result is not JSON");
+
+		// Only an open `input` call makes a run wait.
+		if (statusOf(value) === "waiting")
+			throw new Error("the script returned the status waiting, but no input() call waits");
 
 		return value;
 	}

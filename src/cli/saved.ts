@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { TaskId, TaskRecord } from "@earendil-works/pi-durable";
 import { statePaths } from "@vzlentin/harness/protocol";
-import type { ScriptInput } from "../launch/input.ts";
+import { readProject, type ScriptInput } from "../launch/input.ts";
 import { inputName, progressEvents, reading, runTasks, type Store, startedTasks } from "../records/store.ts";
 import { hasEnded, type RunTask, runStatus, savedInput, savedLater, taskOf } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
@@ -38,13 +38,9 @@ export async function savedRun(id: string, usage: string): Promise<SavedRun> {
 		throw new UsageError(`${id} is not a run ID`, usage);
 	}
 
-	const file = join(runsDirectory(), id, "project");
-
-	const project = (
-		await readFile(file, "utf8").catch(() => {
-			throw new GoneRun(`no run ${id} in ${runsDirectory()}`);
-		})
-	).trim();
+	const project = await readProject(join(runsDirectory(), id)).catch(() => {
+		throw new GoneRun(`no run ${id} in ${runsDirectory()}`);
+	});
 
 	return { id, project, store: join(statePaths(project).dir, STORE_FILE) };
 }

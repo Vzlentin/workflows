@@ -1076,6 +1076,26 @@ export async function startList(id: string | undefined) {
 	}
 }
 
+/** The replies of the `ask` requests `sent`, in order, from a host of the sandbox. A failed request gives its error. */
+export async function askHost(...sent: Extract<Request, { type: "ask" }>[]): Promise<unknown[]> {
+	const host = await startHost();
+	const replies: unknown[] = [];
+
+	try {
+		for (const one of sent) {
+			try {
+				replies.push(await request(one, { start: false }));
+			} catch (error) {
+				replies.push(error);
+			}
+		}
+
+		return replies;
+	} finally {
+		await host.close();
+	}
+}
+
 /** Sends `request` to the host of `project` that runs in this process. */
 async function send(request: Request, project = "main"): Promise<void> {
 	const client = await connectTo(project);

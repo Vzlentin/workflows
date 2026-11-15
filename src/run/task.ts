@@ -11,10 +11,9 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { PRUNE_MARKER, type ScriptInput } from "../launch/input.ts";
 import { branchOf, ensureWorktree, type Renamed, renameBranch } from "../launch/worktree.ts";
-import { outcomeText } from "../tool.ts";
+import { outcomeText, waits } from "../tool.ts";
 import { firstTask, outcomeFrom, scanTasks, type TaskEnd } from "./past.ts";
 import { addProgress } from "./progress.ts";
-import { statusOf } from "./result.ts";
 import { runScript } from "./sandbox.ts";
 import { endSessions } from "./sessions.ts";
 import { type Checkpoint, current, type Host, type Runtime, type ScriptTask, TASK } from "./version.ts";
@@ -165,7 +164,6 @@ async function runPhase(
 			agents: input.agents,
 			overlay: input.overlay,
 			session: input.parent,
-			answer: input.answer,
 			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },
 			definition,
 		});
@@ -173,7 +171,7 @@ async function runPhase(
 		const result = await named(input, ran, runtime.signal);
 
 		// A waiting run keeps its sessions for the task that gets the answer.
-		await closeSessions(host, runtime, input, statusOf(result) !== "waiting", context);
+		await closeSessions(host, runtime, input, !waits(result), context);
 		await notify(runtime, input, { status: "completed", result }, context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: false, at: Date.now() }]);

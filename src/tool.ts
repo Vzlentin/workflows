@@ -108,10 +108,22 @@ export const OUTCOME = Type.Union([
 	Type.Object(
 		{
 			runId: Type.String(),
-			state: Type.Union([Type.Literal("done"), Type.Literal("waiting")]),
+			state: Type.Literal("done"),
 			result: RUN_RESULT,
 			value: JSON_VALUE,
 			/** The lines that the workflow's report prints without `--json`. */
+			report: Type.Array(Type.String()),
+		},
+		{ additionalProperties: false },
+	),
+	/** `question` is the question of the open `input` call that the run waits on. */
+	Type.Object(
+		{
+			runId: Type.String(),
+			state: Type.Literal("waiting"),
+			question: Type.String(),
+			result: RUN_RESULT,
+			value: JSON_VALUE,
 			report: Type.Array(Type.String()),
 		},
 		{ additionalProperties: false },
@@ -174,8 +186,9 @@ export const DESCRIPTION =
 	"project: Esc detaches from it, and `resume` follows it again. A failed or aborted run stays resumable. With " +
 	"`background: true`, the call returns at once and the result of the run comes later as a message in this " +
 	"conversation: use it for long runs such as `campaign` or `optimize`, or for work that can go on while the " +
-	"conversation continues. `input(question)` stops the run, and the tool gives a `waiting` result with the " +
-	"question; answer it with `workflow` `resume: <run-id>` and `answer`, and `input` then returns the answer. With " +
+	"conversation continues. `input(question)` in a root run asks the user, as an ask of the project, and stops the " +
+	"run: the tool gives a `waiting` result with the question; answer it with `workflow` `resume: <run-id>` and " +
+	"`answer`, and `input` then returns the answer. `input` in a child run fails. With " +
 	"`name` or `script`, `cwd` is the absolute path of the directory where the run starts: the project scripts, " +
 	"the `.workflows` configuration and the default repository of the run come from it; without it, the run " +
 	"starts in the directory of this conversation.";
@@ -291,8 +304,20 @@ export function savedOutcome(output: Output, runId: string): Saved {
 	};
 }
 
-/** The result of a run that waits on `input(question)`. */
-export const WAITING = Type.Object({ status: Type.Literal("waiting"), question: Type.String() });
+/** The result of a run that waits on `input(question)`: the question, which is also its one report line. */
+export const WAITING = Type.Object({
+	status: Type.Literal("waiting"),
+	question: Type.String(),
+	report: Type.Array(Type.String()),
+});
+
+/**
+ * Whether `result` is the result of a run that waits for an answer: the one test of waiting, which an open `input`
+ * call alone gives.
+ */
+export function waits(result: unknown): result is Static<typeof WAITING> {
+	return Value.Check(WAITING, result);
+}
 
 /** The most UTF-8 bytes of a summary text. A longer text keeps its first line and its end, with a cut line between. */
 const OUTCOME_BYTES = 2000;
@@ -328,14 +353,13 @@ function texts(outcome: WorkflowOutcome): Texts {
 	const log = `the command workflows log ${id} shows the run and its calls, and workflows log ${id} <call> prints the whole output of a call`;
 
 	switch (outcome.state) {
+		case "waiting": {
+			const text = `run ${id} waits for an answer: ${outcome.question}; answer it with resume: "${id}" and answer: "<your answer>"`;
+
+			return { summary: bounded(text, log), report: [] };
+		}
+
 		case "done":
-		case "waiting":
-			if (Value.Check(WAITING, outcome.value)) {
-				const text = `run ${id} waits for an answer: ${outcome.value.question}; answer it with resume: "${id}" and answer: "<your answer>"`;
-
-				return { summary: bounded(text, log), report: [] };
-			}
-
 			return {
 				summary: bounded(
 					`run ${id} ${stateText(outcome.state, outcome.result)}: ${JSON.stringify(outcome.value)}`,

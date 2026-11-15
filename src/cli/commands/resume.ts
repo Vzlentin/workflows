@@ -4,7 +4,8 @@ import type { Client } from "@vzlentin/harness/client";
 import type { ScriptInput } from "../../launch/input.ts";
 import { checkWorktree } from "../../launch/worktree.ts";
 import { callRecords, reading, type Store } from "../../records/store.ts";
-import { hasEnded, hasResult, runStatus } from "../../run/past.ts";
+import { answerAsk, type Asks, readAsk } from "../../run/asks.ts";
+import { hasEnded, runStatus } from "../../run/past.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { type Following, follow, outcomeOf, reportOutcome } from "../follow.ts";
 import { checkVersion, connectTo, startTask } from "../host.ts";
@@ -17,9 +18,11 @@ export const WAIT = "workflows wait <run-id> [--json]";
 
 /**
  * Continues the run of `args`. A finished run prints its result. A run whose last task ended without a result continues
- * in a new task with the same input, and shows the progress from its start. A run that waits for an answer continues
- * in a new task with the answer of `--answer` to its open `input` call. A run whose last task did not end is
- * followed: with its host running, from the start of the task's current execution, else from when the host starts.
+ * in a new task with the same input, and shows the progress from its start. A run that waits for an answer gives the
+ * answer of `--answer` to the ask of its open `input` call, and continues in a new task with the same input, which
+ * reads the answer from the ask. A waiting run whose ask got its answer elsewhere, or was dropped, continues without
+ * `--answer`. A run whose last task did not end is followed: with its host running, from the start of the task's
+ * current execution, else from when the host starts.
  * With `wait`, an ended run prints its outcome from the store, and Ctrl+C never stops the run.
  */
 export async function resume(
@@ -33,44 +36,39 @@ export async function resume(
 	const { id, answer } = wait ? { id: oneRunId(args, usage), answer: undefined } : resumeArgs(args);
 	const run = await savedRun(id, usage);
 
-	// The open input call comes from the same read as the task and its keys. A resume that reads before another
-	// resume's task starts asks for the same key as the other one.
+	// The ask of the open input call comes from the same read as the task and its keys.
 	const read = await reading(run.store, undefined, async (store) => ({
 		...(await lastTaskIn(store, run.id)),
-		open: answer === undefined ? undefined : await openInput(store, run.id),
+		ask: await openAsk(store, run.id),
 	}));
 
 	if (read === undefined) throw new GoneRun(`run ${run.id} has no workflow`);
 
 	const task = checked(read.latest, run.id, wait ? "be waited for" : "resume");
-	const { input: last } = task;
+	const { input } = task;
 	const status = runStatus(task);
-	const waiting = status === "waiting";
 	const ended = hasEnded(status);
 
-	if (answer !== undefined && !waiting) throw new UsageError(`run ${run.id} does not wait for an answer`, RESUME);
+	if (answer !== undefined && status !== "waiting") {
+		throw new UsageError(`run ${run.id} does not wait for an answer`, RESUME);
+	}
+
+	// A waiting run whose ask is not open, after this command answered it or after an answer or a drop elsewhere, ended
+	// without a result, so it continues in a new task with the same input. A wait never reads the ask.
+	const waiting = status === "waiting" && (wait || (await settleAsk(terminal, run, read.ask, answer)));
 
 	if (waiting && answer === undefined && !wait && !json && !background && terminal.readLine !== undefined) {
 		terminal.stdout(`run ${run.id}`);
-		reportOutcome(last, task, terminal, json, await progressOf(run), true);
+		reportOutcome(input, task, terminal, json, await progressOf(run), true);
 
 		return answering(run.id, terminal);
 	}
 
-	if (ended && answer === undefined && (wait || hasResult(status))) {
+	if (ended && (wait || waiting || status === "done")) {
 		terminal.stdout(`run ${run.id}`);
 
-		return outcomeOf(last, task, terminal, json, await progressOf(run));
+		return outcomeOf(input, task, terminal, json, await progressOf(run));
 	}
-
-	// An answer that a call used replays from its record, so a resume without `--answer` drops the earlier answer.
-	const { answer: _earlier, ...unanswered } = last;
-
-	const given = read.open === undefined || answer === undefined ? undefined : { call: read.open, text: answer };
-
-	if (answer !== undefined && given === undefined) throw new Error(`run ${run.id} has no open input call`);
-
-	const input: ScriptInput = given === undefined ? unanswered : { ...last, answer: given };
 
 	const key = ended ? read.keys.next : read.keys.keyOf(task);
 
@@ -87,7 +85,7 @@ export async function resume(
 	try {
 		if (ended) {
 			// The new task is never the first task of the run, so it refuses what its phase would refuse.
-			if (last.worktree !== undefined) await checkWorktree(run.id, last.worktree, false);
+			if (input.worktree !== undefined) await checkWorktree(run.id, input.worktree, false);
 			from = (await progressOf(run)).length;
 			client = await connectTo(terminal, run.project, true);
 			// The new task posts its outcome only when this resume runs in the background, whatever the last task did.
@@ -153,7 +151,10 @@ export async function followAnswering(
  * Ctrl+C or at the end of input, it prints how to continue and exits 130.
  */
 async function answering(id: string, terminal: Terminal): Promise<number> {
-	const text = await terminal.readLine?.();
+	let text = await terminal.readLine?.();
+
+	// An answer needs a text that is not blank.
+	while (text !== undefined && text.trim() === "") text = await terminal.readLine?.();
 
 	if (text === undefined) {
 		const line = `run ${id} waits for an answer; continue with: workflows resume ${id} --answer <text>`;
@@ -166,26 +167,70 @@ async function answering(id: string, terminal: Terminal): Promise<number> {
 	return resume([id, `--answer=${text}`], terminal, false, false);
 }
 
-/** The run ID and the `--answer` of the args of `resume`. */
+/** The run ID and the `--answer` of the args of `resume`. A blank answer is bad usage. */
 function resumeArgs(args: readonly string[]) {
 	const { values, positionals } = withUsage(
 		() => parseArgs({ args: [...args], options: { answer: { type: "string" } }, allowPositionals: true, strict: true }),
 		RESUME,
 	);
 
+	if (values.answer?.trim() === "") throw new UsageError("--answer needs a text that is not blank", RESUME);
+
 	return { id: oneRunId(positionals, RESUME), answer: values.answer };
 }
 
 /**
- * The document key of the `input` call that the run `id` waits for an answer to, in the call records of `store`: the
- * last one that started and did not end, or undefined when there is none.
+ * The ask of the `input` call that the run `id` waits for an answer to, in the call records of `store`: the ask of the
+ * last open `input` call, or undefined when there is none or its record has no ask.
  */
-async function openInput(store: Store, id: string): Promise<string | undefined> {
+async function openAsk(store: Store, id: string): Promise<number | undefined> {
 	const open = [...(await callRecords(store, id))]
 		.filter(([key, record]) => key.startsWith(`${id}/`) && record.kind === "input" && record.endedAt === undefined)
 		.sort(([, a], [, b]) => a.startedAt.localeCompare(b.startedAt));
 
-	const [key] = open.at(-1) ?? [];
+	return open.at(-1)?.[1].ask;
+}
 
-	return key;
+/**
+ * Whether the waiting run `run` still waits for its ask `ask`, which the host of its project keeps. With `answer`, it
+ * first answers the ask, and the run no longer waits.
+ */
+async function settleAsk(
+	terminal: Terminal,
+	run: { readonly id: string; readonly project: string },
+	ask: number | undefined,
+	answer: string | undefined,
+): Promise<boolean> {
+	const client = await connectTo(terminal, run.project, true);
+	const asks: Asks = (sent) => client.request(sent);
+
+	try {
+		if (answer === undefined) return await isOpen(asks, ask);
+
+		await answerOpen(asks, run.id, ask, answer);
+
+		return false;
+	} finally {
+		client.close();
+	}
+}
+
+/** Whether the ask `ask` is open. An `input` call without an ask has no open ask. */
+async function isOpen(asks: Asks, ask: number | undefined): Promise<boolean> {
+	return ask !== undefined && (await readAsk(asks, ask)).state === "open";
+}
+
+/**
+ * Answers the open ask `ask` of the run `id` with `answer`, as the run. It refuses an ask that is not open, and an
+ * `input` call without an ask: the run reads the answer that the ask has.
+ */
+async function answerOpen(asks: Asks, id: string, ask: number | undefined, answer: string): Promise<void> {
+	const read = ask === undefined ? undefined : await readAsk(asks, ask);
+
+	if (read?.state !== "open") {
+		const state = read === undefined ? "its input has no ask" : `ask ${read.id} is ${read.state}`;
+		throw new Error(`run ${id}: ${state}; continue with: workflows resume ${id}`);
+	}
+
+	await answerAsk(asks, id, read.id, answer);
 }

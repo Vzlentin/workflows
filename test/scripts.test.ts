@@ -38,6 +38,7 @@ import {
 	runsOf,
 	sandbox,
 	setEntries,
+	askHost,
 	startHost,
 	startList,
 	forgetResults,
@@ -348,6 +349,7 @@ describe("input", () => {
 				JSON.stringify({
 					runId: id,
 					state: "waiting",
+					question: "A?",
 					result: { status: "waiting", code: 3 },
 					value: { status: "waiting", question: "A?", report: ["A?"] },
 					report: ["A?"],
@@ -384,7 +386,7 @@ describe("input", () => {
 		]);
 	});
 
-	it("fails a run whose --answer answers a question that it did not ask, and a resume asks again", async () => {
+	it("writes one ask for each input, answers it with --answer, and asks again what the run asks next", async () => {
 		await writeFile(
 			join(root, "x.js"),
 			'try { await sh("test -f f") } catch { return await input("A?") }\nreturn await input("B?")',
@@ -394,16 +396,116 @@ describe("input", () => {
 		expect([first.code, first.stdout]).toEqual([3, [`run ${id}`, "A?"]]);
 		await writeFile(join(root, "f"), "");
 
+		// The answer goes to ask 1, and the run, which no longer reaches that call, asks B? as ask 2.
 		const answered = await workflows(["resume", id, "--answer", "a"], { cwd: root });
-		expect([answered.code, answered.stderr]).toEqual([
-			1,
-			['failed x: resume --answer answered "A?", which the run did not ask', `continue with: workflows resume ${id}`],
-		]);
-
+		expect([answered.code, answered.stdout]).toEqual([3, [`run ${id}`, "B?"]]);
 		const again = await workflows(["resume", id], { cwd: root });
 		expect([again.code, again.stdout]).toEqual([3, [`run ${id}`, "B?"]]);
+
+		const [one, two, three] = await askHost(
+			{ type: "ask", action: "read", id: 1 },
+			{ type: "ask", action: "read", id: 2 },
+			{ type: "ask", action: "read", id: 3 },
+		);
+
+		const asker = `workflows:${id}`;
+		expect(one).toMatchObject({ title: "A?", asker, state: "answered", answer: "own", label: "a", words: ["a"] });
+		expect(two).toMatchObject({ title: "B?", asker, state: "open" });
+		expect(String(three)).toBe("Error: Unknown ask: 3");
+
 		const last = await workflows(["resume", id, "--answer", "b"], { cwd: root });
 		expect([last.code, last.stdout]).toEqual([0, [`run ${id}`, "b"]]);
+	});
+
+	it("goes on with the answer that the ask got elsewhere, on a resume without --answer", async () => {
+		await writeFile(join(root, "x.js"), 'return await input("Which `name` is **best**?")');
+		const first = await workflows(["x.js"], { cwd: root });
+		const id = first.id ?? "";
+		expect([first.code, first.stdout]).toEqual([3, [`run ${id}`, "Which `name` is **best**?"]]);
+
+		const [answered] = await askHost({
+			type: "ask",
+			action: "answer",
+			caller: "test",
+			answers: [{ id: 1, answer: "own", label: "the short one", words: ["the `short`", "one"] }],
+		});
+
+		expect(answered).toMatchObject({
+			asks: [{ title: "Which name is *best*?", view: "Which `name` is **best**?", state: "answered" }],
+		});
+
+		const resumed = await workflows(["resume", id, "--json"], { cwd: root });
+		expect([resumed.code, JSON.parse(resumed.stdout.at(-1) ?? "null").value]).toEqual([0, "the `short`\none"]);
+	});
+
+	it("refuses --answer to an ask that is not open, and a resume goes on without the answer", async () => {
+		await writeFile(join(root, "x.js"), 'try { return await input("A?") } catch (error) { return String(error) }');
+		const first = await workflows(["x.js"], { cwd: root });
+		const id = first.id ?? "";
+		expect(first.code).toBe(3);
+		await askHost({ type: "ask", action: "drop", caller: "test", id: 1 });
+
+		const refused = await workflows(["resume", id, "--answer", "a"], { cwd: root });
+		expect([refused.code, refused.stderr]).toEqual([
+			1,
+			[`workflows: run ${id}: ask 1 is dropped; continue with: workflows resume ${id}`],
+		]);
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${id}`, 'Error: the user dropped ask 1 of input "A?"']]);
+	});
+
+	it("refuses a blank --answer", async () => {
+		const blank = await workflows(["resume", "r1", "--answer", " "], { cwd: root });
+		expect([blank.code, blank.stderr]).toEqual([
+			2,
+			[
+				"workflows: --answer needs a text that is not blank",
+				"usage: workflows resume <run-id> [--answer <text>] [--background] [--json]",
+			],
+		]);
+	});
+
+	it("uses the open ask of the run when the record of its input call lost the ask", async () => {
+		await writeFile(join(root, "x.js"), 'return await input("A?")');
+		const first = await workflows(["x.js"], { cwd: root });
+		const id = first.id ?? "";
+		expect(first.code).toBe(3);
+		const database = new DatabaseSync(storeOf());
+		database
+			.prepare(
+				`UPDATE document_revisions SET content = json_remove(content, '$.ask') WHERE kind = 'base' AND content LIKE '{"kind":"input"%'`,
+			)
+			.run();
+		database.close();
+
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout]).toEqual([3, [`run ${id}`, "A?"]]);
+		const [listed] = await askHost({ type: "ask", action: "list" });
+		expect(listed).toMatchObject({ asks: [{ id: 1, title: "A?" }] });
+		expect(listed).toHaveProperty("asks.length", 1);
+	});
+
+	it("fails an input call in a child run at once, and writes no ask", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "parent.js"), 'return await run("child", {})');
+		await writeFile(join(scripts, "child.js"), 'return await input("A?")');
+
+		const run = await workflows(["parent"], { cwd: repo });
+		expect(run.code).toBe(1);
+		expect(run.stderr[0]).toMatch(/^failed parent: .*input\(\) in the child run \S+: only a root run can ask the user/);
+		expect(await askHost({ type: "ask", action: "list" })).toEqual([{ asks: [] }]);
+	});
+
+	it("fails a script that returns the status waiting without an open input call", async () => {
+		await writeFile(join(root, "x.js"), 'return { status: "waiting", question: "A?", report: ["A?"] }');
+		const run = await workflows(["x.js"], { cwd: root });
+		expect([run.code, run.stderr[0]]).toEqual([
+			1,
+			"failed x: the script returned the status waiting, but no input() call waits",
+		]);
 	});
 
 	it("fails a run whose script catches a second input call that would wait", async () => {

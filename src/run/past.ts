@@ -9,9 +9,9 @@ import type { Cursor, Page, TaskOutcome, TaskRecord } from "@earendil-works/pi-d
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Mark } from "../records/steps.ts";
-import { RUN_STATE, type RunResult, type WorkflowOutcome } from "../tool.ts";
+import { RUN_STATE, type RunResult, type WorkflowOutcome, waits } from "../tool.ts";
 import { ROLE } from "../workflow/roles.ts";
-import { reportOf, runResult, SHOWN_INPUT, type ShownInput, statusOf } from "./result.ts";
+import { reportOf, runResult, SHOWN_INPUT, type ShownInput } from "./result.ts";
 import { current, type Runtime, TASK, thisVersion } from "./version.ts";
 
 export type RunTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
@@ -51,7 +51,7 @@ export function runStatus(task: RunTask | TaskEnd): RunStatus {
 function endedState(outcome: TaskOutcome<JsonValue>): EndedStatus {
 	switch (outcome.status) {
 		case "completed":
-			return statusOf(outcome.result) === "waiting" ? "waiting" : "done";
+			return waits(outcome.result) ? "waiting" : "done";
 		case "failed":
 		case "faulted":
 			return "failed";
@@ -111,9 +111,12 @@ export function endedOutcome(
 /** The outcome of the run `input` whose script returned `value`: its state, its result, its value and its report. */
 function completedOutcome(input: ShownInput, value: JsonValue): CompletedOutcome {
 	const report = reportOf(input, value);
-	const state = statusOf(value) === "waiting" ? "waiting" : "done";
+	const fields = { result: runResult(report), value, report: report.lines };
+	const runId = input.runId;
 
-	return { runId: input.runId, state, result: runResult(report), value, report: report.lines };
+	return waits(value)
+		? { runId, state: "waiting", question: value.question, ...fields }
+		: { runId, state: "done", ...fields };
 }
 
 /** The outcome of the run `input` whose task ended with `outcome`. */

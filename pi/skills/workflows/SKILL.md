@@ -123,10 +123,10 @@ call name at the end of its line. `log` only reads.
 
 ### A waiting run
 
-A run that waits for an answer has the state `waiting`, with `value: { status: "waiting", question }`. Show the question to the
-user. A text longer than 2000 bytes is cut, and its cut line names `workflows log <runId>`, which shows the run and its calls, and `workflows log <runId> <call>`, which prints the whole question of the `input` call. When he answers, call `{ resume: "<runId>", answer: "<his answer>" }`. For a campaign, `stop` or an empty answer
+A run that waits for an answer has the state `waiting`, with its `question`. Show the question to the
+user. A text longer than 2000 bytes is cut, and its cut line names `workflows log <runId>`, which shows the run and its calls, and `workflows log <runId> <call>`, which prints the whole question of the `input` call. When he answers, call `{ resume: "<runId>", answer: "<his answer>" }`. For a campaign, `stop`
 ends it. For a campaign item still at judge 0, the answers are `keep` (ship it as it is), `fix: <words>` (one more fix
-round on his words), `reset` (reset the item and get a rundown), and `stop` or empty (end the campaign, keep the
+round on his words), `reset` (reset the item and get a rundown), and `stop` (end the campaign, keep the
 commit).
 
 ## Follow a run

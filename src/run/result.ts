@@ -3,7 +3,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { subject } from "../launch/input.ts";
-import type { RunResult } from "../tool.ts";
+import { type RunResult, waits } from "../tool.ts";
 import type { ProgressEvent } from "./progress.ts";
 
 /**
@@ -65,8 +65,8 @@ export type Report = {
 
 /**
  * The report lines of the result of the run `input`, its status, its score, and the exit code of its status as
- * `meta.exit` gives it: 3 for `waiting`, whatever `meta.exit` says, 0 for a result without a status, and 1 for a
- * status that `meta.exit` does not declare.
+ * `meta.exit` gives it: 3 for a result that waits for an answer, whatever `meta.exit` says, 0 for a result without a
+ * status, and 1 for a status that `meta.exit` does not declare.
  */
 export function reportOf(input: ShownInput, result: JsonValue): Report {
 	const lines = Value.Check(REPORT, result)
@@ -74,9 +74,9 @@ export function reportOf(input: ShownInput, result: JsonValue): Report {
 		: [Value.Check(Type.String(), result) ? result : JSON.stringify(result)];
 
 	const score = Value.Check(SCORE, result) ? result.score : undefined;
-	const status = statusOf(result);
 
-	if (status === "waiting") return { lines, status, code: 3, score };
+	if (waits(result)) return { lines, status: result.status, code: 3, score };
+	const status = statusOf(result);
 
 	if (status === undefined) return { lines, status, code: 0, score };
 	const code = Object.hasOwn(input.meta.exit, status) ? (input.meta.exit[status] ?? 1) : 1;

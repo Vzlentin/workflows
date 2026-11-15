@@ -487,7 +487,7 @@ terminal and in Pi they move under the item step when it comes.
   Findings:
   - <finding>
 
-  How should the campaign continue? Answer keep to ship the item as it is, fix: <words> for one more fix round on your words, or reset to reset the item and get a rundown. Answer stop, or nothing, to end the campaign and keep the commit.
+  How should the campaign continue? Answer keep to ship the item as it is, fix: <words> for one more fix round on your words, or reset to reset the item and get a rundown. Answer stop to end the campaign and keep the commit.
   ```
 
   `<status>` is the status of the `rundown` input below. The findings are those of the last judge that gave some, and
@@ -499,7 +499,7 @@ terminal and in Pi they move under the item step when it comes.
     and `round` one more than the fix round before it. A score above 0 ships the item, `unjudged` or a score of 0
     again asks again, and any other outcome fails the item as below.
   - `reset` fails the item as below.
-  - `stop`, or an empty answer, prints `stopped <subject> at item <n>: <worktree>`, then the lesson lines, and exits 1.
+  - `stop` prints `stopped <subject> at item <n>: <worktree>`, then the lesson lines, and exits 1.
     The commit of the item and the branch stay, and the result has no `rundown`.
   - Any other answer asks the same question again, after the line `Unknown answer: <answer>` and an empty line.
 - When an item is blocked or stopped, its fix round fails, leaves no change or ends with an unknown status, or the
@@ -517,9 +517,9 @@ failed and was reset: its notes describe code that is gone` to the run memory. T
   The run asks the question of [Input](#input): the question summary, which is the rundown, after a fix round
   `Fix round: <outcome>` with one `- <finding>` line for each finding of the fix round's judge, `Suggestions:` with one
   `- <suggestion>` line each, `Proposed items:` with the numbered items, and `Patch of the failed item: <path>` when
-  the patch exists, then `How should the campaign continue? Answer stop, or nothing, to end it.` The command prints
+  the patch exists, then `How should the campaign continue? Answer stop to end it.` The command prints
   the question and exits 3 with the status `waiting`. Continue with `workflows resume <run-id> --answer <text>`.
-- When the answer is `stop`, in any case, or empty, the command prints `stopped <subject> at item <n>: <worktree>`,
+- When the answer is `stop`, in any case, the command prints `stopped <subject> at item <n>: <worktree>`,
   with the path of the campaign's worktree,
   then the rundown, then the lesson lines, and exits 1. The branch keeps its name `campaign/<run-id>`, or `--branch`.
 - Any other answer goes back to the step `split`: a new planner session with the `split` prompt and the inputs
@@ -1028,7 +1028,7 @@ and `phase`, `log` and `title` need no `await`.
 | `await todo.add(text)` | Adds a todo with the state `open` and the next ID to the list of the run, and returns it, `{ id, text, state }`. See [Todos](#todos) |
 | `await todo.set(id, state, text)` | Sets the state of the todo `id` of the list of the run to `open`, `doing`, `done` or `dropped`, and its text when `text` is given, and returns the todo |
 | `await todo.list()` | The todos of the list of the run, in ID order |
-| `await input(question)` | Asks the user `question`, and returns the answer of `workflows resume <run-id> --answer <text>`, or of the `workflow` tool with `resume` and `answer`. See [Input](#input) |
+| `await input(question)` | Asks the user `question` as an ask of the project, and returns its answer: from `workflows resume <run-id> --answer <text>`, the `workflow` tool with `resume` and `answer`, or an answer of the ask elsewhere. Only a root run can ask. See [Input](#input) |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
 | `title(text)` | Name the run `text` in `list`, `show` and the end lines, in place of the subject of its first `text` argument; the last call wins. `changeOf` calls it with the subject of the intent |
@@ -1193,7 +1193,8 @@ saved results stay in the project store also after the run fails. `phase` and `l
 results. A resume prints the phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
 lines before it, and keeps the last `phase` line waiting for the next call that runs.
 
-An `input` call with an answer saves the answer as its result, so a later resume returns it, and does not wait again.
+An `input` call whose ask has an answer saves the answer as its result, so a later resume returns it, and does not
+wait again.
 
 When the script ends, by its result or by an error, the calls that it did not wait for are cancelled: a `sh` or `ok`
 command is killed, a `run()` call stops waiting for its child run, and an ask stops waiting for its turn. The script's
@@ -1203,31 +1204,51 @@ stop cut records nothing more.
 
 ### Input
 
-`input(question)` asks the user a question. The first time the script reaches it, the call records its start, the
-script stops once the code that called `input` reaches its next `await`, and the run's task completes with the result
-`{ "status": "waiting", "question", "report": [question] }`.
+`input(question)` asks the user a question, as an ask of the project in the store of the harness host (see "Asks and
+parleys" in the spec of harness). The ask has the asker `workflows:<run-id>` and the title `question`, with its
+backticks removed and each run of two or more `*` cut to one, because a title is plain text; when that changes the
+question, the ask keeps the question as it was as its `view`. The call record saves the ID of the ask as `ask`. The
+first time the script reaches the call, the call writes the ask with an `ask round` request, the script stops once the
+code that called `input` reaches its next `await`, and the run's task completes with the result
+`{ "status": "waiting", "question", "report": [question] }`. Only an open `input` call makes a run wait: a script
+that returns the status `waiting` itself fails with `the script returned the status waiting, but no input() call
+waits`.
 The command prints the question as the report line and exits 3, also with `wait` and with a resume without
 `--answer`, when it cannot ask. A command can ask when stdin and stderr are terminals, without `--json` or
 `--background`, and not after a Ctrl+C; `wait` never asks. Then the command reads one line on the terminal, with its
 echo on stderr, and continues as `workflows resume <run-id> --answer <line>` does: it prints `run <run-id>` again and
-follows the new task. A later `input` call asks again in the same way. Ctrl+C or the end of input while the command
-reads prints `run <run-id> waits for an answer; continue with: workflows resume <run-id> --answer <text>` on stderr
-and exits 130, and the run still waits. `list` and `show` give the status `waiting`, and `show` lists the `input` call as `✗`, with the question
-as its label and the word `waiting`. A waiting run keeps its sessions, as a failed run does.
+follows the new task. A blank line is read again. A later `input` call asks again in the same way. Ctrl+C or the end
+of input while the command reads prints `run <run-id> waits for an answer; continue with: workflows resume <run-id>
+--answer <text>` on stderr and exits 130, and the run still waits. `list` and `show` give the status `waiting`, and
+`show` lists the `input` call as `✗`, with the question as its label and the word `waiting`. A waiting run keeps its
+sessions, as a failed run does.
 
-`workflows resume <run-id> --answer <text>` starts a new task of the run with the answer to the open `input` call: the
-last one that started and did not end. The script runs again from the top, and that call returns `<text>`. A later
-`input` call waits again in the same way. While one `input` call waits, a second one that would wait, made before the
-script stops, fails the run with
-`the run waits for an answer to: <question>`, the question of the first; the script cannot catch it. A run without an open `input` call fails with `workflows: run <run-id> has no
-open input call` and exits 1. When the script returns or waits again without the `input` call of the answer, such as
-after a call that failed before now succeeds, the run fails with `resume --answer answered "<question>", which the run
-did not ask`. A resume without `--answer` drops the answer of the last task: a call that used it returns it from its
-record, and the run asks again a question that it did not reach. A script that returns `{ "status": "waiting" }`
-itself also exits 3.
+The answer of the ask is the answer of the call. `workflows resume <run-id> --answer <text>` answers the open ask of the
+run as the run itself: the answer `own`, with the words `[<text>]` and the label of the first line of `<text>` that is
+not blank, as plain text. Then it starts a new task of the run with the same input. The script runs again from the
+top, and the call reads its ask: an answered ask returns its words, one on each line, or its label when it has no
+words, and the call saves that as its result, so a later resume returns it and does not ask again. A dropped ask fails
+the call with `the user dropped ask <n> of input "<question>"`. A later `input` call writes its own ask and waits in
+the same way. A blank `--answer` prints `workflows: --answer needs a text that is not blank` and the usage line, and
+exits 2. `--answer` for an ask that is not open prints `workflows: run <run-id>: ask <n> is <state>; continue with:
+workflows resume <run-id>`, or `its input has no ask` in place of `ask <n> is <state>`, and exits 1, so the answer
+that the run reads is the one that the ask has.
 
-`input()` in a child run has no special handling: the caller of `run()` gets the waiting result as the result of the
-child run.
+An answer that the ask gets elsewhere, in Orda, in Pi or with an `ask answer` request, reaches the run at its next
+resume: the run is not resumed on its own. A resume without `--answer` of a waiting run reads the ask through the host.
+When the ask is open, the resume asks or exits 3 as above. When it is answered or dropped, the resume starts a new task
+of the run, which reads the ask. An ask that an answer reached elsewhere also has a delivery of harness for the asker,
+which no one takes. An answered ask whose call the script no longer reaches, such as after a call that failed before
+now succeeds, stays answered, and the run goes on to the call that it reaches.
+
+While one `input` call waits, a second one that would wait, made before the script stops, fails the run with `the run
+waits for an answer to: <question>`, the question of the first; the script cannot catch it. The `input` calls of one
+execution decide one at a time whether they wait. A call that stopped after it wrote its ask and before its record
+saved it uses the open ask of the run with the same title, so a resume writes no second ask. A blank question fails
+the call with `input() needs a question that is not blank`.
+
+`input()` in a child run fails the call at once with `input() in the child run <run-id>: only a root run can ask the
+user`, and writes no ask.
 
 ## Resume
 
@@ -1265,12 +1286,16 @@ A run has one live task at a time. When the run's last task has not ended, becau
 the host to start, resume follows that task and prints its outcome. When the host runs, resume prints the progress
 lines of the task's current execution from its start. When no host runs, resume starts it and prints the progress
 lines that come after. A host that starts continues the unfinished runs of its project on its own. When resume starts
-a new task, it prints the progress lines of that task. Resume reads the run's tasks, their keys and the open `input`
-call in one read of the store. When two resumes of a run that ended run at the same time, there are two cases:
+a new task, it prints the progress lines of that task. Resume reads the run's tasks, their keys and the ask of the
+open `input` call in one read of the store, then the state of that ask from the host. When two resumes of a run that ended run at the same time, there are two cases:
 
 - The other resume had not started its task when this resume read the store. Both ask for the same key, and the
   first one gets the task. The other follows that task when it sent the same input, else it prints `workflows: run
   <run-id> was resumed by another command with another input: follow it with workflows wait <run-id>` and exits 1.
+  Two resumes with `--answer` of a waiting run send the same input: when both read the ask open, both answer it, the
+  last answer stays in the ask, and both follow the one task, which reads the answer that the ask has when it reaches
+  the call. A resume that reads the ask after the other answered it gives the `ask <n> is answered` error of
+  [Input](#input).
 - The other resume had started its task. This resume acts as a resume that comes after the other one, and continues
   from that task by the rules of this section. It follows the task when it has not ended, prints its outcome when it
   ended with a result, and starts a new task when it ended without a result. When the task waits for an answer,
@@ -1286,8 +1311,9 @@ stopped for a reason other than its end, such as its length, fails its call, and
 whose answer did not call `respond`. A resumed ask never returns the answer of another ask in its session.
 
 A shipped, rejected, unjudged, blocked or stopped run is final: resume prints the same result and exits with the same code. A waiting
-run without `--answer` prints its question again and exits 3. When the command can ask, it reads the answer on the
-terminal and continues the run with it, or prints the `waits for an answer` line and exits 130 when no answer comes.
+run without `--answer` whose ask is open prints its question again and exits 3. When the command can ask, it reads the
+answer on the terminal and continues the run with it, or prints the `waits for an answer` line and exits 130 when no
+answer comes. A waiting run whose ask has an answer or was dropped continues in a new task. See [Input](#input).
 `--answer` for a run whose last task did not complete
 with the status `waiting` prints `workflows: run <run-id> does not wait for an answer` and `usage: workflows resume
 <run-id> [--answer <text>] [--background] [--json]`, and exits 2. See [Input](#input).
@@ -1389,15 +1415,16 @@ Every form of start, resume and wait accepts `--json`, at any position before `-
 line of JSON in place of the report lines, for every outcome. Its `state` is the state of the run, the one word that
 `list` and `show` give, and only a run that is `done` or `waiting` has a `result`:
 
-- `{ "runId", "state": "done" | "waiting", "result": { "status"?, "code", "score"? }, "value", "report" }`: the run has a result.
+- `{ "runId", "state": "done", "result": { "status"?, "code", "score"? }, "value", "report" }`: the run has a result.
   `result.status` is the `status` of the script's result, when it has one, `result.code` the exit code of the
   command, from `meta.exit`, and `result.score` the `score` of the script's result, when it has one: the score of the
   last judge of a ship, a campaign or a judge run. `value` is the whole result of the script, for example
   `{"status":"shipped","rounds":1,"head":"1a2b3c4",...}` for ship; the [Ship](#ship) section lists its fields.
   `report` is the list of report lines that the command prints without `--json`, such as
-  `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4 on fix/readme-typo"]`. A run that waits for an
-  answer is `waiting`, with the value `{"status":"waiting","question":"<question>","report":["<question>"]}` and the
-  exit code 3.
+  `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4 on fix/readme-typo"]`.
+- `{ "runId", "state": "waiting", "question", "result": { "status"?, "code", "score"? }, "value", "report" }`: the run waits for
+  an answer. `question` is the question of its open `input` call, the value is
+  `{"status":"waiting","question":"<question>","report":["<question>"]}`, and the exit code is 3.
 - `{ "runId", "state": "failed" | "orphaned", "error" }`: the task ended without a result. `error` is the error
   message, or the reason of the orphaned task.
 - `{ "runId", "state": "aborted" }`: a second Ctrl+C or `workflows stop` aborted the run.
@@ -1906,7 +1933,7 @@ error result of the command's usage error, before a run exists. It sets `HARNESS
   the saved result keep the whole line. The summary is
   `run <run-id> <state>: <value>`, with the state and the result as [List](#list) gives them, such as
   `run <run-id> done, result shipped exit 0: {...}`, and the JSON of the value of the result. A run that waits for an
-  answer has only the summary, `run <run-id> waits for an answer: <question>; answer it with resume: "<run-id>" and answer: "<your answer>"`, and is not an error. A run that is `done` is not an
+  answer has only the summary, `run <run-id> waits for an answer: <question>; answer it with resume: "<run-id>" and answer: "<your answer>"`, and is not an error. Only the result of an open `input` call, `{ "status": "waiting", "question", "report" }`, gives this text. A run that is `done` is not an
   error either, whatever its exit code. A failed, orphaned, aborted, detached or host-stopped run is an error result
   with its summary, such as `run <run-id> failed: <error>; continue it with resume: "<run-id>"`, `run <run-id>
   orphaned: <reason>` or `run <run-id> aborted; continue it with resume: "<run-id>"`, and keeps the structured output,
@@ -2001,7 +2028,7 @@ The tool takes one of `name`, `script`, `resume` or `save`, plus `args` with `na
   `workflows optimize --workflow=ship --items=items/ --json`.
 - `script` runs `workflows - --<key>=<value>... --json` with the script on stdin, and each arg as a flag as for `name`.
 - `resume` runs `workflows resume <run-id>`. `answer`, with `resume` only, adds `--answer=<text>` and answers the
-  question of a waiting run. With `name`, `script` or `save`, it is the error `answer works only with resume`, and no
+  ask of a waiting run (see [Input](#input)). With `name`, `script` or `save`, it is the error `answer works only with resume`, and no
   command starts. `answer` works with `background`.
 - `save: { runId, name, force? }` runs `workflows save <run-id> <name>`, with `--force` when `force` is true. See
   [Save](#save).
@@ -2237,6 +2264,8 @@ The engine files in `src/`:
   `runStatus`, the one place that computes the status of a run.
 - `run/progress.ts`: the progress events of a run, their document, and the lines that wait for the next call.
 - `run/calls.ts`: the workflow script calls and their records in the project store.
+- `run/asks.ts`: the asks of the `input` calls in the store of the host: the asker and the title of an ask, its
+  requests, the value of its answer, and the answer of `resume --answer`.
 - `run/sessions.ts`: the sessions on harness's children library, and the end of the sessions of a run.
 - `run/child.ts`: the child runs that the `run` calls start.
 - `run/sandbox.ts`: the run of a script in the sandbox, with its globals and prompts.

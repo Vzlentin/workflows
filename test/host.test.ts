@@ -987,7 +987,7 @@ describe("runs in the harness host", () => {
 		]);
 	});
 
-	it("fails a resume that another resume of the run beat to its task with another input", async () => {
+	it("gives one answer to the run when two resumes answer it at once", async () => {
 		await writeFile(join(root, "x.js"), 'return await input("A?")');
 		const first = await workflows(["x.js"], { cwd: root });
 		const id = first.id ?? "";
@@ -999,16 +999,17 @@ describe("runs in the harness host", () => {
 				["a", "b"].map((answer) => workflows(["resume", id, "--answer", answer], { cwd: root, host })),
 			);
 
-			const outcomes = both.map(({ code, stdout, stderr }) => [code, stdout.at(-1), stderr.at(-1)]);
+			const [done, other] = both
+				.map(({ code, stdout, stderr }) => [code, stdout.at(-1), stderr.at(-1)])
+				.toSorted(([a], [b]) => Number(a) - Number(b));
 
-			expect(outcomes.toSorted(([a], [b]) => Number(a) - Number(b))).toEqual([
-				[0, expect.stringMatching(/^[ab]$/), undefined],
-				[
-					1,
-					undefined,
-					`workflows: run ${id} was resumed by another command with another input: follow it with workflows wait ${id}`,
-				],
-			]);
+			// A resume that reads the ask after the other one answered it refuses its answer; else both follow the
+			// one task of the run, which reads one answer.
+			expect(done).toEqual([0, expect.stringMatching(/^[ab]$/), undefined]);
+			expect([
+				[0, done?.[1], undefined],
+				[1, undefined, `workflows: run ${id}: ask 1 is answered; continue with: workflows resume ${id}`],
+			]).toContainEqual(other);
 		} finally {
 			await host.close();
 		}
@@ -1048,7 +1049,7 @@ describe("runs in the harness host", () => {
 		]);
 	});
 
-	it("fails a resume with another answer that read the store before the task of another resume started", async () => {
+	it("refuses a resume with another answer that read the store before another resume answered the ask", async () => {
 		await writeFile(join(root, "x.js"), 'return await input("A?")');
 		const first = await workflows(["x.js"], { cwd: root });
 		const id = first.id ?? "";
@@ -1059,7 +1060,7 @@ describe("runs in the harness host", () => {
 		const b = await readingFrom(before, () => workflows(["resume", id, "--answer", "b"], { cwd: root }));
 		expect([b.code, b.stderr.at(-1)]).toEqual([
 			1,
-			`workflows: run ${id} was resumed by another command with another input: follow it with workflows wait ${id}`,
+			`workflows: run ${id}: ask 1 is answered; continue with: workflows resume ${id}`,
 		]);
 		expect(await rootTasks(id)).toEqual([
 			{ status: "terminal", outcome: "completed" },

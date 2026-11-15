@@ -91,8 +91,8 @@ const stillZero = (head: string) =>
 		`Item 1 shipped with judge score 0, still 0 after one fix round: ${head} fix: correct the README typo`,
 		"Findings:\n- 1 FAIL: the typo stays.",
 		"How should the campaign continue? Answer keep to ship the item as it is, fix: <words> for one more fix round on " +
-			"your words, or reset to reset the item and get a rundown. Answer stop, or nothing, to end the campaign and " +
-			"keep the commit.",
+			"your words, or reset to reset the item and get a rundown. Answer stop to end the campaign and keep the " +
+			"commit.",
 	].join("\n\n");
 
 /** The report line of a shipped item with the commit `subject`. */
@@ -652,7 +652,7 @@ describe("workflows campaign", () => {
 				"Suggestions:\n- Split the item.",
 				"Proposed items:",
 				`Patch of the failed item: ${patch}`,
-				"How should the campaign continue? Answer stop, or nothing, to end it.",
+				"How should the campaign continue? Answer stop to end it.",
 			].join("\n\n"),
 		]);
 		expect(git(worktree, "rev-parse", "HEAD")).toBe(start);

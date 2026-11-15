@@ -3,6 +3,7 @@
  * saves before it starts.
  */
 import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import type { Overlay } from "@vzlentin/harness/overlay";
@@ -120,10 +121,16 @@ export type ScriptInput = Omit<Args, "repo" | "base" | "branch"> & {
 	readonly parent?: string;
 	/** Set by `--background`: the end of the run posts its outcome as a message to the conversation `parent`. */
 	readonly notify?: true;
-	/** Set by `resume --answer`: the answer `text` to the `input` call with the document key `call`. */
-	readonly answer?: { readonly call: string; readonly text: string };
 	readonly worktree?: Worktree;
 };
+
+/**
+ * The project of the root run whose run directory is `runDir`, from its `project` file, which the start of the run
+ * writes. A child run directory has no such file.
+ */
+export async function readProject(runDir: string): Promise<string> {
+	return (await readFile(join(runDir, "project"), "utf8")).trim();
+}
 
 export const USAGE = "workflows <workflow | file.js | -> [<text>] [--<arg> <value>]...";
 

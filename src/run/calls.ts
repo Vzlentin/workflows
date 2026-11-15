@@ -15,12 +15,15 @@ import {
 } from "@earendil-works/pi-durable";
 import type { Owner } from "@vzlentin/harness/children";
 import type { Overlay } from "@vzlentin/harness/overlay";
+import type { Ask } from "@vzlentin/harness/protocol";
 import { addTodo, readTodos, setTodo, type TodoOwner, type TodoState } from "@vzlentin/harness/todo";
 import { type Static, Type } from "typebox";
 import { failure, run } from "../git.ts";
+import { readProject } from "../launch/input.ts";
 import { JSON_VALUE } from "../tool.ts";
 import type { RunBundle } from "../workflow/bundle.ts";
 import type { Roles } from "../workflow/roles.ts";
+import { answerOf, asksOf, newAsk, openAsk, plainText, readAsk } from "./asks.ts";
 import { firstTask, type PastOptions, pastRuns, scanRuns, scanTasks } from "./past.ts";
 import { addProgress, checkpointWhen, type PhaseLines, takeLines } from "./progress.ts";
 import type { Host, Runtime, ScriptTask } from "./version.ts";
@@ -44,8 +47,6 @@ export type ScriptRun = {
 	readonly overlay: Overlay | undefined;
 	/** The conversation whose `workflow` tool started the run, from `PI_SESSION_ID`. */
 	readonly session: string | undefined;
-	/** The answer to the `input` call with the document key `call`, from `resume --answer`. */
-	readonly answer: { readonly call: string; readonly text: string } | undefined;
 	/** The task of every script run, which the child runs of the `run` calls are tasks of. */
 	readonly definition: ScriptTask;
 };
@@ -69,7 +70,8 @@ export type CallKind = Static<typeof CALL_KINDS>;
  * strings, and its result or its error. A call that started and did not end has no `endedAt`. `task` is the task that
  * started it last, and `cancelledAt` the time when the end of its script cancelled it. The `conversation` of a
  * `session` call is its session, and the `child` of a `run` call is its child run, so a stopped call reuses them. The
- * `childRun` of a `run` call is the run ID of its child run, saved before the child run directory exists.
+ * `childRun` of a `run` call is the run ID of its child run, saved before the child run directory exists. The `ask` of
+ * an `input` call is the ID of its ask in the store of the host.
  */
 export const CALL_RECORD = Type.Object({
 	kind: CALL_KINDS,
@@ -84,6 +86,7 @@ export const CALL_RECORD = Type.Object({
 	conversation: Type.Optional(Type.Number()),
 	child: Type.Optional(Type.Object({ task: Type.Number(), runId: Type.String() })),
 	childRun: Type.Optional(Type.String()),
+	ask: Type.Optional(Type.Number()),
 });
 
 /** A call record as the command reads it from the store file, where its IDs are plain numbers. */
@@ -143,8 +146,8 @@ export type Calls = {
 	readonly owner: Owner;
 	/** The question of the `input` call that the run waits for an answer to. */
 	waiting?: string;
-	/** True once the `input` call of `script.answer` got the answer. */
-	answered?: boolean;
+	/** Settles when the `input` calls that came before have decided whether they wait, so they decide one at a time. */
+	inputs: Promise<void>;
 	/** The error of the first `input` call that would wait while another one waits, which fails the run. */
 	secondInput?: Error;
 	/** The list of todos of the run, which the first `todo` call of the execution finds. */
@@ -156,8 +159,8 @@ export function callKey(calls: Calls, name: string, args: JsonObject): string {
 	return `${calls.script.runId}/${keyOf(name, args, calls.counters)}`;
 }
 
-/** What a call records when it starts. */
-type Start = { readonly kind: CallKind; readonly args: JsonObject };
+/** What a call records when it starts, and the ask of an `input` call. */
+type Start = { readonly kind: CallKind; readonly args: JsonObject; readonly ask?: number };
 
 /**
  * The result of the call `key`: its saved result, or the value of `effect`, which gets the key. The call records its
@@ -214,13 +217,8 @@ async function memoizedChange(
 async function startCall(calls: Calls, key: string, start: Start): Promise<JsonValue | undefined> {
 	const { runtime, context, progress } = calls;
 	const saved = await savedCall(runtime, key, context);
-	const { lines } = progress;
 
-	if (saved !== undefined) {
-		lines.splice(0, lines.length, ...lines.filter((line) => line.kind === "phase"));
-
-		return saved;
-	}
+	if (saved !== undefined) return replayed(calls, saved);
 
 	const events = takeLines(progress);
 	await runtime.commit(async (tx) => {
@@ -235,6 +233,14 @@ async function startCall(calls: Calls, key: string, start: Start): Promise<JsonV
 	}, context);
 
 	return undefined;
+}
+
+/** The saved result `saved` of a call, after it drops the log lines and keeps the phase line. */
+function replayed(calls: Calls, saved: JsonValue): JsonValue {
+	const { lines } = calls.progress;
+	lines.splice(0, lines.length, ...lines.filter((line) => line.kind === "phase"));
+
+	return saved;
 }
 
 /**
@@ -312,45 +318,103 @@ export function shellCall(calls: Calls, cwd: string, cmd: string | string[], che
 }
 
 /**
- * The `input` call with `question`: the saved answer, or the answer of `resume --answer` to this call. Without one, the
- * first such call stops the script with `stop` and leaves its record open, so `resume --answer` finds its key. A second
- * call that would wait before the script stops rejects, so the answer has one call, and fails the run when the script
- * ends, also when the script caught the error.
+ * The `input` call with `question`: its saved answer, or the answer of its ask, which the call writes in the store of
+ * the host with the run as its asker. Without an answer, the first such call stops the script with `stop` and leaves
+ * its record open, so a resume finds its ask. A second call that would wait before the script stops rejects, so the
+ * run waits for one ask, and fails the run when the script ends, also when the script caught the error. A child run
+ * cannot ask, and a dropped ask fails the call.
  */
 export async function inputCall(calls: Calls, question: string, stop: () => void): Promise<JsonValue> {
 	const args = { question };
 	const key = callKey(calls, "input", args);
-	const start = { kind: "input", args } as const;
-	const { answer } = calls.script;
+	const { script, runtime, context } = calls;
+	const record = await runtime.snapshot(CallDoc, key, context);
 
-	if (answer?.call === key) {
-		calls.answered = true;
+	if (record !== undefined && "result" in record) return replayed(calls, record.result ?? null);
 
-		return memoized(calls, key, start, async () => answer.text);
+	if (script.parent !== null) {
+		return failInput(
+			calls,
+			key,
+			args,
+			new Error(`input() in the child run ${script.runId}: only a root run can ask the user`),
+		);
 	}
 
-	const saved = await savedCall(calls.runtime, key, calls.context);
-
-	if (saved !== undefined) return memoized(calls, key, start, async () => saved);
-
-	if (calls.waiting !== undefined) {
-		const error = new Error(`the run waits for an answer to: ${calls.waiting}`);
-		calls.secondInput ??= error;
-
-		throw error;
+	if (plainText(question).trim() === "") {
+		return failInput(calls, key, args, new Error("input() needs a question that is not blank"));
 	}
 
-	calls.waiting = question;
+	const decided = calls.inputs.then(() => decide(calls, question, record?.ask));
+	calls.inputs = decided.then(
+		() => undefined,
+		() => undefined,
+	);
+	let ask: Ask;
 
-	// The effect never resolves: it stops the script, and throws once the end of the script cancels the calls, so the
-	// call records no error and its record stays open.
-	return memoized(calls, key, start, async () => {
-		stop();
-		const signal = calls.context.abortSignal;
+	try {
+		ask = await decided;
+	} catch (error) {
+		// The second input fails the run when the script ends, so its call records nothing.
+		if (error === calls.secondInput) throw error;
 
-		if (signal !== undefined && !signal.aborted) await once(signal, "abort");
-		throw new Error(`the run waits for an answer to: ${question}`);
+		return failInput(calls, key, args, error);
+	}
+
+	return memoized(calls, key, { kind: "input", args, ask: ask.id }, async () => {
+		switch (ask.state) {
+			case "answered":
+				return answerOf(ask);
+			case "dropped":
+				throw new Error(`the user dropped ask ${ask.id} of input ${JSON.stringify(question)}`);
+			case "open": {
+				// The effect never resolves: it stops the script, and throws once the end of the script cancels the calls,
+				// so the call records no error and its record stays open.
+				stop();
+				const signal = context.abortSignal;
+
+				if (signal !== undefined && !signal.aborted) await once(signal, "abort");
+				throw new Error(`the run waits for an answer to: ${question}`);
+			}
+		}
 	});
+}
+
+/** Fails the `input` call `key` with `args` and the error `cause`, which its record keeps. */
+function failInput(calls: Calls, key: string, args: JsonObject, cause: unknown): Promise<JsonValue> {
+	return memoized(calls, key, { kind: "input", args }, () => Promise.reject(cause));
+}
+
+/**
+ * The ask of the `input` call with `question`, once the `input` calls before it decided. An open ask makes the run wait
+ * for it. While the run waits for another ask, it throws the error of a second input, `calls.secondInput`, and it
+ * throws the error of a failed request.
+ */
+async function decide(calls: Calls, question: string, saved: number | undefined): Promise<Ask> {
+	if (calls.waiting !== undefined) {
+		calls.secondInput ??= new Error(`the run waits for an answer to: ${calls.waiting}`);
+
+		throw calls.secondInput;
+	}
+
+	const ask = await askOf(calls, question, saved);
+
+	if (ask.state === "open") calls.waiting = question;
+
+	return ask;
+}
+
+/**
+ * The ask of the `input` call with `question`: the ask `saved` of its record, else the open ask of the run with its
+ * title, which a call that stopped before its record saved the ask wrote, else a new ask.
+ */
+async function askOf(calls: Calls, question: string, saved: number | undefined): Promise<Ask> {
+	const { runId, runDir } = calls.script;
+	const asks = asksOf(await readProject(runDir), calls.context.abortSignal);
+
+	if (saved !== undefined) return readAsk(asks, saved);
+
+	return (await openAsk(asks, runId, question)) ?? newAsk(asks, runId, question);
 }
 
 /**

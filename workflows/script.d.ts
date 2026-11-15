@@ -39,7 +39,10 @@ type Meta = {
 	 * does the same for a child run. A script with `worktree` cannot have it.
 	 */
 	repo?: boolean;
-	/** The exit code of each `result.status`. Any other status exits 1, and a result without a status exits 0. */
+	/**
+	 * The exit code of each `result.status`. Any other status exits 1, and a result without a status exits 0. Only an
+	 * open `input()` call makes a run wait: a result with the status `waiting` and no open `input()` call fails the run.
+	 */
 	exit?: Record<string, number>;
 	/** The steps that a user sees in the progress of the script, in order, for the map of the script before a run. */
 	outline?: OutlineStep[];
@@ -105,9 +108,12 @@ declare function sh(cmd: string | readonly string[]): Promise<string>;
 declare function ok(cmd: string | readonly string[]): Promise<boolean>;
 
 /**
- * Asks the user `question`. The first time, the run stops and waits: the command prints the question and exits with 3,
- * and the `workflow` tool gives a `waiting` result with the question. `workflows resume <run-id> --answer <text>`, or
- * the tool with `resume: <run-id>` and `answer`, runs the script again, and this call returns the answer.
+ * Asks the user `question`, as an ask of the project with the run as its asker. The first time, the run stops and
+ * waits: the command prints the question and exits with 3, and the `workflow` tool gives a `waiting` result with the
+ * question. `workflows resume <run-id> --answer <text>`, the tool with `resume: <run-id>` and `answer`, or a resume
+ * after an answer of the ask elsewhere, runs the script again, and this call returns the answer. The question must not
+ * be blank. Only a root run can ask: in a child run, the call fails. A dropped ask fails the call. Only an open
+ * `input()` call makes a run wait: a script result with the status `waiting` and no open `input()` call fails the run.
  */
 declare function input(question: string): Promise<string>;
 
