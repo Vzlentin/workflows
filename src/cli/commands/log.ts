@@ -1,13 +1,15 @@
 /** `workflows log <run-id>`: the short log of a run, the full output of one call, or the log as the run goes on. */
 import { parseArgs } from "node:util";
 import { callKey, callText, findCall, isStepName, type RunProgress, runLines, stepLog } from "../../records/log.ts";
+import { endMark } from "../../records/steps.ts";
 import { runRecords } from "../../records/store.ts";
 import { type CallNode, callNodes } from "../../records/tree.ts";
-import { hasEnded, type RunStatus, runStatus, taskOf } from "../../run/past.ts";
+import { hasEnded, type RunStatus, runStatus, taskOf, taskResult } from "../../run/past.ts";
+import { stateText } from "../../tool.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin } from "../follow.ts";
 import type { Terminal } from "../main.ts";
-import { GoneRun, type SavedRun, savedBy, savedRun, shownStatus } from "../saved.ts";
+import { GoneRun, type SavedRun, savedBy, savedRun } from "../saved.ts";
 
 export const LOG = "workflows log <run-id> [<step> | <call>] [--follow]";
 
@@ -61,7 +63,7 @@ export async function log(args: readonly string[], terminal: Terminal, json: boo
 
 	for (;;) {
 		const read = await readLog(run);
-		const lines = [{ item: "run", text: read.head }, ...runLines(id, id, read.progress, read.calls, "")];
+		const lines = [{ item: "run", text: read.head }, ...runLines(id, id, read.status, read.progress, read.calls, "")];
 
 		for (const { item, text } of lines) {
 			if (printed.has(item)) continue;
@@ -95,10 +97,12 @@ async function readLog(run: SavedRun): Promise<ReadLog> {
 	const ended = status === undefined || hasEnded(status);
 	const calls = callNodes(records, id, { ended, waiting: status === "waiting", live });
 
+	if (status !== undefined && hasEnded(status)) read.progress.stop(endMark(status));
+
 	const head =
 		task === undefined || status === undefined
 			? `run ${id}`
-			: `run ${id} ${savedBy(task).name} ${shownStatus(task, status)}`;
+			: `run ${id} ${savedBy(task).name} ${stateText(status, taskResult(task))}`;
 
 	return { head, calls, progress: read, status };
 }

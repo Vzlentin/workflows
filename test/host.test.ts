@@ -14,11 +14,14 @@ import { addProject } from "@vzlentin/harness/projects";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { LISTED } from "../src/cli/commands/list.ts";
+import { SHOWN, SHOWN_AGENTS } from "../src/cli/commands/show.ts";
 import { CtrlC } from "../src/cli/follow.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { newRunId } from "../src/launch/input.ts";
 import { SessionsDoc } from "../src/run/sessions.ts";
 import { TASK } from "../src/run/version.ts";
+import { OUTCOME } from "../src/tool.ts";
 import { stopAfterPost } from "./stop-entry.ts";
 import {
 	detached,
@@ -229,6 +232,29 @@ export default function ({ durable }) {
 	return join(pkg, "index.ts");
 }
 
+/**
+ * Starts the run `x` in a host of the earlier version of the workflows task, which leaves its task pending, and gives
+ * its run ID. The key number of the task is not the count of the run's tasks.
+ */
+async function pendingOldRun(): Promise<string> {
+	await setEntries({ workflows: await oldWorkflows(TASK.version - 1) });
+	const id = newRunId();
+	await mkdir(join(runsOf(root), id), { recursive: true });
+	await writeFile(join(runsOf(root), id, "project"), "main\n");
+	const old = await startHost();
+
+	try {
+		const input = { runId: id, name: "x", args: {}, meta: { args: {}, exit: {} } };
+		await request({ type: "start", kind: TASK.name, input, key: `wf:${id}#2` }, { start: false });
+	} finally {
+		await old.close();
+	}
+
+	await setEntries();
+
+	return id;
+}
+
 /** The line of a command that a host of the version `version` of the workflows task refused. */
 const refused = (version: number) =>
 	`workflows: This host has version ${version} of workflows.run, not ${TASK.version}: stop the host so it starts again with the installed version (the harness host of project main has pid ${process.pid}: kill ${process.pid})`;
@@ -261,14 +287,15 @@ describe("runs in the harness host", () => {
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
 	});
 
-	it("stops the run on a second Ctrl+C in the window, and a resume continues it", async () => {
+	it("aborts the run on a second Ctrl+C in the window, and a resume continues it", async () => {
 		const ctrlC = new CtrlC(() => {});
 		const pending = workflows(["gated.js", "--json"], { cwd: root, ctrlC, stopWindowMs: 5000 });
 		await reached("g");
 		ctrlC.press();
 		setTimeout(() => ctrlC.press(), 50);
 		const run = await pending;
-		expect([run.code, run.stdout.at(-1)]).toEqual([130, JSON.stringify({ runId: run.id, status: "stopped" })]);
+		expect([run.code, run.stdout.at(-1)]).toEqual([130, JSON.stringify({ runId: run.id, state: "aborted" })]);
+		expect(Value.Check(OUTCOME, JSON.parse(run.stdout.at(-1) ?? "null"))).toBe(true);
 		expect(run.status).toEqual([]);
 		const id = run.id ?? "";
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
@@ -282,7 +309,7 @@ describe("runs in the harness host", () => {
 		]);
 	});
 
-	it("stops the run on a second Ctrl+C that comes before the command waits for it", async () => {
+	it("aborts the run on a second Ctrl+C that comes before the command waits for it", async () => {
 		const ctrlC = new CtrlC(() => {});
 		const pending = workflows(["gated.js"], { cwd: root, ctrlC });
 		await reached("g");
@@ -291,11 +318,11 @@ describe("runs in the harness host", () => {
 		const run = await pending;
 		expect([run.code, run.stderr]).toEqual([
 			130,
-			[detached(run.id), `stopped gated; continue with: workflows resume ${run.id}`],
+			[detached(run.id), `aborted gated; continue with: workflows resume ${run.id}`],
 		]);
 		expect(run.status).toEqual([
 			programStatus("idle", detached(run.id)),
-			programStatus("error", `stopped gated; continue with: workflows resume ${run.id}`),
+			programStatus("error", `aborted gated; continue with: workflows resume ${run.id}`),
 		]);
 		expect([run.exits, await rootTasks(run.id ?? "")]).toEqual([0, [{ status: "terminal", outcome: "aborted" }]]);
 	});
@@ -321,8 +348,9 @@ describe("runs in the harness host", () => {
 		const id = started.id ?? "";
 
 		try {
-			const line = JSON.stringify({ runId: id, status: "started", workflow: "gated" });
+			const line = JSON.stringify({ runId: id, state: "running", follow: "started", workflow: "gated" });
 			expect([started.code, started.stdout]).toEqual([0, [`run ${id}`, line]]);
+			expect(Value.Check(OUTCOME, JSON.parse(line))).toBe(true);
 			expect(await rootTasks(id)).toEqual([{ status: expect.stringMatching(/^(pending|running)$/) }]);
 			const resumed = await workflows(["resume", id, "--background", "--json"], { cwd: root, host });
 			expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${id}`, line]]);
@@ -348,8 +376,9 @@ describe("runs in the harness host", () => {
 		expect([waited.code, waited.stdout, waited.stderr, waited.host]).toEqual([1, [`run ${id}`], lines, undefined]);
 		const json = await workflows(["wait", id, "--json"], { cwd: root });
 		expect(json.stdout.at(-1)).toEqual(
-			JSON.stringify({ runId: id, status: "failed", error: "sh exited with 1: test -f ok" }),
+			JSON.stringify({ runId: id, state: "failed", error: "sh exited with 1: test -f ok" }),
 		);
+		expect(Value.Check(OUTCOME, JSON.parse(json.stdout.at(-1) ?? "null"))).toBe(true);
 		expect(await rootTasks(id)).toHaveLength(1);
 		await writeFile(join(root, "ok"), "");
 		expect((await workflows(["resume", id], { cwd: root })).code).toBe(0);
@@ -398,14 +427,14 @@ describe("runs in the harness host", () => {
 		expect(existsSync(join(root, "g.reached"))).toBe(false);
 	});
 
-	it("stops a run with workflows stop, and refuses a run that does not run", async () => {
+	it("aborts a run with workflows stop, and refuses a run that does not run", async () => {
 		const { id, host } = await detachedRun();
 
 		try {
 			const stopped = await workflows(["stop", id], { cwd: root, host });
 			expect([stopped.code, stopped.stdout, stopped.stderr]).toEqual([
 				0,
-				[`stopped gated; continue with: workflows resume ${id}`],
+				[`aborted gated; continue with: workflows resume ${id}`],
 				[],
 			]);
 			const again = await workflows(["stop", id, "--json"], { cwd: root, host });
@@ -418,35 +447,49 @@ describe("runs in the harness host", () => {
 		const listed = await workflows(["list"], { cwd: root });
 		expect(listed.stdout).toEqual([`${id} gated aborted gated`]);
 		const listedJson = await workflows(["list", "--json"], { cwd: root });
-		expect(JSON.parse(listedJson.stdout[0] ?? "")).toEqual([
-			{ runId: id, workflow: "gated", title: "gated", status: "aborted", repository: null },
+		const rows = JSON.parse(listedJson.stdout[0] ?? "");
+		expect(rows).toEqual([
+			{ runId: id, workflow: "gated", title: "gated", state: "aborted", resumable: true, repository: null },
 		]);
+		expect(Value.Check(Type.Array(LISTED), rows)).toBe(true);
 		const shownJson = await workflows(["show", id, "--json"], { cwd: root });
-		expect(JSON.parse(shownJson.stdout[0] ?? "").status).toBe("aborted");
+		const shownRun = JSON.parse(shownJson.stdout[0] ?? "");
+		expect([shownRun.state, shownRun.resumable, "result" in shownRun]).toEqual(["aborted", true, false]);
+		expect(Value.Check(SHOWN, shownRun)).toBe(true);
 		const shown = await workflows(["show", id], { cwd: root });
 		expect(shown.stdout).toEqual([
 			`run ${id} gated aborted gated`,
 			"  ✗ sh ./gate.sh g  cut",
-			`stopped gated; continue with: workflows resume ${id}`,
+			`aborted gated; continue with: workflows resume ${id}`,
 		]);
 		const usage = await workflows(["stop"], { cwd: root });
 		expect([usage.code, usage.stderr.at(-1)]).toEqual([2, "usage: workflows stop <run-id> [--json]"]);
 	});
 
-	it("lists a run whose script result is stopped as stopped", async () => {
+	it("lists a run whose script result is stopped as done, with the result stopped", async () => {
 		await writeFile(join(root, "x.js"), 'return { status: "stopped", report: ["r"] }');
 		const run = await workflows(["x.js"], { cwd: root });
 		const id = run.id ?? "";
 		// The script declares no `meta.exit`, so the status exits 1.
 		expect(run.code).toBe(1);
 		const listed = await workflows(["list"], { cwd: root });
-		expect(listed.stdout).toEqual([`${id} x stopped x`]);
+		expect(listed.stdout).toEqual([`${id} x done, result stopped exit 1 x`]);
 		const listedJson = await workflows(["list", "--json"], { cwd: root });
-		expect(JSON.parse(listedJson.stdout[0] ?? "")).toEqual([
-			{ runId: id, workflow: "x", title: "x", status: "stopped", repository: null },
+		const rows = JSON.parse(listedJson.stdout[0] ?? "");
+		expect(rows).toEqual([
+			{
+				runId: id,
+				workflow: "x",
+				title: "x",
+				state: "done",
+				result: { status: "stopped", code: 1 },
+				resumable: true,
+				repository: null,
+			},
 		]);
+		expect(Value.Check(Type.Array(LISTED), rows)).toBe(true);
 		const shown = await workflows(["show", id], { cwd: root });
-		expect(shown.stdout[0]).toBe(`run ${id} x stopped x`);
+		expect(shown.stdout[0]).toBe(`run ${id} x done, result stopped exit 1 x`);
 	});
 
 	it("kills a running sh and closes the subagents of the sessions when a run stops", async () => {
@@ -563,9 +606,11 @@ describe("runs in the harness host", () => {
 		const listed = await workflows(["list"], { cwd: root });
 		expect(listed.stdout).toEqual([`${id} - unstarted -`]);
 		const listedJson = await workflows(["list", "--json"], { cwd: root });
-		expect(JSON.parse(listedJson.stdout[0] ?? "")).toEqual([
-			{ runId: id, workflow: "-", title: "-", status: "unstarted", repository: null },
+		const rows = JSON.parse(listedJson.stdout[0] ?? "");
+		expect(rows).toEqual([
+			{ runId: id, workflow: "-", title: "-", state: "unstarted", resumable: false, repository: null },
 		]);
+		expect(Value.Check(Type.Array(LISTED), rows)).toBe(true);
 
 		// A command on a run with no task, or with no run directory, exits 4: the run is gone.
 		const waited = await workflows(["wait", id], { cwd: root });
@@ -586,7 +631,7 @@ describe("runs in the harness host", () => {
 		expect([pruned.code, pruned.stdout, existsSync(directory)]).toEqual([0, [`${id} unstarted ${directory}`], false]);
 	});
 
-	it("reports a run as stopped when the host closes the connection after it took the stop", async () => {
+	it("reports a run as aborted when the host closes the connection after it took the stop", async () => {
 		await writeFile(join(root, "x.js"), 'phase("gate")\nawait sh("./gate.sh g")\nreturn "done"');
 		const ctrlC = new CtrlC(() => {});
 		const pending = workflows(["x.js"], { cwd: root, ctrlC, dropAfterAbort: true });
@@ -595,7 +640,7 @@ describe("runs in the harness host", () => {
 		ctrlC.press();
 		const run = await pending;
 		const id = run.id ?? "";
-		expect([run.code, run.stderr.at(-1)]).toEqual([130, `stopped x; continue with: workflows resume ${id}`]);
+		expect([run.code, run.stderr.at(-1)]).toEqual([130, `aborted x; continue with: workflows resume ${id}`]);
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
 		const shown = await workflows(["show", id], { cwd: root });
 		expect(shown.stdout.slice(0, 2).map(untimed)).toEqual([`run ${id} x aborted x`, "· gate"]);
@@ -606,7 +651,7 @@ describe("runs in the harness host", () => {
 
 		try {
 			const stopped = await workflows(["stop", id], { cwd: root, host, dropAfterAbort: true });
-			expect([stopped.code, stopped.stdout]).toEqual([0, [`stopped gated; continue with: workflows resume ${id}`]]);
+			expect([stopped.code, stopped.stdout]).toEqual([0, [`aborted gated; continue with: workflows resume ${id}`]]);
 		} finally {
 			await host.close();
 		}
@@ -685,7 +730,7 @@ describe("runs in the harness host", () => {
 				expect.stringMatching(/^\d\d:\d\d:\d\d {2}- {2}1 call {2}0 B {2}s0$/),
 				expect.stringMatching(/^\d\d:\d\d:\d\d {4}◉ sh \.\/gate\.sh g {2}running {2}[0-9a-f]{16}\.1$/),
 				expect.stringMatching(/^\d\d:\d\d:\d\d {2}- {2}1 call {2}0 B {2}s0$/),
-				expect.stringMatching(/^\d\d:\d\d:\d\d {2}end ok$/),
+				expect.stringMatching(/^\d\d:\d\d:\d\d {2}end done$/),
 			]);
 		} finally {
 			await host.close();
@@ -708,7 +753,7 @@ describe("runs in the harness host", () => {
 				logLine("  ◉ sh \\./gate\\.sh g  running  [0-9a-f]{16}\\.1"),
 				logLine("wait  \\d+s  1 call  0 B  s1"),
 				logLine("after  \\d+s  0 calls  0 B  s2"),
-				logLine("end ok"),
+				logLine("end done"),
 			]);
 		} finally {
 			await host.close();
@@ -802,22 +847,7 @@ describe("runs in the harness host", () => {
 	});
 
 	it("stops a pending run of an earlier version, which ends as orphaned", async () => {
-		await setEntries({ workflows: await oldWorkflows(TASK.version - 1) });
-		const id = newRunId();
-		await mkdir(join(runsOf(root), id), { recursive: true });
-		await writeFile(join(runsOf(root), id, "project"), "main\n");
-		const old = await startHost();
-
-		try {
-			const input = { runId: id, name: "x" };
-			// The key number is not the count of the run's tasks, so stop must find the key of the task.
-			await request({ type: "start", kind: TASK.name, input, key: `wf:${id}#2` }, { start: false });
-		} finally {
-			await old.close();
-		}
-
-		await setEntries();
-
+		const id = await pendingOldRun();
 		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x earlier-version x`]);
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect(resumed.stderr).toEqual([`workflows: run ${id} was saved by an earlier version of x and cannot resume`]);
@@ -829,12 +859,103 @@ describe("runs in the harness host", () => {
 		const stopped = await workflows(["stop", id], { cwd: root });
 		expect([stopped.code, stopped.stdout]).toEqual([
 			0,
-			["stopped x, which an earlier version saved; it cannot resume"],
+			["orphaned x, which an earlier version saved; it cannot resume"],
 		]);
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "orphaned" }]);
 		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x orphaned x`]);
 		const again = await workflows(["stop", id], { cwd: root });
 		expect(again.stderr).toEqual([`workflows: run ${id} is not running`]);
+	});
+
+	it("logs end orphaned for a pending run of an earlier version that workflows stop orphaned", async () => {
+		const id = await pendingOldRun();
+		const stopped = await workflows(["stop", id, "--json"], { cwd: root });
+		const outcome = JSON.parse(stopped.stdout.at(-1) ?? "null");
+		expect([stopped.code, outcome]).toEqual([0, { runId: id, state: "orphaned", error: expect.any(String) }]);
+		expect(Value.Check(OUTCOME, outcome)).toBe(true);
+		const shown = await workflows(["show", id, "--json"], { cwd: root });
+		expect([shown.code, JSON.parse(shown.stdout[0] ?? "null")]).toEqual([
+			0,
+			expect.objectContaining({ state: "orphaned", error: outcome.error }),
+		]);
+		const logged = await workflows(["log", id], { cwd: root });
+		expect([logged.code, logged.stdout[0], logged.stdout.at(-1)]).toEqual([
+			0,
+			`run ${id} x orphaned`,
+			expect.stringMatching(/ {2}end orphaned$/),
+		]);
+	});
+
+	it("gives the outcome aborted and logs end aborted for a run that workflows stop aborts", async () => {
+		const { id, host } = await detachedRun();
+
+		try {
+			const stopped = await workflows(["stop", id, "--json"], { cwd: root, host });
+			expect([stopped.code, stopped.stdout]).toEqual([0, [JSON.stringify({ runId: id, state: "aborted" })]]);
+			expect(Value.Check(OUTCOME, JSON.parse(stopped.stdout[0] ?? "null"))).toBe(true);
+		} finally {
+			await host.close();
+		}
+
+		const waited = await workflows(["wait", id, "--json"], { cwd: root });
+		expect([waited.code, waited.stdout.at(-1)]).toEqual([130, JSON.stringify({ runId: id, state: "aborted" })]);
+		const logged = await workflows(["log", id], { cwd: root });
+		expect([logged.stdout[0], logged.stdout.at(-1)]).toEqual([`run ${id} gated aborted`, logLine("end aborted")]);
+	});
+
+	it("gives the outcome aborted and logs end aborted for a run that a second Ctrl+C aborts", async () => {
+		const ctrlC = new CtrlC(() => {});
+		const pending = workflows(["gated.js", "--json"], { cwd: root, ctrlC });
+		await reached("g");
+		ctrlC.press();
+		ctrlC.press();
+		const run = await pending;
+		const id = run.id ?? "";
+		expect([run.code, run.stdout.at(-1)]).toEqual([130, JSON.stringify({ runId: id, state: "aborted" })]);
+		expect(Value.Check(OUTCOME, JSON.parse(run.stdout.at(-1) ?? "null"))).toBe(true);
+		const logged = await workflows(["log", id], { cwd: root });
+		expect([logged.stdout[0], logged.stdout.at(-1)]).toEqual([`run ${id} gated aborted`, logLine("end aborted")]);
+	});
+
+	it("lists and shows a script result failed as done with that result, and a thrown script as failed without one", async () => {
+		await writeFile(join(root, "result.js"), 'return { status: "failed", report: ["r"] }');
+		await writeFile(join(root, "thrown.js"), 'throw new Error("no")');
+		const result = await workflows(["result.js"], { cwd: root });
+		const thrown = await workflows(["thrown.js"], { cwd: root });
+		expect([result.code, thrown.code]).toEqual([1, 1]);
+		const resultId = result.id ?? "";
+		const thrownId = thrown.id ?? "";
+
+		const listed = JSON.parse((await workflows(["list", "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(Value.Check(Type.Array(LISTED), listed)).toBe(true);
+		// Both run IDs can have the same second, so the order of the rows is not known.
+		expect(listed).toHaveLength(2);
+		expect(listed).toEqual(
+			expect.arrayContaining([
+				{ runId: thrownId, workflow: "thrown", title: "thrown", state: "failed", resumable: true, repository: null },
+				{
+					runId: resultId,
+					workflow: "result",
+					title: "result",
+					state: "done",
+					result: { status: "failed", code: 1 },
+					resumable: true,
+					repository: null,
+				},
+			]),
+		);
+
+		const shownResult = JSON.parse((await workflows(["show", resultId, "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(Value.Check(SHOWN, shownResult)).toBe(true);
+		expect(shownResult).toMatchObject({ state: "done", result: { status: "failed", code: 1 }, report: ["r"] });
+		const shownThrown = JSON.parse((await workflows(["show", thrownId, "--json"], { cwd: root })).stdout[0] ?? "");
+		expect(Value.Check(SHOWN, shownThrown)).toBe(true);
+		expect(shownThrown).toMatchObject({ state: "failed", error: "no" });
+		expect("result" in shownThrown).toBe(false);
+		const shownAgents = await workflows(["show", thrownId, "--agents", "--json"], { cwd: root });
+		const agents = JSON.parse(shownAgents.stdout[0] ?? "");
+		expect(Value.Check(SHOWN_AGENTS, agents)).toBe(true);
+		expect([agents.state, "result" in agents, agents.ended]).toEqual(["failed", false, true]);
 	});
 
 	it("resumes a run in a new task at the key after its highest key, also after a gap", async () => {
@@ -1116,14 +1237,14 @@ await Promise.all([...asks, Promise.reject(new Error("no"))])`,
 		const listed = await workflows(["list"], { cwd: real });
 		expect(listed.stdout).toEqual([`${id} x running x`]);
 		const other = await workflows(["list"], { cwd: root });
-		expect(other.stdout).toEqual([`${main.id} y done y`]);
+		expect(other.stdout).toEqual([`${main.id} y done, exit 0 y`]);
 
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${id}`, "Reply to one"]]);
 		expect(await rootTasks(id, "demo")).toEqual([{ status: "terminal", outcome: "completed" }]);
 		expect(existsSync(storeOf("demo"))).toBe(true);
 		const shown = await workflows(["show", id], { cwd: root });
-		expect(shown.stdout[0]).toBe(`run ${id} x done x`);
+		expect(shown.stdout[0]).toBe(`run ${id} x done, exit 0 x`);
 	});
 
 	it("gives a session the provider, model and thinking of its call, and the project agent's model without one", async () => {
@@ -1277,7 +1398,7 @@ return await agent("c", { as: "planner", model: "claude-haiku-5", schema: { type
 		const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 		const { stdout, stderr } = await promisify(execFile)(process.execPath, [cli, "list"], { cwd: root });
 
-		expect([stdout, stderr]).toEqual([`${id} quick done quick\n`, ""]);
+		expect([stdout, stderr]).toEqual([`${id} quick done, exit 0 quick\n`, ""]);
 	});
 });
 
@@ -1308,7 +1429,7 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 			await tellAgent(`Script workflow: ${JSON.stringify({ script })}`);
 			const result = await nextResult(0);
 			expect(result).toEqual({
-				text: expect.stringMatching(/^run \S+ finished: \{.*\}\nran\n\{"ok":true\}$/),
+				text: expect.stringMatching(/^run \S+ done, exit 0: \{.*\}\nran\n\{"ok":true\}$/),
 				details: { steps: [expect.stringMatching(/^✓ check {2}\d+s$/), "  lists"] },
 				isError: false,
 			});
@@ -1352,7 +1473,10 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 		try {
 			await tellAgent(`Script workflow: ${JSON.stringify({ name: "hello", cwd: other })}`);
 			const result = await nextResult(0);
-			expect(result).toMatchObject({ text: expect.stringMatching(/^run \S+ finished: .*\nhello$/), isError: false });
+			expect(result).toMatchObject({
+				text: expect.stringMatching(/^run \S+ done, exit 0: .*\nhello$/),
+				isError: false,
+			});
 			const id = /^run (\S+) /.exec(result.text)?.[1] ?? "";
 
 			const refused = [
@@ -1391,8 +1515,10 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 		const answered = await workflows(["resume", id, "--answer", "this", "--json"], { cwd: root });
 		expect([answered.code, answered.stdout.at(-1)]).toEqual([
 			0,
-			JSON.stringify({ runId: id, status: "finished", result: "this", report: ["this"] }),
+			JSON.stringify({ runId: id, state: "done", result: { code: 0 }, value: "this", report: ["this"] }),
 		]);
+		expect(Value.Check(OUTCOME, JSON.parse(asked.stdout.at(-1) ?? "null"))).toBe(true);
+		expect(Value.Check(OUTCOME, JSON.parse(answered.stdout.at(-1) ?? "null"))).toBe(true);
 		expect(await rootTasks(id, "demo")).toHaveLength(2);
 	});
 
@@ -1468,7 +1594,7 @@ return "done"`;
 			]);
 			await tellAgent(`Script workflow: ${JSON.stringify({ resume: id, answer: "yes" })}`);
 			const answered = await nextResult(1);
-			expect([answered.text, answered.isError]).toEqual([`run ${id} finished: "yes"\nyes`, false]);
+			expect([answered.text, answered.isError]).toEqual([`run ${id} done, exit 0: "yes"\nyes`, false]);
 		} finally {
 			await host.close();
 		}
@@ -1484,7 +1610,7 @@ return "done"`;
 			const result = await nextResult(0);
 			const id = /^run (\S+) /.exec(result.text)?.[1] ?? "";
 			const lines = result.text.split("\n");
-			const start = `run ${id} finished: {"text":"`;
+			const start = `run ${id} done, exit 0: {"text":"`;
 			// The first line keeps 500 bytes at most, and a 2-byte é is never split.
 			expect(lines[0]).toBe(start + "é".repeat(Math.floor((500 - start.length) / 2)));
 			expect(lines[1]).toMatch(
@@ -1589,7 +1715,8 @@ return "done"`;
 		const run = await workflows(["x.js", "--json"], { cwd: root });
 		expect(run.code).toBe(1);
 		const outcome = JSON.parse(run.stdout.at(-1) ?? "null");
-		expect(outcome).toEqual({ runId: run.id, status: "failed", error: expect.stringMatching(/^sh -c failed: /) });
+		expect(outcome).toEqual({ runId: run.id, state: "failed", error: expect.stringMatching(/^sh -c failed: /) });
+		expect(Value.Check(OUTCOME, outcome)).toBe(true);
 		// fold writes 100000 x in lines of 99, then `last`.
 		expect(outcome.error.replaceAll("\n", "")).toMatch(/x{100000}last$/);
 	});
@@ -1670,8 +1797,8 @@ return "done"`;
 			await until(async () => model.count("result") === 1);
 			expect(await postedResults("demo")).toEqual([
 				{
-					text: `run ${id} finished: {"report":["ran","child"]}\nran\nchild`,
-					data: { runId: id, status: "finished" },
+					text: `run ${id} done, exit 0: {"report":["ran","child"]}\nran\nchild`,
+					data: { runId: id, state: "done" },
 					conversation: 1,
 				},
 			]);
@@ -1760,7 +1887,7 @@ return "done"`;
 		}
 	});
 
-	it("posts each end of a background run, also of a background resume that is stopped", async () => {
+	it("posts each end of a background run, also of a background resume that is aborted", async () => {
 		const model = hostModel();
 		const host = await startHost("main", model.models);
 
@@ -1779,12 +1906,12 @@ return "done"`;
 			expect(await postedResults()).toEqual([
 				{
 					text: `run ${id} failed: sh exited with 1: test -f ${root}/ok; continue it with resume: "${id}"`,
-					data: { runId: id, status: "failed" },
+					data: { runId: id, state: "failed" },
 					conversation: 1,
 				},
 				{
-					text: `run ${id} stopped; continue it with resume: "${id}"`,
-					data: { runId: id, status: "stopped" },
+					text: `run ${id} aborted; continue it with resume: "${id}"`,
+					data: { runId: id, state: "aborted" },
 					conversation: 1,
 				},
 			]);
@@ -1819,7 +1946,7 @@ return "done"`;
 			await until(async () => (await rootTasks(id))[0]?.status === "terminal");
 			await until(async () => model.count("result") === 1);
 			expect(await postedResults()).toEqual([
-				{ text: `run ${id} finished: "done"\ndone`, data: { runId: id, status: "finished" }, conversation: 1 },
+				{ text: `run ${id} done, exit 0: "done"\ndone`, data: { runId: id, state: "done" }, conversation: 1 },
 			]);
 			expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
 		} finally {
@@ -1853,7 +1980,7 @@ return "done"`;
 		try {
 			await until(async () => (await rootTasks(id))[0]?.status === "terminal");
 			expect(await postedResults()).toEqual([
-				{ text: `run ${id} finished: "done"\ndone`, data: { runId: id, status: "finished" }, conversation: 1 },
+				{ text: `run ${id} done, exit 0: "done"\ndone`, data: { runId: id, state: "done" }, conversation: 1 },
 			]);
 			expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
 		} finally {

@@ -11,7 +11,7 @@ export const PROGRESS_KIND = "workflows.progress";
 /**
  * A `phase` or `log` line of the run `run`, whose caller is `parent`, the end of the run `run`, or the start of an
  * execution of the run `run`: of a root run, from which a command that reaches the running task shows the lines, or of
- * a child run, with its caller `parent`. The end of an aborted run is `stopped`, and not `failed`. `at` is the time of
+ * a child run, with its caller `parent`. The end of an aborted run is `aborted`, and not `failed`. `at` is the time of
  * the line or the end in ms since the epoch; events that an earlier version saved have none. `continues` marks the first phase line of an execution of the run, which goes on
  * with the step of that text when it is the current one. A `title` event gives the run the title `text`, which shows
  * in place of the title of its input, and draws no line.
@@ -29,13 +29,16 @@ export const PROGRESS_EVENT = Type.Union([
 		{ kind: Type.Literal("end"), run: Type.String(), failed: Type.Boolean(), at: Type.Optional(Type.Number()) },
 		{ additionalProperties: false },
 	),
-	Type.Object({
-		kind: Type.Literal("end"),
-		run: Type.String(),
-		failed: Type.Literal(false),
-		stopped: Type.Literal(true),
-		at: Type.Optional(Type.Number()),
-	}),
+	Type.Object(
+		{
+			kind: Type.Literal("end"),
+			run: Type.String(),
+			failed: Type.Literal(false),
+			aborted: Type.Literal(true),
+			at: Type.Optional(Type.Number()),
+		},
+		{ additionalProperties: false },
+	),
 	Type.Object({ kind: Type.Literal("start"), run: Type.String(), parent: Type.Optional(Type.String()) }),
 	Type.Object({ kind: Type.Literal("title"), run: Type.String(), text: Type.String() }),
 ]);

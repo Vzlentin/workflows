@@ -1,18 +1,55 @@
 /** `workflows show <run-id>`: the steps, the calls or the agents of a run. */
 import { parseArgs } from "node:util";
 import type { Todo } from "@vzlentin/harness/todo";
+import { type Static, Type } from "typebox";
 import { endMark, type Progress } from "../../records/steps.ts";
 import { runRecords } from "../../records/store.ts";
 import { agentLines, agentRows, callTree, type Shown, showEntries, type TreeEntry } from "../../records/tree.ts";
-import { hasEnded, hasResult, type RunTask, runStatus, taskOf, taskOutcome } from "../../run/past.ts";
-import { reportOf, type ShownInput, title as titleOf } from "../../run/result.ts";
+import { hasEnded, type RunFields, type RunTask, runFields, runOutcome, taskOf } from "../../run/past.ts";
+import { type ShownInput, title as titleOf } from "../../run/result.ts";
+import { RUN_RESULT, RUN_STATE, stateText } from "../../tool.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin, endOf } from "../follow.ts";
 import type { Choose, Terminal } from "../main.ts";
-import { oneRunId, readable, type SavedRun, savedRun, shownStatus } from "../saved.ts";
+import { oneRunId, readable, type SavedRun, savedRun } from "../saved.ts";
 import type { PickItem } from "../terminal/pick.ts";
 
 export const SHOW = "workflows show <run-id> [--pick | [--agents] [--json]]";
+
+/**
+ * The fields of a run that `show --json` and `show --agents --json` both give. `result` is the result of a run that is
+ * `done` or `waiting`, and `resumable` is true for a task of this version, which `resume` can continue.
+ */
+const RUN_FIELDS = {
+	runId: Type.String(),
+	workflow: Type.String(),
+	title: Type.String(),
+	state: RUN_STATE,
+	result: Type.Optional(RUN_RESULT),
+	resumable: Type.Boolean(),
+};
+
+/**
+ * The run of `show --json`: its fields, the report lines of a run with a result or the error of a failed run, its
+ * todos, its step lines and its calls.
+ */
+export const SHOWN = Type.Object(
+	{
+		...RUN_FIELDS,
+		report: Type.Optional(Type.Array(Type.String())),
+		error: Type.Optional(Type.String()),
+		todos: Type.Array(Type.Unknown()),
+		steps: Type.Array(Type.String()),
+		calls: Type.Array(Type.Unknown()),
+	},
+	{ additionalProperties: false },
+);
+
+/** The run of `show --agents --json`: its fields, whether it ended, and its agents. */
+export const SHOWN_AGENTS = Type.Object(
+	{ ...RUN_FIELDS, ended: Type.Boolean(), agents: Type.Array(Type.Unknown()) },
+	{ additionalProperties: false },
+);
 
 /** How often `show --pick` reads the store again while no line of the run can be picked. */
 const PICK_POLL_MS = 1000;
@@ -49,18 +86,18 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 
 	const agents = values.agents === true;
 	const shown = await readRun(await savedRun(id, SHOW), agents || json, "be shown");
-	const { input, title, status, head, ended, todos, calls, progress, footer, end } = shown;
+	const { input, title, head, ended, todos, calls, progress, footer, end } = shown;
 	const now = Date.now();
-	const run = { runId: id, workflow: input.name };
+	const fields = { runId: id, workflow: input.name, title, ...shown.fields };
 
 	if (agents && json) {
-		const rows = agentRows(calls, 0, now);
-		terminal.stdout(JSON.stringify({ ...run, title, status, ended, agents: rows }));
+		const agentsShown: Static<typeof SHOWN_AGENTS> = { ...fields, ended, agents: agentRows(calls, 0, now) };
+		terminal.stdout(JSON.stringify(agentsShown));
 	} else if (agents) {
 		for (const line of [head, ...agentLines(agentRows(calls, 0, now)), ...footer]) terminal.stdout(line);
 	} else if (json) {
-		const steps = progress.lines();
-		terminal.stdout(JSON.stringify({ ...run, title, status, ...end, todos, steps, calls }));
+		const runShown: Static<typeof SHOWN> = { ...fields, ...end, todos, steps: progress.lines(), calls };
+		terminal.stdout(JSON.stringify(runShown));
 	} else {
 		for (const entry of shownLines(shown, now)) terminal.stdout(entry.text);
 	}
@@ -76,7 +113,7 @@ type ShownRun = {
 	readonly task: RunTask;
 	readonly input: ShownInput;
 	readonly title: string;
-	readonly status: string;
+	readonly fields: RunFields;
 	readonly head: string;
 	readonly ended: boolean;
 	readonly todos: Todo[];
@@ -90,44 +127,45 @@ type ShownRun = {
  * The saved run `run` as `show` prints it: its task, its head line, its steps, its list of todos, its calls, and its
  * footer lines. It reads the call records `withCalls`, or when the run has no steps, and the lists of todos of the run
  * and of the child runs of those records. It reads a task of this version, and a task of another version that ended,
- * as `readable` gives them. The footer tells how to resume only a `resumable` run. `verb` completes the error for a
+ * as `readable` gives them. The footer tells how to resume only a run of this version. `verb` completes the error for a
  * run that cannot be read, as in `cannot <verb>`.
  */
 export async function readRun(run: SavedRun, withCalls: boolean, verb: string): Promise<ShownRun> {
 	const { id } = run;
 	const read = await runRecords(run.store, id, (progress) => withCalls || !progress.stepped);
 	const { events, progress, records, live, todos } = read;
-	const { task: checkedTask, input, thisVersion } = readable(taskOf(read.tasks), id, verb);
-	const known = runStatus(checkedTask);
-	const completed = hasResult(known);
+	const { task: checkedTask, input } = readable(taskOf(read.tasks), id, verb);
+	const fields = runFields(checkedTask);
+	const known = fields.state;
 	const ended = hasEnded(known);
-	const resumable = thisVersion && ended && known !== "done";
 	const title = titleOf(input, events);
-	const result = taskOutcome(checkedTask)?.result ?? null;
 	const footer: string[] = [];
 	let end: { report: string[] } | { error: string } | undefined;
 
-	if (completed) {
-		footer.push(...reportOf(input, result).lines);
-		end = { report: footer };
-	} else if (ended) {
-		const shown = endOf(checkedTask, title, id, resumable);
-		footer.push(...shown.lines);
+	if (ended) {
+		const outcome = runOutcome(input, checkedTask);
 
-		if (shown.error !== undefined) end = { error: shown.error };
+		if ("report" in outcome) {
+			footer.push(...outcome.report);
+			end = { report: footer };
+		} else {
+			const shown = endOf(outcome, title, fields.resumable);
+			footer.push(...shown.lines);
+
+			if (shown.error !== undefined) end = { error: shown.error };
+		}
+
+		progress.stop(endMark(known));
 	}
 
-	const status = shownStatus(checkedTask, known);
-
-	if (ended) progress.stop(endMark(known));
-	const head = `run ${id} ${input.name} ${status} ${title}`;
+	const head = `run ${id} ${input.name} ${stateText(known, fields.result)} ${title}`;
 	const calls = callTree(records, todos, id, { ended, waiting: known === "waiting", live });
 
 	return {
 		task: checkedTask,
 		input,
 		title,
-		status,
+		fields,
 		head,
 		ended,
 		todos: todos.get(id) ?? [],

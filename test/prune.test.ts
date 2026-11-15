@@ -110,7 +110,7 @@ describe("workflows prune", () => {
 		expect(existsSync(join(runsOf(root), id))).toBe(true);
 
 		const runs = await workflows(["list"], { cwd: repo });
-		expect(runs.stdout).toContain(`${id} w done w`);
+		expect(runs.stdout).toContain(`${id} w done, exit 0 w`);
 	});
 
 	it("removes the worktree and branch of a run that an earlier version saved", async () => {
@@ -118,7 +118,15 @@ describe("workflows prune", () => {
 		saveAs(TASK.version - 1, true);
 		const listed = await workflows(["list", "--json"], { cwd: repo });
 		expect(JSON.parse(listed.stdout[0] ?? "")).toEqual([
-			{ runId: id, workflow: "w", title: "w", status: "done", repository: await realpath(repo) },
+			{
+				runId: id,
+				workflow: "w",
+				title: "w",
+				state: "done",
+				result: { code: 0 },
+				resumable: false,
+				repository: await realpath(repo),
+			},
 		]);
 
 		const pruned = await workflows(["prune", "--yes"], { cwd: repo });

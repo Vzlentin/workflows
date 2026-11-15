@@ -6,7 +6,7 @@
 // judge's findings as an array of lines, `message`, the commit message of the implement turn before the squash,
 // `round`, the round of the implementer's notes, and may give `memory`, the `ref` of a run memory to go on with. A
 // failed child run is a result of this run, `failed`, so that the caller saves it and a resume does not run the fix
-// round again. A stopped child run fails this run, so that a resume runs it again. Every Git step is safe to repeat: a
+// round again. An aborted or orphaned child run fails this run, so that a resume runs it again. Every Git step is safe to repeat: a
 // resume runs a step again when its result was not saved.
 export const meta = {
 	description: "Fix a work item on the judge's findings in one implement turn, squash it into one commit, and judge it again.",
@@ -16,7 +16,7 @@ export const meta = {
 		round: { type: "number", default: 1 },
 		message: { type: "string" },
 	},
-	exit: { judged: 0, failed: 1, blocked: 1, unjudged: 1 },
+	exit: { judged: 0, rejected: 1, failed: 1, blocked: 1, unjudged: 1 },
 	outline: [
 		{ kind: "run", workflow: "implement", label: "fix" },
 		{ kind: "run", workflow: "judge", label: "judge" },
@@ -54,23 +54,23 @@ try {
 		return { status: "blocked", reply, report: [`blocked ${subject}`, reply] }
 	}
 
-	const shipped = await judgeCommit(item, start, committed)
+	const { status, ...shipped } = await judgeCommit(item, start, committed)
 	const { score, judgeError } = shipped
 
 	if (score === undefined) {
 		const report = [`judge failed on ${subject}: ${judgeError}`]
 
-		return { status: "unjudged", judgeError, shipped, reply, report }
+		return { status, judgeError, shipped, reply, report }
 	}
 
 	const report = [`judge ${score.toFixed(2)}: ${subject}`, ...shipped.findings.map((finding) => `  ${finding}`)]
 
-	return { status: "judged", shipped, reply, report }
+	return { status, shipped, reply, report }
 } catch (error) {
 	const message = error?.message ?? String(error)
 
-	// A stopped child run is not a failure: the caller fails, and its resume runs the fix round again.
-	if (/^child run \S+ stopped/.test(message)) throw error
+	// An aborted or orphaned child run is not a failure: the caller fails, and its resume runs the fix round again.
+	if (/^child run \S+ (aborted|orphaned)/.test(message)) throw error
 
 	const failed = { status: "failed", error: message, report: [`fix failed on ${subject}: ${message}`] }
 

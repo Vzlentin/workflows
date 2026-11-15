@@ -64,7 +64,7 @@ Each arg becomes a flag of `workflows <name>`. Give only the args that the user 
   `A..B` for a range, or a ref such as `HEAD~1`. Without `item`, the intent is the pull request, or else the commit
   messages of the change.
 - thermoloop commits its fixes on the branch of the change. When the user asks for a review only, use judge.
-- `background: true` starts the run and returns at once with the status `started`. The outcome comes later as a
+- `background: true` starts the run and returns at once with `state: "running"` and `follow: "started"`. The outcome comes later as a
   message in this conversation. Use it for a campaign, or when the user wants to go on with other work. Without it,
   the call waits until the run ends.
 
@@ -78,34 +78,43 @@ out the model or the thinking level to keep it from the tables).
 
 ## Read the outcome
 
-The tool result is `{ runId, status, result?, report?, error? }`. Lead your report with the outcome.
+The tool result has `runId` and `state`, the state of the run. A run that is `done` or `waiting` also has `result`,
+`{ status?, code, score? }`, the status of the workflow, the exit code and the score of its last judge, if any, `value`, the whole result of the workflow, and
+`report`, its report lines. Lead your report with the outcome.
 
-| Tool status | Meaning | What to tell the user |
+| State | Meaning | What to tell the user |
 | --- | --- | --- |
-| `finished` | The run ended. `result.status` gives the outcome of the workflow, and `report` its report lines. | See the next table. |
+| `done` | The run ended with a result. `result.status` gives the outcome of the workflow, and `value` its fields. | See the next table. |
+| `waiting` | The run asks a question. | See [A waiting run](#a-waiting-run). |
 | `failed` | The run failed. `error` gives the reason, such as a Git hook or a model error after the retries. The text keeps at most 2000 bytes: a longer error keeps its first line and its end, with a line `[… <n> bytes cut; the command workflows log <runId> shows the run and its calls, and workflows log <runId> <call> prints the whole output of a call]`. | Quote the error, or the lines that `workflows log <runId>` prints. `workflows log <runId> <call>` prints the whole error of the failed call. `{ resume: "<runId>" }` continues the run. Do not resume it yourself. |
-| `started` | A `background` call started the run. | The outcome comes as a message. |
-| `detached` | Esc detached the tool. The run goes on. | `{ resume: "<runId>" }` follows it again. |
-| `stopped` | `workflows stop` stopped the run. | `{ resume: "<runId>" }` continues it. |
-| `host-stopped` | The host stopped. The run continues when the host starts again. | `{ resume: "<runId>" }` follows it. |
+| `orphaned` | No host can run the task, such as a task of another version. `error` gives the reason. | Quote the reason. |
+| `aborted` | `workflows stop` or a second Ctrl+C aborted the run. | `{ resume: "<runId>" }` continues it. |
+| `running`, `follow: "started"` | A `background` call started the run. | The outcome comes as a message. |
+| `running`, `follow: "detached"` | Esc detached the tool. The run goes on. | `{ resume: "<runId>" }` follows it again. |
+| `running`, `follow: "host-stopped"` | The host stopped. The run continues when the host starts again. | `{ resume: "<runId>" }` follows it. |
 
 A tool error before a run exists, such as bad usage, has no run ID. Quote the error.
 
-The values of `result.status` for a `finished` run:
+The values of `result.status` for a `done` run. The fields that the table names, such as `branch`, are fields of
+`value`. `result.code` is the exit code of the run, from the `meta.exit` of the workflow.
 
 | Workflow | `result.status` | Give |
 | --- | --- | --- |
-| ship | `shipped` | The branch (`result.branch`, and the report line `branch <name>`), the rounds, the judge score and `result.findings`. The change is one squashed commit, and the judge judged that commit and its message. A `judge failed` score means that the judge gave no verdict: `result.judgeError` says why. |
+| ship | `shipped` | The branch (`value.branch`, and the report line `branch <name>`), the rounds, the judge score and `value.findings`. The change is one squashed commit, and the judge judged that commit and its message. |
+| ship | `rejected` | The judge scored the squashed commit 0. The commit and the branch stay. Give the branch and `value.findings`. |
+| ship | `unjudged` | The judge gave no verdict: `value.judgeError` says why. The commit and the branch stay. |
 | ship | `stopped` | The review rounds ended without SHIP. Give the worktree, the last patches and the findings of the last review. |
-| ship, rpi, thermoloop | `blocked` | A round changed nothing. Give the worktree and `result.reply`, the implementer's reason. |
-| campaign | `done` | The branch, one line for each item with its commit and score, and the findings of the campaign judge. |
+| ship, rpi, thermoloop | `blocked` | A round changed nothing. Give the worktree and `value.reply`, the implementer's reason. |
+| campaign | `done` | The branch, one line for each item with its commit and score, and the score and findings of the campaign judge (`result.score` and `value.findings`). |
+| campaign | `rejected`, `unjudged` | The campaign judge gave 0, or no verdict. The commits and the branch stay. Give the same lines as for `done`. |
 | campaign | `stopped` | The user stopped the campaign at an item. Give the rundown when the result has one. |
 | campaign | `waiting` | An item failed, or is still at judge 0, and the campaign asks how to continue. See below. |
-| rpi | `implemented` | The commit `result.head` and the branch. |
-| thermoloop | `approved` | The reviewer answered SHIP. Give `result.rounds` and the report line. |
+| rpi | `implemented` | The commit `value.head` and the branch. |
+| thermoloop | `approved` | The reviewer answered SHIP. Give `value.rounds` and the report line. |
 | thermoloop | `stopped` | The rounds ended without SHIP. Give the findings of the last review. |
-| judge | `judged` | `result.score`, from 0 to 1, and `result.findings`. |
-| judge | `unjudged` | The judge gave no verdict. Quote `result.judgeError`. |
+| judge | `judged` | `result.score`, from 0 to 1, and `value.findings`. |
+| judge | `rejected` | The score is 0. Give `value.findings`. |
+| judge | `unjudged` | The judge gave no verdict. Quote `value.judgeError`. |
 
 Do not guess findings. To read the findings of the last review, use `workflows log <runId>`: it gives the steps, and
 the review rounds are under the `run thermoloop` line. Then `workflows log <runId> <step>` gives the calls of one step,
@@ -114,7 +123,7 @@ call name at the end of its line. `log` only reads.
 
 ### A waiting run
 
-A run that waits for an answer is `finished` with `result: { status: "waiting", question }`. Show the question to the
+A run that waits for an answer has the state `waiting`, with `value: { status: "waiting", question }`. Show the question to the
 user. A text longer than 2000 bytes is cut, and its cut line names `workflows log <runId>`, which shows the run and its calls, and `workflows log <runId> <call>`, which prints the whole question of the `input` call. When he answers, call `{ resume: "<runId>", answer: "<his answer>" }`. For a campaign, `stop` or an empty answer
 ends it. For a campaign item still at judge 0, the answers are `keep` (ship it as it is), `fix: <words>` (one more fix
 round on his words), `reset` (reset the item and get a rundown), and `stop` or empty (end the campaign, keep the
@@ -124,7 +133,8 @@ commit).
 
 - `{ resume: "<runId>" }` follows a run that goes on, or continues one that ended without a result. Add `background:
   true` to return at once.
-- `workflows list` gives the runs of this project, newest first, with their status. `workflows show <runId>` gives the
+- `workflows list` gives the runs of this project, newest first, with their state and result, such as `done, result
+  shipped exit 0`. `workflows list --json` also says with `resumable` whether `resume` can take each run. `workflows show <runId>` gives the
   steps and the report of one run. `workflows log <runId>` gives its steps with their times, call counts and sizes,
   and the calls that failed or still run, `workflows log <runId> <step>` the calls of one step with their exit codes
   and sizes, `workflows log <runId> <call>` the full output of one call, and `--follow` follows the run. Read the calls

@@ -1,13 +1,17 @@
 import { existsSync } from "node:fs";
 import { chmod, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { createRegistry, defineDoc, Harness, ROOT_CONVERSATION_ID, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { request } from "@vzlentin/harness/client";
 import { StartedTasks } from "@vzlentin/harness/tasks";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { CATCH_UP } from "../src/run/catchup.ts";
 import { TASK } from "../src/run/version.ts";
 import { catchUps, hostModel, piSettings, sandbox, startHost, storeOf, tellAgent, workflows } from "./support.ts";
 
@@ -89,7 +93,7 @@ describe("the catch-up of workflows runs", () => {
 				[
 					"Catch-up since your last input.",
 					"Workflow runs that ended:",
-					`- ${a.id} (a): finished; subject: Add the parser; branch: abc1234; divergence: none; lessons: ["Keep it small"]; sessions: [run ${a.id}: default #${aConversation}]`,
+					`- ${a.id} (a): done, result finished exit 0; subject: Add the parser; branch: abc1234; divergence: none; lessons: ["Keep it small"]; sessions: [run ${a.id}: default #${aConversation}]`,
 				].join("\n"),
 			);
 
@@ -104,7 +108,7 @@ describe("the catch-up of workflows runs", () => {
 				text: [
 					"Catch-up since your last input.",
 					"Workflow runs that ended:",
-					`- ${b.id} (b): completed; subject: Fix the lexer; sessions: [run ${b.id}: planner #${planner}, reviewer #${reviewer}]`,
+					`- ${b.id} (b): done, exit 0; subject: Fix the lexer; sessions: [run ${b.id}: planner #${planner}, reviewer #${reviewer}]`,
 				].join("\n"),
 				data: {
 					hooks: {
@@ -114,7 +118,8 @@ describe("the catch-up of workflows runs", () => {
 									task: expect.any(Number),
 									runId: b.id,
 									workflow: "b",
-									status: "completed",
+									state: "done",
+									result: { code: 0 },
 									subject: "Fix the lexer",
 									sessions: [
 										{ run: b.id, conversation: Number(planner), key: expect.stringMatching(/^wf:/), label: "planner" },
@@ -139,6 +144,103 @@ describe("the catch-up of workflows runs", () => {
 		}
 
 		expect(await seenRuns()).toEqual({ lastTaskId: expect.any(Number), pending: [] });
+	});
+
+	it("tells a failed run apart from a run whose script result is failed", async () => {
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			await tellAgent("Script: First");
+			await writeFile(join(root, "c.js"), 'throw new Error("boom")');
+			await writeFile(join(root, "d.js"), 'return { status: "failed" }');
+			const c = await workflows(["c.js"], { cwd: root, host });
+			const d = await workflows(["d.js"], { cwd: root, host });
+			expect([c.code, d.code]).toEqual([1, 1]);
+			await tellAgent("Script: Second");
+		} finally {
+			await host.close();
+		}
+
+		const [caught, ...more] = await catchUps();
+		expect(more).toEqual([]);
+		const lines = caught?.text.split("\n").filter((line) => line.startsWith("- ")) ?? [];
+		expect(lines.map((line) => line.split(";")[0])).toEqual([
+			expect.stringMatching(/ \(c\): failed$/),
+			expect.stringMatching(/ \(d\): done, result failed exit 1$/),
+		]);
+		const hooks = Type.Object({ hooks: Type.Object({ "workflows.runs": CATCH_UP }) });
+		const caughtData = caught?.data;
+		expect(Value.Check(hooks, caughtData)).toBe(true);
+		const data = Value.Check(hooks, caughtData) ? caughtData.hooks["workflows.runs"] : undefined;
+		expect(data).toMatchObject({
+			runs: [
+				{ workflow: "c", state: "failed" },
+				{ workflow: "d", state: "done", result: { status: "failed", code: 1 } },
+			],
+		});
+		expect(data?.runs[0]).not.toHaveProperty("result");
+	});
+
+	it("tells the project agent the state of runStatus for a faulted and an orphaned task", async () => {
+		let host = await startHost("main", hostModel().models);
+		let faulted = "";
+		let orphaned = "";
+
+		try {
+			await tellAgent("Script: First");
+			await writeFile(join(root, "e.js"), 'throw new Error("no")');
+			faulted = (await workflows(["e.js"], { cwd: root, host })).id ?? "";
+			orphaned = (await workflows(["e.js"], { cwd: root, host })).id ?? "";
+		} finally {
+			await host.close();
+		}
+
+		const database = new DatabaseSync(storeOf());
+
+		const outcome = database.prepare(
+			`UPDATE tasks SET record = json_set(record, '$.state.outcome', json(?)) WHERE record ->> '$.kind' = 'workflows.run' AND record ->> '$.input.runId' = ?`,
+		);
+
+		outcome.run(JSON.stringify({ status: "faulted", error: { message: "no" } }), faulted);
+		outcome.run(JSON.stringify({ status: "orphaned", reason: "no definition" }), orphaned);
+		database.close();
+		host = await startHost("main", hostModel().models);
+
+		try {
+			await tellAgent("Script: Second");
+		} finally {
+			await host.close();
+		}
+
+		const [caught, ...more] = await catchUps();
+		expect(more).toEqual([]);
+		expect(caught?.data).toMatchObject({
+			hooks: {
+				"workflows.runs": {
+					runs: [
+						{ runId: faulted, state: "failed" },
+						{ runId: orphaned, state: "orphaned" },
+					],
+				},
+			},
+		});
+		const lines = caught?.text.split("\n").filter((line) => line.startsWith("- ")) ?? [];
+		expect(lines.map((line) => line.split(";")[0])).toEqual([
+			`- ${faulted} (e): failed`,
+			`- ${orphaned} (e): orphaned`,
+		]);
+
+		for (const [id, state] of [
+			[faulted, "failed"],
+			[orphaned, "orphaned"],
+		]) {
+			const logged = await workflows(["log", id ?? ""], { cwd: root });
+			expect([logged.code, logged.stdout[0], logged.stdout.at(-1)]).toEqual([
+				0,
+				`run ${id} e ${state}`,
+				expect.stringMatching(new RegExp(` {2}end ${state}$`)),
+			]);
+		}
 	});
 
 	it("tells the project agent about a run whose record is gone and a run whose input is not a run input", async () => {

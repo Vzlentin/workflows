@@ -29,14 +29,16 @@ describe("runs that another version saved", () => {
 		saveAs(TASK.version - 1, wrap);
 
 		const listed = await workflows(["list"], { cwd: root });
-		expect(listed.stdout).toEqual([`${id} t done Fix the parser`]);
+		expect(listed.stdout).toEqual([`${id} t done, exit 0 Fix the parser`]);
 		const shown = await workflows(["show", id], { cwd: root });
 		expect([shown.code, shown.stdout.map(untimed)]).toEqual([
 			0,
-			[`run ${id} t done Fix the parser`, "✓ a", "Reply to one"],
+			[`run ${id} t done, exit 0 Fix the parser`, "✓ a", "Reply to one"],
 		]);
 		const json = await workflows(["show", id, "--json"], { cwd: root });
-		expect(JSON.parse(json.stdout[0] ?? "").todos).toEqual([]);
+		expect(JSON.parse(json.stdout[0] ?? "")).toMatchObject({ todos: [], state: "done", resumable: false });
+		const listedJson = await workflows(["list", "--json"], { cwd: root });
+		expect(JSON.parse(listedJson.stdout[0] ?? "")).toMatchObject([{ runId: id, resumable: false }]);
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect([resumed.code, resumed.stderr]).toEqual([
 			1,
@@ -52,11 +54,17 @@ describe("runs that another version saved", () => {
 
 		const current = await workflows(["show", id], { cwd: root });
 		expect([current.code, current.stdout.slice(-2)]).toEqual([0, ["failed f: boom", hint]]);
+		const currentJson = await workflows(["show", id, "--json"], { cwd: root });
+		expect(JSON.parse(currentJson.stdout[0] ?? "")).toMatchObject({ state: "failed", resumable: true });
+		const listed = await workflows(["list", "--json"], { cwd: root });
+		expect(JSON.parse(listed.stdout[0] ?? "")).toMatchObject([{ runId: id, state: "failed", resumable: true }]);
 
 		saveAs(TASK.version - 1, false);
 		const shown = await workflows(["show", id], { cwd: root });
 		expect([shown.code, shown.stdout[0], shown.stdout.at(-1)]).toEqual([0, `run ${id} f failed f`, "failed f: boom"]);
 		expect(shown.stdout).not.toContain(hint);
+		const shownJson = await workflows(["show", id, "--json"], { cwd: root });
+		expect(JSON.parse(shownJson.stdout[0] ?? "")).toMatchObject({ state: "failed", resumable: false });
 		const resumed = await workflows(["resume", id], { cwd: root });
 		expect([resumed.code, resumed.stderr]).toEqual([
 			1,

@@ -11,29 +11,30 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { PRUNE_MARKER, type ScriptInput } from "../launch/input.ts";
 import { branchOf, ensureWorktree, type Renamed, renameBranch } from "../launch/worktree.ts";
-import { outcomeText, type WorkflowOutcome } from "../tool.ts";
-import { firstTask, scanTasks } from "./past.ts";
+import { outcomeText } from "../tool.ts";
+import { firstTask, outcomeFrom, scanTasks, type TaskEnd } from "./past.ts";
 import { addProgress } from "./progress.ts";
-import { reportOf, statusOf } from "./result.ts";
+import { statusOf } from "./result.ts";
 import { runScript } from "./sandbox.ts";
 import { endSessions } from "./sessions.ts";
 import { type Checkpoint, current, type Host, type Runtime, type ScriptTask, TASK } from "./version.ts";
 
-/** The outcome of the finished run `input` with `result`, with the report lines that the command prints. */
-function finishedOutcome(input: ScriptInput, result: JsonValue): WorkflowOutcome {
-	return { runId: input.runId, status: "finished", result, report: reportOf(input, result).lines };
-}
-
 /**
- * Posts `outcome` as a message to the conversation `input.parent` when the run started with `notify`. Its request ID
+ * Posts the outcome of the run `input`, whose task ends with `outcome`, as a message to the conversation `input.parent` when the run started with `notify`. Its request ID
  * has the task ID, so a rerun of the phase posts once, and a later task of the run posts again. A failed post does not
  * change the outcome of the run, but a closing host rethrows it, so the task stays pending and posts after the restart.
  */
-async function notify(runtime: Runtime, input: ScriptInput, outcome: WorkflowOutcome, context: Context): Promise<void> {
+async function notify(
+	runtime: Runtime,
+	input: ScriptInput,
+	outcome: NonNullable<TaskEnd["outcome"]>,
+	context: Context,
+): Promise<void> {
 	const { notify: wanted, parent } = input;
 
 	// A Pi session ID is a UUID, and only a host conversation has a number.
 	if (!wanted || parent === undefined || !/^\d+$/.test(parent)) return;
+	const ended = outcomeFrom(input, outcome);
 
 	try {
 		// SAFETY: a conversation ID is a number, and `parent` is the number of the conversation of the `workflow` call.
@@ -43,8 +44,8 @@ async function notify(runtime: Runtime, input: ScriptInput, outcome: WorkflowOut
 			{
 				type: "input",
 				whenBusy: "followUp",
-				content: outcomeText(outcome),
-				entry: { kind: "workflows.result", data: { runId: input.runId, status: outcome.status } },
+				content: outcomeText(ended),
+				entry: { kind: "workflows.result", data: { runId: input.runId, state: ended.state } },
 				requestId: `workflows.result:${input.runId}/${runtime.taskId}`,
 			},
 			context,
@@ -173,7 +174,7 @@ async function runPhase(
 
 		// A waiting run keeps its sessions for the task that gets the answer.
 		await closeSessions(host, runtime, input, statusOf(result) !== "waiting", context);
-		await notify(runtime, input, finishedOutcome(input, result), context);
+		await notify(runtime, input, { status: "completed", result }, context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: false, at: Date.now() }]);
 
@@ -185,7 +186,7 @@ async function runPhase(
 		// A thrown phase would end the task as faulted, so the phase commits the failure itself.
 		const message = error instanceof Error ? error.message : String(error);
 		await closeSessions(host, runtime, input, false, context);
-		await notify(runtime, input, { runId, status: "failed", error: message }, context);
+		await notify(runtime, input, { status: "failed", error: { message } }, context);
 		await runtime.commit(async (tx) => {
 			await addProgress(tx, root, [{ kind: "end", run: runId, failed: true, at: Date.now() }]);
 
@@ -204,9 +205,9 @@ export function scriptTask(host: Host): ScriptTask {
 		abort: async (task, runtime, context) => {
 			const { runId, root } = task.input;
 			await closeSessions(host, runtime, task.input, false, context);
-			await notify(runtime, task.input, { runId, status: "stopped" }, context);
+			await notify(runtime, task.input, { status: "aborted" }, context);
 			await runtime.commit(async (tx) => {
-				await addProgress(tx, root, [{ kind: "end", run: runId, failed: false, stopped: true, at: Date.now() }]);
+				await addProgress(tx, root, [{ kind: "end", run: runId, failed: false, aborted: true, at: Date.now() }]);
 
 				return { status: "terminal", outcome: { status: "aborted" } };
 			}, context);

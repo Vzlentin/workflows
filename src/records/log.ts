@@ -6,6 +6,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { SavedCall } from "../run/calls.ts";
+import { hasEnded, type RunStatus } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
 import { duration, type Progress, type RunStep, stepIndexOf, stepTime } from "./steps.ts";
 import type { RunRecords } from "./store.ts";
@@ -43,11 +44,8 @@ type StepGroup = {
 	readonly calls: CallNode[];
 };
 
-/** The progress events of a root run and their steps. */
-export type RunProgress = Pick<RunRecords, "progress" | "events">;
-
-/** The last end of a run, with its index among the events. */
-type RunEnd = { readonly word: string; readonly at: number | undefined; readonly n: number };
+/** The progress events of a root run and their steps, and the state of each task of the store by task ID. */
+export type RunProgress = Pick<RunRecords, "progress" | "events" | "states">;
 
 /** The name of a step: `s<n>` in the root run, `<run>/s<n>` in a child run. */
 const STEP_NAME = /^(?:(.+)\/)?s(\d+)$/;
@@ -145,16 +143,13 @@ function groupsOf(progress: Progress, runId: string, calls: readonly CallNode[])
 }
 
 /**
- * The end of the run `runId` when its last `start` or `end` event in `events` is an end: each task of the run, a resume
- * too, starts with a `start` event, so a run that goes on has none.
+ * The time of the end of the run `runId` when its last `start` or `end` event in `events` is an end: each task of the
+ * run, a resume too, starts with a `start` event, so a run that goes on has none.
  */
-function lastEnd(events: readonly ProgressEvent[], runId: string): RunEnd | undefined {
-	const n = events.findLastIndex((event) => (event.kind === "start" || event.kind === "end") && event.run === runId);
-	const event = events[n];
+function lastEnd(events: readonly ProgressEvent[], runId: string): number | undefined {
+	const event = events.findLast((each) => (each.kind === "start" || each.kind === "end") && each.run === runId);
 
-	if (event?.kind !== "end") return undefined;
-
-	return { word: "stopped" in event ? "stopped" : event.failed ? "failed" : "ok", at: event.at, n };
+	return event?.kind === "end" ? event.at : undefined;
 }
 
 /** The name of the step `n` of the run `runId` in the root run `root`. */
@@ -164,15 +159,15 @@ function stepName(root: string, runId: string, n: number): string {
 
 /**
  * The line of the step `group` of the run `runId` at `indent`: its text, its duration, the count and output size of its
- * own calls, and its name. Group 0 has the text `-`, and ends with `end`, the end of its run.
+ * own calls, and its name. Group 0 has the text `-`, and ends at `end`, the time of the end of its run.
  */
-function stepLine(root: string, runId: string, group: StepGroup, end: RunEnd | undefined, indent: string): LogLine {
+function stepLine(root: string, runId: string, group: StepGroup, end: number | undefined, indent: string): LogLine {
 	const { n, step, at, calls } = group;
 	const text = step === undefined ? "-" : `${step.text.slice(0, PHASE_WIDTH)}${stepTime(step)}`;
 	const count = `${calls.length} ${calls.length === 1 ? "call" : "calls"}`;
 	const bytes = calls.reduce((sum, node) => sum + (outputBytes(node.record) ?? 0), 0);
 	const facts = [count, sizeOf(bytes), stepName(root, runId, n)];
-	const ended = step === undefined ? end?.at : step.ended;
+	const ended = step === undefined ? end : step.ended;
 
 	// A step prints again in `log --follow` when it ends, with its last count.
 	return { item: `step:${runId}:${n}:${ended ?? "open"}`, text: `${clock(at)}  ${indent}${text}  ${facts.join("  ")}` };
@@ -204,12 +199,14 @@ function callLines(root: string, node: CallNode, indent: string): LogLine[] {
 
 /**
  * The lines of the run `runId` of the root run `root` at `indent`: each step line; under it each call of the step that
- * is not done and each `run` call, with its child run under it, indented by 4 more; then the end of the run when the
- * run does not go on. `read` gives the progress events of the run and their steps.
+ * is not done and each `run` call, with its child run under it, indented by 4 more; then `end <state>` when the run,
+ * whose task is in `state`, has ended. `read` gives the progress events of the run, their steps and the states of the
+ * tasks.
  */
 export function runLines(
 	root: string,
 	runId: string,
+	state: RunStatus | undefined,
 	read: RunProgress,
 	calls: readonly CallNode[],
 	indent: string,
@@ -223,16 +220,18 @@ export function runLines(
 		for (const node of group.calls) {
 			if (node.state === "done" && node.record.kind !== "run") continue;
 			lines.push(...callLines(root, node, indent));
-			const child = node.record.child?.runId;
+			const child = node.record.child;
 
 			if (child !== undefined && node.calls !== undefined) {
-				lines.push(...runLines(root, child, read, node.calls, `${indent}    `));
+				const childState = read.states.get(child.task);
+				lines.push(...runLines(root, child.runId, childState, read, node.calls, `${indent}    `));
 			}
 		}
 	}
 
-	if (end !== undefined) {
-		lines.push({ item: `end:${runId}:${end.n}`, text: `${clock(end.at)}  ${indent}end ${end.word}` });
+	if (state !== undefined && hasEnded(state)) {
+		const at = end ?? "-";
+		lines.push({ item: `end:${runId}:${state}:${at}`, text: `${clock(end)}  ${indent}end ${state}` });
 	}
 
 	return lines;

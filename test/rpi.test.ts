@@ -39,7 +39,7 @@ describe("workflows rpi", () => {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		const worktree = worktreeAt(repo, run.id);
 		const head = git(worktree, "rev-parse", "--short", "HEAD");
 		expect(report).toEqual([`implemented ${ITEM}, ${head}`, LESSON_LINE]);

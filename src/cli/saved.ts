@@ -10,18 +10,9 @@ import type { TaskId, TaskRecord } from "@earendil-works/pi-durable";
 import { statePaths } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
 import { inputName, progressEvents, reading, runTasks, type Store, startedTasks } from "../records/store.ts";
-import {
-	hasEnded,
-	type RunStatus,
-	type RunTask,
-	runStatus,
-	savedInput,
-	savedLater,
-	taskOf,
-	taskOutcome,
-} from "../run/past.ts";
+import { hasEnded, type RunTask, runStatus, savedInput, savedLater, taskOf } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
-import { SHOWN_INPUT, type ShownInput, statusOf } from "../run/result.ts";
+import { SHOWN_INPUT, type ShownInput } from "../run/result.ts";
 import { current } from "../run/version.ts";
 import { UsageError } from "../workflow/find.ts";
 import { keyNumber, runsDirectory, STORE_FILE, taskKey } from "./host.ts";
@@ -92,14 +83,6 @@ export async function unstartedRuns(project: string, runs: ReadonlyMap<string, u
 /** The root tasks of `run`, oldest first. */
 export function tasksOf(run: SavedRun): Promise<RunTask[]> {
 	return reading(run.store, [], async (store) => (await runTasks(store)).get(run.id) ?? []);
-}
-
-/**
- * The status of the run whose task is `task` and whose run status is `status`, as `list` and `show` print it: the
- * `status` of the result of a `done` run, or `done` when the result has none, else `status`.
- */
-export function shownStatus(task: RunTask, status: RunStatus): string {
-	return status === "done" ? (statusOf(taskOutcome(task)?.result ?? null) ?? "done") : status;
 }
 
 /** The `start` keys of the tasks of a run: the key of its task `task`, and the key of a new task. */
@@ -176,11 +159,8 @@ export function checked(
 	throw otherVersion(latest, id, verb);
 }
 
-/**
- * A task that `show` can read, with the fields of its input that it reads. `thisVersion` is true for a task of this
- * version, which `resume` can continue.
- */
-type ReadableTask = { readonly task: RunTask; readonly input: ShownInput; readonly thisVersion: boolean };
+/** A task that `show` can read, with the fields of its input that it reads. */
+type ReadableTask = { readonly task: RunTask; readonly input: ShownInput };
 
 /**
  * The task `latest` of the run `id`, with the fields of its input that `show` reads: a task of this version, or a task
@@ -190,10 +170,10 @@ type ReadableTask = { readonly task: RunTask; readonly input: ShownInput; readon
 export function readable(latest: RunTask | undefined, id: string, verb: string): ReadableTask {
 	if (latest === undefined) throw new GoneRun(`run ${id} has no workflow`);
 
-	if (current(latest)) return { task: latest, input: latest.input, thisVersion: true };
+	if (current(latest)) return { task: latest, input: latest.input };
 	const input = savedInput(SHOWN_INPUT, latest.input);
 
-	if (input !== undefined && hasEnded(runStatus(latest))) return { task: latest, input, thisVersion: false };
+	if (input !== undefined && hasEnded(runStatus(latest))) return { task: latest, input };
 	throw otherVersion(latest, id, verb);
 }
 

@@ -8,8 +8,10 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import type { Cursor, Page, TaskOutcome, TaskRecord } from "@earendil-works/pi-durable";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
+import type { Mark } from "../records/steps.ts";
+import { RUN_STATE, type RunResult, type WorkflowOutcome } from "../tool.ts";
 import { ROLE } from "../workflow/roles.ts";
-import { statusOf } from "./result.ts";
+import { reportOf, runResult, SHOWN_INPUT, type ShownInput, statusOf } from "./result.ts";
 import { current, type Runtime, TASK, thisVersion } from "./version.ts";
 
 export type RunTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
@@ -22,15 +24,7 @@ export type TaskEnd = { readonly kind: string; readonly version: number; readonl
  * version saved it. A completed task is `waiting` when its result waits for an answer, else `done`. A task that ended
  * without a result is `failed` (also when pi-durable faulted it), `aborted` or `orphaned`.
  */
-export type RunStatus =
-	| "running"
-	| "earlier-version"
-	| "later-version"
-	| "waiting"
-	| "done"
-	| "failed"
-	| "aborted"
-	| "orphaned";
+export type RunStatus = Static<typeof RUN_STATE>;
 
 /** The outcome of `task`, or undefined when it has not ended. */
 export function taskOutcome(task: RunTask | TaskEnd): TaskOutcome<JsonValue> | undefined {
@@ -46,12 +40,15 @@ export function savedLater(task: { readonly kind: string; readonly version: numb
 export function runStatus(task: RunTask | TaskEnd): RunStatus {
 	const outcome = taskOutcome(task);
 
-	if (outcome === undefined) {
-		if (thisVersion(task)) return "running";
+	if (outcome !== undefined) return endedState(outcome);
 
-		return savedLater(task) ? "later-version" : "earlier-version";
-	}
+	if (thisVersion(task)) return "running";
 
+	return savedLater(task) ? "later-version" : "earlier-version";
+}
+
+/** The state of a run whose task ended with `outcome`, as `runStatus` gives it for a saved task. */
+function endedState(outcome: TaskOutcome<JsonValue>): EndedStatus {
 	switch (outcome.status) {
 		case "completed":
 			return statusOf(outcome.result) === "waiting" ? "waiting" : "done";
@@ -65,14 +62,103 @@ export function runStatus(task: RunTask | TaskEnd): RunStatus {
 	}
 }
 
+/** The state of a run whose task has ended. */
+export type EndedStatus = Exclude<RunStatus, "running" | "earlier-version" | "later-version">;
+
+/** The state of a run that ended without a result. */
+export type EndState = Exclude<EndedStatus, "done" | "waiting">;
+
+/** The outcome of a run that ended without a result. */
+export type EndedOutcome = Extract<WorkflowOutcome, { state: EndState }>;
+
+/** The outcome of a run that has a result. */
+export type CompletedOutcome = Extract<WorkflowOutcome, { state: "done" | "waiting" }>;
+
 /** Whether a run of `status` has ended: its task is terminal. */
-export function hasEnded(status: RunStatus): boolean {
+export function hasEnded(status: RunStatus): status is EndedStatus {
 	return status !== "running" && status !== "earlier-version" && status !== "later-version";
 }
 
 /** Whether a run of `status` has a result: it is `done`, or `waiting` for an answer. */
-export function hasResult(status: RunStatus): boolean {
+export function hasResult(status: RunStatus): status is "done" | "waiting" {
 	return status === "done" || status === "waiting";
+}
+
+/**
+ * The mark of the steps that run and the exit code of a run that ended in `state` without a result: `✗` and 1 when it
+ * failed or was orphaned, `·` and 130 when it was aborted.
+ */
+export function ending(state: EndState): { readonly mark: Mark; readonly code: number } {
+	return state === "aborted" ? { mark: "·", code: 130 } : { mark: "✗", code: 1 };
+}
+
+/** The outcome of the run `runId` whose task ended with `outcome`, without a result. */
+export function endedOutcome(
+	runId: string,
+	outcome: Exclude<TaskOutcome<JsonValue>, { status: "completed" }>,
+): EndedOutcome {
+	switch (outcome.status) {
+		case "failed":
+		case "faulted":
+			return { runId, state: "failed", error: outcome.error.message };
+		case "orphaned":
+			return { runId, state: "orphaned", error: outcome.reason };
+		case "aborted":
+			return { runId, state: "aborted" };
+	}
+}
+
+/** The outcome of the run `input` whose script returned `value`: its state, its result, its value and its report. */
+function completedOutcome(input: ShownInput, value: JsonValue): CompletedOutcome {
+	const report = reportOf(input, value);
+	const state = statusOf(value) === "waiting" ? "waiting" : "done";
+
+	return { runId: input.runId, state, result: runResult(report), value, report: report.lines };
+}
+
+/** The outcome of the run `input` whose task ended with `outcome`. */
+export function outcomeFrom(input: ShownInput, outcome: TaskOutcome<JsonValue>): CompletedOutcome | EndedOutcome {
+	return outcome.status === "completed" ? completedOutcome(input, outcome.result) : endedOutcome(input.runId, outcome);
+}
+
+/** The outcome of the run `input` whose task `task` ended. It throws for a task that has not ended. */
+export function runOutcome(input: ShownInput, task: RunTask | TaskEnd): CompletedOutcome | EndedOutcome {
+	const outcome = taskOutcome(task);
+
+	if (outcome === undefined) throw new Error(`run ${input.runId} has not ended`);
+
+	return outcomeFrom(input, outcome);
+}
+
+/** The result of the run whose task is `task`, when it completed and its saved input has the fields of a report. */
+export function taskResult(task: RunTask): RunResult | undefined {
+	const outcome = taskOutcome(task);
+	const input = savedInput(SHOWN_INPUT, task.input);
+
+	if (outcome?.status !== "completed" || input === undefined) return undefined;
+
+	return completedOutcome(input, outcome.result).result;
+}
+
+/** The state of the run whose task is `task`, and the result of a run that has one, as the JSON of a run gives them. */
+export type StateFields = { state: RunStatus; result?: RunResult };
+
+/** The state fields of the run whose task is `task`. */
+export function stateFields(task: RunTask): StateFields {
+	const fields: StateFields = { state: runStatus(task) };
+	const result = taskResult(task);
+
+	if (result !== undefined) fields.result = result;
+
+	return fields;
+}
+
+/** The state fields of a run, and whether `resume` can continue its task: a task of this version. */
+export type RunFields = StateFields & { resumable: boolean };
+
+/** The run fields of the run whose task is `task`. */
+export function runFields(task: RunTask): RunFields {
+	return { ...stateFields(task), resumable: current(task) };
 }
 
 /**

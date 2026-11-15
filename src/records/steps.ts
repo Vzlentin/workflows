@@ -4,17 +4,15 @@
  * comes. The command draws the tree on stderr, and the Pi tool draws the lines that the command sends with `--json`,
  * so both show the same steps.
  */
-import { hasResult, type RunStatus } from "../run/past.ts";
+import { type EndedStatus, ending, hasResult } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
 
-/** The mark of a step: done, running, failed, or stopped. */
+/** The mark of a step: done, running, failed, or aborted. */
 export type Mark = "✓" | "◉" | "✗" | "·";
 
-/** The mark of the steps that run when the run ends with `status`: `✓` done or waiting, `·` stopped, else `✗`. */
-export function endMark(status: RunStatus): Mark {
-	if (hasResult(status)) return "✓";
-
-	return status === "aborted" ? "·" : "✗";
+/** The mark of the steps that run when the run ends in `status`: `✓` done or waiting, else the mark of `ending`. */
+export function endMark(status: EndedStatus): Mark {
+	return hasResult(status) ? "✓" : ending(status).mark;
 }
 
 /**
@@ -70,8 +68,7 @@ export class Progress {
 			const step = this.#runs.get(event.run)?.current;
 
 			if (step?.mark === "◉") {
-				if ("stopped" in event) step.mark = "·";
-				else step.mark = event.failed ? "✗" : "✓";
+				step.mark = endMark("aborted" in event ? "aborted" : event.failed ? "failed" : "done");
 				step.ended = event.at;
 			}
 

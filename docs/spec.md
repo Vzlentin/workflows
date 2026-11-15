@@ -157,14 +157,16 @@ prints nothing.
 
 Then the run starts the child run `judge` in the worktree, with the work item and the start commit, so the judge
 judges the squashed commit and its message: see [Judge](#judge). If the judge fails or does not answer through
-`respond`, the command prints `judge failed on <subject>: <error>` on stderr, and the run still ships the squashed
+`respond`, the command prints `judge failed on <subject>: <error>` on stderr, and the run still keeps the squashed
 commit.
 
-The command prints `shipped <subject> in <n> rounds, judge <score or failed>, <commit>`, then the line `branch <name>`
-of [Branch name](#branch-name), and exits 0.
+The status of the run follows the judge: `shipped` when the score is above 0, `rejected` when it is 0, and `unjudged`
+when the judge failed. The command prints `<status> <subject> in <n> rounds, judge <score or failed>, <commit>`, then
+the line `branch <name>` of [Branch name](#branch-name). It exits 0 when `shipped`, and 1 when `rejected` or
+`unjudged`; these two keep the squashed commit, the branch and the worktree.
 
 The result of the run, which `--json` prints, has `status` and `rounds`; `head`, `subject`, the subject of the
-squashed commit, and `branch`, the branch that the worktree ends on, when shipped; `worktree`, the path of the
+squashed commit, and `branch`, the branch that the worktree ends on, when `shipped`, `rejected` or `unjudged`; `worktree`, the path of the
 directory that the run ran in, for every status; `score`, `answers`, the eight answers in question order, and `findings`, the finding
 lines of the judge, when the judge answered; `judgeError` when the judge failed; `divergence`, the divergence line of
 the judge with its whitespace runs made one space, when the judge answered; `reply` when blocked; `handoff`, the
@@ -246,14 +248,16 @@ message (`%B`) as `HEAD` before the implement, the round is blocked: the run res
 The result is `{ "status": "judged", "shipped", "reply" }`, with `shipped` the result of `judgeCommit`: `{ "head",
 "subject", "score", "answers", "findings", "divergence" }`, `head` the short squashed commit and `subject` its subject.
 The command prints
-`judge <score>: <subject>` and one line `  <finding>` for each finding, and exits 0. When the implement is blocked, because the item has no change from `--start`, or the
+`judge <score>: <subject>` and one line `  <finding>` for each finding, and exits 0. A score of 0 gives the status
+`rejected` in place of `judged`, and exits 1. When the implement is blocked, because the item has no change from `--start`, or the
 round left the same tree and message as `HEAD` before it, the result is `{ "status": "blocked", "reply" }` and the command prints `blocked <subject>` and the reply. When the judge
 gives no score, the result is `{ "status": "unjudged", "judgeError", "shipped", "reply" }`, with `shipped` the result
 of `judgeCommit`, with its `head` and `subject`, and the command prints `judge failed
 on <subject>: <error>`. When a child run fails, the run does not fail: the result is `{ "status": "failed", "error" }`,
 with `reply` when the implement ended, and the command prints `fix failed on <subject>: <error>`. So a caller saves the
-result, and a resume does not run the fix round again. These three exit 1. A child run that was stopped, whose error
-is `child run <id> stopped: <reason>`, fails the run with that error, so that a resume of the caller runs it again.
+result, and a resume does not run the fix round again. These three exit 1. A child run that was aborted or orphaned,
+whose error is `child run <id> aborted: <reason>` or `child run <id> orphaned: <reason>`, fails the run with that error,
+so that a resume of the caller runs it again.
 
 ## Thermoloop
 
@@ -352,7 +356,7 @@ fails, the score is 0. Otherwise the score is the fraction of questions 3 to 8 t
 line `  <finding>` for each
 finding, and exits 0. The result is `{ "status": "judged", "score", "answers", "findings", "divergence" }`, with
 `divergence` the one line of the judge on how the change differs from its intent, or `none`, with its whitespace runs
-made one space.
+made one space. A score of 0 gives the status `rejected` in place of `judged`, and exits 1.
 
 If the judge fails or does not answer through `respond`, the run logs and prints `judge failed on <subject>: <error>`,
 and exits 1. The result is `{ "status": "unjudged", "judgeError" }`.
@@ -437,20 +441,22 @@ terminal and in Pi they move under the item step when it comes.
 - When every item shipped, the step `all <n> item(s)` runs the child run `judge` on the change of the whole campaign,
   from the start commit to the last item, against the goal: the judge of an item sees only its item, and not how the
   items fit together. The command prints
-  `done <subject> in <n> item(s), judge <score or failed>, <commit>` with the commit of the last item, then one line
+  `<status> <subject> in <n> item(s), judge <score or failed>, <commit>` with the commit of the last item, then one line
   `  <commit> <commit subject>, judge <score or failed>` for each shipped item, in order, with
   `, divergence <divergence>` at the end when the item's divergence is there, not empty and not `none`, then one line
   `  finding <finding>` for each finding of the campaign judge, then the lesson lines, then the line `branch <name>` of
-  [Branch name](#branch-name), with the `subject` of the last split, and exits 0. The score of the campaign judge does
-  not change the outcome.
+  [Branch name](#branch-name), with the `subject` of the last split. The campaign judge gives the status: `done` and
+  exit 0 when its score is above 0, `rejected` and exit 1 when it is 0, and `unjudged` and exit 1 when it failed. The
+  commits and the branch stay in each case.
 
-- When an item ships with a judge score of 0 and the judge gave findings, the item gets one fix round: the child run
+- An item whose ship is `shipped` ships. An item whose ship is `rejected` (a judge score of 0) and whose judge gave
+  findings gets one fix round: the child run
   [`fix`](#fix) with the work item, `start` at the commit that the item started from, the judge's findings, `round` at
   the rounds of the item plus 1, the message `fix: judge findings of item <n>` and the run memory of the item. `fix`
   squashes the change of the item again into one commit with a new commit message, and logs
-  `commit <commit> <commit subject>`. When `fix` is judged with a score above 0, the item ships: its result is the ship
-  result with the judge fields of the ship result replaced by the `head`, `subject`, `score`, `answers`, `findings`,
-  `judgeError` and `divergence` of `fix`. The step `fix` comes
+  `commit <commit> <commit subject>`. When `fix` is `judged`, with a score above 0, the item ships: its result is the
+  ship result with the status `shipped` and the judge fields of the ship result replaced by the `head`, `subject`,
+  `score`, `answers`, `findings`, `judgeError` and `divergence` of `fix`. The step `fix` comes
   under the item step, and its log line and its `judge` step under it:
 
   ```text
@@ -468,10 +474,10 @@ terminal and in Pi they move under the item step when it comes.
 
   Otherwise the fix round ends with an outcome: `the fix round failed: <error>` when `fix` is `failed`, `the fix
   round left no change` when it is `blocked`, `no judge score after one fix round` when it is `unjudged`, `still 0
-  after one fix round` when the score is 0 again, and `the fix round ended with the unknown status <status>` for any
+  after one fix round` when it is `rejected`, a score of 0 again, and `the fix round ended with the unknown status <status>` for any
   other status. After `unjudged` or a score of 0 again, the run asks as below; after any other outcome the item fails
   as below.
-- When an item ships with a judge that failed, ships with a judge score of 0 and no findings, or its fix round ends
+- When an item's ship is `unjudged` (its judge failed), or `rejected` with no findings, or its fix round ends
   `unjudged` or with a score of 0 again, the item is one squashed commit, and the run asks the question of
   [Input](#input), with no reset, no patch and no rundown:
 
@@ -523,8 +529,10 @@ failed and was reset: its notes describe code that is gone` to the run memory. T
 
 `<subject>` is the first non-empty line of the goal without leading `#`. `<n>` in the `done` line counts the shipped
 items. The number of the item step counts every item that ran. The result is
-`{ "status": "done", "subject", "head", "judge": { "score", "findings" }, "branch", "items": [{ "item", "result" }], "lessons" }`,
-with `judgeError` in place of `judge` when the campaign judge failed, or `{ "status": "stopped", "items", "rundown", "lessons" }`,
+`{ "status": "done", "subject", "head", "score", "findings", "branch", "items": [{ "item", "result" }], "lessons" }`,
+where `score` and `findings` are those of the campaign judge, as in a ship result, with the status `rejected` when the
+campaign judge gave 0, and the status `unjudged` and `judgeError` in place of `score` and `findings` when the campaign
+judge failed, or `{ "status": "stopped", "items", "rundown", "lessons" }`,
 with no `rundown` when the user stopped at the question about an item still at 0. An item that the user kept has `"kept": true` and `findings`. The `result` of
 each shipped item, and of the failed item in a stopped result, is its `ship` result, with its `divergence` and its child run ID as
 `runId`, and after a fix round that shipped, that the user kept or at which the user stopped, the `head`, `subject` and judge fields of the last fix round. `head` is the commit of the last item, and `branch` is the
@@ -549,7 +557,7 @@ The work items and their baselines come from one of two places:
 
 - By default, from past runs: `pastRuns("ship", ...)` gives the completed root ship runs of the project store, the
   newest `--limit` (default 8), or with `--runs` the run IDs of that comma list, in that order. A saved run keeps its
-  result as its baseline when its status is `shipped` and its `head` is still a commit of its repository; its diff is
+  result as its baseline when its status is `shipped`, `rejected` or `unjudged` and its `head` is still a commit of its repository; its diff is
   `git diff <start> <head>`. Any other saved run runs its baseline again once, as the child run
   `run("ship", { item, repo: repository, base: start, from: runId })`, with its saved prompts and agents table.
 - With `--items <folder>`, relative to the current directory, from `<name>.md` files. Each file has the frontmatter
@@ -888,7 +896,7 @@ it has no line of its own. When the caller has no step then, the child run moves
 command draws the tree on stderr in one of three ways:
 
 - On a terminal, the command draws the tree again in place at each change. A step is `◉` while it runs, `✓` when it
-  is done, `✗` when its run failed, and `·` when its run was stopped. A step that ended ends with two spaces and its duration, such
+  is done, `✗` when its run failed or was orphaned, and `·` when its run was aborted. A step that ended ends with two spaces and its duration, such
   as `12s`, `3m05s` or `1h02m`, from its `phase` line to the next `phase` line of its run or the end of its run. Each
   line is cut to the columns of the terminal. When another
   line, such as a warning, comes between two draws, the lines above it stay, and the changed lines print again below
@@ -909,9 +917,10 @@ The status of the run is the text of each step that runs, outermost first, joine
 `item 2/5: Add a thanks line › round 1/3: review`; child runs that run at once join with `, `. Only the `--json` line,
 the [Pi widget](#background-runs-in-pi) and `list --pick` show it.
 
-When the run ends, the steps that still run become `✓` when the run finished or waits for an answer, `·` when it was
-stopped, and `✗` when it failed in another way. The end of a stopped run is saved with `stopped`, so `show` and a later
-command show its steps as `·` too. A command that Ctrl+C detaches leaves them as they are. On a terminal and with `--json`, the tree draws once
+When the run ends, the steps that still run become `✓` when the run is `done` or `waiting`, `·` when it was
+`aborted`, and `✗` when it `failed` or was `orphaned`. The end event of an aborted run is saved with `aborted: true`,
+so `show` and a later command show its steps as `·` too; an end event of an earlier version with `stopped` is not
+valid, and the commands leave it out. A command that Ctrl+C detaches leaves them as they are. On a terminal and with `--json`, the tree draws once
 more then. A command that follows a run shows only the lines that come after it starts or reaches the run. `<title>`
 is the subject of the first `text` argument, or else the file name without `.js`, the workflow name, or `stdin`. The
 run's task ends as failed, and its saved calls stay in the project store for the resume. `workflows log <run-id>` shows the failed call with the last lines of its error. See [Log](#log).
@@ -993,7 +1002,7 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
   child run of a child run gets them too.
 
 `run()` returns the child's result, with `runId`, the child run ID, added to an object result. A failed child run
-fails the call with `child run <id> failed: <error>`, where `<id>` is the deepest child run that failed, and the child's task ends as failed. A child run that was stopped (aborted or orphaned) fails the call with `child run <id> stopped: <reason>`. A caller that fails aborts
+fails the call with `child run <id> failed: <error>`, where `<id>` is the deepest child run that failed, and the child's task ends as failed. A child run that was aborted or orphaned fails the call with `child run <id> aborted: <reason>` or `child run <id> orphaned: <reason>`. A caller that fails aborts
 its child runs that are still running. A resume of the caller continues the same child run, with the same run ID and
 run directory, also after a failed call, an abort or an interruption, and repeats no call that the child run saved. A
 child run that ended without a result continues in a new task.
@@ -1245,7 +1254,7 @@ refuses, it prints `workflows: <line>`, exits 1 and starts no task.
 
 With `--background`, at any position before `--`, start and resume print `run <run-id>` once the host has the run's
 task, and exit 0 without following it. With `--json`, they also print
-`{"runId":"<run-id>","status":"started","workflow":"<workflow>"}`, where `<workflow>` is the name of the run's workflow,
+`{"runId":"<run-id>","state":"running","follow":"started","workflow":"<workflow>"}`, where `<workflow>` is the name of the run's workflow,
 as `workflows show` gives it. A Ctrl+C after the host accepted the task does not change this. The other commands
 ignore `--background`. Follow such a run with `workflows wait <run-id>` or `workflows resume <run-id>`. A start with `--background` saves `notify` in the
 input of the run. A resume that starts a new task saves `notify` only with `--background`, whatever the last task
@@ -1272,11 +1281,11 @@ A run that fails with an error prints `failed <subject>: <error>` and `continue 
 exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. The run's task ends as
 failed. Resume runs the script again in a new task of the same run, with the same input: a failed Git step runs again,
 a failed turn is sent again in the same session, saved calls return their results, and child runs continue. A run whose
-task ended in another way, such as a stopped or orphaned task, or one that pi-durable faulted, resumes in the same way. An ask whose answer
+task ended in another way, such as an aborted or orphaned task, or one that pi-durable faulted, resumes in the same way. An ask whose answer
 stopped for a reason other than its end, such as its length, fails its call, and a resume asks again. So does an ask
 whose answer did not call `respond`. A resumed ask never returns the answer of another ask in its session.
 
-A shipped, blocked or stopped run is final: resume prints the same result and exits with the same code. A waiting
+A shipped, rejected, unjudged, blocked or stopped run is final: resume prints the same result and exits with the same code. A waiting
 run without `--answer` prints its question again and exits 3. When the command can ask, it reads the answer on the
 terminal and continues the run with it, or prints the `waits for an answer` line and exits 130 when no answer comes.
 `--answer` for a run whose last task did not complete
@@ -1309,14 +1318,14 @@ may have started: workflows resume <run-id>`.
 The run goes on in the host after the command ends. Ctrl+C detaches the command: it prints `detached; run <run-id>
 goes on. Follow it with: workflows resume <run-id>. Stop it with: workflows stop <run-id>` and waits 2 s for a second
 Ctrl+C. Without one, it exits 130, or reports the outcome of a run that ends in those 2 s. A second Ctrl+C in those
-2 s stops the run: the run's task ends as stopped, and the command prints `stopped <title>; continue with: workflows
+2 s stops the run: the run's task ends as `aborted`, and the command prints `aborted <title>; continue with: workflows
 resume <run-id>` and exits 130. A second Ctrl+C that comes before the command waits for it, such as one right after
 the first, stops the run in the same way. A second Ctrl+C while the command follows no run, and a third, exit at once.
 A Ctrl+C before the run starts, such as while the command clones the repository, starts no run: the command removes
 the run directory, prints `workflows: interrupted before the run started` and exits 130.
 
 When the host closes the connection after it replied to the stop of a second Ctrl+C, it has saved the stop, so the
-command prints the `stopped` line, or `{"runId","status":"stopped"}` with `--json`, and exits 130. Otherwise, when the
+command prints the `aborted` line, or `{"runId","state":"aborted"}` with `--json`, and exits 130. Otherwise, when the
 host stops while the command follows the run, the run stays pending: the command prints `the host stopped;
 the run continues when it starts again: workflows resume <run-id>`, leaves the steps as they are and exits 1. The next
 host continues the run when it starts, and `resume` starts it.
@@ -1326,14 +1335,15 @@ workflows stop <run-id>
 ```
 
 `workflows stop` stops a run that runs, from any directory: it aborts the run's task with its child runs, sessions and
-Git steps, prints `stopped <title>; continue with: workflows resume <run-id>` and exits 0. It does so also when the host
+Git steps, prints `aborted <title>; continue with: workflows resume <run-id>` and exits 0. It does so also when the host
 closes the connection after it replied to the abort, which it saved then. When no host runs, `stop`
 starts the run's host, and the host resumes the run before the abort reaches it: a `sh` or `ok` command that a host
 stop cut runs again from its start, and an ask that was in progress continues its turn, until the abort stops them. With `--json`, it prints `{ "runId",
-"status": "stopped" }`. A run whose last task has ended prints `workflows: run <run-id> is not running` and exits 1.
+"state": "aborted" }`. A run whose last task has ended prints `workflows: run <run-id> is not running` and exits 1.
 `stop` also stops a pending run of another version of workflows, which no host can run: its task ends as `orphaned`,
-and the command prints `stopped <workflow>, which an earlier version saved; it cannot resume` (or `a later version`). A command that follows a run that `stop` stops prints the
-`stopped` line and exits 130. A stopped run resumes in a new task.
+and the command prints `orphaned <workflow>, which an earlier version saved; it cannot resume` (or `a later version`),
+or with `--json` `{ "runId", "state": "orphaned", "error" }`. A command that follows a run that `stop` stops prints the
+`aborted` line and exits 130. An aborted run resumes in a new task.
 
 Model requests use the retry, stream timeout and compaction settings of Pi's `settings.json` in `~/.pi/agent`, as the
 host reads them. The `.pi/settings.json` of the run's directory does not count.
@@ -1376,24 +1386,34 @@ workflows wait <run-id> --json
 ```
 
 Every form of start, resume and wait accepts `--json`, at any position before `--`. After `run <run-id>`, stdout gets one
-line of JSON in place of the report lines, `{ "runId", "status", "result"?, "report"?, "error"? }`, for every outcome:
+line of JSON in place of the report lines, for every outcome. Its `state` is the state of the run, the one word that
+`list` and `show` give, and only a run that is `done` or `waiting` has a `result`:
 
-- `finished`: `result` is the result of the run, for example `{"status":"shipped","rounds":1,"head":"1a2b3c4",...}`
-  for ship. The [Ship](#ship) section lists the fields of a ship result. `report` is the list of report lines that
-  the command prints without `--json`, such as `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4 on fix/readme-typo"]`.
-  A run that waits for an answer is `finished` with the result `{"status":"waiting","question":"<question>","report":["<question>"]}`
-  and the exit code 3.
-- `failed`: `error` is the error message.
-- `started`: with `--background`, the host has the run's task, and the command does not follow it. `workflow` is the
-  name of the run's workflow. The `workflow` tool of the host and the `workflow` tool of Pi give it as a result that
-  is not an error.
-- `detached`: Ctrl+C detached the command, and the run goes on in the host.
-- `stopped`: a second Ctrl+C or `workflows stop` stopped the run.
-- `host-stopped`: the host stopped while the command followed the run, which stays pending.
+- `{ "runId", "state": "done" | "waiting", "result": { "status"?, "code", "score"? }, "value", "report" }`: the run has a result.
+  `result.status` is the `status` of the script's result, when it has one, `result.code` the exit code of the
+  command, from `meta.exit`, and `result.score` the `score` of the script's result, when it has one: the score of the
+  last judge of a ship, a campaign or a judge run. `value` is the whole result of the script, for example
+  `{"status":"shipped","rounds":1,"head":"1a2b3c4",...}` for ship; the [Ship](#ship) section lists its fields.
+  `report` is the list of report lines that the command prints without `--json`, such as
+  `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4 on fix/readme-typo"]`. A run that waits for an
+  answer is `waiting`, with the value `{"status":"waiting","question":"<question>","report":["<question>"]}` and the
+  exit code 3.
+- `{ "runId", "state": "failed" | "orphaned", "error" }`: the task ended without a result. `error` is the error
+  message, or the reason of the orphaned task.
+- `{ "runId", "state": "aborted" }`: a second Ctrl+C or `workflows stop` aborted the run.
+- `{ "runId", "state": "running", "follow": "started", "workflow" }`: with `--background`, the host has the run's
+  task, and the command does not follow it. `workflow` is the name of the run's workflow. The `workflow` tool of the
+  host and the `workflow` tool of Pi give it as a result that is not an error.
+- `{ "runId", "state": "running", "follow": "detached" }`: Ctrl+C detached the command, and the run goes on in the host.
+- `{ "runId", "state": "running", "follow": "host-stopped" }`: the host stopped while the command followed the run,
+  which stays pending.
 
-The JSON line replaces the `failed`, `continue with`, `detached`, `stopped` and `host stopped` lines on stderr, so each stderr line is
-a `{"progress":[...]}` line of the run, see [Progress](#progress), or a warning. The exit codes do not change. An error before the run exists, such as
-bad usage, prints no `run <run-id>` line and no JSON line.
+`OUTCOME` in `src/tool.ts` is the schema of this line, and each of its objects has only these fields. The JSON line
+replaces the `failed`, `orphaned`, `continue with`, `detached`, `aborted` and `host stopped` lines on stderr, so each
+stderr line is a `{"progress":[...]}` line of the run, see [Progress](#progress), or a warning. The exit codes do not
+change. An error before the run exists, such as bad usage, prints no `run <run-id>` line and no JSON line. A command
+that loses its wait for the run, with an error that is not a closed host, does not say how the run ended: it prints
+no outcome line, prints `workflows: <error>` and exits 1, and the run goes on in the host.
 
 ## List
 
@@ -1404,27 +1424,32 @@ workflows list --pick
 ```
 
 `workflows list` prints one line for each run of the harness project of the current directory, newest run ID first:
-`<run-id> <workflow> <status> <title>`. Runs of other projects are not listed. `<workflow>` is the script name. Child
+`<run-id> <workflow> <state> <title>`. Runs of other projects are not listed. `<workflow>` is the script name. Child
 runs are not listed: they are tasks of their caller. The title is the last `title(text)` of the run, such as the subject of the intent of
 `thermoloop`, else the subject of the first `text` argument, such as the work item for ship and the goal for campaign, or
-else the script name. A finished run has the
-`status` of its result, such as `shipped`, `blocked` or `stopped` for ship and `done` or `stopped` for campaign, or
-`done` when the result has no `status`. A run that waits for an answer to `input()` is `waiting`. A run whose task has not ended is `running`, also when it waits for its host
-to start. A run whose task ended without a result is `aborted` (a second Ctrl+C or `workflows stop` stopped it), `failed` (also a task that pi-durable faulted) or `orphaned`. A pending run that
+else the script name. `<state>` is the state of the run, which `runStatus` in `src/run/past.ts` alone computes, with
+its result when it has one: `done, result <status> exit <code>`, such as `done, result shipped exit 0` or
+`done, result blocked exit 1`, or `done, exit 0` when the result has no `status`. A run that waits for an answer to
+`input()` is `waiting`, with its result `result waiting exit 3`. A run whose task has not ended is `running`, also when it waits for its host
+to start. A run whose task ended without a result is `aborted` (a second Ctrl+C or `workflows stop` aborted it), `failed` (also a task that pi-durable faulted) or `orphaned`, with no result. A pending run that
 another version of workflows saved is `earlier-version` or `later-version`: it cannot resume. A run that another
 version saved has its title as a run of this version has it, when its saved input has the fields of a title (the
 run ID, the script name, the arguments, and the `args` and `exit` of its `meta`); a run whose input does not have them
-has its workflow name as its title. With `--json`, the command prints one JSON array of `{ "runId", "workflow", "title", "status", "repository" }`.
+has its workflow name as its title. With `--json`, the command prints one JSON array of
+`{ "runId", "workflow", "title", "state", "result"?, "resumable", "repository" }`, with the schema `LISTED` of
+`src/cli/commands/list.ts`. `result` is `{ "status"?, "code", "score"? }` as in [JSON output](#json-output), for a run that is `done` or
+`waiting` and whose saved input has the fields of a title. `resumable` is true when this version of workflows saved
+the run's task, so that `resume` can take it; it is false for a run of another version.
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
 without a worktree.
 Only the runs that have a run directory with a `project` file are listed. The command writes that file before it
 prepares the run, so a run directory of the project whose run has no task is listed as `<run-id> - unstarted -`, and
-with `--json` as `{ "runId", "workflow": "-", "title": "-", "status": "unstarted", "repository": null }`: its run is
+with `--json` as `{ "runId", "workflow": "-", "title": "-", "state": "unstarted", "resumable": false, "repository": null }`: its run is
 about to start, or its command stopped before the host created the task. `--pick` leaves these out.
 
 With `--pick`, on a terminal, the command asks `Pick a run:` with the runs that run or wait first, each as `<mark>
-<title>  <workflow> <status>`, with `: <status of the run>` of [Progress](#progress) for a running run. The mark is `◉` running, `?` waiting,
-`✗` failed (a task that ended without a result, not a result whose `status` is `failed`), else `·`. Typing filters by each word, in any case; the arrows move, Enter prints the run ID, and Esc or
+<title>  <workflow> <state>`, with `: <status of the run>` of [Progress](#progress) for a running run. The mark is `◉` running, `?` waiting,
+`✗` failed or orphaned (a task that ended without a result, not a result whose `status` is `failed`), else `·`. Typing filters by each word, in any case; the arrows move, Enter prints the run ID, and Esc or
 Ctrl+C exits 130. So commands compose: `workflows wait "$(workflows list --pick)"`. While the pick waits for a key, the
 command reads the runs again 1 s after each read ends and draws the new lines, with the typed filter kept and the cursor
 on the same run, else on the first match. A read that fails keeps the lines it has, and a read that finds no run shows
@@ -1507,15 +1532,15 @@ workflows show <run-id> --json
 workflows show <run-id> --pick
 ```
 
-`workflows show` prints one run from the store of its project: the line `run <run-id> <workflow> <status> <title>`,
+`workflows show` prints one run from the store of its project: the line `run <run-id> <workflow> <state> <title>`,
 with the fields of `workflows list`, then the steps of [Progress](#progress) from the first line of the run, then the
 report lines, or the `failed` and `continue with` lines. Once the run's task ended, the steps that still ran are `✓`
-when it completed, `·` when it was stopped, and `✗` otherwise. The calls of a run are in [Log](#log).
+when it completed, `·` when it was aborted, and `✗` otherwise. The calls of a run are in [Log](#log).
 
 A run without steps prints the tree of its phases and calls in place of the steps:
 
 ```text
-run <run-id> <workflow> <status> <title>
+run <run-id> <workflow> <state> <title>
 <phase line>
   ✓ <kind> <label>  <duration>
 <report lines, or the failed and continue with lines>
@@ -1540,13 +1565,15 @@ run <run-id> <workflow> <status> <title>
 - The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, also for a working session, it is
   the time since the call started.
 - A finished run ends with its report lines. A failed run ends with `failed <title>: <error>` and `continue with:
-  workflows resume <run-id>`, an aborted run with `stopped <title>; continue with: workflows resume <run-id>`, and an
+  workflows resume <run-id>`, an aborted run with `aborted <title>; continue with: workflows resume <run-id>`, and an
   orphaned run with `orphaned <title>: <reason>` and the `continue with` line. A run that another version saved, which
-  `resume` refuses, has no `continue with` line: an aborted one ends with `stopped <title>`. Any other run ends after
+  `resume` refuses, has no `continue with` line: an aborted one ends with `aborted <title>`. Any other run ends after
   its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
-object with both trees: `{ "runId", "workflow", "title", "status", "report"?, "error"?, "todos", "steps", "calls" }`, where
+object with both trees: `{ "runId", "workflow", "title", "state", "result"?, "resumable", "report"?, "error"?, "todos", "steps", "calls" }`,
+with the schema `SHOWN` of `src/cli/commands/show.ts`. `state`, `result` and `resumable` are those of
+[List](#list), `error` is the error of a failed run or the reason of an orphaned run, and
 `todos` is the list of todos of the run, as in [Todos](#todos): an array of `{ "id", "text", "state" }` in ID order,
 or `[]` when the run has no todo, also for a run that an earlier version saved, and
 `steps` has the step lines of the text, without the first line and the footer. Each call is
@@ -1559,7 +1586,7 @@ list of todos of the child run, and `calls`, the calls of the child run.
 With `--agents`, `show` prints the agents of the run:
 
 ```text
-run <run-id> <workflow> <status> <title>
+run <run-id> <workflow> <state> <title>
 <phase line>
   ✓ <agent text>  <model>  <n> asks  <duration>
   ◉ run <workflow> <child run-id>
@@ -1577,8 +1604,8 @@ run <run-id> <workflow> <status> <title>
 - A phase line comes before the first agent or child run under it. Other calls, such as `sh`, are not in the tree. The
   rows of a child run are indented by 4 more under its `run` line.
 
-With `--agents --json`, the command prints one JSON object `{ "runId", "workflow", "title", "status",
-"ended", "agents" }`, where `ended` is true when the run has ended, also when it waits for an answer.
+With `--agents --json`, the command prints one JSON object `{ "runId", "workflow", "title", "state", "result"?,
+"resumable", "ended", "agents" }`, with the schema `SHOWN_AGENTS` of `src/cli/commands/show.ts`, where `ended` is true when the run has ended, also when it waits for an answer.
 `agents` has one object for each line of the tree, in order: `{ "kind": "phase", "depth", "text" }`, `{ "kind": "run",
 "depth", "mark", "text" }` with the text `run <workflow> <child run-id>`, or `{ "kind": "agent", "depth", "mark", "text",
 "phase", "model", "asks", "conversation", "startedAt", "endedAt"?, "facts" }`, where `phase` is the phase line of the
@@ -1632,7 +1659,7 @@ so it also prints a run that another version saved, which `show` refuses.
 The short log:
 
 ```text
-run <run-id> <workflow> <status>
+run <run-id> <workflow> <state>
 HH:MM:SS  <phase text>  <duration>  <n> calls  <size>  s1
 HH:MM:SS  <phase text>  <duration>  <n> calls  <size>  s2
 HH:MM:SS    ✗ <kind> <label>  <duration>  <size>  <call>
@@ -1640,11 +1667,11 @@ HH:MM:SS    ✗ <kind> <label>  <duration>  <size>  <call>
 HH:MM:SS    ✓ run <workflow> <child run-id>  <duration>  <size>  <call>
 HH:MM:SS      <phase text of the child run>  <n> calls  <size>  <child run-id>/s1
 HH:MM:SS        ◉ <kind> <label>  running  <call>
-HH:MM:SS      end ok
-HH:MM:SS  end ok
+HH:MM:SS      end done
+HH:MM:SS  end done
 ```
 
-- The first line has the workflow and the status as `list` gives them, for a task of any version. A run with no task
+- The first line has the workflow and the state as `list` gives them, for a task of any version. A run with no task
   has only the run ID in it.
 - For each run, its steps are in the order they started. A step is a `phase` line of the run; a `phase` line that
   continues the step of the same text, after a resume, is no new step. A call is in the last step of its run whose
@@ -1669,9 +1696,11 @@ HH:MM:SS  end ok
   `sh` or `ok` call, else its result (a string as it is, else its JSON) or its error. The last field is the name of
   the call.
 - A failed call has the last 5 lines of its error under it, each as `| <line>`, cut at 120 characters.
-- The last line of a run is its end (`end ok`, `end failed` or `end stopped`), only when the last start or end of the
-  run is an end. Each task of a run, a resume too, starts it again, so a run that failed and then ended after a resume
-  has one end line, its last one.
+- The last line of a run is its end, `end <state>`, with the state of its last task (`done`, `waiting`, `failed`,
+  `aborted` or `orphaned`), only when that task has ended. A child run takes the state of its task in the record of its
+  `run` call. The time is that of the last end event of the run, when its last start or end event is an end, else
+  blank. Each task of a run, a resume too, starts it again, so a run that failed and then ended after a resume has one
+  end line, its last one. Once the run has ended, its steps that still ran take the end mark of [Show](#show).
 
 The name of a step is `s<n>`, where `n` counts the steps of the run from 1, for a step of the root run, and
 `<child run-id>/s<n>` for a step of a child run. `workflows log <run-id> <step>` prints the line of the step, then the
@@ -1840,15 +1869,17 @@ directory, starts the host when none runs, asks it to start the run's task, and 
   document of keys, and the `workflows.run` tasks that were not terminal. The hook reads each task after `lastTaskId`,
   and each task in `pending`. A task of another kind is skipped, and a task that is not terminal goes in `pending`.
   The lines are `Workflow runs that ended:`, then one line for each run that ended,
-  `- <run-id> (<workflow>): <status>`, with `; subject: <subject>`, `; branch: <branch> @ <head>`,
+  `- <run-id> (<workflow>): <state>`, with `; subject: <subject>`, `; branch: <branch> @ <head>`,
   `; divergence: <divergence>`, `; lessons: <JSON>` and `; sessions: [run <run>: <label> #<conversation>, ...]` when
   they are known, then `Workflow runs that cannot be reported:` and `- task <id>: <reason>` for a task whose input is
-  not a workflows run input, and a task in `pending` whose record is gone. A block with no line is left out. The status
-  is the `status` of the result of a completed run, else the outcome (`completed`, `failed` or `aborted`). The branch is
+  not a workflows run input, and a task in `pending` whose record is gone. A block with no line is left out. The state
+  is the state of the run from `runStatus`, with its result as [List](#list) gives it, such as `done, result shipped
+  exit 0`, `failed` or `orphaned`. The branch is
   the result's, else the branch of the run's worktree. The sessions come from `workflows.sessions` of the root run; a
   session without a label shows its lineage key, and without one only `#<conversation>`. The data of the lines is
-  `{ runs, lost? }`: `runs` has `{ task, runId, workflow, status, subject?, branch?, head?, divergence?, lessons?,
-  sessions }` for each run, with `{ run, conversation, key?, label? }` for each session, and `lost` has
+  `{ runs, lost? }`, with the schema `CATCH_UP` of `src/run/catchup.ts`: `runs` has `{ task, runId, workflow, state,
+  result?, subject?, branch?, head?, divergence?, lessons?, sessions }` for each run, where `result` is
+  `{ status?, code }` for a run that is `done` or `waiting` and whose saved input has the fields of a title, with `{ run, conversation, key?, label? }` for each session, and `lost` has
   `{ task, reason }`. The first time, and with a `seen` that is not valid, the hook only records the runs, with no
   line. When a read fails, the hook fails: the host warns `catch-up: workflows.runs: <message>`, keeps the last `seen`,
   and the next catch-up reads the same runs again.
@@ -1870,17 +1901,19 @@ error result of the command's usage error, before a run exists. It sets `HARNESS
   run is detached and goes on in the harness host; follow it with resume: "<run-id>"`. Each stderr line appends a line to the running output, the last progress line or the line itself,
   and sets the `details` of the call to `{ steps }`, the progress lines of the command then any other stderr line.
   The result keeps the last `details`.
-- The result text of a finished run is its summary, then the `report` lines. A report line longer than 500 bytes in
+- The result text of a run that is `done` is its summary, then the `report` lines. A report line longer than 500 bytes in
   UTF-8 is cut at a character to 497 bytes, then `…`, so it is at most 500 bytes; the structured output, `--json` and
   the saved result keep the whole line. The summary is
-  `run <run-id> finished: <result>`, with the JSON of the result. A run that waits for an
-  answer has only the summary, `run <run-id> waits for an answer: <question>; answer it with resume: "<run-id>" and answer: "<your answer>"`, and is not an error. A failed, detached, stopped
-  or host-stopped run is an error result with its summary, such as `run <run-id> failed: <error>; continue it with
-  resume: "<run-id>"`, and keeps the structured output `{ runId, status, result?, report?, error? }`, with the whole
-  result and error.
+  `run <run-id> <state>: <value>`, with the state and the result as [List](#list) gives them, such as
+  `run <run-id> done, result shipped exit 0: {...}`, and the JSON of the value of the result. A run that waits for an
+  answer has only the summary, `run <run-id> waits for an answer: <question>; answer it with resume: "<run-id>" and answer: "<your answer>"`, and is not an error. A run that is `done` is not an
+  error either, whatever its exit code. A failed, orphaned, aborted, detached or host-stopped run is an error result
+  with its summary, such as `run <run-id> failed: <error>; continue it with resume: "<run-id>"`, `run <run-id>
+  orphaned: <reason>` or `run <run-id> aborted; continue it with resume: "<run-id>"`, and keeps the structured output,
+  the outcome of [Wait](#wait), with the whole value and error.
 - A summary is at most 2000 bytes in UTF-8, with its prefix and its suffix. A longer summary is three lines: its first
   line, cut to 500 bytes at a character, then the cut line, then the longest end of the text that fits, from a line
-  start when that end has one, else from a character. The cut line of a finished run is `[… <n> bytes cut; the
+  start when that end has one, else from a character. The cut line of a run that is `done` is `[… <n> bytes cut; the
   command workflows wait <run-id> --json prints the whole result]`. The cut line of a failed or waiting run is `[… <n>
   bytes cut; the command workflows log <run-id> shows the run and its calls, and workflows log <run-id> <call> prints
   the whole output of a call]`. `<n>` is the count of bytes between the two parts. `<run-id>` is the run of the outcome, also
@@ -1888,15 +1921,14 @@ error result of the command's usage error, before a run exists. It sets `HARNESS
   way. Every caller text comes from the summary: the result text of the tool, the posted text of a background run,
   and in Pi the tool text, the background message and the drawn outcome line.
 - `background: true`, with `name`, `script` or `resume`, adds `--background` to the command. With `save`, it is an
-  error and no command starts. The result is `started`, which is not an error: `run <run-id> started in the
+  error and no command starts. The result is the outcome with `follow: "started"`, which is not an error: `run <run-id> started in the
   background; its result comes as a message in this conversation when it ends; follow it with resume: "<run-id>", or
   stop it with the command workflows stop <run-id>`.
 - A task whose input has `notify` posts its outcome to the conversation `parent` when it ends, after it ends its
   sessions and before its end commits. The post is a follow-up input of the entry kind `workflows.result`, with the
-  data `{ runId, status }` and the text of the tool result for that outcome: `finished` with the report lines
-  (with the limit on the summary above),
-  `finished` with the question and how to answer it for a run that waits for an answer, `failed` with the error, or
-  `stopped`. Its request ID is `workflows.result:<run-id>/<task-id>`, so a rerun of the
+  data `{ runId, state }` and the text of the tool result for that outcome, which the same builder as the command
+  makes from the end of the task: `done` with the report lines (with the limit on the summary above), `waiting` with
+  the question and how to answer it, `failed` with the error, or `aborted`. Its request ID is `workflows.result:<run-id>/<task-id>`, so a rerun of the
   phase posts once, and each later task of the run posts again. A child run never has `notify`. Nothing is posted
   when `parent` is not a conversation ID of the host, such as the session ID of Pi, or when the host stops: the task
   stays pending and posts when it ends after the restart. A failed post goes to the host's report and does not
@@ -2004,38 +2036,40 @@ In Pi, the call line is `workflow <name> <slug>`, `workflow <name>`, `workflow s
 file name of a `.md` file without `.md`, or else the first 40 characters of its subject. Under it are the lines of the last `{"progress":[...]}` line of the command, as the
 command draws them on a terminal, with the marks in the theme's colors, then the last 100 other stderr lines, such as a warning.
 See [Progress](#progress). So a campaign shows its item steps with the ship steps of each item under them. The tool
-does not make the steps itself. A finished run ends with its `report` lines,
-such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8 on fix/readme-typo`. A failed, detached or stopped run ends with
+does not make the steps itself. A run that is `done` or `waiting` ends with its `report` lines,
+such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8 on fix/readme-typo`. A failed, orphaned, aborted or detached run ends with
 the error or the state, and the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the
 same after a reload. The model gets the result text of the host tool: the summary, then the `report` lines of a
-finished run that does not wait for an answer, with the limit on the summary of
+run that is `done`, with the limit on the summary of
 [The `workflow` tool of the host](#the-workflow-tool-of-the-host).
 
-The tool declares an `outputSchema`, the union of the outcomes below, one object for each status. Its
-`structuredContent` is `{ runId, status, result?, report?, error?, workflow? }`:
+The tool declares an `outputSchema`, `OUTCOME`, the union of the outcomes of [Wait](#wait). Its `structuredContent`
+is that outcome:
 
-- `finished`: the run finished, `result` is its result, such as a `blocked` ship result, and `report` is its report
-  lines. For a run that waits for an answer, `result` is `{"status":"waiting","question":"<question>",...}`, and the
-  text is `run <run-id> waits for an answer: <question>; answer it with resume: "<run-id>" and answer: "<your answer>"`.
-- `failed`: the run failed, and `error` is its error message.
-- `started`: a `background` call started the run, or a new task of it, and does not follow it. It is not an error,
-  its text is `run <run-id> started in the background; its result comes as a message in this conversation when it
-  ends; follow it with resume: "<run-id>", or stop it with the command workflows stop <run-id>`, and it draws
-  `◉ started in the background`.
-- `detached`: Esc detached the command, and the run goes on in the host.
-- `stopped`: `workflows stop` stopped the run.
-- `host-stopped`: the host stopped while the command followed the run, which continues when the host starts again.
+- `state` `done`: the run has a result, `result` is `{ status?, code }`, `value` is the whole result of the script,
+  such as a `blocked` ship result, and `report` is its report lines.
+- `state` `waiting`: `value` is `{"status":"waiting","question":"<question>",...}`, and the text is
+  `run <run-id> waits for an answer: <question>; answer it with resume: "<run-id>" and answer: "<your answer>"`.
+- `state` `failed` or `orphaned`: the run ended without a result, and `error` is its error message or reason.
+- `state` `aborted`: `workflows stop` or a second Ctrl+C aborted the run.
+- `state` `running` with `follow` `started`: a `background` call started the run, or a new task of it, and does not
+  follow it. It is not an error, its text is `run <run-id> started in the background; its result comes as a message
+  in this conversation when it ends; follow it with resume: "<run-id>", or stop it with the command workflows stop
+  <run-id>`, and it draws `◉ started in the background`.
+- `state` `running` with `follow` `detached`: Esc detached the command, and the run goes on in the host.
+- `state` `running` with `follow` `host-stopped`: the host stopped while the command followed the run, which
+  continues when the host starts again.
 
 These are the fields of the JSON outcome line of the command.
 
 ### Background runs in Pi
 
-After a `started` result, the extension appends the session entry `workflow-background` with the data
+After a result with `follow: "started"`, the extension appends the session entry `workflow-background` with the data
 `{ runId, cwd, workflow }`, with the directory of the session as `cwd`, also for a call with `cwd`, and the
 `workflow` of the outcome, and follows the run with `workflows wait <run-id> --json` in `cwd`. The wait finds the run
-by its ID, so it also follows a run of another project. When the wait prints a
-`finished`, `failed` or `stopped` outcome, the extension sends the message `workflow-result`, with the text of a
-call without `background` for that outcome (the summary, then the report lines of a finished run, with the limit on
+by its ID, so it also follows a run of another project. When the wait prints an
+outcome whose `state` is not `running`, the extension sends the message `workflow-result`, with the text of a
+call without `background` for that outcome (the summary, then the report lines of a run that is `done`, with the limit on
 the summary of the host tool; for a waiting run,
 the question and how to answer it), the `details` `{ steps, outcome }`,
 `display: true`, `triggerTurn: true` and `deliverAs: "followUp"`. It then appends the session entry
@@ -2064,7 +2098,7 @@ line does not change it. The widget redraws when a run starts to be followed, at
 and at the end of each wait. When the session follows no run, the widget draws no line, and takes no space. After
 shutdown, the extension asks for no redraw. As `session_start` follows the pending runs again, they show again after a reload.
 
-A `detached` or `host-stopped` outcome, an outcome line that is not valid, no outcome line, or a wait that does not
+An outcome whose `state` is `running`, an outcome line that is not valid, no outcome line, or a wait that does not
 start posts nothing and appends no end entry. The extension then waits 1 s and runs the wait again, and doubles the time
 before each next wait, up to 60 s. `session_shutdown` ends these retries, so the next `session_start` follows the run
 again. A wait that exits 4 with no outcome line, for a run that is gone, posts nothing and appends the end entry with
@@ -2073,14 +2107,14 @@ the data `{ runId, reason }`, where `reason` is the error text that the tool giv
 posts the outcome again at the next `session_start`.
 
 A call without `background` that resumes a run that the session follows gives the outcome in its own result. When that
-result is `finished`, `failed` or `stopped`, the call appends the end entry, the wait posts nothing, and a wait
+result has a `state` that is not `running`, the call appends the end entry, the wait posts nothing, and a wait
 that waits to run again stops, so the run leaves the widget. Else the wait
 posts the outcome that it gets.
 
-A `save` call returns `{ runId, status: "finished", result: { file }, report: [file] }`, with the absolute path of the
+A `save` call returns `{ runId, state: "done", result: { code: 0 }, value: { file }, report: [file] }`, with the absolute path of the
 file that it wrote. A `save` that fails is a normal tool error with the stderr text.
 
-A failed, detached, stopped or host-stopped result is an error result that keeps `structuredContent`. Thus
+An outcome whose `state` is not `done` or `waiting`, other than `follow: "started"`, is an error result that keeps `structuredContent`. Thus
 `await tools.workflow({ name: "ship", args: { item } })` in a codemode script gets this object. A call that fails
 before a run exists, such as an unknown workflow name, is a normal tool error with the stderr text. A call whose
 command printed `run <run-id>` and then stopped with no outcome line is a normal tool error `run <run-id>: <stderr
@@ -2090,7 +2124,8 @@ text>`, or `run <run-id>: workflows exited with <code>` with no stderr, so the e
 
 `/workflows` composes [`workflows list`](#list), [`workflows show`](#show) and [`workflows attach`](#attach). It runs
 `workflows list --json` in Pi's working directory, and lists the runs in that order, one line each:
-`<run-id>  <workflow>  <status>  <title>`, under the title `Show workflow run`. With no run, it notifies
+`<run-id>  <workflow>  <state>  <title>`, with the state and the result as `workflows list` gives them, under the
+title `Show workflow run`. With no run, it notifies
 `No workflow runs in this project`. When the list fails, it notifies its stderr as an error.
 
 For the chosen run, it reads [`workflows show <run-id> --agents --json`](#show) once. When the `show` fails, it

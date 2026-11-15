@@ -52,7 +52,7 @@ export async function resume(
 
 	if (waiting && answer === undefined && !wait && !json && !background && terminal.readLine !== undefined) {
 		terminal.stdout(`run ${run.id}`);
-		reportOutcome(last, run.id, task, terminal, json, await progressOf(run), true);
+		reportOutcome(last, task, terminal, json, await progressOf(run), true);
 
 		return answering(run.id, terminal);
 	}
@@ -60,7 +60,7 @@ export async function resume(
 	if (ended && answer === undefined && (wait || hasResult(status))) {
 		terminal.stdout(`run ${run.id}`);
 
-		return outcomeOf(last, run.id, task, terminal, json, await progressOf(run));
+		return outcomeOf(last, task, terminal, json, await progressOf(run));
 	}
 
 	// An answer that a call used replays from its record, so a resume without `--answer` drops the earlier answer.

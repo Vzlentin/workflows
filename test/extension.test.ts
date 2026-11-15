@@ -39,67 +39,67 @@ let tool: Tool;
 /** A fake `workflows` command: its behavior comes from its arguments, which it appends to `args.log`. */
 const FAKE = `#!/bin/sh
 echo "$@" >> args.log
-case "$1 $3" in "resume --background") echo "run $2"; echo '{"runId":"'"$2"'","status":"started","workflow":"campaign"}'; exit 0 ;; esac
-case "$1 $2" in "gated --background") echo "run 20261115T000000-cc000001"; echo '{"runId":"20261115T000000-cc000001","status":"started","workflow":"gated"}'; exit 0 ;; esac
-case " $* " in *" --background "*) echo "run rb"; echo '{"runId":"rb","status":"started","workflow":"ship"}'; exit 0 ;; esac
+case "$1 $3" in "resume --background") echo "run $2"; echo '{"runId":"'"$2"'","state":"running","follow":"started","workflow":"campaign"}'; exit 0 ;; esac
+case "$1 $2" in "gated --background") echo "run 20261115T000000-cc000001"; echo '{"runId":"20261115T000000-cc000001","state":"running","follow":"started","workflow":"gated"}'; exit 0 ;; esac
+case " $* " in *" --background "*) echo "run rb"; echo '{"runId":"rb","state":"running","follow":"started","workflow":"ship"}'; exit 0 ;; esac
 case "$1" in
 ok)
 	echo "run r1"; echo '{"progress":["◉ item 1/2: one"]}' >&2
 	echo '{"progress":["◉ item 1/2: one","  ◉ plan"]}' >&2; echo "warning: slow disk" >&2
 	echo '{"progress":["◉ item 1/2: one","  ✓ plan","  judge failed","◉ item 2/2: two"]}' >&2
 	echo '{"progress":["✓ item 1/2: one","  ✓ plan","  judge failed","✓ item 2/2: two"]}' >&2
-	echo '{"runId":"r1","status":"finished","result":{"answer":42},"report":["{\\"answer\\":42}"]}' ;;
+	echo '{"runId":"r1","state":"done","result":{"code":0},"value":{"answer":42},"report":["{\\"answer\\":42}"]}' ;;
 -)
 	echo "run r2"; cat > stdin.js
-	echo '{"runId":"r2","status":"finished","result":"from stdin","report":["from stdin"]}' ;;
-long) echo "run r14"; x=$(printf '%2100s' '' | tr ' ' x); echo '{"runId":"r14","status":"finished","result":"'"$x"'","report":["one","'"$x"'"]}' ;;
-keys) echo "run r12"; echo '{"status":"s","progress":["◉ one"]}' >&2; echo '{"runId":"r12","status":"finished","result":1,"report":["one"]}' ;;
+	echo '{"runId":"r2","state":"done","result":{"code":0},"value":"from stdin","report":["from stdin"]}' ;;
+long) echo "run r14"; x=$(printf '%2100s' '' | tr ' ' x); echo '{"runId":"r14","state":"done","result":{"code":0},"value":"'"$x"'","report":["one","'"$x"'"]}' ;;
+keys) echo "run r12"; echo '{"status":"s","progress":["◉ one"]}' >&2; echo '{"runId":"r12","state":"done","result":{"code":0},"value":1,"report":["one"]}' ;;
 many|cutmany)
 	echo "run r13"; i=1; while [ $i -le 150 ]; do echo "warning: $i" >&2; i=$((i + 1)); done
 	[ "$1" = cutmany ] && exit 1
-	echo '{"runId":"r13","status":"finished","result":1,"report":["one"]}' ;;
-bad) echo "run r3"; echo '{"progress":["✗ one"]}' >&2; echo '{"runId":"r3","status":"failed","error":"boom"}'; exit 1 ;;
-longbad) echo "run r15"; x=$(printf '%2100s' '' | tr ' ' x); echo '{"runId":"r15","status":"failed","error":"'"$x"'"}'; exit 1 ;;
+	echo '{"runId":"r13","state":"done","result":{"code":0},"value":1,"report":["one"]}' ;;
+bad) echo "run r3"; echo '{"progress":["✗ one"]}' >&2; echo '{"runId":"r3","state":"failed","error":"boom"}'; exit 1 ;;
+longbad) echo "run r15"; x=$(printf '%2100s' '' | tr ' ' x); echo '{"runId":"r15","state":"failed","error":"'"$x"'"}'; exit 1 ;;
 slow)
 	echo "run r4"
-	trap 'echo '"'"'{"runId":"r4","status":"detached"}'"'"'; exit 130' INT
+	trap 'echo '"'"'{"runId":"r4","state":"running","follow":"detached"}'"'"'; exit 130' INT
 	echo "started" >&2
 	while :; do sleep 0.02; done ;;
-resume) echo "run $2"; touch fg-done; echo '{"runId":"'"$2"'","status":"finished","result":2,"report":["two"]}' ;;
-stopped) echo "run r8"; echo '{"runId":"r8","status":"stopped"}'; exit 130 ;;
-host) echo "run r9"; echo '{"runId":"r9","status":"host-stopped"}'; exit 1 ;;
+resume) echo "run $2"; touch fg-done; echo '{"runId":"'"$2"'","state":"done","result":{"code":0},"value":2,"report":["two"]}' ;;
+aborted) echo "run r8"; echo '{"runId":"r8","state":"aborted"}'; exit 130 ;;
+host) echo "run r9"; echo '{"runId":"r9","state":"running","follow":"host-stopped"}'; exit 1 ;;
 cut) echo "run r11"; echo "workflows: lost the host" >&2; exit 1 ;;
-invalid) echo "run r10"; echo '{"runId":"r10","status":"lost"}' ;;
+invalid) echo "run r10"; echo '{"runId":"r10","state":"lost"}' ;;
 usage) echo "workflows: unknown flag" >&2; exit 2 ;;
 save)
 	if [ "$3" = taken ]; then echo "workflows: a workflow taken exists; replace it with --force" >&2; exit 1; fi
 	echo "$PWD/.workflows/scripts/$3.js" ;;
 ship)
 	echo "run r5"
-	echo '{"runId":"r5","status":"finished","result":{"status":"shipped","rounds":1,"head":"abc"},"report":["shipped Fix the README typo in 1 rounds, judge failed, abc"]}' ;;
+	echo '{"runId":"r5","state":"done","result":{"status":"shipped","code":0},"value":{"status":"shipped","rounds":1,"head":"abc"},"report":["shipped Fix the README typo in 1 rounds, judge failed, abc"]}' ;;
 campaign)
 	echo "run r6"
-	echo '{"runId":"r6","status":"finished","result":{"status":"done","items":[]},"report":["done Fix the docs in 2 items, abc"]}' ;;
+	echo '{"runId":"r6","state":"done","result":{"status":"done","code":0},"value":{"status":"done","items":[]},"report":["done Fix the docs in 2 items, abc"]}' ;;
 optimize)
 	echo "run r7"
-	echo '{"runId":"r7","status":"finished","result":{"wins":3,"items":4,"promoted":true,"overlay":{},"diff":"overlay.diff"},"report":["optimized ship: 3/4 wins, promoted, overlay.diff"]}' ;;
+	echo '{"runId":"r7","state":"done","result":{"code":0},"value":{"wins":3,"items":4,"promoted":true,"overlay":{},"diff":"overlay.diff"},"report":["optimized ship: 3/4 wins, promoted, overlay.diff"]}' ;;
 wait)
 	echo "run $2"
 	case "$2" in
-	rb) echo '{"progress":["✓ plan"]}' >&2; echo '{"runId":"rb","status":"finished","result":1,"report":["one"]}' ;;
-	failed) echo '{"progress":["✗ plan"]}' >&2; echo '{"runId":"failed","status":"failed","error":"boom"}'; exit 1 ;;
-	longbad) x=$(printf '%2100s' '' | tr ' ' x); echo '{"runId":"longbad","status":"failed","error":"'"$x"'"}'; exit 1 ;;
-	stopped) echo '{"runId":"stopped","status":"stopped"}'; exit 130 ;;
+	rb) echo '{"progress":["✓ plan"]}' >&2; echo '{"runId":"rb","state":"done","result":{"code":0},"value":1,"report":["one"]}' ;;
+	failed) echo '{"progress":["✗ plan"]}' >&2; echo '{"runId":"failed","state":"failed","error":"boom"}'; exit 1 ;;
+	longbad) x=$(printf '%2100s' '' | tr ' ' x); echo '{"runId":"longbad","state":"failed","error":"'"$x"'"}'; exit 1 ;;
+	aborted) echo '{"runId":"aborted","state":"aborted"}'; exit 130 ;;
 	gone) echo "workflows: no run gone" >&2; exit 4 ;;
-	sleepy) echo '{"runId":"sleepy","status":"host-stopped"}'; exit 1 ;;
+	sleepy) echo '{"runId":"sleepy","state":"running","follow":"host-stopped"}'; exit 1 ;;
 	flaky)
-		if [ -e flaky-once ]; then echo '{"runId":"flaky","status":"finished","result":1,"report":["one"]}'
-		else touch flaky-once; echo '{"runId":"flaky","status":"host-stopped"}'; exit 1; fi ;;
+		if [ -e flaky-once ]; then echo '{"runId":"flaky","state":"done","result":{"code":0},"value":1,"report":["one"]}'
+		else touch flaky-once; echo '{"runId":"flaky","state":"running","follow":"host-stopped"}'; exit 1; fi ;;
 	fg)
 		until [ -e fg-done ]; do sleep 0.02; done
-		echo '{"runId":"fg","status":"finished","result":2,"report":["two"]}' ;;
+		echo '{"runId":"fg","state":"done","result":{"code":0},"value":2,"report":["two"]}' ;;
 	long)
-		trap 'touch detached; echo '"'"'{"runId":"long","status":"detached"}'"'"'; exit 130' INT
+		trap 'touch detached; echo '"'"'{"runId":"long","state":"running","follow":"detached"}'"'"'; exit 130' INT
 		touch waiting
 		while :; do sleep 0.02; done ;;
 	*-*)
@@ -108,7 +108,7 @@ wait)
 		until [ -e "end-$2" ] || [ -e "status-$2" ]; do sleep 0.02; done
 		[ -e "status-$2" ] && echo '{"progress":["◉ item 2/5: x","  ◉ round 1: review"],"status":"item 2/5 › round 1/3: review"}' >&2
 		until [ -e "end-$2" ]; do sleep 0.02; done
-		echo '{"runId":"'"$2"'","status":"finished","result":1,"report":["one"]}' ;;
+		echo '{"runId":"'"$2"'","state":"done","result":{"code":0},"value":1,"report":["one"]}' ;;
 	esac ;;
 list)
 	if [ -e list.fails ]; then echo "workflows: no harness project" >&2; exit 1; fi
@@ -343,13 +343,14 @@ describe("the workflow tool", () => {
 		expect(pi.names).toEqual(["workflow"]);
 	});
 
-	it("returns the structured result of a finished run, with each stderr line as an update", async () => {
+	it("returns the structured result of a done run, with each stderr line as an update", async () => {
 		const args = { path: "src", depth: 2, all: true, dry: false, tags: ["a"] };
 		const { result, updates } = await call({ name: "ok", args });
 		expect(result.structuredContent).toEqual({
 			runId: "r1",
-			status: "finished",
-			result: { answer: 42 },
+			state: "done",
+			result: { code: 0 },
+			value: { answer: 42 },
 			report: ['{"answer":42}'],
 		});
 		expect(result.isError).toBeUndefined();
@@ -361,7 +362,7 @@ describe("the workflow tool", () => {
 		const other = join(root, "other");
 		await mkdir(other);
 		const { result } = await call({ name: "ok", cwd: other });
-		expect(result.structuredContent).toMatchObject({ runId: "r1", status: "finished" });
+		expect(result.structuredContent).toMatchObject({ runId: "r1", state: "done" });
 		expect(await readFile(join(other, "args.log"), "utf8")).toBe("ok --json\n");
 		expect(existsSync(join(root, "args.log"))).toBe(false);
 	});
@@ -383,8 +384,9 @@ describe("the workflow tool", () => {
 		const script = await call({ script: "return 'hi'", args: { word: "a", all: true } });
 		expect(script.result.structuredContent).toEqual({
 			runId: "r2",
-			status: "finished",
-			result: "from stdin",
+			state: "done",
+			result: { code: 0 },
+			value: "from stdin",
 			report: ["from stdin"],
 		});
 		expect(await readFile(join(root, "stdin.js"), "utf8")).toBe("return 'hi'");
@@ -392,23 +394,26 @@ describe("the workflow tool", () => {
 		const ship = await call({ name: "ship", args: { item: "Fix the README typo", rounds: 2 } });
 		expect(ship.result.structuredContent).toEqual({
 			runId: "r5",
-			status: "finished",
-			result: { status: "shipped", rounds: 1, head: "abc" },
+			state: "done",
+			result: { status: "shipped", code: 0 },
+			value: { status: "shipped", rounds: 1, head: "abc" },
 			report: ["shipped Fix the README typo in 1 rounds, judge failed, abc"],
 		});
 
 		const campaign = await call({ name: "campaign", args: { base: "develop", goal: "goal.md" } });
 		expect(campaign.result.structuredContent).toEqual({
 			runId: "r6",
-			status: "finished",
-			result: { status: "done", items: [] },
+			state: "done",
+			result: { status: "done", code: 0 },
+			value: { status: "done", items: [] },
 			report: ["done Fix the docs in 2 items, abc"],
 		});
 		const optimize = await call({ name: "optimize", args: { workflow: "ship", limit: 4 } });
 		expect(optimize.result.structuredContent).toEqual({
 			runId: "r7",
-			status: "finished",
-			result: { wins: 3, items: 4, promoted: true, overlay: {}, diff: "overlay.diff" },
+			state: "done",
+			result: { code: 0 },
+			value: { wins: 3, items: 4, promoted: true, overlay: {}, diff: "overlay.diff" },
 			report: ["optimized ship: 3/4 wins, promoted, overlay.diff"],
 		});
 		expect((await readFile(join(root, "args.log"), "utf8")).split("\n")).toEqual([
@@ -422,7 +427,7 @@ describe("the workflow tool", () => {
 
 	it("returns a failed run as an error result that keeps its data", async () => {
 		const { result } = await call({ name: "bad" });
-		expect(result.structuredContent).toEqual({ runId: "r3", status: "failed", error: "boom" });
+		expect(result.structuredContent).toEqual({ runId: "r3", state: "failed", error: "boom" });
 		expect(result.isError).toBe(true);
 	});
 
@@ -444,7 +449,7 @@ describe("the workflow tool", () => {
 			contextOf(root),
 		);
 
-		expect(result.structuredContent).toEqual({ runId: "r4", status: "detached" });
+		expect(result.structuredContent).toEqual({ runId: "r4", state: "running", follow: "detached" });
 		expect(result.isError).toBe(true);
 		expect(result.content).toEqual([
 			{
@@ -455,16 +460,16 @@ describe("the workflow tool", () => {
 		expect(updates).toEqual(["started"]);
 	});
 
-	it("returns a stopped run as an error result with the run ID to resume", async () => {
-		const { result } = await call({ name: "stopped" });
-		expect(result.structuredContent).toEqual({ runId: "r8", status: "stopped" });
+	it("returns an aborted run as an error result with the run ID to resume", async () => {
+		const { result } = await call({ name: "aborted" });
+		expect(result.structuredContent).toEqual({ runId: "r8", state: "aborted" });
 		expect(result.isError).toBe(true);
-		expect(result.content).toEqual([{ type: "text", text: 'run r8 stopped; continue it with resume: "r8"' }]);
+		expect(result.content).toEqual([{ type: "text", text: 'run r8 aborted; continue it with resume: "r8"' }]);
 	});
 
 	it("returns a run whose host stopped as an error result that says how to follow it", async () => {
 		const { result } = await call({ name: "host" });
-		expect(result.structuredContent).toEqual({ runId: "r9", status: "host-stopped" });
+		expect(result.structuredContent).toEqual({ runId: "r9", state: "running", follow: "host-stopped" });
 		expect(result.isError).toBe(true);
 		expect(result.content).toEqual([
 			{
@@ -476,7 +481,7 @@ describe("the workflow tool", () => {
 
 	it("throws an outcome line that is not valid", async () => {
 		await expect(call({ name: "invalid" })).rejects.toThrow(
-			'workflows printed an outcome that is not valid: {"runId":"r10","status":"lost"}',
+			'workflows printed an outcome that is not valid: {"runId":"r10","state":"lost"}',
 		);
 	});
 
@@ -510,10 +515,10 @@ describe("the workflow tool", () => {
 		]);
 	});
 
-	it("cuts a finished text longer than 2000 bytes and a report line longer than 500 bytes, and keeps both whole in the structured output", async () => {
+	it("cuts a done text longer than 2000 bytes and a report line longer than 500 bytes, and keeps both whole in the structured output", async () => {
 		const { result } = await call({ name: "long" });
-		// The text is `run r14 finished: "<2100 x>"`, 2120 bytes on one line: its first 500 bytes, the cut line, its end.
-		const start = 'run r14 finished: "';
+		// The text is `run r14 done, exit 0: "<2100 x>"`, 2124 bytes on one line: its first 500 bytes, the cut line, its end.
+		const start = 'run r14 done, exit 0: "';
 		const [content] = result.content;
 		const text = content?.type === "text" ? content.text : "";
 		const [head, cut, end, ...report] = text.split("\n");
@@ -524,14 +529,15 @@ describe("the workflow tool", () => {
 		);
 
 		expect(end).toMatch(/^x+"$/);
-		expect(500 + count + (end ?? "").length).toBe(2120);
+		expect(500 + count + (end ?? "").length).toBe(2124);
 		expect(Buffer.byteLength([head, cut, end].join("\n"))).toBeLessThanOrEqual(2000);
 		expect(Buffer.byteLength([head, cut, end].join("\n"))).toBeGreaterThan(1990);
 		expect(report).toEqual(["one", `${"x".repeat(497)}…`]);
 		expect(result.structuredContent).toEqual({
 			runId: "r14",
-			status: "finished",
-			result: "x".repeat(2100),
+			state: "done",
+			result: { code: 0 },
+			value: "x".repeat(2100),
 			report: ["one", "x".repeat(2100)],
 		});
 	});
@@ -549,7 +555,7 @@ describe("the workflow tool", () => {
 		expect(end).toMatch(/^x+; continue it with resume: "r15"$/);
 		expect(rest).toEqual([]);
 		expect(Buffer.byteLength(text)).toBeLessThanOrEqual(2000);
-		expect(result.structuredContent).toEqual({ runId: "r15", status: "failed", error: "x".repeat(2100) });
+		expect(result.structuredContent).toEqual({ runId: "r15", state: "failed", error: "x".repeat(2100) });
 		expect(result.isError).toBe(true);
 	});
 
@@ -566,7 +572,7 @@ describe("the workflow tool", () => {
 		await expect(call({ name: "cutmany" })).rejects.toThrow(new Error(`run r13: ${last.join("\n")}`));
 	});
 
-	it("draws the report lines after the steps of a finished run", async () => {
+	it("draws the report lines after the steps of a done run", async () => {
 		const ok = await call({ name: "ok" });
 		expect(draw({ name: "ok" }, ok.result)).toEqual([
 			"workflow ok",
@@ -633,8 +639,14 @@ describe("the workflow tool", () => {
 				contextOf(cwd),
 			);
 
-			expect(answered.content).toEqual([{ type: "text", text: `run ${id} finished: "yes"\nyes` }]);
-			expect(answered.structuredContent).toEqual({ runId: id, status: "finished", result: "yes", report: ["yes"] });
+			expect(answered.content).toEqual([{ type: "text", text: `run ${id} done, exit 0: "yes"\nyes` }]);
+			expect(answered.structuredContent).toEqual({
+				runId: id,
+				state: "done",
+				result: { code: 0 },
+				value: "yes",
+				report: ["yes"],
+			});
 		} finally {
 			await host.close();
 			restoreEnvironment();
@@ -645,7 +657,13 @@ describe("the workflow tool", () => {
 	it("saves the script of a run and returns the file", async () => {
 		const file = join(await realpath(root), ".workflows", "scripts", "fix.js");
 		const { result } = await call({ save: { runId: "r2", name: "fix" } });
-		expect(result.structuredContent).toEqual({ runId: "r2", status: "finished", result: { file }, report: [file] });
+		expect(result.structuredContent).toEqual({
+			runId: "r2",
+			state: "done",
+			result: { code: 0 },
+			value: { file },
+			report: [file],
+		});
 		expect(result.content).toEqual([{ type: "text", text: `saved the script of run r2 as ${file}` }]);
 		expect(draw({ save: { runId: "r2", name: "fix" } }, result)).toEqual(["workflow save r2 fix", file]);
 
@@ -698,7 +716,7 @@ describe("a background run of the workflow tool", () => {
 			contextOf(root),
 		);
 
-		expect(result.structuredContent).toEqual({ runId: "rb", status: "started", workflow: "ship" });
+		expect(result.structuredContent).toEqual({ runId: "rb", state: "running", follow: "started", workflow: "ship" });
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toEqual([
 			{
@@ -714,11 +732,11 @@ describe("a background run of the workflow tool", () => {
 			{
 				message: {
 					customType: "workflow-result",
-					content: [{ type: "text", text: "run rb finished: 1\none" }],
+					content: [{ type: "text", text: "run rb done, exit 0: 1\none" }],
 					display: true,
 					details: {
 						steps: ["✓ plan"],
-						outcome: { runId: "rb", status: "finished", result: 1, report: ["one"] },
+						outcome: { runId: "rb", state: "done", result: { code: 0 }, value: 1, report: ["one"] },
 					},
 				},
 				options: { triggerTurn: true, deliverAs: "followUp" },
@@ -739,7 +757,7 @@ describe("a background run of the workflow tool", () => {
 
 		const call = { name: "gated", background: true, cwd: other };
 		const result = await pi.registered.execute("call-1", call, undefined, undefined, contextOf(root));
-		expect(result.structuredContent).toEqual({ runId: id, status: "started", workflow: "gated" });
+		expect(result.structuredContent).toEqual({ runId: id, state: "running", follow: "started", workflow: "gated" });
 		expect(await readFile(join(other, "args.log"), "utf8")).toBe("gated --background --json\n");
 		expect(pi.entries.map((entry) => [entry.customType, entry.data])).toEqual([
 			["workflow-background", { runId: id, cwd: root, workflow: "gated" }],
@@ -750,13 +768,13 @@ describe("a background run of the workflow tool", () => {
 		await writeFile(join(root, `go-${id}`), "");
 		await writeFile(join(root, `end-${id}`), "");
 		await vi.waitFor(() => expect(pi.messages).toHaveLength(1));
-		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: `run ${id} finished: 1\none` }]);
+		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: `run ${id} done, exit 0: 1\none` }]);
 		await vi.waitFor(() => expect(lines()).toEqual([]));
 		expect(await waits()).toEqual([`wait ${id} --json`]);
 	});
 
-	it("posts a failed or stopped run with the run ID to resume", async () => {
-		for (const runId of ["failed", "stopped"]) {
+	it("posts a failed or aborted run with the run ID to resume", async () => {
+		for (const runId of ["failed", "aborted"]) {
 			const pi = fakePi([startEntry(runId, root)]);
 			await pi.fire("session_start");
 			await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
@@ -788,7 +806,7 @@ describe("a background run of the workflow tool", () => {
 		await pi.fire("session_start");
 		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
 		const [{ message } = { message: undefined }] = pi.messages;
-		const outcome = { runId: "longbad", status: "failed" as const, error: "x".repeat(2100) };
+		const outcome = { runId: "longbad", state: "failed" as const, error: "x".repeat(2100) };
 		const text = toolModule.outcomeText(outcome);
 		expect(message?.content).toEqual([{ type: "text", text }]);
 		expect(text.split("\n")[1]).toMatch(/^\[… \d+ bytes cut; the command workflows log longbad shows/);
@@ -797,12 +815,12 @@ describe("a background run of the workflow tool", () => {
 	});
 
 	it("watches each run of the session that has no end entry, once", async () => {
-		const pi = fakePi([startEntry("rb", root), startEntry("stopped", root), endEntry("stopped")]);
+		const pi = fakePi([startEntry("rb", root), startEntry("aborted", root), endEntry("aborted")]);
 		await pi.fire("session_start");
 		await pi.fire("session_start");
 		await vi.waitFor(() => expect(pi.messages).toHaveLength(1));
 		expect(await waits()).toEqual(["wait rb --json"]);
-		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: "run rb finished: 1\none" }]);
+		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: "run rb done, exit 0: 1\none" }]);
 	});
 
 	it("ends a gone run with its reason, and posts nothing", async () => {
@@ -819,7 +837,7 @@ describe("a background run of the workflow tool", () => {
 		await pi.fire("session_start");
 		await vi.waitFor(() => expect(pi.messages).toHaveLength(1), { timeout: 3000 });
 		expect(await waits()).toEqual(["wait flaky --json", "wait flaky --json"]);
-		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: "run flaky finished: 1\none" }]);
+		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: "run flaky done, exit 0: 1\none" }]);
 		expect(pi.entries.map((entry) => entry.data)).toEqual([{ runId: "flaky", cwd: root }, { runId: "flaky" }]);
 	});
 
@@ -828,7 +846,13 @@ describe("a background run of the workflow tool", () => {
 		await pi.fire("session_start");
 		await vi.waitFor(async () => expect(await waits()).toEqual(["wait fg --json"]));
 		const result = await pi.registered.execute("call-1", { resume: "fg" }, undefined, undefined, contextOf(root));
-		expect(result.structuredContent).toEqual({ runId: "fg", status: "finished", result: 2, report: ["two"] });
+		expect(result.structuredContent).toEqual({
+			runId: "fg",
+			state: "done",
+			result: { code: 0 },
+			value: 2,
+			report: ["two"],
+		});
 		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
 		await new Promise((resolve) => setTimeout(resolve, 200));
 		expect(pi.messages).toEqual([]);
@@ -882,7 +906,7 @@ describe("a background run of the workflow tool", () => {
 		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
 		await vi.waitFor(() => expect(lines()).toEqual([]));
 		expect(widgets).toHaveLength(1);
-		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: `run ${id} finished: 1\none` }]);
+		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: `run ${id} done, exit 0: 1\none` }]);
 		expect(pi.entries[1]?.data).toEqual({ runId: id });
 	});
 
@@ -941,13 +965,38 @@ describe("a background run of the workflow tool", () => {
 describe("the /workflows command", () => {
 	const good = "20261024T223428-aaaa1111";
 	const bad = "20261024T223428-bad";
+	const shipped = "20261023T120000-dddd4444";
+	const old = "20261022T120000-eeee5555";
 
 	const runs = [
-		{ runId: good, workflow: "ship", title: "Fix the typo", status: "running", repository: null },
-		{ runId: bad, workflow: "campaign", title: "Docs", status: "failed", repository: null },
+		{ runId: good, workflow: "ship", title: "Fix the typo", state: "running", resumable: true, repository: null },
+		{ runId: bad, workflow: "campaign", title: "Docs", state: "failed", resumable: true, repository: null },
+		{
+			runId: shipped,
+			workflow: "ship",
+			title: "Fix the docs",
+			state: "done",
+			result: { status: "shipped", code: 0 },
+			resumable: true,
+			repository: null,
+		},
+		{
+			runId: old,
+			workflow: "judge",
+			title: "Judge",
+			state: "done",
+			result: { code: 1 },
+			resumable: false,
+			repository: null,
+		},
 	];
 
-	const listed = [`${good}  ship  running  Fix the typo`, `${bad}  campaign  failed  Docs`];
+	const listed = [
+		`${good}  ship  running  Fix the typo`,
+		`${bad}  campaign  failed  Docs`,
+		`${shipped}  ship  done, result shipped exit 0  Fix the docs`,
+		`${old}  judge  done, exit 1  Judge`,
+	];
 
 	const commands = async () => (await readFile(join(root, "args.log"), "utf8")).split("\n").filter(Boolean);
 
@@ -989,7 +1038,8 @@ describe("the /workflows command", () => {
 		runId: good,
 		workflow: "mine",
 		title: "Mine",
-		status: "running",
+		state: "running",
+		resumable: true,
 		ended: false,
 		agents: [
 			{ kind: "phase", depth: 0, text: "plan" },

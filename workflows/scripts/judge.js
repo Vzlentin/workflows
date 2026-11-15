@@ -3,7 +3,7 @@
 // commits nothing: it says that it does not judge the changes of the checkout that are not committed. A change on a
 // branch that no worktree has runs again as a child run in a worktree on that branch. A caller gives `start`, the
 // commit that its change starts from, with `item`. The result also gives `divergence`, one line on how the change
-// differs from its intent, or `none`. `ship.js` runs it on the squashed commit of an item, `fix.js` on the squashed
+// differs from its intent, or `none`. A score of 0 is `rejected`, and exits 1. `ship.js` runs it on the squashed commit of an item, `fix.js` on the squashed
 // commit of an item after its fix, and `campaign.js` on the change of all its items. `--repo <path>` runs it in the
 // checkout of that local repository, as from its directory.
 export const meta = {
@@ -14,7 +14,7 @@ export const meta = {
 		base: { type: "string", default: "main" },
 	},
 	repo: true,
-	exit: { judged: 0, unjudged: 1 },
+	exit: { judged: 0, rejected: 1, unjudged: 1 },
 	outline: [{ kind: "agent", role: "judge", label: "judge" }],
 }
 
@@ -62,7 +62,7 @@ log(`judge ${score.toFixed(2)}`)
 
 const report = [`judge ${score.toFixed(2)}: ${subject}`, ...findings.map((finding) => `  ${finding}`), ...notes]
 
-return { status: "judged", score, answers, findings, divergence: oneLine(verdict.divergence), report }
+return { status: score === 0 ? "rejected" : "judged", score, answers, findings, divergence: oneLine(verdict.divergence), report }
 
 // Zero when question 1 or 2 fails, else the passing fraction of questions 3 to 8.
 function scoreOf(answers) {

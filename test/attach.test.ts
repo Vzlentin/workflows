@@ -105,7 +105,7 @@ describe("list --pick", () => {
 		};
 
 		const picked = await workflows(["list", "--pick"], { cwd: root, choose });
-		expect(asked).toEqual([["Pick a run:", "◉ y  y running: talk", "· x  x done"]]);
+		expect(asked).toEqual([["Pick a run:", "◉ y  y running: talk", "· x  x done, exit 0"]]);
 		expect([picked.code, picked.stdout]).toEqual([0, [running.id]]);
 		const cancelled = await workflows(["list", "--pick"], { cwd: root, choose: async () => undefined });
 		expect([cancelled.code, cancelled.stdout, cancelled.stderr]).toEqual([130, [], []]);
@@ -128,7 +128,7 @@ describe("list --pick", () => {
 		};
 
 		const picked = await workflows(["list", "--pick"], { cwd: root, choose });
-		expect(seen).toEqual([["◉ y  y running: talk"], ["· y  y done"]]);
+		expect(seen).toEqual([["◉ y  y running: talk"], ["· y  y done, exit 0"]]);
 		expect([picked.code, picked.stdout]).toEqual([0, [id]]);
 	});
 });

@@ -24,7 +24,7 @@ describe("workflows implement", () => {
 		const run = await workflows(["implement", "--json", PLAN], { cwd: repo, script: { edits: [FIXED] } });
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		const head = git(repo, "rev-parse", "--short", "HEAD");
 		expect(report).toEqual([`implemented ${SUBJECT}, ${head}`]);
 		expect(result).toEqual({
@@ -44,7 +44,7 @@ describe("workflows implement", () => {
 		const run = await workflows(["implement", "--json", PLAN], { cwd: repo });
 
 		expect(run.code).toBe(1);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(report).toEqual([`blocked ${SUBJECT}`, "I found nothing to change."]);
 		expect(result).toMatchObject({ status: "blocked", reply: "I found nothing to change." });
 		expect(result).not.toHaveProperty("head");
@@ -86,7 +86,7 @@ return result`,
 		const run = await workflows(["parent", "--json"], { cwd: repo, script: { edits: [FIXED] } });
 
 		expect(run.code).toBe(0);
-		const { result } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result } = JSON.parse(run.stdout[1] ?? "");
 		expect(result).toMatchObject({
 			status: "implemented",
 			memory: ["#0 item 2 planner: one word changes.", "#1 item 2 implementer r2: Implement 1: README.md had wrold."],

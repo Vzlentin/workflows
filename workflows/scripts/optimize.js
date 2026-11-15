@@ -159,7 +159,7 @@ if (args.items === undefined) {
 
 	for (const { runId: from, item: text, repository: repo, start, result } of past) {
 		const item = { name: from, text, repo, start, from }
-		const head = result?.status === "shipped" ? result.head : undefined
+		const head = ["shipped", "rejected", "unjudged"].includes(result?.status) ? result.head : undefined
 		const kept = head !== undefined && (await ok(["git", "-C", repo, "cat-file", "-e", `${head}^{commit}`]))
 
 		// A saved baseline that did not ship, or whose head is gone, runs again once with its saved bundle.

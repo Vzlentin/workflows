@@ -189,7 +189,7 @@ function resultOf(tool: ToolModule, outcome: WorkflowOutcome, steps: string[]): 
 		structuredContent: outcome,
 	};
 
-	if (outcome.status !== "finished" && outcome.status !== "started") result.isError = true;
+	if (!tool.succeeded(outcome)) result.isError = true;
 
 	return result;
 }
@@ -223,8 +223,9 @@ const MARKS = new Map<string, ThemeColor>([
 ]);
 
 /**
- * The progress lines as the command drew them, with themed marks, then the report lines of a finished run, a line for a
- * run that started in the background, or the summary of a failed, detached or stopped one, or of one whose host stopped.
+ * The progress lines as the command drew them, with themed marks, then the report lines of a run that is `done` or
+ * `waiting`, a line for a run that started in the background, or the summary of a run that failed, was aborted or
+ * orphaned, or that the command detached from or whose host stopped.
  */
 function detailLines(
 	tool: ToolModule,
@@ -242,9 +243,11 @@ function detailLines(
 
 	if (outcome === undefined) return lines;
 
-	if (outcome.status === "finished") return [...lines, ...outcome.report];
+	if (outcome.state === "done" || outcome.state === "waiting") return [...lines, ...outcome.report];
 
-	if (outcome.status === "started") return [...lines, `${theme.fg("accent", "◉")} started in the background`];
+	if (outcome.state === "running" && outcome.follow === "started") {
+		return [...lines, `${theme.fg("accent", "◉")} started in the background`];
+	}
 
 	return [...lines, theme.fg("error", `✗ ${tool.summary(outcome)}`)];
 }
@@ -282,7 +285,9 @@ export function workflowTool(command: readonly string[], watcher: Watcher, tool:
 			const outcome = await call;
 
 			// The CLI finds a run by its ID from any directory, so the wait runs in the session's, also for a call with `cwd`.
-			if (outcome.status === "started") watcher.started(outcome.runId, ctx.cwd, outcome.workflow);
+			if (outcome.state === "running" && outcome.follow === "started") {
+				watcher.started(outcome.runId, ctx.cwd, outcome.workflow);
+			}
 
 			return resultOf(tool, outcome, steps.lines);
 		},
@@ -311,7 +316,14 @@ type InHerdr = (typeof import("@vzlentin/harness/herdr"))["inHerdr"];
 
 /** The stdout line of `workflows list --json`, as far as the `/workflows` command reads it. */
 const LISTED = Type.Array(
-	Type.Object({ runId: Type.String(), workflow: Type.String(), status: Type.String(), title: Type.String() }),
+	Type.Object({
+		runId: Type.String(),
+		workflow: Type.String(),
+		state: Type.String(),
+		result: Type.Optional(Type.Object({ status: Type.Optional(Type.String()), code: Type.Integer() })),
+		resumable: Type.Boolean(),
+		title: Type.String(),
+	}),
 );
 
 /**
@@ -380,7 +392,7 @@ async function pick<T>(ui: ExtensionUIContext, title: string, options: Map<strin
  * --conversation` in herdr-app when `inHerdr` says that Pi runs in an hc terminal, or says how to attach from another
  * terminal.
  */
-export function workflowsCommand(command: readonly string[], inHerdr: InHerdr) {
+export function workflowsCommand(command: readonly string[], inHerdr: InHerdr, tool: ToolModule) {
 	return {
 		description: "Pick a workflow run of this project, then one of its agents, and attach to it in herdr-app",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
@@ -402,7 +414,12 @@ export function workflowsCommand(command: readonly string[], inHerdr: InHerdr) {
 			const runId = await pick(
 				ctx.ui,
 				"Show workflow run",
-				new Map(runs.map((run) => [`${run.runId}  ${run.workflow}  ${run.status}  ${run.title}`, run.runId])),
+				new Map(
+					runs.map((run) => [
+						`${run.runId}  ${run.workflow}  ${tool.stateText(run.state, run.result)}  ${run.title}`,
+						run.runId,
+					]),
+				),
 			);
 
 			if (runId === undefined) return;
@@ -469,7 +486,7 @@ type Waited = { readonly code?: number | null; readonly outcome?: WorkflowOutcom
 
 /** Whether the watcher posts `outcome`: the end of a run. */
 function postable(outcome: WorkflowOutcome | undefined): outcome is WorkflowOutcome {
-	return outcome?.status === "finished" || outcome?.status === "failed" || outcome?.status === "stopped";
+	return outcome !== undefined && outcome.state !== "running";
 }
 
 /**
@@ -765,7 +782,7 @@ function register(pi: Api, command: readonly string[], tool: ToolModule, inHerdr
 	const watcher = new Watcher(pi, command, tool);
 	const details = detailsOf(tool);
 	pi.registerTool(workflowTool(command, watcher, tool));
-	pi.registerCommand("workflows", workflowsCommand(command, inHerdr));
+	pi.registerCommand("workflows", workflowsCommand(command, inHerdr, tool));
 	pi.on("session_start", (_event, ctx) => watcher.resume(ctx));
 	pi.on("session_shutdown", () => watcher.stop());
 	pi.registerMessageRenderer("workflow-result", (message, _options, theme) => {

@@ -66,7 +66,7 @@ async function ship(
 ) {
 	const run = await workflows(["ship", "--json", ...argv, item], { cwd: repo, script });
 
-	return { code: run.code, runId: run.id ?? "", result: JSON.parse(run.stdout[1] ?? "{}").result };
+	return { code: run.code, runId: run.id ?? "", result: JSON.parse(run.stdout[1] ?? "{}").value };
 }
 
 /** The rows of the run memory of the run directory `directory`, without the `#<k> <date>` start and the padding. */
@@ -401,7 +401,7 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 		const whole = await workflows(argv, { cwd: repo, script: { ...script, select: ["Hello, world", "Hello world"] } });
 		expect(whole.code).toBe(0);
 		const U = JSON.parse(whole.stdout[1] ?? "{}");
-		expect(U.result.lessons).toEqual([LESSONED]);
+		expect(U.value.lessons).toEqual([LESSONED]);
 		expect(U.report.at(-1)).toBe(LESSON_LINE);
 		const harvests = goalHarvests(whole.model.calls);
 		expect(harvests).toHaveLength(1);

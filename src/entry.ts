@@ -22,6 +22,7 @@ import {
 	outcomeText,
 	PARAMETERS,
 	savedOutcome,
+	succeeded,
 	type WorkflowCall,
 } from "./tool.ts";
 
@@ -126,7 +127,7 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 	const result = { output: [{ type: "text" as const, text: outcomeText(outcome) }], structuredOutput: outcome };
 
 	// The result has no details, so the details of the last progress line stay.
-	return outcome.status === "finished" || outcome.status === "started" ? result : { ...result, isError: true };
+	return succeeded(outcome) ? result : { ...result, isError: true };
 }
 
 /** The `workflow` tool, in an extension that every conversation of the host selects, and that sessions remove. */

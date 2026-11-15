@@ -59,30 +59,100 @@ export const PARAMETERS = Type.Object({
 export type WorkflowCall = Static<typeof PARAMETERS>;
 
 /**
+ * The state of a run, from the task of the run: `running`, or `earlier-version` or `later-version` for a task of another
+ * version that has not ended, `waiting` for a result that waits for an answer, `done` for another result, and `failed`,
+ * `aborted` or `orphaned` for a task that ended without a result.
+ */
+export const RUN_STATE = Type.Union([
+	Type.Literal("running"),
+	Type.Literal("earlier-version"),
+	Type.Literal("later-version"),
+	Type.Literal("waiting"),
+	Type.Literal("done"),
+	Type.Literal("failed"),
+	Type.Literal("aborted"),
+	Type.Literal("orphaned"),
+]);
+
+/**
+ * The result of a run that is `done` or `waiting`: the status that its script returned, if any, its exit code, and the
+ * `score` that its script returned, the score of its last judge, if any.
+ */
+export const RUN_RESULT = Type.Object(
+	{ status: Type.Optional(Type.String()), code: Type.Integer(), score: Type.Optional(Type.Number()) },
+	{ additionalProperties: false },
+);
+
+export type RunResult = Static<typeof RUN_RESULT>;
+
+/**
+ * The text of the state `state` and the result `result` of a run: `done`, `done, result shipped exit 0`, or `done,
+ * exit 0` for a result without a status.
+ */
+export function stateText(state: string, result?: RunResult): string {
+	if (result === undefined) return state;
+
+	return result.status === undefined
+		? `${state}, exit ${result.code}`
+		: `${state}, result ${result.status} exit ${result.code}`;
+}
+
+/**
  * The stdout line of `workflows --json` after `run <run-id>`, and of `workflows wait <run-id> --json`, and the outcome
- * that a background run posts. It is also the output schema of the `workflow` tool.
+ * that a background run posts. It is also the output schema of the `workflow` tool. `state` is the state of the run. A
+ * run that is `done` or `waiting` gives its `result`, and `value`, the whole result of its script. A run that still
+ * runs gives `follow`: the command `started` it in the background, `detached` from it, or lost its host, which
+ * `host-stopped`.
  */
 export const OUTCOME = Type.Union([
-	Type.Object({
-		runId: Type.String(),
-		status: Type.Literal("finished"),
-		result: JSON_VALUE,
-		/** The lines that the workflow's report prints without `--json`. */
-		report: Type.Array(Type.String()),
-	}),
-	Type.Object({ runId: Type.String(), status: Type.Literal("failed"), error: Type.String() }),
+	Type.Object(
+		{
+			runId: Type.String(),
+			state: Type.Union([Type.Literal("done"), Type.Literal("waiting")]),
+			result: RUN_RESULT,
+			value: JSON_VALUE,
+			/** The lines that the workflow's report prints without `--json`. */
+			report: Type.Array(Type.String()),
+		},
+		{ additionalProperties: false },
+	),
+	Type.Object(
+		{
+			runId: Type.String(),
+			state: Type.Union([Type.Literal("failed"), Type.Literal("orphaned")]),
+			error: Type.String(),
+		},
+		{ additionalProperties: false },
+	),
+	Type.Object({ runId: Type.String(), state: Type.Literal("aborted") }, { additionalProperties: false }),
 	/** `workflow` is the name of the run's workflow, which a background run shows while it runs. */
-	Type.Object({ runId: Type.String(), status: Type.Literal("started"), workflow: Type.String() }),
-	Type.Object({
-		runId: Type.String(),
-		status: Type.Union([Type.Literal("detached"), Type.Literal("stopped"), Type.Literal("host-stopped")]),
-	}),
+	Type.Object(
+		{
+			runId: Type.String(),
+			state: Type.Literal("running"),
+			follow: Type.Literal("started"),
+			workflow: Type.String(),
+		},
+		{ additionalProperties: false },
+	),
+	Type.Object(
+		{
+			runId: Type.String(),
+			state: Type.Literal("running"),
+			follow: Type.Union([Type.Literal("detached"), Type.Literal("host-stopped")]),
+		},
+		{ additionalProperties: false },
+	),
 ]);
 
 export type WorkflowOutcome = Static<typeof OUTCOME>;
 
-/** The `status` of a JSON outcome line of the command. */
-export type OutcomeStatus = WorkflowOutcome["status"];
+/** Whether the tool gives `outcome` as a result and not as an error: a run that is `done` or `waiting`, or `started`. */
+export function succeeded(outcome: WorkflowOutcome): boolean {
+	return (
+		outcome.state === "done" || outcome.state === "waiting" || ("follow" in outcome && outcome.follow === "started")
+	);
+}
 
 export const DESCRIPTION =
 	"Run a durable workflow and wait for its result. Start or resume a run only when the user asks for that run in " +
@@ -101,7 +171,7 @@ export const DESCRIPTION =
 	"`change`, `item`, `base`, `rounds` (thermoloop only), and `repo`, the path of a local repository to run in. " +
 	"Each `run()` call of a " +
 	"script starts a child run, which a resume of its caller continues. A run goes on in the harness host of the " +
-	"project: Esc detaches from it, and `resume` follows it again. A failed or stopped run stays resumable. With " +
+	"project: Esc detaches from it, and `resume` follows it again. A failed or aborted run stays resumable. With " +
 	"`background: true`, the call returns at once and the result of the run comes later as a message in this " +
 	"conversation: use it for long runs such as `campaign` or `optimize`, or for work that can go on while the " +
 	"conversation continues. `input(question)` stops the run, and the tool gives a `waiting` result with the " +
@@ -205,7 +275,7 @@ export function outcomeOf(output: Output): WorkflowOutcome {
 export type Saved = { readonly text: string; readonly outcome: WorkflowOutcome };
 
 /**
- * The file that `workflows save` wrote for the run `runId`, as a finished outcome, so that it fits the output schema.
+ * The file that `workflows save` wrote for the run `runId`, as a `done` outcome, so that it fits the output schema.
  * Throws the stderr text when the command failed.
  */
 export function savedOutcome(output: Output, runId: string): Saved {
@@ -217,7 +287,7 @@ export function savedOutcome(output: Output, runId: string): Saved {
 
 	return {
 		text: `saved the script of run ${runId} as ${file}`,
-		outcome: { runId, status: "finished", result: { file }, report: [file] },
+		outcome: { runId, state: "done", result: { code: 0 }, value: { file }, report: [file] },
 	};
 }
 
@@ -243,7 +313,7 @@ export function summary(outcome: WorkflowOutcome): string {
 	return texts(outcome).summary;
 }
 
-/** The text of `outcome` for the model: its summary, then the report lines of a finished run that does not wait. */
+/** The text of `outcome` for the model: its summary, then the report lines of a run that is `done`. */
 export function outcomeText(outcome: WorkflowOutcome): string {
 	const { summary, report } = texts(outcome);
 
@@ -257,17 +327,18 @@ function texts(outcome: WorkflowOutcome): Texts {
 	const id = outcome.runId;
 	const log = `the command workflows log ${id} shows the run and its calls, and workflows log ${id} <call> prints the whole output of a call`;
 
-	switch (outcome.status) {
-		case "finished":
-			if (Value.Check(WAITING, outcome.result)) {
-				const text = `run ${id} waits for an answer: ${outcome.result.question}; answer it with resume: "${id}" and answer: "<your answer>"`;
+	switch (outcome.state) {
+		case "done":
+		case "waiting":
+			if (Value.Check(WAITING, outcome.value)) {
+				const text = `run ${id} waits for an answer: ${outcome.value.question}; answer it with resume: "${id}" and answer: "<your answer>"`;
 
 				return { summary: bounded(text, log), report: [] };
 			}
 
 			return {
 				summary: bounded(
-					`run ${id} finished: ${JSON.stringify(outcome.result)}`,
+					`run ${id} ${stateText(outcome.state, outcome.result)}: ${JSON.stringify(outcome.value)}`,
 					`the command workflows wait ${id} --json prints the whole result`,
 				),
 				report: outcome.report.map(reportLine),
@@ -277,23 +348,24 @@ function texts(outcome: WorkflowOutcome): Texts {
 				summary: bounded(`run ${id} failed: ${outcome.error}; continue it with resume: "${id}"`, log),
 				report: [],
 			};
+		case "orphaned":
+			return { summary: bounded(`run ${id} orphaned: ${outcome.error}`, log), report: [] };
+		case "aborted":
+			return { summary: `run ${id} aborted; continue it with resume: "${id}"`, report: [] };
+		case "running":
+			return { summary: runningText(id, outcome.follow), report: [] };
+	}
+}
+
+/** The text of the run `id` that still runs after the command `follow`. */
+function runningText(id: string, follow: "started" | "detached" | "host-stopped"): string {
+	switch (follow) {
 		case "started":
-			return {
-				summary: `run ${id} started in the background; its result comes as a message in this conversation when it ends; follow it with resume: "${id}", or stop it with the command workflows stop ${id}`,
-				report: [],
-			};
+			return `run ${id} started in the background; its result comes as a message in this conversation when it ends; follow it with resume: "${id}", or stop it with the command workflows stop ${id}`;
 		case "detached":
-			return {
-				summary: `run ${id} detached and goes on in the harness host; follow it with resume: "${id}", or stop it with the command workflows stop ${id}`,
-				report: [],
-			};
-		case "stopped":
-			return { summary: `run ${id} stopped; continue it with resume: "${id}"`, report: [] };
+			return `run ${id} detached and goes on in the harness host; follow it with resume: "${id}", or stop it with the command workflows stop ${id}`;
 		case "host-stopped":
-			return {
-				summary: `the harness host of run ${id} stopped; the run continues when the host starts again, so follow it with resume: "${id}"`,
-				report: [],
-			};
+			return `the harness host of run ${id} stopped; the run continues when the host starts again, so follow it with resume: "${id}"`;
 	}
 }
 

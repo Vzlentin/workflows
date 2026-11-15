@@ -123,7 +123,7 @@ describe("workflows campaign", () => {
 		expect(run.model.calls).toEqual([]);
 	});
 
-	it("gives judgeError and no judge when the campaign judge fails", async () => {
+	it("gives judgeError and no score, and exits 1 as unjudged, when the campaign judge fails", async () => {
 		const failing = "1 PASS\n2 PASS";
 
 		const run = await workflows(["campaign", "--json", GOAL], {
@@ -131,11 +131,13 @@ describe("workflows campaign", () => {
 			script: { items: [[FIRST]], edits: [FIXED], commit: [COMMIT], judge: [PASSING_JUDGE, failing, failing, failing] },
 		});
 
-		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
-		expect(report[0]).toMatch(/^done Fix the README in 1 item, judge failed, [0-9a-f]+$/);
+		expect(run.code).toBe(1);
+		const { value: result, report, result: runResult } = JSON.parse(run.stdout[1] ?? "");
+		expect(result.status).toBe("unjudged");
+		expect(report[0]).toMatch(/^unjudged Fix the README in 1 item, judge failed, [0-9a-f]+$/);
 		expect(result.judgeError).toBe("the answer did not call respond");
-		expect(result).not.toHaveProperty("judge");
+		expect(result).not.toHaveProperty("score");
+		expect(runResult).toEqual({ status: "unjudged", code: 1 });
 	});
 
 	it("ships two items as two commits on the campaign branch", async () => {
@@ -145,7 +147,7 @@ describe("workflows campaign", () => {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report, result: runResult } = JSON.parse(run.stdout[1] ?? "");
 		expect(run.stdout).toHaveLength(2);
 		expect(run.stdout[0]).toBe(`run ${run.id}`);
 		expect(report).toEqual([
@@ -156,7 +158,8 @@ describe("workflows campaign", () => {
 			"branch docs/readme",
 		]);
 		expect(result).toMatchObject({ subject: "docs: readme", branch: "docs/readme" });
-		expect(result.judge).toEqual({ score: 5 / 6, findings: PASSING_JUDGE.findings });
+		expect([result.score, result.findings]).toEqual([5 / 6, PASSING_JUDGE.findings]);
+		expect(runResult).toEqual({ status: "done", code: 0, score: 5 / 6 });
 		expect(result).not.toHaveProperty("judgeError");
 		expect(result.items[0].result).toMatchObject({
 			status: "shipped",
@@ -289,7 +292,7 @@ describe("workflows campaign", () => {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(run.model.calls.map((call) => call.kind)).toEqual([
 			"split",
 			...SHIP,
@@ -330,7 +333,7 @@ describe("workflows campaign", () => {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(run.model.count("rundown")).toBe(0);
 		expect(report[1]).toEqual(itemLine(COMMIT.subject));
 		expect(result.items[0].result).toMatchObject({ status: "shipped", subject: COMMIT.subject, score: 5 / 6 });
@@ -407,7 +410,7 @@ describe("workflows campaign", () => {
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).toBe(start);
 	});
 
-	it("fails the campaign when a child run of the fix round was stopped, and runs it again on resume", async () => {
+	it("fails the campaign when a child run of the fix round was aborted, and runs it again on resume", async () => {
 		// The CLI sets the entry of this checkout before it starts a host, so the test starts the host itself.
 		await setEntries({ workflows: fileURLToPath(new URL("abort-entry.ts", import.meta.url)) });
 		abortFix.armed = true;
@@ -417,7 +420,7 @@ describe("workflows campaign", () => {
 
 		expect(abortFix.armed).toBe(false);
 		expect(run.code).toBe(1);
-		expect(run.stderr.join("\n")).toMatch(/child run \S+ stopped: aborted/);
+		expect(run.stderr.join("\n")).toMatch(/child run \S+ aborted: aborted/);
 		expect(model.count("rundown")).toBe(0);
 
 		const resumed = await workflows(["resume", run.id ?? "", "--json"], {
@@ -427,7 +430,7 @@ describe("workflows campaign", () => {
 
 		expect(resumed.code).toBe(0);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["implement", "commit", "judge", "judge", "harvest"]);
-		expect(JSON.parse(resumed.stdout[1] ?? "").result.items[0].result.score).toBe(5 / 6);
+		expect(JSON.parse(resumed.stdout[1] ?? "").value.items[0].result.score).toBe(5 / 6);
 		expect(await readFile(join(worktreeOf(run.id), "README.md"), "utf8")).toBe(FIX);
 	});
 
@@ -446,7 +449,7 @@ describe("workflows campaign", () => {
 
 		expect(existsSync(join(root, "detached"))).toBe(true);
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(result.branch).toBe("docs/readme");
 		expect(report.at(-1)).toBe("branch docs/readme");
 		const worktree = worktreeOf(run.id);
@@ -496,7 +499,7 @@ describe("workflows campaign", () => {
 
 		expect(resumed.code).toBe(0);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["judge", "judge", "harvest"]);
-		const { result } = JSON.parse(resumed.stdout[1] ?? "");
+		const { value: result } = JSON.parse(resumed.stdout[1] ?? "");
 		expect(result.items[0].result.score).toBe(5 / 6);
 		const worktree = worktreeOf(first.id);
 		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("1");
@@ -532,7 +535,7 @@ describe("workflows campaign", () => {
 
 		expect(kept.code).toBe(0);
 		expect(kept.model.calls.map((call) => call.kind)).toEqual([...SHIP, "judge", "harvest"]);
-		const { result, report } = JSON.parse(kept.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(kept.stdout[1] ?? "");
 		expect(report[1]).toEqual(expect.stringMatching(new RegExp(`^ {2}${head} ${COMMIT.subject}, judge 0\\.00$`)));
 		expect(report[2]).toBe("    finding 1 FAIL: the typo stays.");
 		expect(report[3]).toEqual(itemLine(THANKS.subject));
@@ -565,7 +568,7 @@ describe("workflows campaign", () => {
 		expect(fixed.code).toBe(0);
 		expect(fixed.model.calls.map((call) => call.kind)).toEqual(["implement", "commit", "judge", "judge", "harvest"]);
 		expect(fixed.model.find("implement")?.prompt).toContain("## Judge findings\n\n- Put a comma after Hello");
-		const { result } = JSON.parse(fixed.stdout[1] ?? "");
+		const { value: result } = JSON.parse(fixed.stdout[1] ?? "");
 		expect(result.items[0].result.score).toBe(5 / 6);
 		expect(result.items[0]).not.toHaveProperty("kept");
 		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(COMMA);
@@ -681,7 +684,7 @@ describe("workflows campaign", () => {
 		expect(stopped.model.calls.map((call) => call.kind)).toEqual(["harvest"]);
 		expect(git(worktree, "branch", "--show-current")).toBe(`campaign/${run.id}`);
 		const json = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
-		const result = JSON.parse(json.stdout[1] ?? "").result;
+		const result = JSON.parse(json.stdout[1] ?? "").value;
 		expect(result.rundown).toBe("Rundown 1: the item failed.");
 		expect(await todosOf(run.id)).toEqual(dropped);
 		git(worktree, "apply", "--index", patch);
@@ -758,7 +761,7 @@ describe("workflows campaign", () => {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(run.model.count("harvest")).toBe(1);
 		expect(run.model.calls.at(-1)?.kind).toBe("harvest");
 		expect(result.lessons).toEqual([LESSONED]);
@@ -799,7 +802,7 @@ describe("workflows campaign", () => {
 		expect(stopped.code).toBe(1);
 		expect(stopped.stdout.slice(1)).toEqual([`stopped Fix the README at item 1: ${worktreeOf(run.id)}`, LESSON_LINE]);
 		const json = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
-		const { result } = JSON.parse(json.stdout[1] ?? "");
+		const { value: result } = JSON.parse(json.stdout[1] ?? "");
 		expect(result).toMatchObject({ status: "stopped", lessons: [LESSONED] });
 		expect(result).not.toHaveProperty("rundown");
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).not.toBe(start);
@@ -913,7 +916,7 @@ describe("workflows campaign", () => {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(report.slice(1, 3)).toEqual([
 			itemLine(COMMIT.subject),
 			expect.stringMatching(
@@ -935,7 +938,7 @@ describe("workflows campaign", () => {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(result.branch).toBe("docs/readme-2");
 		expect(report).toEqual([expect.any(String), itemLine(COMMIT.subject), FINDING, "branch docs/readme-2"]);
 		expect(git(worktreeOf(run.id), "branch", "--show-current")).toBe("docs/readme-2");

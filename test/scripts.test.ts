@@ -15,6 +15,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { AGENT_ROWS } from "../pi/index.ts";
+import { SHOWN, SHOWN_AGENTS } from "../src/cli/commands/show.ts";
 import type { Choose } from "../src/cli/main.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { branchOf, renameBranch } from "../src/launch/worktree.ts";
@@ -346,20 +347,29 @@ describe("input", () => {
 				`run ${id}`,
 				JSON.stringify({
 					runId: id,
-					status: "finished",
-					result: { status: "waiting", question: "A?", report: ["A?"] },
+					state: "waiting",
+					result: { status: "waiting", code: 3 },
+					value: { status: "waiting", question: "A?", report: ["A?"] },
 					report: ["A?"],
 				}),
 			],
 		]);
 		const listed = await workflows(["list"], { cwd: root });
-		expect(listed.stdout).toEqual([`${id} x waiting x`]);
+		expect(listed.stdout).toEqual([`${id} x waiting, result waiting exit 3 x`]);
 		const listedJson = await workflows(["list", "--json"], { cwd: root });
 		expect(JSON.parse(listedJson.stdout[0] ?? "")).toEqual([
-			{ runId: id, workflow: "x", title: "x", status: "waiting", repository: null },
+			{
+				runId: id,
+				workflow: "x",
+				title: "x",
+				state: "waiting",
+				result: { status: "waiting", code: 3 },
+				resumable: true,
+				repository: null,
+			},
 		]);
 		const shown = await workflows(["show", id], { cwd: root });
-		expect(shown.stdout).toEqual([`run ${id} x waiting x`, "  ✗ input A?  waiting", "A?"]);
+		expect(shown.stdout).toEqual([`run ${id} x waiting, result waiting exit 3 x`, "  ✗ input A?  waiting", "A?"]);
 
 		const second = await workflows(["resume", id, "--answer", "x"], { cwd: root });
 		expect([second.code, second.stdout]).toEqual([3, [`run ${id}`, "B?"]]);
@@ -483,7 +493,7 @@ describe("input", () => {
 			programStatus("blocked", "B?", "question"),
 			programStatus("idle", hint),
 		]);
-		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x waiting x`]);
+		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x waiting, result waiting exit 3 x`]);
 
 		const waited = await workflows(["wait", id], { cwd: root, lines: ["y"] });
 		expect([waited.code, waited.stdout]).toEqual([3, [`run ${id}`, "B?"]]);
@@ -537,10 +547,12 @@ describe("workflows show", () => {
 			runId: id,
 			workflow: "x",
 			title: "x",
-			status: "failed",
+			state: "failed",
+			resumable: true,
 			error: "sh exited with 3: exit 3",
 			todos: [],
 		});
+		expect(Value.Check(SHOWN, JSON.parse(shownJson.stdout[0] ?? ""))).toBe(true);
 		expect(json).toEqual(steps.stdout.slice(1, 3));
 		expect(
 			calls.map((call: { mark: string; result?: unknown; error?: string }) => [call.mark, call.result, call.error]),
@@ -615,6 +627,7 @@ describe("workflows show", () => {
 
 		const printed = JSON.parse((await workflows(["show", id, "--agents", "--json"], { cwd: repo })).stdout[0] ?? "");
 		expect(Value.Check(AGENT_ROWS, printed)).toBe(true);
+		expect(Value.Check(SHOWN_AGENTS, printed)).toBe(true);
 		const { agents, ...head } = printed;
 
 		const child = String(agents.find((row: { kind: string }) => row.kind === "run")?.text).slice("run child ".length);
@@ -622,7 +635,7 @@ describe("workflows show", () => {
 		expect([shown.code, shown.stderr]).toEqual([0, []]);
 
 		expect(shown.stdout).toEqual([
-			`run ${id} parent done parent`,
+			`run ${id} parent done, exit 0 parent`,
 			"plan",
 			expect.stringMatching(agent("Script: plan\\.")),
 			"work",
@@ -634,7 +647,15 @@ describe("workflows show", () => {
 			...run.stdout.slice(-1),
 		]);
 
-		expect(head).toEqual({ runId: id, workflow: "parent", title: "parent", status: "done", ended: true });
+		expect(head).toEqual({
+			runId: id,
+			workflow: "parent",
+			title: "parent",
+			state: "done",
+			result: { code: 0 },
+			resumable: true,
+			ended: true,
+		});
 		expect(agents[1]).toMatchObject({ kind: "agent", depth: 0, mark: "\u2713", text: "Script: plan.", asks: 1 });
 		expect(agents[1].conversation).toBe(await conversationOf(/Script: plan/));
 		expect(agents.at(-1)).toMatchObject({ kind: "agent", depth: 1, text: "Script: child." });
@@ -662,7 +683,7 @@ describe("workflows show", () => {
 		expect(asked[0]).toEqual([
 			"Pick an agent:",
 			[
-				`run ${id} x done x`,
+				`run ${id} x done, exit 0 x`,
 				expect.stringMatching(/^ {2}✓ sh true {2}\d+s$/),
 				expect.stringMatching(new RegExp(`^ {2}✓ session default conversation ${one} {2}\\d+s$`)),
 				expect.stringMatching(/^ {2}✓ ask default {2}\d+s$/),
@@ -731,7 +752,7 @@ describe("workflows show", () => {
 		expect(seen).toEqual([
 			[`run ${id} x running x`, "◉ talk"],
 			[
-				`run ${id} x done x`,
+				`run ${id} x done, exit 0 x`,
 				expect.stringMatching(/^✓ talk {2}\d+s$/),
 				expect.stringMatching(/^✓ more {2}\d+s$/),
 				...ends,
@@ -805,13 +826,13 @@ describe("workflows log", () => {
 		expect([logged.code, logged.stderr]).toEqual([0, []]);
 		const child = /run child (\S+)/.exec(logged.stdout[3] ?? "")?.[1] ?? "";
 		expect(logged.stdout).toEqual([
-			`run ${id} parent done`,
+			`run ${id} parent done, exit 0`,
 			logLine("build  \\d+s  3 calls  6 B  s1"),
 			logLine("spawn  \\d+s  1 call  \\d+ B  s2"),
 			logLine(`  ✓ run child ${child}  \\d+s  \\d+ B  [0-9a-f]{16}\\.1`),
 			logLine(`    inner  \\d+s  1 call  3 B  ${child}/s1`),
-			logLine("    end ok"),
-			logLine("end ok"),
+			logLine("    end done"),
+			logLine("end done"),
 		]);
 		const step = await workflows(["log", id, "s1"], { cwd: repo });
 		expect([step.code, step.stderr]).toEqual([0, []]);
@@ -856,7 +877,7 @@ describe("workflows log", () => {
 		expect((await workflows(["resume", id], { cwd: root })).code).toBe(0);
 		const logged = await workflows(["log", id], { cwd: root });
 		const ends = logged.stdout.filter((text) => /^\S+ {2}end /.test(text));
-		expect(ends).toEqual([expect.stringMatching(/^\d\d:\d\d:\d\d {2}end ok$/)]);
+		expect(ends).toEqual([expect.stringMatching(/^\d\d:\d\d:\d\d {2}end done$/)]);
 		expect(logged.stdout.at(-1)).toBe(ends[0]);
 	});
 
@@ -1161,6 +1182,14 @@ return n`,
 		expect(run.stdout).toEqual([`run ${run.id}`, "3"]);
 	});
 
+	it("prints no outcome line and does not say that the run failed when the command loses its wait", async () => {
+		await writeFile(join(root, "x.js"), 'phase("one")\nreturn "done"');
+		const run = await workflows(["x.js", "--json"], { cwd: root, dropWait: true });
+		expect([run.code, run.stdout, run.stderr]).toEqual([1, [`run ${run.id}`], ["workflows: the wait was lost"]]);
+		const waited = await workflows(["wait", run.id ?? "", "--json"], { cwd: root });
+		expect(JSON.parse(waited.stdout.at(-1) ?? "")).toMatchObject({ state: "done", value: "done" });
+	});
+
 	it("runs a failed call again on resume, and no finished call", async () => {
 		await writeFile(
 			join(root, "x.js"),
@@ -1173,7 +1202,7 @@ return { reply }`,
 		const run = await workflows(["x.js", "--json"], { cwd: root });
 		expect(run.code).toBe(1);
 		const error = "sh exited with 1: test -f fixed";
-		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, status: "failed", error })]);
+		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, state: "failed", error })]);
 		expect(run.stderr).toEqual([]);
 
 		await writeFile(join(root, "fixed"), "");
@@ -1407,7 +1436,7 @@ return "done"`,
 		const stop = await workflows(["stop", id], { cwd: root, script: { interruptAt: { kind: "script", nth: 1 } } });
 		expect([stop.code, stop.stdout, stop.stderr]).toEqual([
 			0,
-			[`stopped x; continue with: workflows resume ${id}`],
+			[`aborted x; continue with: workflows resume ${id}`],
 			[],
 		]);
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
@@ -1455,7 +1484,7 @@ return { runId, runDir, cwd, branch, start: args.start, plan: await prompts.plan
 		expect(existsSync(join(worktreeAt(repo, child.runId), "README.md"))).toBe(true);
 		expect(existsSync(join(runs(), child.runId, "project"))).toBe(false);
 		const listed = await workflows(["list"], { cwd: repo });
-		expect(listed.stdout).toEqual([`${run.id} parent done parent`]);
+		expect(listed.stdout).toEqual([`${run.id} parent done, exit 0 parent`]);
 	});
 
 	it("gives a child run an overlay of its templates and of the files that its sessions and child runs see", async () => {
@@ -1633,7 +1662,7 @@ return { branch: await sh(["git", "branch", "--show-current"]), start: args.star
 		expect(run.code).toBe(0);
 		const short = git(repo, "rev-parse", "--short", "HEAD");
 		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
-		expect(JSON.parse(run.stdout[1] ?? "").result).toBe(short);
+		expect(JSON.parse(run.stdout[1] ?? "").value).toBe(short);
 		expect(run.stderr).toContainEqual(expect.stringContaining(`nothing to commit since ${short}`));
 	});
 

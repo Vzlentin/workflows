@@ -13,11 +13,14 @@ export type Faults = {
 	readonly lateStart?: boolean;
 	/** After the reply to an `abort-task` request, every connection of the command closes, as when the host stops. */
 	readonly dropAfterAbort?: boolean;
+	/** The first `wait-task` request fails with an error that is not a closed host, as a wait that the command lost. */
+	readonly dropWait?: boolean;
 };
 
 /** The state of the faults of one command, shared by all its connections. */
 export type FaultState = {
 	drop: boolean;
+	dropWait: boolean;
 	late: boolean;
 	held: Request | undefined;
 	readonly clients: Client[];
@@ -25,7 +28,13 @@ export type FaultState = {
 
 /** The state of `faults` before the first request of a command. */
 export function faultState(faults: Faults): FaultState {
-	return { drop: faults.dropStart === true, late: faults.lateStart === true, held: undefined, clients: [] };
+	return {
+		drop: faults.dropStart === true,
+		dropWait: faults.dropWait === true,
+		late: faults.lateStart === true,
+		held: undefined,
+		clients: [],
+	};
 }
 
 /** The error of harness's client when the host closes the connection. */
@@ -48,6 +57,11 @@ async function faultyRequest<T extends Request["type"]>(
 	faults: Faults,
 	state: FaultState,
 ): Promise<Replies[T]> {
+	if (sent.type === "wait-task" && state.dropWait) {
+		state.dropWait = false;
+		throw new Error("the wait was lost");
+	}
+
 	if (sent.type === "start" && state.late) {
 		state.late = false;
 		state.held = sent;

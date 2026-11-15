@@ -53,7 +53,7 @@ describe("workflows thermoloop", () => {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(report).toEqual([`approved ${ITEM} in 2 rounds, ${git(repo, "rev-parse", "--short", "HEAD")}`, LESSON_LINE]);
 		expect(result).toMatchObject({
 			status: "approved",
@@ -122,7 +122,7 @@ describe("workflows thermoloop", () => {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(result.lessons).toEqual([]);
 		expect(report).toEqual([`approved ${ITEM} in 1 rounds, ${git(repo, "rev-parse", "--short", "HEAD")}`]);
 		expect(run.model.count("harvest")).toBe(0);
@@ -147,7 +147,7 @@ describe("workflows thermoloop", () => {
 			"#1 implementer r2: Implement 1: README.md had wrold.",
 		];
 
-		expect(JSON.parse(run.stdout[1] ?? "").result.memory).toEqual(notes);
+		expect(JSON.parse(run.stdout[1] ?? "").value.memory).toEqual(notes);
 		const memory = join(runsOf(root), run.id ?? "", "memory");
 		expect(await readFile(join(memory, "notes.txt"), "utf8")).toBe(`${notes.join("\n")}\n`);
 		expect(run.model.find("review", 1)?.prompt).toMatch(new RegExp(`^## memory\\n${notes.join("\\n")}\\n\\nPerform`));
@@ -286,9 +286,9 @@ echo '{"title":"Fix the typo of the README","body":"It says wrold."}'
 
 		// The intent names the run, also without a work item.
 		const listed = await workflows(["list"], { cwd: repo });
-		expect(listed.stdout).toEqual([`${run.id} thermoloop approved Fix the typo of the README`]);
+		expect(listed.stdout).toEqual([`${run.id} thermoloop done, result approved exit 0 Fix the typo of the README`]);
 		const shown = await workflows(["show", run.id ?? ""], { cwd: repo });
-		expect(shown.stdout[0]).toBe(`run ${run.id} thermoloop approved Fix the typo of the README`);
+		expect(shown.stdout[0]).toBe(`run ${run.id} thermoloop done, result approved exit 0 Fix the typo of the README`);
 	});
 
 	it("commits the changes of the checkout as wip, and reviews a ref with the commit messages as the intent", async () => {

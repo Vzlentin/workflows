@@ -7,7 +7,10 @@ import { entriesPath } from "@vzlentin/harness/entries";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { LISTED } from "../src/cli/commands/list.ts";
+import { SHOWN } from "../src/cli/commands/show.ts";
 import { TASK } from "../src/run/version.ts";
+import { OUTCOME } from "../src/tool.ts";
 import {
 	COMMIT,
 	conversationOf,
@@ -145,7 +148,7 @@ describe("workflows ship", () => {
 			"-",
 		]);
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(run.stdout).toHaveLength(2);
 		expect(run.stdout[0]).toBe(`run ${run.id}`);
 		expect(report).toEqual([expect.stringMatching(SHIPPED), `branch ${BRANCH}`]);
@@ -358,7 +361,10 @@ export default function ({ events }) {
 		});
 
 		expect(run.code).toBe(130);
-		expect(run.stdout).toEqual([`run ${run.id}`, JSON.stringify({ runId: run.id, status: "detached" })]);
+		expect(run.stdout).toEqual([
+			`run ${run.id}`,
+			JSON.stringify({ runId: run.id, state: "running", follow: "detached" }),
+		]);
 
 		const resumed = await workflows(["resume", run.id ?? "", "--json"], { cwd: repo, script: { edits: [] } });
 
@@ -376,7 +382,13 @@ export default function ({ events }) {
 		const report = [`blocked Fix the README typo after 1 rounds: ${worktreeOf(run.id)}`, result.reply];
 		expect(resumed.stdout).toEqual([
 			`run ${run.id}`,
-			JSON.stringify({ runId: run.id, status: "finished", result: { ...result, report, lessons: [] }, report }),
+			JSON.stringify({
+				runId: run.id,
+				state: "done",
+				result: { status: "blocked", code: 1 },
+				value: { ...result, report, lessons: [] },
+				report,
+			}),
 		]);
 
 		const item = await workflows(["ship", "--", "--json"], { cwd: repo, script: { edits: [] } });
@@ -387,7 +399,7 @@ export default function ({ events }) {
 		const run = await workflows(["ship", "--json", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(result.lessons).toEqual([]);
 		expect(report).toEqual([expect.stringMatching(SHIPPED), `branch ${BRANCH}`]);
 		expect(run.model.calls.map((call) => call.kind).filter((kind) => kind === "harvest")).toEqual(["harvest"]);
@@ -402,7 +414,7 @@ export default function ({ events }) {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(result.lessons).toEqual([LESSONED]);
 		expect(report).toEqual([expect.stringMatching(SHIPPED), LESSON_LINE, `branch ${BRANCH}`]);
 		const prompt = run.model.find("harvest")?.prompt ?? "";
@@ -423,7 +435,7 @@ export default function ({ events }) {
 		});
 
 		expect(run.code).toBe(0);
-		const { result } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result } = JSON.parse(run.stdout[1] ?? "");
 		expect(result.memory).toEqual([]);
 		expect(result.lessons).toEqual([]);
 		expect(run.model.count("harvest")).toBe(0);
@@ -445,7 +457,7 @@ export default function ({ events }) {
 		expect(resumed.code).toBe(0);
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["harvest"]);
 		expect(resumed.model.find("harvest")?.prompt).toContain(`## notes\n${NOTES.slice(0, 2).join("\n")}`);
-		const { result, report } = JSON.parse(resumed.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(resumed.stdout[1] ?? "");
 		expect(result).toMatchObject({ divergence: "none", lessons: [LESSONED] });
 		expect(report).toContain(LESSON_LINE);
 
@@ -464,7 +476,7 @@ export default function ({ events }) {
 		});
 
 		expect(run.code).toBe(1);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(run.stdout).toHaveLength(2);
 		expect(run.stdout[0]).toBe(`run ${run.id}`);
 		expect(report).toEqual([`stopped Fix the README typo after 2 rounds: ${worktreeOf(run.id)}`]);
@@ -587,7 +599,7 @@ export default function ({ events }) {
 		expect(existsSync(runs()) ? await readdir(runs()) : []).toEqual([]);
 	});
 
-	it("clones a GitHub repository through gh and ships without a judge score when the judge fails", async () => {
+	it("clones a GitHub repository through gh, and keeps the commit of an unjudged ship that exits 1", async () => {
 		const remote = join(root, "github", "octocat", "calibre");
 		await repository(remote);
 		git(remote, "checkout", "-qb", "develop");
@@ -602,12 +614,11 @@ export default function ({ events }) {
 			script: { edits: [FIXED], judge: "1 PASS\n2 PASS" },
 		});
 
-		expect(run.code).toBe(0);
+		expect(run.code).toBe(1);
 		expect(await readFile(join(root, "gh.log"), "utf8")).toBe(
 			`repo clone calibre ${join(runs(), run.id ?? "", "repository")}\n`,
 		);
-		expect(run.stdout[1]).toMatch(SHIPPED);
-		expect(run.stdout[1]).toContain("judge failed,");
+		expect(run.stdout[1]).toMatch(/^unjudged Fix the README typo in 1 rounds, judge failed, [0-9a-f]+$/);
 		expect(run.stderr.filter((line) => !progress.test(line))).toEqual([
 			"  +1 -1 in 1 file",
 			"  SHIP",
@@ -631,6 +642,30 @@ export default function ({ events }) {
 		expect(git(cloned, "rev-parse", "HEAD^")).toBe(git(remote, "rev-parse", "main"));
 	});
 
+	it("exits 1 with the result rejected when the judge scores 0, and keeps the commit", async () => {
+		const zero = { ...PASSING_JUDGE, answers: ["FAIL" as const, ...PASSING_JUDGE.answers.slice(1)] };
+
+		const run = await workflows(["ship", "--json", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED], judge: zero },
+		});
+
+		expect(run.code).toBe(1);
+		const outcome = JSON.parse(run.stdout[1] ?? "");
+		expect(Value.Check(OUTCOME, outcome)).toBe(true);
+		expect(outcome).toMatchObject({ state: "done", result: { status: "rejected", code: 1, score: 0 } });
+		expect(outcome.value.score).toBe(0);
+		expect(outcome.report[0]).toMatch(/^rejected Fix the README typo in 1 rounds, judge 0\.00, [0-9a-f]+$/);
+		const listed = await workflows(["list", "--json"], { cwd: repo });
+		expect(JSON.parse(listed.stdout[0] ?? "")).toEqual([
+			expect.objectContaining({ runId: run.id, result: { status: "rejected", code: 1, score: 0 } }),
+		]);
+		const worktree = worktreeOf(run.id);
+		expect(git(worktree, "rev-parse", "--short", "HEAD")).toBe(outcome.value.head);
+		expect(git(worktree, "rev-parse", "HEAD^")).toBe(start);
+		expect(git(worktree, "log", "-1", "--format=%B")).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
+	});
+
 	it("uses a relative local repository and a piped work item", async () => {
 		const run = await workflows(["ship", "--repo", "repo"], {
 			cwd: root,
@@ -651,7 +686,7 @@ export default function ({ events }) {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(result.branch).toBe("docs/typo");
 		expect(report).toEqual([expect.stringMatching(SHIPPED), "branch docs/typo"]);
 		expect(git(worktreeOf(run.id), "branch", "--show-current")).toBe("docs/typo");
@@ -683,7 +718,7 @@ export default function ({ events }) {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(result.branch).toBe(`ship/${run.id}`);
 		expect(report).toEqual([
 			expect.stringMatching(SHIPPED),
@@ -699,7 +734,7 @@ export default function ({ events }) {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(result).toMatchObject({ status: "shipped", subject: "Fix the README typo", branch: "fix-the-readme-typo" });
 		expect(result.divergence).toBe("none");
 		expect(result.score).toBeCloseTo(5 / 6);
@@ -718,7 +753,7 @@ export default function ({ events }) {
 		});
 
 		expect(run.code).toBe(0);
-		const { result } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result } = JSON.parse(run.stdout[1] ?? "");
 		expect(result).toMatchObject({ status: "shipped", divergence: "The commit also fixes the README title." });
 		const message = git(worktreeOf(run.id), "log", "-1", "--format=%B");
 		expect(message).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
@@ -731,7 +766,7 @@ export default function ({ events }) {
 		});
 
 		expect(run.code).toBe(0);
-		const { result } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result } = JSON.parse(run.stdout[1] ?? "");
 		expect(result).toMatchObject({ status: "shipped", subject: COMMIT.subject, findings: PASSING_JUDGE.findings });
 		expect(result.score).toBeCloseTo(5 / 6);
 		const message = git(worktreeOf(run.id), "log", "-1", "--format=%B");
@@ -784,7 +819,7 @@ export default function ({ events }) {
 		const run = await workflows(["caller", "--json"], { cwd: repo, script: { edits: [FIXED] } });
 
 		expect(run.code).toBe(0);
-		const { result } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result } = JSON.parse(run.stdout[1] ?? "");
 		expect(result).toMatchObject({ status: "shipped", rounds: 1, runId: expect.any(String), branch: "docs/child" });
 		expect(git(worktreeOf(result.runId), "branch", "--show-current")).toBe("docs/child");
 		expect(git(worktreeOf(result.runId), "rev-parse", "HEAD~1")).toBe(start);
@@ -844,7 +879,7 @@ describe("pastRuns", () => {
 			const run = await workflows(["ship", "--json", item], { cwd: repo, script: { edits: [FIXED] } });
 			expect(run.code).toBe(0);
 
-			return { runId: run.id ?? "", result: JSON.parse(run.stdout[1] ?? "").result };
+			return { runId: run.id ?? "", result: JSON.parse(run.stdout[1] ?? "").value };
 		};
 
 		const first = await ship("Fix the README typo");
@@ -942,10 +977,10 @@ describe("workflows show", () => {
 		const ran = (indent: string, name: string, child = "") =>
 			logLine(`${indent}  ✓ run ${name} ${child}  \\d+s  ${size}  \\S+`);
 
-		const ended = (indent: string) => logLine(`${indent}end ok`);
+		const ended = (indent: string) => logLine(`${indent}end done`);
 
 		expect(logged.stdout).toEqual([
-			`run ${id} ship shipped`,
+			`run ${id} ship done, result shipped exit 0`,
 			step("", "-", "s0"),
 			ran("", "rpi", rpiId),
 			step("    ", "research", `${rpiId}/s1`),
@@ -1039,12 +1074,15 @@ describe("workflows show", () => {
 		const json = await workflows(["show", id, "--json"], { cwd: root });
 		expect([json.code, json.stdout.length]).toEqual([0, 1]);
 		const tree = JSON.parse(json.stdout[0] ?? "");
+		expect(Value.Check(SHOWN, tree)).toBe(true);
 		const time = expect.stringMatching(/^\d{4}-\d\d-\d\dT[\d:.]+Z$/);
 		expect(tree).toMatchObject({
 			runId: id,
 			workflow: "ship",
 			title: "Fix the README typo",
-			status: "shipped",
+			state: "done",
+			result: { status: "shipped", code: 0 },
+			resumable: true,
 			report: shown.stdout.slice(-2),
 		});
 		const flat = (calls: readonly Stored[]): Stored[] => calls.flatMap((c) => [c, ...flat(c.calls ?? [])]);
@@ -1124,7 +1162,7 @@ describe("workflows show --pick", () => {
 		const closed = items.flatMap((item) => (item.value === undefined ? [untimed(item.text)] : []));
 
 		expect(closed).toEqual([
-			`run ${id} ship shipped Fix the README typo`,
+			`run ${id} ship done, result shipped exit 0 Fix the README typo`,
 			expect.stringMatching(/^commit [0-9a-f]+ fix: correct the README typo$/),
 			expect.stringMatching(SHIPPED),
 			`branch ${BRANCH}`,
@@ -1220,7 +1258,7 @@ describe("workflows resume of ship runs", () => {
 		const listed = await workflows(["list"], { cwd: repo });
 
 		const lines = new Map([
-			[run.id ?? "", `${run.id} stdin done stdin`],
+			[run.id ?? "", `${run.id} stdin done, exit 0 stdin`],
 			[earlier, `${earlier} ship earlier-version ship`],
 			[later, `${later} ship later-version ship`],
 		]);
@@ -1298,14 +1336,23 @@ describe("workflows resume of ship runs", () => {
 		const repository = git(repo, "rev-parse", "--show-toplevel");
 
 		const runs = [
-			{ runId: shipped.id, workflow: "ship", title: "Fix the README typo", status: "shipped", repository },
-			{ runId: stopped.id, workflow: "ship", title: "Second item", status: "running", repository },
+			{
+				runId: shipped.id,
+				workflow: "ship",
+				title: "Fix the README typo",
+				state: "done",
+				result: { status: "shipped", code: 0, score: 5 / 6 },
+				resumable: true,
+				repository,
+			},
+			{ runId: stopped.id, workflow: "ship", title: "Second item", state: "running", resumable: true, repository },
 		].sort((a, b) => (b.runId ?? "").localeCompare(a.runId ?? ""));
 
 		expect(JSON.parse(listed.stdout[0] ?? "")).toEqual(runs);
+		expect(Value.Check(Type.Array(LISTED), JSON.parse(listed.stdout[0] ?? ""))).toBe(true);
 		const text = await workflows(["list"], { cwd: root });
 		expect(text.stdout).toEqual(runs.map((run) => expect.stringMatching(new RegExp(`^${run.runId} ship `))));
-		expect(text.stdout).toContain(`${shipped.id} ship shipped Fix the README typo`);
+		expect(text.stdout).toContain(`${shipped.id} ship done, result shipped exit 0 Fix the README typo`);
 
 		const resumed = await workflows(["resume", stopped.id ?? ""], { cwd: root, script: { edits: [FIXED] } });
 		expect(resumed.code).toBe(0);

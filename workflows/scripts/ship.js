@@ -1,7 +1,8 @@
 // `workflows ship` and each `workflows campaign` item, in its worktree: the child runs `rpi.js` and `thermoloop.js`,
 // then `commitAndJudge`: the commit message turn, the squash, and the child run `judge.js` on the squashed commit. A
 // caller may give `memory`, the `ref` of a run memory to go on with. The engine names the branch from `subject` of the
-// result. Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
+// result. The ship is `shipped` when the judge scores above 0, `rejected` at 0 and `unjudged` when the judge fails;
+// the two last exit 1 and keep the commit. Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
 export const meta = {
 	description: "Ship one work item onto a new branch: research, plan, implement, review rounds, one squashed commit, and judge.",
 	args: {
@@ -9,7 +10,7 @@ export const meta = {
 		rounds: { type: "number", default: 3 },
 	},
 	worktree: true,
-	exit: { shipped: 0, blocked: 1, stopped: 1 },
+	exit: { shipped: 0, rejected: 1, unjudged: 1, blocked: 1, stopped: 1 },
 	outline: [
 		{ kind: "agent", role: "researcher", label: "research" },
 		{ kind: "agent", role: "planner", label: "plan" },
@@ -54,14 +55,15 @@ const reviewed = await run("thermoloop", { item, rounds, start, patches, plan, r
 
 if (reviewed.status !== "approved") return notes.finish(item, unshipped(reviewed))
 
-const shipped = await commitAndJudge(item, start)
+const { status: verdict, ...shipped } = await commitAndJudge(item, start)
 const judged = shipped.score === undefined ? "failed" : shipped.score.toFixed(2)
+const status = verdict === "judged" ? "shipped" : verdict
 
 return notes.finish(item, {
-	status: "shipped",
+	status,
 	rounds: reviewed.rounds,
 	...shipped,
 	memory: reviewed.memory,
 	worktree,
-	report: [`shipped ${subject} in ${reviewed.rounds} rounds, judge ${judged}, ${shipped.head}`],
+	report: [`${status} ${subject} in ${reviewed.rounds} rounds, judge ${judged}, ${shipped.head}`],
 })

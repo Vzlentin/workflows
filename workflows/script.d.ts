@@ -262,9 +262,10 @@ declare function commitChange(
 	findings?: readonly string[],
 ): Promise<{ head: string; subject: string }>;
 
-/** The judge fields of `judgeCommit`: a score, or the error of the judge. */
+/** The judge fields of `judgeCommit`: the status of the judge with a score, or the error of the judge. */
 type JudgeFields =
 	| {
+			status: "judged" | "rejected";
 			score: number;
 			answers: ("PASS" | "FAIL")[];
 			findings: string[];
@@ -272,6 +273,7 @@ type JudgeFields =
 			judgeError?: undefined;
 	  }
 	| {
+			status: "unjudged";
 			judgeError: string;
 			score?: undefined;
 			answers?: undefined;

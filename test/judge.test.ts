@@ -25,7 +25,7 @@ describe("workflows judge", () => {
 		const run = await workflows(["judge", "--json", "--item", ITEM], { cwd: repo, script: { judge: PASSING_JUDGE } });
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(report).toEqual([`judge 0.83: ${ITEM}`, `  ${PASSING_JUDGE.findings[0]}`]);
 		expect(result).toMatchObject({ status: "judged", score: 5 / 6, ...PASSING_JUDGE, divergence: "none" });
 		expect(result).not.toHaveProperty("commit");
@@ -59,7 +59,7 @@ describe("workflows judge", () => {
 		});
 
 		expect(run.code).toBe(0);
-		const { result, report } = JSON.parse(run.stdout[1] ?? "");
+		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(report).toEqual([`judge 0.83: ${ITEM}`, `  ${PASSING_JUDGE.findings[0]}`]);
 		expect(result).toMatchObject({ status: "judged", score: 5 / 6 });
 		expect(progressOf(run.stderr)).toEqual(["✓ judge", "  judge 0.83"]);

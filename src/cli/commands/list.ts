@@ -3,28 +3,42 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveProject } from "@vzlentin/harness/projects";
 import { statePaths } from "@vzlentin/harness/protocol";
-import { type Mark, Progress } from "../../records/steps.ts";
+import { type Static, Type } from "typebox";
+import { endMark, type Mark, Progress } from "../../records/steps.ts";
 import { inputWorktree, progressEvents, reading, runTasks, type Store } from "../../records/store.ts";
-import { type RunStatus, type RunTask, runStatus, savedInput, taskOf } from "../../run/past.ts";
+import { hasEnded, type RunStatus, type RunTask, runFields, savedInput, taskOf } from "../../run/past.ts";
 import { SHOWN_INPUT, title as titleOf } from "../../run/result.ts";
+import { RUN_RESULT, RUN_STATE, stateText } from "../../tool.ts";
 import { UsageError } from "../../workflow/find.ts";
 import { runsDirectory, STORE_FILE } from "../host.ts";
 import type { Choose, Terminal } from "../main.ts";
-import { savedBy, shownStatus, unstartedRuns } from "../saved.ts";
+import { savedBy, unstartedRuns } from "../saved.ts";
 import type { PickItem } from "../terminal/pick.ts";
 
 export const LIST = "workflows list [--pick] [--json]";
 
-type Listed = {
-	readonly runId: string;
-	readonly workflow: string;
-	readonly title: string;
-	readonly status: string;
-	readonly repository: string | null;
-};
+/**
+ * A run of `list --json`. `state` is the state of the run, or `unstarted` for a run directory whose run has no task.
+ * `result` is the result of a run that is `done` or `waiting`. `resumable` is true for a task of this version, which
+ * `resume` can continue.
+ */
+export const LISTED = Type.Object(
+	{
+		runId: Type.String(),
+		workflow: Type.String(),
+		title: Type.String(),
+		state: Type.Union([RUN_STATE, Type.Literal("unstarted")]),
+		result: Type.Optional(RUN_RESULT),
+		resumable: Type.Boolean(),
+		repository: Type.Union([Type.String(), Type.Null()]),
+	},
+	{ additionalProperties: false },
+);
 
-/** A listed run, with its run status `run`, which orders it in the picker and gives its mark, and which JSON leaves out. */
-type Row = Listed & { readonly run: RunStatus };
+type Listed = Static<typeof LISTED>;
+
+/** A listed run that has a task, with its state, which orders it in the picker and gives its mark. */
+type Row = Listed & { readonly state: RunStatus };
 
 /**
  * Prints the runs of the project of the current directory that have a run directory, newest run ID first, also the run
@@ -48,7 +62,10 @@ export async function list(args: readonly string[], terminal: Terminal, json: bo
 	const listed = await projectRuns(resolveProject(process.env, terminal.cwd));
 
 	if (json) terminal.stdout(JSON.stringify(listed));
-	else for (const run of listed) terminal.stdout(`${run.runId} ${run.workflow} ${run.status} ${run.title}`);
+	else {
+		for (const run of listed)
+			terminal.stdout(`${run.runId} ${run.workflow} ${stateText(run.state, run.result)} ${run.title}`);
+	}
 
 	return 0;
 }
@@ -68,17 +85,16 @@ async function projectRuns(project: string): Promise<Listed[]> {
 		},
 	);
 
-	const started = rows.map(({ run: _run, ...listed }): Listed => listed);
-
 	const unstarted = (await unstartedRuns(project, runs)).map(({ runId }): Listed => ({
 		runId,
 		workflow: "-",
 		title: "-",
-		status: "unstarted",
+		state: "unstarted",
+		resumable: false,
 		repository: null,
 	}));
 
-	return [...started, ...unstarted].sort((a, b) => b.runId.localeCompare(a.runId));
+	return [...rows, ...unstarted].sort((a, b) => b.runId.localeCompare(a.runId));
 }
 
 /** The runs `runs` of the open project store `store` that have a run directory, newest run ID first. */
@@ -89,17 +105,13 @@ async function listedRuns(store: Store, runs: ReadonlyMap<string, readonly RunTa
 		const task = taskOf(tasks);
 
 		if (task === undefined || !existsSync(join(runsDirectory(), id, "project"))) continue;
-		const run = runStatus(task);
-		const status = shownStatus(task, run);
 		const repository = inputWorktree(task.input)?.repository ?? null;
 
 		// A task of every version whose input has the fields of a title gets its title; another keeps its workflow name.
 		const input = savedInput(SHOWN_INPUT, task.input);
 		const workflow = savedBy(task).name;
 		const title = input === undefined ? workflow : titleOf(input, await progressEvents(store, id));
-		const row = { runId: id, workflow, title, status, repository, run };
-
-		listed.push(row);
+		listed.push({ runId: id, workflow, title, ...runFields(task), repository });
 	}
 
 	return listed;
@@ -126,13 +138,13 @@ async function runItems(terminal: Terminal): Promise<PickItem<string>[]> {
 		join(statePaths(resolveProject(process.env, terminal.cwd)).dir, STORE_FILE),
 		empty,
 		async (store) => {
-			const live = ({ run }: Row) => run === "running" || run === "waiting";
+			const live = ({ state }: Row) => state === "running" || state === "waiting";
 			// A stable sort keeps the newest first within each group.
 			const tasks = await runTasks(store);
 			const sorted = (await listedRuns(store, tasks)).toSorted((a, b) => Number(live(b)) - Number(live(a)));
 			const found = new Map<string, string>();
 
-			for (const { runId } of sorted.filter((each) => each.run === "running")) {
+			for (const { runId } of sorted.filter((each) => each.state === "running")) {
 				const progress = new Progress();
 
 				for (const event of await progressEvents(store, runId)) progress.add(event);
@@ -145,28 +157,24 @@ async function runItems(terminal: Terminal): Promise<PickItem<string>[]> {
 		},
 	);
 
-	return runs.map(({ runId, title, workflow, status, run }) => {
+	return runs.map(({ runId, title, workflow, state, result }) => {
 		const step = steps.get(runId);
-		const text = `${markOf(run)} ${title}  ${workflow} ${status}${step === undefined ? "" : `: ${step}`}`;
+		const text = `${markOf(state)} ${title}  ${workflow} ${stateText(state, result)}${step === undefined ? "" : `: ${step}`}`;
 
 		return { text, value: runId };
 	});
 }
 
-/** The mark of a run in the picker by its status: `◉` running, `?` waiting for an answer, `✗` failed, else `·`. */
-function markOf(status: RunStatus): Mark | "?" {
-	switch (status) {
-		case "running":
-			return "◉";
-		case "waiting":
-			return "?";
-		case "failed":
-			return "✗";
-		case "done":
-		case "aborted":
-		case "orphaned":
-		case "earlier-version":
-		case "later-version":
-			return "·";
-	}
+/**
+ * The mark of a run in the picker by its state: `◉` running, `?` waiting for an answer, `·` done or of another version,
+ * else the mark of the steps of a run that ended in that state.
+ */
+function markOf(state: RunStatus): Mark | "?" {
+	if (state === "running") return "◉";
+
+	if (state === "waiting") return "?";
+
+	if (state === "done" || !hasEnded(state)) return "·";
+
+	return endMark(state);
 }

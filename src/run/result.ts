@@ -3,6 +3,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { subject } from "../launch/input.ts";
+import type { RunResult } from "../tool.ts";
 import type { ProgressEvent } from "./progress.ts";
 
 /**
@@ -31,6 +32,7 @@ function textArg(input: ShownInput): string | undefined {
 
 const STATUS = Type.Object({ status: Type.String() });
 const REPORT = Type.Object({ report: Type.Array(Type.Unknown()) });
+const SCORE = Type.Object({ score: Type.Number() });
 
 /** The status of a result object, if it has one. */
 export function statusOf(result: JsonValue): string | undefined {
@@ -50,25 +52,43 @@ export function title(input: ShownInput, events: readonly ProgressEvent[]): stri
 	return text === undefined ? input.name : subject(text);
 }
 
-/** The lines that a finished run prints, and the exit code of the command. */
-export type Report = { readonly lines: string[]; readonly code: number };
+/**
+ * The lines that a run with a result prints, the status of the result, if any, the exit code of the command, and the
+ * judge score of the result, if any.
+ */
+export type Report = {
+	readonly lines: string[];
+	readonly status: string | undefined;
+	readonly code: number;
+	readonly score: number | undefined;
+};
 
 /**
- * The report lines of the result of the run `input`, and the exit code of its status as `meta.exit` gives it: 3 for
- * `waiting`, whatever `meta.exit` says, 0 for a result without a status, and 1 for a status that `meta.exit` does not
- * declare.
+ * The report lines of the result of the run `input`, its status, its score, and the exit code of its status as
+ * `meta.exit` gives it: 3 for `waiting`, whatever `meta.exit` says, 0 for a result without a status, and 1 for a
+ * status that `meta.exit` does not declare.
  */
 export function reportOf(input: ShownInput, result: JsonValue): Report {
 	const lines = Value.Check(REPORT, result)
 		? result.report.map((line) => String(line))
 		: [Value.Check(Type.String(), result) ? result : JSON.stringify(result)];
 
+	const score = Value.Check(SCORE, result) ? result.score : undefined;
 	const status = statusOf(result);
 
-	if (status === "waiting") return { lines, code: 3 };
+	if (status === "waiting") return { lines, status, code: 3, score };
 
-	if (status === undefined) return { lines, code: 0 };
+	if (status === undefined) return { lines, status, code: 0, score };
 	const code = Object.hasOwn(input.meta.exit, status) ? (input.meta.exit[status] ?? 1) : 1;
 
-	return { lines, code };
+	return { lines, status, code, score };
+}
+
+/** The result of a run as its JSON gives it: the status of `report`, if any, its exit code, and its judge score, if any. */
+export function runResult({ status, code, score }: Report): RunResult {
+	const result: RunResult = status === undefined ? { code } : { status, code };
+
+	if (score !== undefined) result.score = score;
+
+	return result;
 }

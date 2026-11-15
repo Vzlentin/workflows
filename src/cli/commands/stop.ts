@@ -1,8 +1,7 @@
 /** `workflows stop <run-id>`: stops a run in its host. */
-import { hasEnded, runStatus } from "../../run/past.ts";
+import { endedOutcome, hasEnded, runStatus } from "../../run/past.ts";
 import { title as titleOf } from "../../run/result.ts";
 import { current } from "../../run/version.ts";
-import type { OutcomeStatus } from "../../tool.ts";
 import { abortRun } from "../host.ts";
 import type { Terminal } from "../main.ts";
 import { GoneRun, lastTask, oneRunId, progressOf, savedBy, savedRun } from "../saved.ts";
@@ -10,7 +9,7 @@ import { GoneRun, lastTask, oneRunId, progressOf, savedBy, savedRun } from "../s
 export const STOP = "workflows stop <run-id> [--json]";
 
 /**
- * Stops the run of `args` in its host. Its task ends as stopped, and a resume continues it. A pending task of another
+ * Stops the run of `args` in its host. Its task ends as aborted, and a resume continues it. A pending task of another
  * version, which no host can run, ends as orphaned.
  */
 export async function stop(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
@@ -22,17 +21,21 @@ export async function stop(args: readonly string[], terminal: Terminal, json: bo
 
 	if (hasEnded(runStatus(latest))) throw new Error(`run ${run.id} is not running`);
 	const key = keys.keyOf(latest);
-	const status = runStatus(await abortRun(terminal, run.project, key));
+	const ended = await abortRun(terminal, run.project, key);
+	const { outcome } = ended;
 
-	if (status !== "aborted" && status !== "orphaned") throw new Error(`run ${run.id} is not running`);
+	if (outcome?.status !== "aborted" && outcome?.status !== "orphaned") throw new Error(`run ${run.id} is not running`);
+	const stopped = endedOutcome(run.id, outcome);
 
-	if (json) terminal.stdout(JSON.stringify({ runId: run.id, status: "stopped" satisfies OutcomeStatus }));
+	if (json) terminal.stdout(JSON.stringify(stopped));
 	else if (current(latest)) {
 		const title = titleOf(latest.input, await progressOf(run));
-		terminal.stdout(`stopped ${title}; continue with: workflows resume ${run.id}`);
+		terminal.stdout(`aborted ${title}; continue with: workflows resume ${run.id}`);
 	} else {
 		const { name, later } = savedBy(latest);
-		terminal.stdout(`stopped ${name}, which ${later ? "a later" : "an earlier"} version saved; it cannot resume`);
+		terminal.stdout(
+			`${stopped.state} ${name}, which ${later ? "a later" : "an earlier"} version saved; it cannot resume`,
+		);
 	}
 
 	return 0;

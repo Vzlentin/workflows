@@ -27,7 +27,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { ScriptInput } from "../launch/input.ts";
 import { CALL_KIND, CALL_RECORD, type SavedCall } from "../run/calls.ts";
-import { allPages, firstTask, type RunTask, rootRuns, runStatus, savedInput } from "../run/past.ts";
+import { allPages, firstTask, type RunStatus, type RunTask, rootRuns, runStatus, savedInput } from "../run/past.ts";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "../run/progress.ts";
 import { TASK } from "../run/version.ts";
 import { type Progress, progressOf } from "./steps.ts";
@@ -366,11 +366,12 @@ export async function callRecords(store: Store, runId: string): Promise<Map<stri
 
 /**
  * What the store keeps of the root run `id`: its root tasks, oldest first, its progress events and their steps, its
- * call records and those of its child runs, the IDs of the tasks that run, and the list of todos of the run and of each
- * child run in its call records.
+ * call records and those of its child runs, the IDs of the tasks that run, the state of each task of the store by task
+ * ID, and the list of todos of the run and of each child run in its call records.
  */
 export type RunRecords = {
 	readonly tasks: readonly RunTask[];
+	readonly states: ReadonlyMap<number, RunStatus>;
 	readonly events: readonly ProgressEvent[];
 	readonly progress: Progress;
 	readonly records: Map<string, SavedCall>;
@@ -389,6 +390,7 @@ export async function runRecords(
 ): Promise<RunRecords> {
 	const empty = {
 		tasks: [],
+		states: new Map<number, RunStatus>(),
 		events: [],
 		progress: progressOf([]),
 		records: new Map<string, SavedCall>(),
@@ -405,6 +407,8 @@ export async function runRecords(
 
 		const todos = await todoLists(store, tasks, [id, ...children]);
 
-		return { tasks: runs.get(id) ?? [], events, progress, records, live, todos };
+		const states = new Map(tasks.map((task): [number, RunStatus] => [task.id, runStatus(task)]));
+
+		return { tasks: runs.get(id) ?? [], states, events, progress, records, live, todos };
 	});
 }
