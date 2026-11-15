@@ -1625,6 +1625,17 @@ return seen`,
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "ok"]);
 	});
 
+	it("gives sh and ok a closed stdin", { timeout: 10_000 }, async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const read = await sh("read x", { settle: true })
+const empty = await ok("read x")
+return JSON.stringify([read, empty])`,
+		);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, JSON.stringify([{ error: "sh exited with 1: read x" }, false])]);
+	});
+
 	it("replays a settled failure of sh on resume", async () => {
 		await writeFile(
 			join(root, "x.js"),

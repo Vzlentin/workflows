@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 
 export type Result = { readonly code: number; readonly stdout: string; readonly stderr: string };
 
-/** The exit code and output of `command <args>` in `cwd`, with no shell. */
+/** The exit code and output of `command <args>` in `cwd`, with no shell and a closed stdin. */
 export function run(command: string, args: readonly string[], cwd: string, signal?: AbortSignal): Promise<Result> {
 	return new Promise((done, fail) => {
 		execFile(command, args, { cwd, signal, maxBuffer: 1 << 30 }, (error, stdout, stderr) => {
@@ -11,7 +11,7 @@ export function run(command: string, args: readonly string[], cwd: string, signa
 			if (error === null) done({ code: 0, stdout, stderr });
 			else if (Number.isInteger(error.code)) done({ code: Number(error.code), stdout, stderr });
 			else fail(error);
-		});
+		}).stdin?.end();
 	});
 }
 
