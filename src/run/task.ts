@@ -7,13 +7,13 @@ import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
-import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { PRUNE_MARKER, readProject, type ScriptInput } from "../launch/input.ts";
 import { branchOf, ensureWorktree, type Renamed, renameBranch } from "../launch/worktree.ts";
 import { outcomeText, waits } from "../tool.ts";
 import { firstTask, outcomeFrom, scanTasks, type TaskEnd } from "./past.ts";
 import { addProgress } from "./progress.ts";
+import { RESULT_OBJECT } from "./result.ts";
 import { runScript } from "./sandbox.ts";
 import { checkServes } from "./serves.ts";
 import { endSessions } from "./sessions.ts";
@@ -75,8 +75,6 @@ async function closeSessions(
 	}
 }
 
-const NAMED = Type.Object({ subject: Type.String(), report: Type.Optional(Type.Array(Type.String())) });
-
 /**
  * `result` of a run with a worktree of its own, with the branch that the worktree ends on. A result with a `subject`
  * gets `branch` and the report line `branch <name>`. A worktree that `renames` its branch renames it to the name of
@@ -86,7 +84,7 @@ const NAMED = Type.Object({ subject: Type.String(), report: Type.Optional(Type.A
 async function named(input: ScriptInput, result: JsonValue, signal: AbortSignal): Promise<JsonValue> {
 	const { worktree } = input;
 
-	if (worktree === undefined || !Value.Check(NAMED, result)) return result;
+	if (worktree === undefined || !Value.Check(RESULT_OBJECT, result) || result.subject === undefined) return result;
 	const wanted = branchOf(result.subject);
 	const from = worktree.branch;
 

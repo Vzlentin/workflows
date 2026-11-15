@@ -163,7 +163,7 @@ async function askStillZero(question) {
 // The judge fields of a ship result, which a fix round replaces.
 const JUDGE_FIELDS = ["score", "answers", "findings", "judgeError", "divergence"]
 
-// The ship result `result` with the head, subject and judge fields of `shipped`, the result of `commitAndJudge` in a
+// The ship result `result` with the head, subject and judge fields of `shipped`, the result of `judgeCommit` in a
 // fix round. The judge fields of `result` go first, also when `shipped` has no value for them: a saved result comes
 // back from JSON with no undefined keys.
 function withFixRound(result, shipped) {

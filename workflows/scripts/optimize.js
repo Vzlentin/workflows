@@ -75,7 +75,7 @@ const SELECT = { enum: ["A", "B", "tie"] }
 // The templates of optimize itself are not texts of ship.
 const OWN = ["prompts/inv.md", "prompts/select.md", "prompts/dom.md", "prompts/compose.md"]
 
-if (args.workflow !== "ship") throw new Error(`optimize takes ship only, not ${args.workflow}`)
+if (args.workflow !== "ship") throw new Error(`optimize takes ship only, not ${String(args.workflow)}`)
 
 if (args.items !== undefined && args.runs !== undefined) throw new Error("give --items or --runs, not both")
 
@@ -328,7 +328,7 @@ function reasonsOf(overlay) {
 
 		if (path === "AGENTS.md") {
 			const length = (text ?? "").replace(/\n$/, "").length
-			const cap = args["always-on-max"] ?? surface["AGENTS.md"]?.length ?? 0
+			const cap = Number(args["always-on-max"] ?? surface["AGENTS.md"]?.length ?? 0)
 
 			if (length > cap) reasons.push(`invalid candidate: AGENTS.md has ${length} characters, over the ${cap} cap`)
 		} else if (name !== undefined && text === null) {

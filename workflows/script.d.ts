@@ -40,8 +40,9 @@ type Meta = {
 	 */
 	repo?: boolean;
 	/**
-	 * The exit code of each `result.status`. Any other status exits 1, and a result without a status exits 0. Only an
-	 * open `input()` call makes a run wait: a result with the status `waiting` and no open `input()` call fails the run.
+	 * The exit code of each `result.status`, from 0 to 255, except 2, 3, 4 and 130, which the command gives itself (usage,
+	 * waiting, gone run, Ctrl+C or aborted). Any other status exits 1, and a result without a status exits 0. Only an open
+	 * `input()` call makes a run wait: a result with the status `waiting` and no open `input()` call fails the run.
 	 */
 	exit?: Record<string, number>;
 	/** The steps that a user sees in the progress of the script, in order, for the map of the script before a run. */
@@ -61,7 +62,7 @@ type OutlineStep =
  * The argument values of `meta.args`, and `start` with `worktree: true`. The tool's `args`, or the `--<name>` flags,
  * fill `args.<name>`.
  */
-declare const args: any;
+declare const args: Readonly<Record<string, Json>>;
 
 /** The run ID. A script that `run()` starts gets its own value. */
 declare const runId: string;
@@ -121,11 +122,37 @@ declare function input(question: string): Promise<string>;
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json | undefined };
 
 /**
+ * The result object that a script returns. The engine reads these fields, and the script can add others. A script can
+ * also return a JSON value that is not an object: a string prints as it is, and any other value prints as JSON. A
+ * result with a bad field fails the run with `the script result has a bad field: <path> <problem>`.
+ */
+type Result = {
+	/** The status, whose exit code `meta.exit` gives. */
+	status?: string;
+	/** The lines that the run prints at its end. */
+	report?: string[];
+	/** The subject of the change, which names the branch of a run with `worktree`. */
+	subject?: string;
+	/** The judge score. */
+	score?: number;
+	/** The engine writes it: the run ID of a child run, in the result of `run()`. */
+	runId?: string;
+	/** The engine writes it: the branch that the worktree of the run ends on. */
+	branch?: string;
+	/** The engine writes it: the question of an open `input()` call. */
+	question?: string;
+	[key: string]: Json | undefined;
+};
+
+/** What a script returns, and what `run()` gives: a result object, or a JSON value that is not an object. */
+type ScriptResult = Result | null | boolean | number | string | Json[];
+
+/**
  * Runs the script `name` of `workflows/` as a child run and returns its result, with `runId` when it is an object. The
  * args that its `meta.args` declares are checked before the child starts. The reserved arg `from: <run-id>` gives the
  * child the prompts and agents table of that saved run.
  */
-declare function run(name: string, args?: { [key: string]: Json | undefined }): Promise<any>;
+declare function run(name: string, args?: { [key: string]: Json | undefined }): Promise<ScriptResult>;
 
 /** A completed root run of the project store, as `pastRuns` gives it. */
 type PastRun = {
@@ -138,7 +165,7 @@ type PastRun = {
 	/** The saved template texts, by prompt name. */
 	readonly prompts: { readonly [name: string]: string };
 	/** The result of the run. */
-	readonly result: any;
+	readonly result: ScriptResult;
 };
 
 /**
@@ -294,14 +321,8 @@ declare function judgeCommit<T extends { head: string; subject: string }>(
 	committed: T,
 ): Promise<Omit<T, keyof JudgeFields> & JudgeFields>;
 
-/** `commitChange`, then `judgeCommit`. */
-declare function commitAndJudge(item: string, start: string): Promise<{ head: string; subject: string } & JudgeFields>;
-
 /** Writes the binary diff from `from` to `HEAD` to the file `path`, and returns `path`. */
 declare function writePatch(path: string, from: string): Promise<string>;
-
-/** `+12 -3 in 2 files` for the change from `from` to `to` (default `HEAD`), or `no new changes`. */
-declare function diffStat(from: string, to?: string): Promise<string>;
 
 /**
  * The change of a script's `args`. With `args.start`, a caller gives the change: `start`, and `args.item` as the
@@ -329,6 +350,3 @@ declare function inCheckout(
 	change: { start: string; intent: string; checkout?: string },
 	args: { [key: string]: Json | undefined },
 ): Promise<any>;
-
-/** Throws when the checkout has changes that are not committed. */
-declare function assertClean(): Promise<void>;

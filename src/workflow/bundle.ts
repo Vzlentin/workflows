@@ -16,7 +16,11 @@ import { mergeRoles, type Roles, readRoles, userTablePath } from "./roles.ts";
  */
 export type Bundle = {
 	readonly scripts: Readonly<Record<string, string>>;
-	/** The files of `workflows/lib/` in name order, which the prelude gives every script after the script calls. */
+	/**
+	 * The files of `workflows/lib/` in name order, wrapped in a function that returns the names that
+	 * `workflows/script.d.ts` declares, which the prelude gives every script after the script calls. The other names of
+	 * the lib files are not globals of a script.
+	 */
 	readonly lib: string;
 	readonly prompts: Readonly<Record<string, string>>;
 	/** The `agents.json` tables of the project, the user and the package, merged by `mergeRoles`. */
@@ -83,21 +87,40 @@ export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle
 	const own = join(PACKAGE, "agents.json");
 	const tables = cwd === undefined ? [own] : [join(project, "agents.json"), userTablePath(), own];
 
-	const [scripts, merged, layers, lib] = await Promise.all([
+	const [scripts, merged, layers, lib, declarations] = await Promise.all([
 		loadScripts(project),
 		readMerged(project, "prompts", ".md"),
 		Promise.all(tables.map(readRoles)),
 		readFolder(PACKAGE, "lib", ".js"),
+		readFile(join(PACKAGE, "script.d.ts"), "utf8"),
 	]);
 
 	const templates = prompts === undefined ? merged : { ...merged, ...(await overrides(prompts, merged)) };
 
 	return {
 		scripts,
-		lib: Object.values(lib).join("\n"),
+		lib: wrapLib(Object.values(lib).join("\n"), declarations),
 		prompts: Object.fromEntries(Object.entries(templates).map(([name, text]) => [name, instructions(text)])),
 		agents: mergeRoles(layers),
 	};
+}
+
+/** A global that `workflows/script.d.ts` declares. */
+const DECLARED = /^declare (?:const|function) (\w+)/gm;
+
+/** A name that a lib file declares at its top level. */
+const LIB_NAME = /^(?:async function|function|const|let|class) (\w+)/gm;
+
+/**
+ * The lib code `code` in a function that returns the names of `declarations` that it declares, in the order of
+ * `declarations`, as constants of the same names.
+ */
+function wrapLib(code: string, declarations: string): string {
+	const own = new Set(Array.from(code.matchAll(LIB_NAME), ([, name]) => name));
+	const names = Array.from(declarations.matchAll(DECLARED), ([, name]) => name).filter((name) => own.has(name));
+	const list = names.join(", ");
+
+	return `const { ${list} } = (() => {\n${code}\nreturn { ${list} };\n})();`;
 }
 
 /** The scripts of the package and of the project folder `project`, where a project script replaces the package script of its name. */

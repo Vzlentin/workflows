@@ -13,6 +13,24 @@ export const meta = {
 	outline: [{ kind: "agent", role: "implementer", label: "implement" }],
 }
 
+// `+12 -3 in 2 files` for the change from `from` to `to`, or `no new changes`.
+async function diffStat(from, to = "HEAD") {
+	const shortstat = await sh(["git", "diff", "--shortstat", from, to])
+	const count = (word) => Number(new RegExp(`(\\d+) ${word}`).exec(shortstat)?.[1] ?? 0)
+	const files = count("files? changed")
+
+	if (files === 0) return "no new changes"
+
+	return `+${count("insertion")} -${count("deletion")} in ${files} file${files === 1 ? "" : "s"}`
+}
+
+// Throws when the checkout of the current directory has changes that are not committed.
+async function assertClean() {
+	if ((await sh(["git", "status", "--porcelain"])) !== "") {
+		throw new Error("the checkout has changes that are not committed; commit or stash them first")
+	}
+}
+
 const { plan, round } = args
 const subject = subjectOf(plan)
 

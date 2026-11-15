@@ -53,11 +53,3 @@ async function judgeCommit(item, start, committed) {
 
 	return { ...committed, status, score, answers, findings, judgeError, divergence };
 }
-
-/**
- * `commitChange`, then `judgeCommit`. Returns `{ head, subject, status, score, answers, findings, judgeError,
- * divergence }`.
- */
-async function commitAndJudge(item, start) {
-	return judgeCommit(item, start, await commitChange(item, start));
-}

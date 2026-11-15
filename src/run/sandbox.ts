@@ -31,7 +31,7 @@ import {
 import { childResult } from "./child.ts";
 import { PAST_OPTIONS } from "./past.ts";
 import { addProgress, type PhaseLines, phaseLine, takeLines } from "./progress.ts";
-import { statusOf } from "./result.ts";
+import { RESULT, statusOf } from "./result.ts";
 import { askTurn, ownerOf, sessionOf } from "./sessions.ts";
 import type { Host, Runtime } from "./version.ts";
 
@@ -276,7 +276,8 @@ export async function runScript(
 	if (result.ok) {
 		const value = result.value ?? null;
 
-		if (!Value.Check(JSON_VALUE, value)) throw new Error("the script result is not JSON");
+		if (!Value.Check(RESULT, value))
+			throw new Error(`the script result has a bad field: ${argumentError(Value.Errors(RESULT, value))}`);
 
 		// Only an open `input` call makes a run wait.
 		if (statusOf(value) === "waiting")

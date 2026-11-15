@@ -33,8 +33,8 @@ judge session:      fixed rubric, on the squashed commit
 ```
 
 The research, plan and first implement sessions are `workflows/scripts/rpi.js`, the review sessions and the implement
-sessions after them `workflows/scripts/thermoloop.js` (at most `--rounds` reviews), the commit session `commitAndJudge` of
-the script lib, and the judge session `workflows/scripts/judge.js`.
+sessions after them `workflows/scripts/thermoloop.js` (at most `--rounds` reviews), the commit session `commitChange` and
+`judgeCommit` of the script lib, which `ship.js` calls, and the judge session `workflows/scripts/judge.js`.
 Each implement session is a child run of `workflows/scripts/implement.js`, which `rpi.js` and `thermoloop.js` both run.
 
 Each box is a new session.
@@ -298,7 +298,7 @@ again as a child run with `checkout` in a worktree on that branch, next to the r
 it: see [Child runs](#child-runs). Its report gets the last line `worktree <path>`, and the current checkout stays as
 it is. The run worktree stays after the run. A branch that another worktree has checked out fails with `<branch> is
 checked out at <path>; run there`, and a change that does not end on a branch, such as `main..<commit>`, fails with
-`<end> is not a branch, and the fixes need one`. A change with no change from its start fails with `no change from
+`the change ends on <end>, which is not a branch`. A change with no change from its start fails with `no change from
 <from>`, where `<from>` is `--base`, the base branch of the pull request, or `A` of the range or the ref, before any
 session.
 
@@ -793,8 +793,10 @@ export const meta = {
   that is not a boolean fails with `meta.repo is not a boolean`, and `repo: true` with `worktree: true` fails with
   `meta.repo is for a script without meta.worktree`.
 - `exit` maps `result.status` to the exit code. A script declares each status that it returns, also the ones that exit
-  0. A status that `exit` does not declare exits 1, and a result without `status` exits 0. The status `waiting` always
-  exits 3, whatever `exit` says. See [Input](#input).
+  0. A code is an integer from 0 to 255: another code fails with `meta.exit.<status> is <code>, not an exit code from 0
+  to 255`. The codes 2 (usage), 3 (waiting), 4 (gone run) and 130 (Ctrl+C or aborted) are the command's own, and fail
+  with `meta.exit.<status> is <code>, which the command reserves`. A status that `exit` does not declare exits 1, and a
+  result without `status` exits 0. The status `waiting` always exits 3, whatever `exit` says. See [Input](#input).
 - `outline` is the map of the script before a run: an array of the steps that a user sees in the progress of the
   script, in order. A step is `{ kind: "agent", role, label }`, a turn of the role `role`; `{ kind: "run", workflow,
   label }`, a child run of the workflow `workflow`; or `{ kind: "loop", label, steps }`, steps that repeat, such as
@@ -827,7 +829,9 @@ export const meta = {
 
 Every script also takes `--prompts <folder>`, as `ship` does, `--agents <name>=<provider>/<id>:<thinking>,...`, the
 run layer of the roles (see [Roles](#roles)), `--serves <todo-id | parley-slug>`, what the run builds (see
-[Serves](#serves)), `--background`, `--json` and `--help`. `workflows <wf> --help` prints
+[Serves](#serves)), `--background`, `--json` and `--help`. These flag names, and the options that a placement adds,
+are reserved argument names: `meta.args.<name>` with one of them fails with `meta.args.<name> is a reserved name`.
+`workflows <wf> --help` prints
 the usage line, built from `meta`, and `meta.description` when the script has one, and exits 0. Any other flag is bad usage. Bad usage prints
 `workflows: <error>` and the usage line of the script, and exits 2. A bad `meta` fails with
 `workflows: <name>: <problem>` and exits 1.
@@ -881,12 +885,15 @@ The command prints `run <run-id>` on stdout, then each `phase` and `log` line on
 runs, or when the script ends. The script runs in the host, which saves these lines in the project store, and the
 command reads them from the store file about every 0.5 s. A read that fails prints `warning: cannot read the progress
 of run <run-id>: <error>` on stderr once for each series of failed reads, also with `--json`; the next good read prints
-the lines that it missed. See [Progress](#progress). When the script returns a result with `report`, a list of lines, the command prints
-those lines on stdout. Otherwise it prints the return value: a string as it is, and any other value as JSON. The exit
-code comes from `meta.exit`. A run that waits for an answer to `input(question)` prints the question and exits 3. When
-stdin and stderr are terminals, and without `--json` or `--background`, the command asks the question in place of the
-exit: it reads one line on the terminal and continues the run with it as the answer. See [Input](#input). With
-`--json`, stdout gets one JSON outcome line in place of the lines. See [JSON output](#json-output).
+the lines that it missed. See [Progress](#progress). When the script returns a result with `report`, a list of lines,
+the command prints those lines on stdout. Otherwise it prints the return value: a string as it is, and any other value
+as JSON. The exit code comes from `meta.exit`. A result object can have other fields, but `status`, `subject`, `runId`,
+`branch` and `question` must be strings, `report` an array of strings and `score` a number: a result with a bad field
+fails the run with `the script result has a bad field: <path> <problem>`, such as `/report/1 must be string`. A run that
+waits for an answer to `input(question)` prints the question and exits 3. When stdin and stderr are terminals, and
+without `--json` or `--background`, the command asks the question in place of the exit: it reads one line on the
+terminal and continues the run with it as the answer. See [Input](#input). With `--json`, stdout gets one JSON outcome
+line in place of the lines. See [JSON output](#json-output).
 
 A script that throws, or a call in it that fails, stops the run: the command prints `failed <title>: <error>` and
 `continue with: workflows resume <run-id>` on stderr, and exits 1.
@@ -1087,10 +1094,11 @@ saves its result, so a resume returns the same list and does not read the store 
 
 #### The script lib
 
-Every script also gets these helpers of the files of `workflows/lib/`, which the run puts after the calls above. They
-use only the calls above. A lib file only declares: it runs no code when it loads, so the order of the files does not
-change the result. A run saves the lib with its scripts and prompts, so a resume uses the lib that the run started
-with. A script's own declaration of the same name takes their place.
+Every script also gets these helpers of the files of `workflows/lib/`, which the run puts after the calls above. The run
+gives a script only the helpers that `workflows/script.d.ts` declares: the other names of the lib files are not globals
+of a script. The helpers use only the calls above. A lib file only declares: it runs no code when it loads, so the order
+of the files does not change the result. A run saves the lib with its scripts and prompts, so a resume uses the lib that
+the run started with. A script's own declaration of the same name takes their place.
 
 | Global | Meaning |
 |---|---|
@@ -1101,12 +1109,10 @@ with. A script's own declaration of the same name takes their place.
 | `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries, and in both stores `<path>/notes.keys`, the key `<run-id>/<n>` of each note, whose line is `<k>` in the plain store; an add whose key is there adds no note. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. A compression request without `nap <a>-<b>` fails with `memo asked for a compression without "nap <a>-<b>": <first line>`, and the 65th request in a row fails with `memo still asks for compressions after 64 summaries`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without its `report` and `memory` keys at any depth, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(name)` is a session of the role `name` whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the role name, and returns the text |
 | `await noteLines(notes)` | The `#<k> <note>` lines of `notes.text`, without empty lines |
 | `await commitAll(message)` | Stages every change, and commits it as `message` when something is staged, with the check and the commit in one command, so that a repeat makes no second commit. The shell runs the commit with `exec`, so a stop of the run also stops the commit |
+| `await squash(start, message, subject)` | Squashes the commits since `start` into one commit with `message`, logs `commit <short> <subject>` and returns the short head. When nothing changed since `start`, it makes no commit, logs `nothing to commit since <short>` and returns the short head. Safe to repeat: it is one command, so a repeat resets a squash commit that was made but not saved. The shell runs the commit with `exec`, so a stop of the run also stops the commit |
 | `await commitChange(item, start, findings)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base`, `head` and `findings`, the lines of `findings` (default `[]`) joined with newlines, squashes the change into one commit with it, and returns `{ head, subject }`, `head` the short head and `subject` the commit subject. When the turn fails or gives an empty subject, the message is the subject of `item` |
 | `await judgeCommit(item, start, committed)` | Runs the child run `judge` with `item` and `start`, and returns `committed`, the result of `commitChange`, with the judge fields `score`, `answers`, `findings`, `judgeError` and `divergence` |
-| `await commitAndJudge(item, start)` | Runs `commitChange(item, start)`, then `judgeCommit`, and returns `{ head, subject, score, answers, findings, judgeError, divergence }` |
 | `await writePatch(path, from)` | Writes `git diff --binary` from `from` to `HEAD` to the file `path`, and returns `path` |
-| `await diffStat(from, to)` | `+<insertions> -<deletions> in <n> file(s)` for `git diff from to` (`to` defaults to `HEAD`), or `no new changes` |
-| `await assertClean()` | Throws `the checkout has changes that are not committed; commit or stash them first` when `git status --porcelain` shows a change |
 | `await changeOf(args, { wip })` | `{ start, intent, checkout, dirty }` of the change of a script's `args`. With `args.start`, it is `args.start` and `args.item`, not dirty, with no Git step. Else it is the change that `args.change` points at from `args.base`, with the rules of [Thermoloop](#thermoloop), and it calls `title` with the subject of the intent: `start` is the start commit, `intent` is `args.item` or the pull request or the commit messages, `checkout` is the branch of a change that must run in a worktree of its own, and `dirty` says that the checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip` |
 | `await inCheckout(name, change, args)` | Runs the script `name` again as a child run with `args`, the `item` and `start` of the change, and `checkout`, the branch of the change, and returns its result with the last report line `worktree <path>`, the worktree that has the branch |
 

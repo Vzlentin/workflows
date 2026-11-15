@@ -100,6 +100,15 @@ describe("workflows judge", () => {
 		expect(help.stdout[0]).toContain(" [--base <value>] [--repo <repository>] [--prompts <folder>] ");
 	});
 
+	it("fails a change that does not end on a branch before any session", async () => {
+		const head = git(repo, "rev-parse", "HEAD");
+		const run = await workflows(["judge", `main..${head}`], { cwd: repo, script: { judge: PASSING_JUDGE } });
+
+		expect(run.code).toBe(1);
+		expect(run.stderr).toContain(`failed judge: the change ends on ${head}, which is not a branch`);
+		expect(run.model.calls).toEqual([]);
+	});
+
 	it("exits 1 when the judge does not answer", async () => {
 		const run = await workflows(["judge", "--item", ITEM], { cwd: repo, script: { judge: "1 PASS" } });
 

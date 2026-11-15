@@ -3,7 +3,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { subject } from "../launch/input.ts";
-import { type RunResult, waits } from "../tool.ts";
+import { JSON_VALUE, type RunResult, waits } from "../tool.ts";
 import type { ProgressEvent } from "./progress.ts";
 
 /**
@@ -30,13 +30,36 @@ function textArg(input: ShownInput): string | undefined {
 	return Value.Check(Type.String(), value) ? value : undefined;
 }
 
-const STATUS = Type.Object({ status: Type.String() });
-const REPORT = Type.Object({ report: Type.Array(Type.Unknown()) });
-const SCORE = Type.Object({ score: Type.Number() });
+/**
+ * A result object of a script: the fields that the engine reads, each optional, and other fields of the script. The
+ * engine writes `runId`, `branch` and `question`.
+ */
+export const RESULT_OBJECT = Type.Object(
+	{
+		status: Type.Optional(Type.String()),
+		report: Type.Optional(Type.Array(Type.String())),
+		subject: Type.Optional(Type.String()),
+		score: Type.Optional(Type.Number()),
+		runId: Type.Optional(Type.String()),
+		branch: Type.Optional(Type.String()),
+		question: Type.Optional(Type.String()),
+	},
+	{ additionalProperties: JSON_VALUE },
+);
+
+/** The result of a script: a result object, or a JSON value that is not an object. */
+export const RESULT = Type.Union([
+	RESULT_OBJECT,
+	Type.Null(),
+	Type.Boolean(),
+	Type.Number(),
+	Type.String(),
+	Type.Array(JSON_VALUE),
+]);
 
 /** The status of a result object, if it has one. */
 export function statusOf(result: JsonValue): string | undefined {
-	return Value.Check(STATUS, result) ? result.status : undefined;
+	return Value.Check(RESULT_OBJECT, result) ? result.status : undefined;
 }
 
 /**
@@ -69,11 +92,9 @@ export type Report = {
  * status, and 1 for a status that `meta.exit` does not declare.
  */
 export function reportOf(input: ShownInput, result: JsonValue): Report {
-	const lines = Value.Check(REPORT, result)
-		? result.report.map((line) => String(line))
-		: [Value.Check(Type.String(), result) ? result : JSON.stringify(result)];
-
-	const score = Value.Check(SCORE, result) ? result.score : undefined;
+	const object = Value.Check(RESULT_OBJECT, result) ? result : undefined;
+	const lines = object?.report ?? [Value.Check(Type.String(), result) ? result : JSON.stringify(result)];
+	const score = object?.score;
 
 	if (waits(result)) return { lines, status: result.status, code: 3, score };
 	const status = statusOf(result);
@@ -93,8 +114,6 @@ export function runResult({ status, code, score }: Report): RunResult {
 	return result;
 }
 
-const BRANCH = Type.Object({ branch: Type.String() });
-
 /**
  * The branch of a run: the `branch` of the value `value` of its result, the branch that its worktree ends on, else the
  * branch of its worktree `worktree`. Undefined for a run without either.
@@ -103,5 +122,5 @@ export function runBranch(
 	value: JsonValue | undefined,
 	worktree: { readonly branch: string } | undefined,
 ): string | undefined {
-	return Value.Check(BRANCH, value) ? value.branch : worktree?.branch;
+	return (Value.Check(RESULT_OBJECT, value) ? value.branch : undefined) ?? worktree?.branch;
 }

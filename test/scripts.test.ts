@@ -21,9 +21,10 @@ import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { branchOf, renameBranch } from "../src/launch/worktree.ts";
 import { callRecords, reading, runTasks } from "../src/records/store.ts";
 import { CallDoc, type SavedCall } from "../src/run/calls.ts";
+import { RESULT_OBJECT } from "../src/run/result.ts";
 import { prelude } from "../src/run/sandbox.ts";
 import { TASK } from "../src/run/version.ts";
-import { loadBundle } from "../src/workflow/bundle.ts";
+import { loadBundle, readFolder } from "../src/workflow/bundle.ts";
 import { readMeta } from "../src/workflow/meta.ts";
 import {
 	childTasks,
@@ -160,33 +161,6 @@ function rows() {
 	}
 }
 
-/** The names of the lib that only the lib uses: a script gets them, and `script.d.ts` does not declare them. */
-const LIB_INTERNALS = [
-	"checkedOutAt",
-	"prIntent",
-	"prOf",
-	"isBranch",
-	"isAncestor",
-	"pullBranch",
-	"targetOf",
-	"intentOf",
-	"MEMO_INSTALL",
-	"MEMO",
-	"PLAIN",
-	"NOTE_KEYS",
-	"COMPRESS_PASSES",
-	"noteAdds",
-	"NOTE_BYTES",
-	"memo",
-	"bytesOf",
-	"cutNote",
-	"openStore",
-	"optmemStore",
-	"plainStore",
-	"NOTED",
-	"LESSONS",
-];
-
 /** The names of the own properties of `globalThis` in a sandbox, as a script returns them. */
 const NAMES = Type.Array(Type.String());
 
@@ -200,7 +174,8 @@ async function declaredNames(): Promise<string[]> {
 describe("workflows/script.d.ts", () => {
 	it("declares every global and lib helper that a script gets", async () => {
 		const declared = await declaredNames();
-		const text = prelude({ runId: "r", runDir: root, args: {}, bundle: await loadBundle() }, root);
+		const bundle = await loadBundle();
+		const text = prelude({ runId: "r", runDir: root, args: {}, bundle }, root).replace(bundle.lib, "");
 		const lexical = [...text.matchAll(/^(?:async function|function|const|let) (\w+)/gm)].map(([, name]) => name ?? "");
 		const probe = "return Object.getOwnPropertyNames(globalThis)";
 		await writeFile(join(root, "x.js"), probe);
@@ -214,12 +189,44 @@ describe("workflows/script.d.ts", () => {
 		const builtIns = Value.Parse(NAMES, builtIn.value);
 
 		const missing = [...lexical, ...globals].filter(
-			(name) =>
-				!name.startsWith("__") && !builtIns.includes(name) && !LIB_INTERNALS.includes(name) && !declared.includes(name),
+			(name) => !name.startsWith("__") && !builtIns.includes(name) && !declared.includes(name),
 		);
 
 		expect(missing).toEqual([]);
-		expect(LIB_INTERNALS.filter((name) => !lexical.includes(name))).toEqual([]);
+	});
+
+	it("declares in Result the fields of RESULT_OBJECT, the result object that the engine checks", async () => {
+		const declarations = await readFile("workflows/script.d.ts", "utf8");
+		const body = /^type Result = \{\n(.*?)\n\};$/ms.exec(declarations)?.[1] ?? "";
+		const fields = [...body.matchAll(/^\t(\w+)\??:/gm)].map(([, name]) => name);
+
+		expect(fields).toEqual(Object.keys(RESULT_OBJECT.properties));
+	});
+
+	it("gives a script no name of the lib that it does not declare", async () => {
+		const declared = await declaredNames();
+		const lib = await readFolder("workflows", "lib", ".js");
+
+		const names = Object.values(lib).flatMap((code) =>
+			[...code.matchAll(/^(?:async function|function|const|let|class) (\w+)/gm)].map(([, name]) => name ?? ""),
+		);
+
+		const internal = names.filter((name) => !declared.includes(name));
+		expect(internal).toContain("targetOf");
+
+		const types = internal.map((name) => `${name}: typeof ${name}`).join(", ");
+		await writeFile(join(root, "x.js"), `return { ${types} }`);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(0);
+		expect(JSON.parse(run.stdout.at(-1) ?? "null")).toEqual(
+			Object.fromEntries(internal.map((name) => [name, "undefined"])),
+		);
+	});
+
+	it("lets a script's own declaration shadow a lib helper", async () => {
+		await writeFile(join(root, "x.js"), 'const subjectOf = () => "own"\nreturn subjectOf("# x")');
+		const run = await workflows(["x.js"], { cwd: root });
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, "own"]);
 	});
 
 	it("declares only globals that a script has", async () => {
@@ -514,6 +521,15 @@ describe("input", () => {
 		expect([run.code, run.stderr[0]]).toEqual([
 			1,
 			"failed x: the script returned the status waiting, but no input() call waits",
+		]);
+	});
+
+	it("fails a script whose result has a bad field", async () => {
+		await writeFile(join(root, "x.js"), 'return { report: ["a", 1] }');
+		const run = await workflows(["x.js"], { cwd: root });
+		expect([run.code, run.stderr[0]]).toEqual([
+			1,
+			"failed x: the script result has a bad field: /report/1 must be string",
 		]);
 	});
 
@@ -2306,6 +2322,17 @@ return [one.reply, two.reply].join(", ")`,
 			1,
 			"workflows: bad: meta.args.n.type is not string, number, boolean or text",
 		]);
+
+		for (const [meta, problem] of [
+			['{ args: { background: { type: "boolean" } } }', "meta.args.background is a reserved name"],
+			["{ exit: { failed: 3 } }", "meta.exit.failed is 3, which the command reserves"],
+			["{ exit: { failed: 256 } }", "meta.exit.failed is 256, not an exit code from 0 to 255"],
+		]) {
+			await writeFile(join(root, "reserved.js"), `export const meta = ${meta}\nreturn 1`);
+			const reserved = await workflows(["reserved.js"], { cwd: root });
+			expect([reserved.code, reserved.stderr[0]], meta).toEqual([1, `workflows: reserved: ${problem}`]);
+		}
+
 		await writeFile(join(root, "described.js"), `export const meta = { description: 1 }\nreturn 1`);
 		const described = await workflows(["described.js"], { cwd: root });
 		expect([described.code, described.stderr[0]]).toEqual([

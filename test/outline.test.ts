@@ -238,7 +238,7 @@ describe("workflows outline", () => {
 	description: "Mine.",
 	args: { path: { type: "string", positional: true, required: true }, all: { type: "boolean" } },
 	repo: true,
-	exit: { found: 0, missing: 4 },
+	exit: { found: 0, missing: 5 },
 	outline: [{ kind: "agent", role: "reader", label: "read" }],
 }
 return 1`,
@@ -263,7 +263,7 @@ return 1`,
 				description: "Mine.",
 				args: { path: { type: "string", positional: true, required: true }, all: { type: "boolean" } },
 				placement: "repo",
-				exit: { found: 0, missing: 4 },
+				exit: { found: 0, missing: 5 },
 				outline: [agent("reader", "read")],
 				usage:
 					"workflows mine [--all] [--repo <repository>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] <path> [--background] [--json]",

@@ -43,6 +43,7 @@ const ARGS = Type.Object({ args: Type.Optional(Type.Record(Type.String(), Type.U
 const WORKTREE = Type.Object({ worktree: Type.Optional(Type.Boolean()) });
 const REPO = Type.Object({ repo: Type.Optional(Type.Boolean()) });
 const EXIT = Type.Object({ exit: Type.Optional(Type.Record(Type.String(), Type.Integer())) });
+const EXIT_CODE = Type.Integer({ minimum: 0, maximum: 255 });
 const SPEC_TYPE = Type.Object({ type: ARG_TYPE });
 
 // `.` matches no line terminator, so a line is a non-empty string without `\n`, `\r`, U+2028 or U+2029.
@@ -80,7 +81,7 @@ export const META = Type.Object(
 		args: Type.Record(Type.String(), ARG_SPEC),
 		placement: PLACEMENT,
 		/** The exit code of each `result.status`; any other status exits 1, and a result without a status exits 0. */
-		exit: Type.Record(Type.String(), Type.Integer()),
+		exit: Type.Record(Type.String(), EXIT_CODE),
 	},
 	{ additionalProperties: false },
 );
@@ -186,6 +187,12 @@ function checkStep(value: unknown, at: string, fail: (problem: string) => Error)
 	for (const [index, step] of value.steps.entries()) checkStep(step, `${at}/steps/${index}`, fail);
 }
 
+/** The exit codes that the command gives itself: 2 usage, 3 waiting, 4 gone run, 130 Ctrl+C or aborted. */
+const COMMAND_CODES = new Set([2, 3, 4, 130]);
+
+/** The options that the command reads for every script, which no `meta.args` name can take. */
+const RESERVED_ARGS = ["prompts", "agents", "serves", "overlay", "checkout", "from", "help", "json", "background"];
+
 /** Throws the first problem of `value` as the `meta` of the script `name`. */
 function checkMeta(value: unknown, name: string): asserts value is Literal {
 	const fail = (problem: string) => new MetaError(`${name}: ${problem}`);
@@ -206,8 +213,17 @@ function checkMeta(value: unknown, name: string): asserts value is Literal {
 	if (value.repo === true && value.worktree === true) throw fail("meta.repo is for a script without meta.worktree");
 
 	if (!Value.Check(EXIT, value)) throw fail("meta.exit does not map statuses to integer exit codes");
+
+	for (const [status, code] of Object.entries(value.exit ?? {})) {
+		if (!Value.Check(EXIT_CODE, code))
+			throw fail(`meta.exit.${status} is ${String(code)}, not an exit code from 0 to 255`);
+
+		if (COMMAND_CODES.has(code)) throw fail(`meta.exit.${status} is ${code}, which the command reserves`);
+	}
+
 	const placement = placementOf(value);
-	const reserved = new Set(["prompts", "agents", "serves", "overlay", "checkout", "from", "help", "json"]);
+
+	const reserved = new Set(RESERVED_ARGS);
 
 	for (const option of PLACEMENT_OPTIONS[placement]) reserved.add(option);
 

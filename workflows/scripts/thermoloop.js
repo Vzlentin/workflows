@@ -30,7 +30,8 @@ export const meta = {
 	],
 }
 
-const { rounds, patches = runDir } = args
+const rounds = Number(args.rounds)
+const patches = String(args.patches ?? runDir)
 const change = await changeOf(args, { wip: true })
 
 if (change.checkout !== undefined) return await inCheckout("thermoloop", change, { rounds })

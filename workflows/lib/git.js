@@ -40,24 +40,6 @@ async function writePatch(path, from) {
 	return path;
 }
 
-/** `+12 -3 in 2 files` for the change from `from` to `to`, or `no new changes`. */
-async function diffStat(from, to = "HEAD") {
-	const shortstat = await sh(["git", "diff", "--shortstat", from, to]);
-	const count = (word) => Number(new RegExp(`(\\d+) ${word}`).exec(shortstat)?.[1] ?? 0);
-	const files = count("files? changed");
-
-	if (files === 0) return "no new changes";
-
-	return `+${count("insertion")} -${count("deletion")} in ${files} file${files === 1 ? "" : "s"}`;
-}
-
-/** Throws when the checkout of the current directory has changes that are not committed. */
-async function assertClean() {
-	if ((await sh(["git", "status", "--porcelain"])) !== "") {
-		throw new Error("the checkout has changes that are not committed; commit or stash them first");
-	}
-}
-
 /** The path of the worktree that has `branch` checked out, or undefined when no worktree has it. */
 async function checkedOutAt(branch) {
 	let path;
@@ -158,7 +140,7 @@ async function changeOf(args, { wip = false } = {}) {
 	const here = await sh(["git", "branch", "--show-current"]);
 	const branch = end === "HEAD" ? here : (await isBranch(end)) ? end : undefined;
 
-	if (branch === undefined) throw new Error(`${end} is not a branch, and the fixes need one`);
+	if (branch === undefined) throw new Error(`the change ends on ${end}, which is not a branch`);
 	const local = branch === here;
 
 	if (!local) {
