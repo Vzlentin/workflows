@@ -1037,8 +1037,8 @@ and `phase`, `log` and `title` need no `await`.
 | `args` | The argument values of `meta.args`, and `start` with `worktree: true` |
 | `runId`, `runDir` | The run ID and the run directory. A script that `run()` starts gets its own values |
 | `cwd` | The directory where `sh` and `ok` run: the run's worktree, the repository of `--repo`, the caller's directory, or the directory of the command |
-| `await agent(prompt, { as, provider, model, thinking, schema, settle })` | One turn in a new session of the role `as` (default `default`), with the model of [Roles](#roles). Returns the reply text, or the answer with `schema`. With `settle: true`, a failed turn returns `{ error }` with its message, and a resume returns the same `{ error }` |
-| `session(name)`, `session({ as, provider, model, thinking })` | A new session of the role `name` or `as` (default `default`), with the model of [Roles](#roles), returned at once. `await <session>.ask(prompt, { schema, settle })` is one turn in it, with `schema` and `settle` as for `agent` |
+| `await agent(prompt, { as, provider, model, thinking, schema, settle })` | One turn in a new session of the role `as` (default `default`), with the model of [Roles](#roles). Returns the reply text, or the answer with `schema`. With `settle: true`, a failed turn returns `{ error }` with its message, and a resume returns the same `{ error }`. The prompt is the `key` of its session |
+| `session(name)`, `session({ as, provider, model, thinking, key })` | A new session of the role `name` or `as` (default `default`), with the model of [Roles](#roles), returned at once. `await <session>.ask(prompt, { schema, settle })` is one turn in it, with `schema` and `settle` as for `agent`. `key`, a string, tells apart the sessions of the same options |
 | `await sh(cmd, { settle })` | Runs `sh -c <cmd>` in the current directory of the start. Returns stdout without the last newline, and throws on a nonzero exit code. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>`. With `settle: true`, a failure returns `{ error }` with that message, and a resume returns the same `{ error }` |
 | `await ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
@@ -1109,8 +1109,8 @@ the run started with. A script's own declaration of the same name takes their pl
 
 | Global | Meaning |
 |---|---|
-| `await parallel(thunks)` | Runs the functions at once and returns their results |
-| `await pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once |
+| `await parallel(thunks)` | Runs the functions at once and returns their results. Give each `session` of a function a different `key` |
+| `await pipeline(items, ...stages)` | Sends each item through the stages in order, and the items at once. Give each `session` of a stage a different `key` |
 | `subjectOf(text)` | The first non-empty line of `text`, without leading `#` |
 | `oneLine(text)` | `text` with each whitespace run made one space, trimmed |
 | `await memory(ref)` | The run memory of `ref`, `{ path, plain, item }`: the OptMem store `path`, through `$HOME/.optmem/memo` with `MEMORY_DIR` set to `path`, or with `plain` the file `<path>/notes.txt` of `#<k> <note>` lines, with no summaries, and in both stores `<path>/notes.keys`, the key `<run-id>/<n>` of each note, whose line is `<k>` in the plain store; an add whose key is there adds no note. Without `ref.path`, opens the store `<runDir>/memory` with `memo init` and `memo config PART_CHARS=100000`, or, without `memo`, the plain store, and logs the install command of OptMem. `.ref` goes to a child run. `.note(author, round, notes)` adds each note, as the line `[item <item> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, empty ones left out, and words cut from its end above 280 UTF-8 bytes, then, in an OptMem store, answers each compression that `memo` asks for with a `summarizer` turn and `memo nap`. A compression request without `nap <a>-<b>` fails with `memo asked for a compression without "nap <a>-<b>": <first line>`, and the 65th request in a row fails with `memo still asks for compressions after 64 summaries`. `.text` is a promise of the notes, one `#<k> <note>` line each. `.finish(item, result)` gives `result` as it is when `ref.path` was given, else `result` with `lessons` and the report line `  lesson <cue>: <lesson> (<evidence>)` for each lesson after the other lines: `[]` with no turn when there are no notes, else the lessons of one `summarizer` turn on the `harvest` prompt with `item` and `result` without its `report` and `memory` keys at any depth, each `{ cue, lesson, evidence }` with its whitespace runs made one space. `.session(name)` is a session of the role `name` whose first `.ask(prompt, { schema })` starts with a `## memory` section of the notes, from `memo wake` in an OptMem store, and whose `.noted(round, prompt, rule)` adds `When you are done, answer with respond: text is <rule> Each note is one line of at most 280 bytes.`, asks for `{ text, notes }`, adds the notes under the role name, and returns the text |
@@ -1200,12 +1200,14 @@ changes only new runs. The shared instructions of the sessions are not saved: a 
 code.
 
 Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
-again. A call is known by its name, its arguments and its position among identical calls. A turn that was in progress
+again. A call is known by its name, its arguments and its position among identical calls. The calls of `parallel` and
+`pipeline` can start in another order at resume, so two identical calls there can swap their saved results: a session
+in a branch needs its own `key`, and an `agent` call its own prompt. A turn that was in progress
 continues in its session. A command that was in progress runs again, so commands must be safe to repeat. Each call
 records its kind, the arguments of its kind, its phase and its start time when it starts, and its `end` when it ends:
 `{ "kind": "done", "at", "result" }`, `{ "kind": "failed", "at", "error" }`, or `{ "kind": "cancelled", "at" }`. A
 call without `end` has not ended. The arguments of each kind are: `session` `{ "profile", "provider"?, "model"?,
-"thinking"? }`, `ask` `{ "conversation", "prompt", "schema", "settle"? }` (`schema` is `null` without one), `sh`
+"thinking"?, "key"? }` (`key` is the first 16 hex characters of the sha256 of the key that the script gives, the prompt of an `agent` call), `ask` `{ "conversation", "prompt", "schema", "settle"? }` (`schema` is `null` without one), `sh`
 `{ "cmd", "check", "settle"? }`, `ok` `{ "cmd", "check" }`, `run` `{ "name", "args" }`, `input` `{ "question" }`, `pastRuns` `{ "workflow", "options" }`, and
 `todo` `{ "action": "add", "text" }`, `{ "action": "set", "id", "state", "text"? }` or `{ "action": "list" }`.
 `CALL_RECORD` of `src/run/calls.ts` is the schema of a record, one member for each kind. It also records the task that

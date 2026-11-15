@@ -94,15 +94,20 @@ type SessionOptions = { as?: string; provider?: string; model?: string; thinking
  */
 type AskOptions = { schema?: object; settle?: true };
 
-/** One turn in a new session. Returns the reply text, or with `schema` the answer checked against that JSON Schema. */
+/**
+ * One turn in a new session. Returns the reply text, or with `schema` the answer checked against that JSON Schema. The
+ * prompt is the key of the session, so `agent` calls with different prompts keep their sessions in `parallel` and
+ * `pipeline` branches.
+ */
 declare function agent(prompt: string | Promise<string>, options?: SessionOptions & AskOptions): Promise<any>;
 
 /**
  * A new session of a role name or of `options` (default `default`). Returns at once, and the session keeps its history:
- * `.ask(prompt, { schema })` is one turn in it.
+ * `.ask(prompt, { schema })` is one turn in it. `key` tells apart the sessions of the same options: in `parallel` and
+ * `pipeline` branches, give each session a different `key`, else a resume can give a branch the session of another.
  */
 declare function session(
-	options?: string | SessionOptions,
+	options?: string | (SessionOptions & { key?: string }),
 ): { ask(prompt: string | Promise<string>, options?: AskOptions): Promise<any> };
 
 /**
@@ -198,12 +203,16 @@ declare const todo: {
 	list(): Promise<Todo[]>;
 };
 
-/** Runs the functions at once and returns their results. */
+/**
+ * Runs the functions at once and returns their results. A resume can start their calls in another order: give each
+ * `session` of a function a different `key`.
+ */
 declare function parallel<const T extends readonly unknown[]>(thunks: { [K in keyof T]: () => T[K] }): Promise<{ -readonly [K in keyof T]: Awaited<T[K]> }>;
 
 /**
  * Sends each item through the stages in order, and the items at once. Each stage gets the awaited value of the one
- * before. The types cover up to six stages.
+ * before. The types cover up to six stages. A resume can start the calls of the items in another order: give each
+ * `session` of a stage a different `key`.
  */
 declare const pipeline: {
 	<T>(items: readonly T[]): Promise<Awaited<T>[]>;

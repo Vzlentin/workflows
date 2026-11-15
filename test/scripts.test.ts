@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -728,6 +729,9 @@ describe("workflows show", () => {
 		const { calls } = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
 		expect(calls[0].conversation).toBe(a);
 		expect(calls[2]).toMatchObject({ kind: "session", conversation: b, mark: "✓" });
+		// The session record keeps a digest of the prompt, not the prompt.
+		const two = createHash("sha256").update("Script: two").digest("hex").slice(0, 16);
+		expect(calls[2].args).toEqual({ profile: "default", key: two });
 		expect(calls[3]).toMatchObject({ kind: "ask", label: "default", mark: "◉", args: { prompt: "Script: two" } });
 		expect(calls[3].endedAt).toBeUndefined();
 		const resumed = await workflows(["resume", id], { cwd: root });
@@ -1334,6 +1338,61 @@ return (await pipeline([1, 2], first, second)).join(" ")`,
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "1b 2b"]);
 		expect(await log()).toBe("2a\n2b\n1a\n1b\n");
+	});
+
+	it("keeps each agent session of a parallel branch when the branches open them in another order", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const [a, b] = await parallel([
+	async () => {
+		await sh("./gate.sh a")
+		const reply = await agent("Script: a", { as: "x" })
+		await sh("touch b.open")
+		return reply
+	},
+	async () => {
+		await sh("./gate.sh b")
+		const reply = await agent("Script: b", { as: "x" })
+		await sh("touch a.open")
+		return reply
+	},
+])
+await sh("./gate.sh end")
+return a + " | " + b`,
+		);
+		await writeFile(join(root, "b.open"), "");
+		const first = await stopped(["x.js"], { gate: "end" });
+		expect(first.code).toBe(130);
+		expect(forgetResults("./gate.sh b", "touch b.open")).toBe(2);
+		await rm(join(root, "b.open"));
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to a | Reply to b"]);
+		expect(resumed.model.calls).toEqual([]);
+	});
+
+	it("keeps each keyed session of a parallel branch when the branches open them in another order", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			`const branch = (name, other) => async () => {
+	await sh("./gate.sh " + name)
+	const s = session({ as: "x", key: name })
+	const one = await s.ask("Script: " + name + "1")
+	const two = await s.ask("Script: " + name + "2")
+	await sh("touch " + other + ".open")
+	return one + ", " + two
+}
+const [a, b] = await parallel([branch("a", "b"), branch("b", "a")])
+await sh("./gate.sh end")
+return a + " | " + b`,
+		);
+		await writeFile(join(root, "b.open"), "");
+		const first = await stopped(["x.js"], { gate: "end" });
+		expect(first.code).toBe(130);
+		expect(forgetResults("./gate.sh b", "touch b.open")).toBe(2);
+		await rm(join(root, "b.open"));
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to a1, Reply to a2 | Reply to b1, Reply to b2"]);
+		expect(resumed.model.calls).toEqual([]);
 	});
 
 	it("accepts an object answer sent as JSON text, and keeps a string answer to a string schema", async () => {
@@ -2439,6 +2498,7 @@ return [one.reply, two.reply].join(", ")`,
 			["input(1)", "input got bad arguments: /0 must be string"],
 			['sh("true", { settle: "yes" })', "sh got bad arguments: /1 must be boolean"],
 			['agent("Script: one", { settle: "yes" })', "ask got bad arguments: /3 must be boolean"],
+			['session({ key: 1 }).ask("Script: one")', "session got bad arguments: /0/key must be string"],
 		]) {
 			await writeFile(join(root, "bad.js"), `await ${code}`);
 			const run = await workflows(["bad.js"], { cwd: root });

@@ -53,13 +53,17 @@ export type ScriptRun = {
 	readonly definition: ScriptTask;
 };
 
-/** The args of a `session` call: `profile`, the role name, and the fields that override its role. */
+/**
+ * The args of a `session` call: `profile`, the role name, the fields that override its role, and `key`, which tells
+ * apart the sessions of the same role: the `digest` of the key that the script gives (for an `agent` call, its prompt).
+ */
 export const SESSION_ARGS = Type.Object(
 	{
 		profile: Type.String(),
 		provider: Type.Optional(Type.String()),
 		model: Type.Optional(Type.String()),
 		thinking: Type.Optional(Type.String()),
+		key: Type.Optional(Type.String()),
 	},
 	{ additionalProperties: false },
 );
@@ -270,12 +274,14 @@ export async function savedCall(runtime: Runtime, key: string, context: Context)
 	return record?.end?.kind === "done" ? record.end.result : undefined;
 }
 
-/** `<sha256(name + JSON args), 16 hex>.<n>`, n counting identical calls in this execution. */
+/** The first 16 hex characters of the sha256 of `text`. */
+export function digest(text: string): string {
+	return createHash("sha256").update(text).digest("hex").slice(0, 16);
+}
+
+/** `<digest(name + JSON args)>.<n>`, n counting identical calls in this execution. */
 function keyOf(name: string, args: JsonObject, counters: Map<string, number>): string {
-	const hash = createHash("sha256")
-		.update(name + JSON.stringify(args))
-		.digest("hex")
-		.slice(0, 16);
+	const hash = digest(name + JSON.stringify(args));
 
 	const n = (counters.get(hash) ?? 0) + 1;
 	counters.set(hash, n);

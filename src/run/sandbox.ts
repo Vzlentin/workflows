@@ -19,6 +19,7 @@ import { type Bundle, META, render } from "../workflow/bundle.ts";
 import {
 	type Calls,
 	callKey,
+	digest,
 	inputCall,
 	JSON_OBJECT,
 	memoized,
@@ -59,17 +60,22 @@ const prompts = Object.fromEntries(
 	${JSON.stringify(Object.keys(script.bundle.prompts))}.map((name) => [name, (inputs) => __prompt(name, inputs)]),
 );
 function session(options = "default") {
-	const { as = "default", provider, model, thinking } = typeof options === "string" ? { as: options } : (options ?? {});
+	const { as = "default", provider, model, thinking, key } =
+		typeof options === "string" ? { as: options } : (options ?? {});
 	const spec = { profile: as };
 	if (provider !== undefined) spec.provider = provider;
 	if (model !== undefined) spec.model = model;
 	if (thinking !== undefined) spec.thinking = thinking;
+	if (key !== undefined) spec.key = key;
 	const id = __session(spec);
 	return {
 		ask: async (prompt, options = {}) => __ask(await id, await prompt, options.schema, options.settle ?? false),
 	};
 }
-const agent = (prompt, { schema, settle, ...options } = {}) => session(options).ask(prompt, { schema, settle });
+const agent = async (prompt, { schema, settle, ...options } = {}) => {
+	const text = await prompt;
+	return session({ ...options, key: text }).ask(text, { schema, settle });
+};
 const sh = async (cmd, options = {}) => {
 	const result = await __sh(cmd, options.settle ?? false);
 	return "error" in result ? result : result.stdout.replace(/\\n$/, "");
@@ -191,11 +197,14 @@ export async function runScript(
 	const sandbox = new CodemodeSandbox({
 		timeoutMs: Number.POSITIVE_INFINITY,
 		globals: [
-			global("__session", Type.Tuple([SESSION_ARGS]), ([args]) =>
-				memoized(calls, callKey(calls, "session", args), { kind: "session", args }, (key) =>
+			// The record keeps a digest of the key, which can be a whole prompt.
+			global("__session", Type.Tuple([SESSION_ARGS]), ([given]) => {
+				const args = given.key === undefined ? given : { ...given, key: digest(given.key) };
+
+				return memoized(calls, callKey(calls, "session", args), { kind: "session", args }, (key) =>
 					sessionOf(calls, key, cwd, args),
-				),
-			),
+				);
+			}),
 			// The sandbox sends a missing schema as null.
 			global("__ask", ASK_ARGS, ([conversation, prompt, schema, settle]) => {
 				const args = settleArgs({ conversation, prompt, schema }, settle);
