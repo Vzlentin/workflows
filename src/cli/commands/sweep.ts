@@ -14,7 +14,7 @@ import { SWEEP_MARKER } from "../../launch/input.ts";
 import { hasBranch, repositoryAt } from "../../launch/worktree.ts";
 import { SWEPT } from "../../records/run.ts";
 import { inputWorktree, reading, runTasks } from "../../records/store.ts";
-import { hasEnded, type RunTask, runStatus, taskOf } from "../../run/past.ts";
+import { endedStatus, type RunTask, taskOf } from "../../run/past.ts";
 import { withUsage } from "../../workflow/find.ts";
 import { runsDirectory, storeOf } from "../host.ts";
 import type { Terminal } from "../main.ts";
@@ -186,7 +186,7 @@ async function hasUnpushed(directory: string): Promise<boolean> {
 function endedTask(tasks: readonly RunTask[]): RunTask | undefined {
 	const task = taskOf(tasks);
 
-	return task !== undefined && hasEnded(runStatus(task)) && !savedBy(task).later ? task : undefined;
+	return task !== undefined && endedStatus(task) !== undefined && !savedBy(task).later ? task : undefined;
 }
 
 /**

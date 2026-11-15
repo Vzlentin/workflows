@@ -38,7 +38,7 @@ export async function attach(args: readonly string[]): Promise<number> {
 	const conversation = wanted === undefined ? undefined : Number(wanted);
 
 	const run = await savedRun(id, ATTACH);
-	const { calls } = await readRun(run, true, "be attached");
+	const { calls } = await readRun(run, true);
 
 	const session = runAgent(
 		agentRows(calls, 0, Date.now()),

@@ -6,12 +6,12 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { Cursor, Page, TaskOutcome, TaskRecord } from "@earendil-works/pi-durable";
-import { type Static, type TSchema, Type } from "typebox";
+import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Mark } from "../records/steps.ts";
 import { RUN_STATE, type RunResult, type WorkflowOutcome, waits } from "../tool.ts";
 import { ROLE } from "../workflow/roles.ts";
-import { reportOf, runResult, SHOWN_INPUT, type ShownInput } from "./result.ts";
+import { reportOf, runResult, type ShownInput } from "./result.ts";
 import { current, type Runtime, TASK, thisVersion } from "./version.ts";
 
 export type RunTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
@@ -20,9 +20,10 @@ export type RunTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 export type TaskEnd = { readonly kind: string; readonly version: number; readonly outcome?: TaskOutcome<JsonValue> };
 
 /**
- * The status of a run. A task that has not ended is `running`, or `earlier-version` or `later-version` when another
- * version saved it. A completed task is `waiting` when its result waits for an answer, else `done`. A task that ended
- * without a result is `failed` (also when pi-durable faulted it), `aborted` or `orphaned`.
+ * The status of a run. A task that another version saved is `earlier-version` or `later-version`, also when it ended. A
+ * task of this version that has not ended is `running`. A completed task is `waiting` when its result waits for an
+ * answer, else `done`. A task that ended without a result is `failed` (also when pi-durable faulted it), `aborted` or
+ * `orphaned`.
  */
 export type RunStatus = Static<typeof RUN_STATE>;
 
@@ -38,16 +39,22 @@ export function savedLater(task: { readonly kind: string; readonly version: numb
 
 /** The status of the run whose task is `task`. It is the one place that computes it. */
 export function runStatus(task: RunTask | TaskEnd): RunStatus {
-	const outcome = taskOutcome(task);
+	if (!thisVersion(task)) return savedLater(task) ? "later-version" : "earlier-version";
 
-	if (outcome !== undefined) return endedState(outcome);
-
-	if (thisVersion(task)) return "running";
-
-	return savedLater(task) ? "later-version" : "earlier-version";
+	return endedStatus(task) ?? "running";
 }
 
-/** The state of a run whose task ended with `outcome`, as `runStatus` gives it for a saved task. */
+/**
+ * The state of the outcome of `task`, of any version, or undefined when it has not ended. It is the state that
+ * `runStatus` gives for a task of this version that ended.
+ */
+export function endedStatus(task: RunTask | TaskEnd): EndedStatus | undefined {
+	const outcome = taskOutcome(task);
+
+	return outcome === undefined ? undefined : endedState(outcome);
+}
+
+/** The state of a run whose task ended with `outcome`. */
 function endedState(outcome: TaskOutcome<JsonValue>): EndedStatus {
 	switch (outcome.status) {
 		case "completed":
@@ -133,14 +140,13 @@ export function runOutcome(input: ShownInput, task: RunTask | TaskEnd): Complete
 	return outcomeFrom(input, outcome);
 }
 
-/** The result of the run whose task is `task`, when it completed and its saved input has the fields of a report. */
+/** The result of the run whose task is `task`, when this version saved it and it completed. */
 export function taskResult(task: RunTask): RunResult | undefined {
 	const outcome = taskOutcome(task);
-	const input = savedInput(SHOWN_INPUT, task.input);
 
-	if (outcome?.status !== "completed" || input === undefined) return undefined;
+	if (outcome?.status !== "completed" || !current(task)) return undefined;
 
-	return completedOutcome(input, outcome.result).result;
+	return completedOutcome(task.input, outcome.result).result;
 }
 
 /** The state of the run whose task is `task`, and the result of a run that has one, as the JSON of a run gives them. */
@@ -164,7 +170,7 @@ export function stateFields(task: RunTask): StateFields {
 export function taskOf(tasks: readonly RunTask[]): RunTask | undefined {
 	const latest = tasks.at(-1);
 
-	if (latest === undefined || current(latest) || !hasEnded(runStatus(latest))) return latest;
+	if (latest === undefined || current(latest) || endedStatus(latest) === undefined) return latest;
 
 	return tasks.findLast(current) ?? latest;
 }
@@ -183,16 +189,7 @@ const SAVED = Type.Object({
 
 type Saved = Static<typeof SAVED>;
 
-const WRAPPED = Type.Object({ input: Type.Object({}) });
-
 const RUN_ID = Type.Object({ runId: Type.String() });
-
-/** The saved input of a workflow task as `schema` gives it, also when some versions wrapped it as `{ input }`. */
-export function savedInput<T extends TSchema>(schema: T, input: JsonValue): Static<T> | undefined {
-	const saved = Value.Check(WRAPPED, input) ? input.input : input;
-
-	return Value.Check(schema, saved) ? saved : undefined;
-}
 
 /** All the items of the pages that `page` reads, from the first cursor to the last. */
 export async function allPages<T>(page: (cursor: Cursor | undefined) => Promise<Page<T, Cursor>>): Promise<T[]> {
@@ -216,7 +213,7 @@ export function rootRuns(tasks: readonly RunTask[]): Map<string, RunTask[]> {
 	const runs = new Map<string, RunTask[]>();
 
 	for (const task of tasks) {
-		const id = savedInput(RUN_ID, task.input)?.runId;
+		const id = Value.Check(RUN_ID, task.input) ? task.input.runId : undefined;
 
 		if (task.owner !== undefined || id === undefined) continue;
 		runs.set(id, [...(runs.get(id) ?? []), task]);
@@ -235,7 +232,7 @@ export function firstTask(tasks: readonly RunTask[], runId: string): RunTask | u
 
 /** Whether the saved input of `task`, of any version, has the run ID `runId`. */
 export function isOfRun(task: RunTask, runId: string): boolean {
-	return savedInput(RUN_ID, task.input)?.runId === runId;
+	return Value.Check(RUN_ID, task.input) && task.input.runId === runId;
 }
 
 /**
@@ -273,9 +270,8 @@ function savedRuns(roots: ReadonlyMap<string, readonly RunTask[]>): Map<string, 
 
 	for (const [id, tasks] of roots) {
 		const task = tasks.at(-1);
-		const input = task === undefined ? undefined : savedInput(SAVED, task.input);
 
-		if (task !== undefined && input !== undefined) saved.set(id, { task, input });
+		if (task !== undefined && Value.Check(SAVED, task.input)) saved.set(id, { task, input: task.input });
 	}
 
 	return saved;
@@ -294,7 +290,7 @@ export function pastRuns(
 	const completed = new Map<string, JsonValue>();
 
 	for (const [id, { task, input }] of savedRuns(roots)) {
-		if (input.name !== workflow || runStatus(task) !== "done") continue;
+		if (input.name !== workflow || endedStatus(task) !== "done") continue;
 		const { args, worktree, bundle } = input;
 
 		completed.set(id, {

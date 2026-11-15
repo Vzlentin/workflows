@@ -10,7 +10,7 @@ import { UsageError, withUsage } from "../../workflow/find.ts";
 import { type Following, follow, outcomeOf, reportOutcome } from "../follow.ts";
 import { checkVersion, connectTo, startTask } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { checked, GoneRun, inputOf, lastTaskIn, oneRunId, eventsOf, savedRun } from "../saved.ts";
+import { checked, inputOf, lastTaskIn, oneRunId, eventsOf, savedRun, UnfollowableRun } from "../saved.ts";
 import { programStatus } from "../terminal/redraw.ts";
 
 export const RESUME = "workflows resume <run-id> [--answer <text>] [--background] [--json]";
@@ -42,7 +42,7 @@ export async function resume(
 		ask: await openAsk(opened, run.id),
 	}));
 
-	if (read === undefined) throw new GoneRun(`run ${run.id} has no workflow`);
+	if (read === undefined) throw new UnfollowableRun(`run ${run.id} has no workflow`);
 
 	const task = checked(read.latest, run.id, wait ? "be waited for" : "resume");
 	const { input } = task;

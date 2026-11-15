@@ -14,7 +14,7 @@ import type { Client } from "@vzlentin/harness/client";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { USAGE } from "../launch/input.ts";
-import { type CommandName, GONE_EXIT } from "../tool.ts";
+import { type CommandName, UNFOLLOWABLE_EXIT } from "../tool.ts";
 import { help, type Io, listScripts, parseArgsMessage, UsageError } from "../workflow/find.ts";
 import { ATTACH, attach } from "./commands/attach.ts";
 import { CHECK, check } from "./commands/check.ts";
@@ -27,7 +27,7 @@ import { SHOW, show } from "./commands/show.ts";
 import { start } from "./commands/start.ts";
 import { STOP, stop } from "./commands/stop.ts";
 import { SWEEP, sweep } from "./commands/sweep.ts";
-import { GoneRun } from "./saved.ts";
+import { UnfollowableRun } from "./saved.ts";
 import type { PickItem } from "./terminal/pick.ts";
 
 /** The part of the `package.json` of workflows that `--version` reads. */
@@ -164,6 +164,6 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 			return 2;
 		}
 
-		return error instanceof GoneRun ? GONE_EXIT : 1;
+		return error instanceof UnfollowableRun ? UNFOLLOWABLE_EXIT : 1;
 	}
 }

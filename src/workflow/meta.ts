@@ -187,7 +187,7 @@ function checkStep(value: unknown, at: string, fail: (problem: string) => Error)
 	for (const [index, step] of value.steps.entries()) checkStep(step, `${at}/steps/${index}`, fail);
 }
 
-/** The exit codes that the command gives itself: 2 usage, 3 waiting, 4 gone run, 130 Ctrl+C or aborted. */
+/** The exit codes that the command gives itself: 2 usage, 3 waiting, 4 a run that the command can never follow, 130 Ctrl+C or aborted. */
 const COMMAND_CODES = new Set([2, 3, 4, 130]);
 
 /** The options that the command reads for every script, which no `meta.args` name can take. */

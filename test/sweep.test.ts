@@ -139,21 +139,17 @@ describe("workflows sweep", () => {
 
 	it("removes the worktree and branch of a run that an earlier version saved", async () => {
 		const { id, worktree } = await mergedRun();
-		saveAs(TASK.version - 1, true);
-		const shown = JSON.parse((await workflows(["show", id, "--json"], { cwd: repo })).stdout[0] ?? "");
+		saveAs(TASK.version - 1);
 		const listed = await workflows(["list", "--json"], { cwd: repo });
 		expect(JSON.parse(listed.stdout[0] ?? "")).toEqual([
 			{
 				runId: id,
 				workflow: "w",
 				title: "w",
-				state: "done",
-				result: { code: 0 },
-				resumable: false,
-				branch: `w/${id}`,
+				state: "earlier-version",
 				startedAt: expect.any(String),
-				repository: await realpath(repo),
-				steps: shown.steps,
+				repository: null,
+				steps: [],
 			},
 		]);
 
@@ -225,7 +221,7 @@ describe("workflows sweep", () => {
 
 	it("keeps a run that a later version saved", async () => {
 		const { worktree } = await mergedRun();
-		saveAs(TASK.version + 1, false);
+		saveAs(TASK.version + 1);
 
 		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
 		expect([swept.code, swept.stdout]).toEqual([0, []]);

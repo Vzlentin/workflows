@@ -64,17 +64,16 @@ type Ended = { readonly lines: string[]; readonly error?: string; readonly code:
 
 /**
  * How the run that ended with `outcome`, without a result, ended. The lines start with the state of the run, and tell
- * how to resume it only when it is `resumable`.
+ * how to resume it.
  */
-export function endOf(outcome: EndedOutcome, title: string, resumable: boolean): Ended {
+export function endOf(outcome: EndedOutcome, title: string): Ended {
 	const resume = `continue with: workflows resume ${outcome.runId}`;
 	const { code } = ending(outcome.state);
 
-	if (outcome.state === "aborted")
-		return { lines: [resumable ? `aborted ${title}; ${resume}` : `aborted ${title}`], code };
+	if (outcome.state === "aborted") return { lines: [`aborted ${title}; ${resume}`], code };
 	const { error } = outcome;
 
-	return { lines: [`${outcome.state} ${title}: ${error}`, ...(resumable ? [resume] : [])], error, code };
+	return { lines: [`${outcome.state} ${title}: ${error}`, resume], error, code };
 }
 
 /** True when `signal` aborts within `ms`. */
@@ -356,7 +355,7 @@ export function outcomeOf(
 		return outcome.result.code;
 	}
 
-	const ended = endOf(outcome, titleOf(input, events), true);
+	const ended = endOf(outcome, titleOf(input, events));
 
 	if (!json) for (const line of ended.lines) terminal.stderr(line);
 

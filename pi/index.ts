@@ -65,7 +65,8 @@ const STARTED_ENTRY = Type.Object({
 
 /**
  * The entry that the watcher records after it posts the outcome of a background run, or that the tool records after a
- * call that it waited for gave the outcome. `reason` is the error of a gone run, which ended with no outcome.
+ * call that it waited for gave the outcome. `reason` is the last error line of a run that `wait` can never follow, which
+ * ended with no outcome.
  */
 const ENDED_ENTRY = Type.Object({
 	type: Type.Literal("custom"),
@@ -327,7 +328,6 @@ const LISTED = Type.Array(
 		workflow: Type.String(),
 		state: Type.String(),
 		result: Type.Optional(Type.Object({ status: Type.Optional(Type.String()), code: Type.Integer() })),
-		resumable: Type.Boolean(),
 		title: Type.String(),
 	}),
 );
@@ -487,6 +487,8 @@ type Followed = Background & {
 	readonly steps: Steps;
 	readonly done: AbortController;
 	foreground?: Promise<void>;
+	/** The last line of the error of the last wait, until a progress line comes. */
+	error?: string | undefined;
 };
 
 /**
@@ -503,8 +505,10 @@ function postable(outcome: WorkflowOutcome | undefined): outcome is WorkflowOutc
 /**
  * Follows the background runs of a session with `workflows wait`, and posts the outcome of each one as a
  * `workflow-result` message that starts a turn. A wait that gives no outcome to post, such as a detached run or a host
- * that stopped, runs again after 1 s, then twice as long each time, up to 60 s. A run that is gone, which `wait` gives
- * with the exit code `GONE_EXIT`, gets an end entry with the reason, and no message. A call of the tool that resumes a
+ * that stopped, runs again after 1 s, then twice as long each time, up to 60 s, and the widget shows the last line of
+ * its error until a progress line comes. A run that `wait` can never follow, which it gives with the exit code
+ * `UNFOLLOWABLE_EXIT`, such as a gone run or a run of another version, gets an end entry with the last line of the
+ * error as its reason, and no message. A call of the tool that resumes a
  * followed run in the foreground gives the outcome itself: the watcher posts only when that call gave none. Shutdown
  * sends SIGINT to the waits, which detach and post nothing, and ends the retries. With a UI from `session_start`, the
  * widget `workflows` below the editor shows a dim `workflows` header and the step of each followed run, and draws no
@@ -607,7 +611,8 @@ class Watcher {
 
 	/**
 	 * The widget: no line when no run is followed, else a dim `workflows` header, then one line for each followed run,
-	 * with its workflow name, the name of its repository when known, its short ID and its step.
+	 * with its workflow name, the name of its repository when known, its short ID and its step, and the last error of
+	 * its wait in parentheses.
 	 * `Text` pads and wraps the lines as Pi does for a widget of lines.
 	 */
 	#widget(theme: Theme): Component {
@@ -626,11 +631,12 @@ class Watcher {
 	#lines(theme: Theme): string {
 		if (this.#watched.size === 0) return "";
 
-		const shown = [...this.#watched.values()].map(({ runId, workflow, repository, steps }) => {
+		const shown = [...this.#watched.values()].map(({ runId, workflow, repository, steps, error }) => {
 			const short = runId.slice(runId.lastIndexOf("-") + 1);
 			const words = repository === undefined ? [short] : [basename(repository), short];
+			const failed = error === undefined ? "" : ` (${error})`;
 
-			return `${theme.fg("dim", `${workflow}:`)} ${words.join(" ")} ${steps.step}`;
+			return `${theme.fg("dim", `${workflow}:`)} ${words.join(" ")} ${steps.step}${failed}`;
 		});
 
 		return [theme.fg("dim", "workflows"), ...shown].join("\n");
@@ -666,10 +672,17 @@ class Watcher {
 				return;
 			}
 
-			if (code === this.#tool.GONE_EXIT && error !== undefined) {
-				this.#end(run, error);
+			const last = error?.split("\n").findLast((line) => line.trim() !== "");
+
+			if (code === this.#tool.UNFOLLOWABLE_EXIT && last !== undefined) {
+				this.#end(run, last);
 
 				return;
+			}
+
+			if (last !== undefined) {
+				run.error = last;
+				this.#draw();
 			}
 
 			try {
@@ -681,7 +694,8 @@ class Watcher {
 	}
 
 	/** What one `workflows wait` of `run` gave. */
-	async #wait({ runId, cwd, steps }: Followed): Promise<Waited> {
+	async #wait(run: Followed): Promise<Waited> {
+		const { runId, cwd, steps } = run;
 		let output: Output;
 
 		try {
@@ -689,6 +703,8 @@ class Watcher {
 				signal: this.#controller.signal,
 				progress: (line, progress) => {
 					steps.add(line, progress);
+
+					if (progress !== undefined) run.error = undefined;
 					this.#draw();
 				},
 			});

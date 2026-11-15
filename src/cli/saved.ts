@@ -13,18 +13,10 @@ import { Value } from "typebox/value";
 import { readProject, type ScriptInput } from "../launch/input.ts";
 import { RUN_FIELDS, SWEPT, type TaskFields, taskFields } from "../records/run.ts";
 import { type Progress, progressOf } from "../records/steps.ts";
-import {
-	inputName,
-	inputWorktree,
-	progressEvents,
-	reading,
-	runTasks,
-	type Store,
-	startedTasks,
-} from "../records/store.ts";
-import { hasEnded, type RunTask, runStatus, savedInput, savedLater, taskOf } from "../run/past.ts";
+import { inputName, progressEvents, reading, runTasks, type Store, startedTasks } from "../records/store.ts";
+import { type RunTask, savedLater, taskOf } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
-import { SHOWN_INPUT, type ShownInput, title as titleOf } from "../run/result.ts";
+import { title as titleOf } from "../run/result.ts";
 import { current } from "../run/version.ts";
 import { UsageError } from "../workflow/find.ts";
 import { keyNumber, runsDirectory, storeOf, taskKey } from "./host.ts";
@@ -38,8 +30,11 @@ export function oneRunId(args: readonly string[], usage: string): string {
 	return id;
 }
 
-/** The error of a command on a saved run that is gone: its run directory or its task is missing. It exits `GONE_EXIT`. */
-export class GoneRun extends Error {}
+/**
+ * The error of a command on a saved run that it can never follow: its run directory or its task is missing, or another
+ * version saved it. It exits `UNFOLLOWABLE_EXIT`.
+ */
+export class UnfollowableRun extends Error {}
 
 /** A run that the command started: its ID, its project, and the path of the project store. */
 export type SavedRun = { readonly id: string; readonly project: string; readonly store: string };
@@ -51,7 +46,7 @@ export async function savedRun(id: string, usage: string): Promise<SavedRun> {
 	}
 
 	const project = await readProject(join(runsDirectory(), id)).catch(() => {
-		throw new GoneRun(`no run ${id} in ${runsDirectory()}`);
+		throw new UnfollowableRun(`no run ${id} in ${runsDirectory()}`);
 	});
 
 	return { id, project, store: storeOf(project) };
@@ -79,15 +74,8 @@ export async function listedRuns(store: Store, runs: ReadonlyMap<string, readonl
 		const task = taskOf(tasks);
 
 		if (task === undefined || !existsSync(join(runsDirectory(), id, "project"))) continue;
-		const repository = inputWorktree(task.input)?.repository ?? null;
-
-		// A task of every version whose input has the fields of a title gets its title; another keeps its workflow name.
-		const input = savedInput(SHOWN_INPUT, task.input);
-		const workflow = savedBy(task).name;
-		const events = await progressEvents(store, id);
-		const title = input === undefined ? workflow : titleOf(input, events);
 		const fields = taskFields(tasks, task);
-		const progress = progressOf(events);
+		const { workflow, title, progress, repository } = current(task) ? await viewOf(store, id, task) : otherView(task);
 
 		progress.end(fields.state);
 		const row = { ...(await runFields(id, workflow, title, fields)), repository, steps: progress.lines() };
@@ -96,6 +84,40 @@ export async function listedRuns(store: Store, runs: ReadonlyMap<string, readonl
 	}
 
 	return listed;
+}
+
+/**
+ * What `list` and `show` give of a run besides its task fields: its workflow, its title, the progress of its steps, and
+ * the repository of its worktree, or null for a run without a worktree.
+ */
+type RunView = {
+	readonly workflow: string;
+	readonly title: string;
+	readonly progress: Progress;
+	readonly repository: string | null;
+};
+
+/** The view of the run `id` of the open project store `store`, whose task `task` this version saved. */
+async function viewOf(store: Store, id: string, task: TaskRecord<ScriptInput, JsonValue, JsonValue>): Promise<RunView> {
+	const { input } = task;
+	const events = await progressEvents(store, id);
+
+	return {
+		workflow: input.name,
+		title: titleOf(input, events),
+		progress: progressOf(events),
+		repository: input.worktree?.repository ?? null,
+	};
+}
+
+/**
+ * The view of the run whose task `task` another version saved: its workflow, as `savedBy` reads it, as its title, no
+ * steps and no repository. This version does not read its input or its events.
+ */
+export function otherView(task: RunTask): RunView {
+	const { name } = savedBy(task);
+
+	return { workflow: name, title: name, progress: progressOf([]), repository: null };
 }
 
 /** The file of a run directory that holds the word of `sweep --yes`, `landed` or `dropped`. */
@@ -177,13 +199,13 @@ export async function lastTaskIn(
 }
 
 /**
- * The last root task of `run` and the keys of its tasks, as `lastTaskIn` reads them. It throws `GoneRun` when the store
- * is missing.
+ * The last root task of `run` and the keys of its tasks, as `lastTaskIn` reads them. It throws `UnfollowableRun` when
+ * the store is missing.
  */
 export async function lastTask(run: SavedRun) {
 	const read = await reading(run.store, undefined, ({ store }) => lastTaskIn(store, run.id));
 
-	if (read === undefined) throw new GoneRun(`run ${run.id} has no workflow`);
+	if (read === undefined) throw new UnfollowableRun(`run ${run.id} has no workflow`);
 
 	return read;
 }
@@ -222,48 +244,29 @@ export function eventsOf(run: SavedRun): Promise<readonly ProgressEvent[]> {
 	return reading(run.store, [], ({ store }) => progressEvents(store, run.id));
 }
 
-const PREFIX = "workflows.";
-
-/** The task `latest` of the run `id`. It throws `GoneRun` when there is none, and an error when another version saved it. */
+/**
+ * The task `latest` of the run `id`. It throws `UnfollowableRun` when there is none or when another version saved it;
+ * `verb` completes that error, as in `cannot <verb>`.
+ */
 export function checked(
 	latest: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined,
 	id: string,
 	verb: string,
 ): TaskRecord<ScriptInput, JsonValue, JsonValue> {
-	if (latest === undefined) throw new GoneRun(`run ${id} has no workflow`);
+	if (latest === undefined) throw new UnfollowableRun(`run ${id} has no workflow`);
 
 	if (current(latest)) return latest;
-	throw otherVersion(latest, id, verb);
-}
-
-/** A task that `show` can read, with the fields of its input that it reads. */
-type ReadableTask = { readonly task: RunTask; readonly input: ShownInput };
-
-/**
- * The task `latest` of the run `id`, with the fields of its input that `show` reads: a task of this version, or a task
- * of another version that ended and whose input has these fields. It throws `GoneRun` when there is no task, and
- * an error for another task of another version.
- */
-export function readable(latest: RunTask | undefined, id: string, verb: string): ReadableTask {
-	if (latest === undefined) throw new GoneRun(`run ${id} has no workflow`);
-
-	if (current(latest)) return { task: latest, input: latest.input };
-	const input = savedInput(SHOWN_INPUT, latest.input);
-
-	if (input !== undefined && hasEnded(runStatus(latest))) return { task: latest, input };
-	throw otherVersion(latest, id, verb);
-}
-
-function otherVersion(latest: RunTask, id: string, verb: string): Error {
 	const { name, later } = savedBy(latest);
 
-	return new Error(`run ${id} was saved by ${later ? "a later" : "an earlier"} version of ${name} and cannot ${verb}`);
+	throw new UnfollowableRun(
+		`run ${id} was saved by ${later ? "a later" : "an earlier"} version of ${name} and cannot ${verb}`,
+	);
 }
 
-/** The workflow of the task `latest` of any version, and whether the version that saved it is later than this one. */
+/**
+ * The workflow of the task `latest` of any version, as the input schema of this version reads it, or `?`, and whether
+ * the version that saved it is later than this one.
+ */
 export function savedBy(latest: TaskRecord<JsonValue, JsonValue, JsonValue>) {
-	// A script task names its workflow in its input; an earlier task kind names it in the kind.
-	const name = inputName(latest.input) ?? latest.kind.slice(PREFIX.length);
-
-	return { name, later: savedLater(latest) };
+	return { name: inputName(latest.input) ?? "?", later: savedLater(latest) };
 }

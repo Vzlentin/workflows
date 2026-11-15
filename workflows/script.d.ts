@@ -42,7 +42,7 @@ type Meta = {
 	repo?: boolean;
 	/**
 	 * The exit code of each `result.status`, from 0 to 255, except 2, 3, 4 and 130, which the command gives itself (usage,
-	 * waiting, gone run, Ctrl+C or aborted). Any other status exits 1, and a result without a status exits 0. Only an open
+	 * waiting, a run that the command can never follow, Ctrl+C or aborted). Any other status exits 1, and a result without a status exits 0. Only an open
 	 * `input()` call makes a run wait: a result with the status `waiting` and no open `input()` call fails the run.
 	 */
 	exit?: Record<string, number>;

@@ -1100,7 +1100,6 @@ describe("workflows show", () => {
 			title: "Fix the README typo",
 			state: "done",
 			result: { status: "shipped", code: 0 },
-			resumable: true,
 			report: shown.stdout.slice(-2),
 		});
 		const flat = (calls: readonly Stored[]): Stored[] => calls.flatMap((c) => [c, ...flat(c.child?.calls ?? [])]);
@@ -1190,36 +1189,28 @@ describe("workflows show --pick", () => {
 
 describe("workflows resume of ship runs", () => {
 	it("refuses a run that another version saved, and lists it as such", async () => {
-		// A task without a workflow name in its input is named by its kind.
+		// A task without a workflow name in its input has the workflow `?`.
 		const run = await saveRun(root, "workflows.run", TASK.version - 1);
-		// A script task of an earlier version names its workflow in its input.
 		const script = await saveRun(root, "workflows.run", TASK.version - 1, { name: "ship" });
-		// Some earlier versions wrapped the input as `{ input }`.
-		const wrapped = await saveRun(root, "workflows.run", TASK.version - 1, { input: { name: "campaign" } });
-		// A script task of a later version is refused too.
 		const later = await saveRun(root, "workflows.run", TASK.version + 1, { name: "ship" });
 
 		for (const [id, name, word] of [
-			[run, "run", "an earlier"],
+			[run, "?", "an earlier"],
 			[script, "ship", "an earlier"],
-			[wrapped, "campaign", "an earlier"],
 			[later, "ship", "a later"],
 		] as const) {
 			const resumed = await workflows(["resume", id], { cwd: repo });
 			expect([resumed.code, resumed.stdout, resumed.stderr]).toEqual([
-				1,
+				4,
 				[],
 				[`workflows: run ${id} was saved by ${word} version of ${name} and cannot resume`],
 			]);
-			const shown = await workflows(["show", id, "--json"], { cwd: repo });
-			expect([shown.code, shown.stdout, shown.stderr]).toEqual([
-				1,
-				[],
-				[`workflows: run ${id} was saved by ${word} version of ${name} and cannot be shown`],
-			]);
+			const state = id === later ? "later-version" : "earlier-version";
+			const shown = await workflows(["show", id], { cwd: repo });
+			expect([shown.code, shown.stdout[0], shown.stderr]).toEqual([0, `run ${id} ${name} ${state} ${name}`, []]);
 			const saved = await workflows(["save", id, "x"], { cwd: repo });
 			expect([saved.code, saved.stdout, saved.stderr]).toEqual([
-				1,
+				4,
 				[],
 				[`workflows: run ${id} was saved by ${word} version of ${name} and cannot be saved`],
 			]);
@@ -1233,17 +1224,9 @@ describe("workflows resume of ship runs", () => {
 
 		const listed = await workflows(["list"], { cwd: repo });
 		const word = (id: string) => (id === later ? "later-version" : "earlier-version");
-		const all = [run, script, wrapped, later].sort().reverse();
-
-		const names = new Map([
-			[run, "run"],
-			[script, "ship"],
-			[wrapped, "campaign"],
-		]);
-
-		expect(listed.stdout).toEqual(
-			all.map((id) => `${id} ${names.get(id) ?? "ship"} ${word(id)} ${names.get(id) ?? "ship"}`),
-		);
+		const name = (id: string) => (id === run ? "?" : "ship");
+		const all = [run, script, later].sort().reverse();
+		expect(listed.stdout).toEqual(all.map((id) => `${id} ${name(id)} ${word(id)} ${name(id)}`));
 		const unknown = await workflows(["show", "20990101T000000-00000000"], { cwd: repo });
 		expect([unknown.code, unknown.stdout, unknown.stderr]).toEqual([
 			4,
@@ -1363,7 +1346,6 @@ describe("workflows resume of ship runs", () => {
 				title: "Fix the README typo",
 				state: "done",
 				result: { status: "shipped", code: 0, score: 5 / 6 },
-				resumable: true,
 				branch: "fix/correct-the-readme-typo",
 				startedAt: expect.any(String),
 				repository,
@@ -1374,7 +1356,6 @@ describe("workflows resume of ship runs", () => {
 				workflow: "ship",
 				title: "Second item",
 				state: "running",
-				resumable: true,
 				branch: `ship/${stopped.id}`,
 				startedAt: expect.any(String),
 				repository,

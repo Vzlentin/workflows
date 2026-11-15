@@ -14,6 +14,7 @@ import { runRecords } from "../../records/store.ts";
 import { type CallNode, callNodes } from "../../records/tree.ts";
 import {
 	endedOutcome,
+	endedStatus,
 	hasEnded,
 	type RunStatus,
 	type RunTask,
@@ -26,7 +27,7 @@ import { stateText } from "../../tool.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin } from "../follow.ts";
 import type { Terminal } from "../main.ts";
-import { GoneRun, type SavedRun, savedBy, savedRun } from "../saved.ts";
+import { type SavedRun, savedBy, savedRun, UnfollowableRun } from "../saved.ts";
 
 export const LOG = "workflows log <run-id> [<step> | <call>] [--follow]";
 
@@ -100,8 +101,8 @@ export async function log(args: readonly string[], terminal: Terminal, json: boo
 }
 
 /**
- * A run as `log` reads it: its head line, its call tree, its progress, the status of its task, if it has one, and the
- * error of the task when it ended with one.
+ * A run as `log` reads it: its head line, its call tree, its progress, the status of its task, if it has one, as its
+ * outcome gives it for a task of another version that ended, and the error of the task when it ended with one.
  */
 type ReadLog = {
 	readonly head: string;
@@ -118,17 +119,22 @@ async function readLog(run: SavedRun): Promise<ReadLog> {
 	const { tasks, events, records, live } = read;
 	const task = taskOf(tasks);
 
-	if (task === undefined && events.length === 0 && records.size === 0) throw new GoneRun(`run ${id} has no workflow`);
-	const status = task === undefined ? undefined : runStatus(task);
+	if (task === undefined && events.length === 0 && records.size === 0) {
+		throw new UnfollowableRun(`run ${id} has no workflow`);
+	}
+
+	// The calls, the steps and the end line of a task of another version that ended show how it ended; its head shows
+	// its state.
+	const status = task === undefined ? undefined : (endedStatus(task) ?? runStatus(task));
 	const ended = status === undefined || hasEnded(status);
 	const calls = callNodes(records, id, { ended, waiting: status === "waiting", live });
 
 	if (status !== undefined) read.progress.end(status);
 
 	const head =
-		task === undefined || status === undefined
+		task === undefined
 			? `run ${id}`
-			: `run ${id} ${savedBy(task).name} ${stateText(status, taskResult(task))}`;
+			: `run ${id} ${savedBy(task).name} ${stateText(runStatus(task), taskResult(task))}`;
 
 	return { head, calls, progress: read, status, error: errorOf(id, task) };
 }

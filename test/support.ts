@@ -180,14 +180,8 @@ export async function inputsOf(id: string | undefined): Promise<JsonObject[]> {
 
 /**
  * The input of a task of another version, with the workflow `name`, the arguments `args` and the `meta` of its script.
- * Some versions wrapped it as `{ input }`.
  */
-type SavedInput = {
-	readonly name?: string;
-	readonly args?: JsonObject;
-	readonly meta?: JsonObject;
-	readonly input?: { readonly name?: string };
-};
+type SavedInput = { readonly name?: string; readonly args?: JsonObject; readonly meta?: JsonObject };
 
 /**
  * The ID of a new run of the `main` project of the sandbox `root` whose store holds one pending task of `kind` at
@@ -198,7 +192,7 @@ export async function saveRun(
 	root: string,
 	kind: string,
 	version: number,
-	input: SavedInput = { input: {} },
+	input: SavedInput = {},
 	options: { readonly started?: true } = {},
 ): Promise<string> {
 	const id = newRunId();
@@ -223,10 +217,8 @@ export async function saveRun(
 
 	try {
 		const conversation = await harness.root(BACKGROUND_CONTEXT);
-		// A script task of some earlier versions wrapped its input as `{ input }`.
-		const saved = "input" in input ? { input: { ...input.input, runId: id } } : { ...input, runId: id };
 		await conversation.commit(async (tx) => {
-			const taskId = await tx.createTask(task, saved, { ownership: { kind: "conversation" } });
+			const taskId = await tx.createTask(task, { ...input, runId: id }, { ownership: { kind: "conversation" } });
 
 			if (options.started) (await tx.doc(StartedTasks)).tasks[`wf:${id}#1`] = taskId;
 		}, BACKGROUND_CONTEXT);
@@ -237,17 +229,11 @@ export async function saveRun(
 	return id;
 }
 
-/**
- * Marks the run tasks of the store of `main` as saved by `version`, with their input wrapped as `{ input }` when `wrap`
- * is set.
- */
-export function saveAs(version: number, wrap: boolean): void {
+/** Marks the run tasks of the store of `main` as saved by `version`. */
+export function saveAs(version: number): void {
 	const database = new DatabaseSync(storeOf());
-	const input = wrap ? ", '$.input', json_object('input', record -> '$.input')" : "";
 	database
-		.prepare(
-			`UPDATE tasks SET record = json_set(record, '$.version', ?${input}) WHERE record ->> '$.kind' = 'workflows.run'`,
-		)
+		.prepare(`UPDATE tasks SET record = json_set(record, '$.version', ?) WHERE record ->> '$.kind' = 'workflows.run'`)
 		.run(version);
 	database.close();
 }

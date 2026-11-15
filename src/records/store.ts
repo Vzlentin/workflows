@@ -27,7 +27,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { ScriptInput } from "../launch/input.ts";
 import { CALL_KIND, CALL_RECORD, childOf, type SavedCall } from "../run/calls.ts";
-import { allPages, isOfRun, type RunStatus, type RunTask, rootRuns, runStatus, savedInput } from "../run/past.ts";
+import { allPages, isOfRun, type RunStatus, type RunTask, rootRuns, runStatus } from "../run/past.ts";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "../run/progress.ts";
 import { TASK } from "../run/version.ts";
 import { type Progress, progressOf } from "./steps.ts";
@@ -215,12 +215,11 @@ export async function reading<T>(path: string, fallback: T, read: (opened: Opene
 	}
 }
 
-/**
- * The workflow name in the input of a workflow task, also of an earlier version, which some versions wrapped as
- * `{ input }`.
- */
+const NAMED = Type.Object({ name: Type.String() });
+
+/** The workflow name in the input of a workflow task of any version, as the input schema of this version reads it. */
 export function inputName(input: JsonValue): string | undefined {
-	return savedInput(Type.Object({ name: Type.String() }), input)?.name;
+	return Value.Check(NAMED, input) ? input.name : undefined;
 }
 
 const WORKTREE = Type.Object({
@@ -242,9 +241,9 @@ type Exactly<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B
  */
 type SavedWorktree = Exactly<Readonly<Static<typeof WORKTREE>["worktree"]>, NonNullable<ScriptInput["worktree"]>>;
 
-/** The worktree of the input of a workflow task, also of an earlier version, which some versions wrapped as `{ input }`. */
+/** The worktree of the input of a workflow task of any version, as the input schema of this version reads it. */
 export function inputWorktree(input: JsonValue): SavedWorktree | undefined {
-	return savedInput(WORKTREE, input)?.worktree;
+	return Value.Check(WORKTREE, input) ? input.worktree : undefined;
 }
 
 /** The tasks of the kind `workflows.run`, root or child, also of another version. */

@@ -18,13 +18,23 @@ import {
 	type TreeEntry,
 } from "../../records/tree.ts";
 import { hasEnded, type RunStatus, type RunTask, runOutcome, taskOf } from "../../run/past.ts";
-import { type ShownInput, title as titleOf } from "../../run/result.ts";
+import { title as titleOf } from "../../run/result.ts";
+import { current, TASK } from "../../run/version.ts";
 import { stateText } from "../../tool.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin, endOf } from "../follow.ts";
 import { storeOf } from "../host.ts";
 import type { Choose, Terminal } from "../main.ts";
-import { type ListedRun, listedRuns, runFields, oneRunId, readable, type SavedRun, savedRun } from "../saved.ts";
+import {
+	type ListedRun,
+	listedRuns,
+	oneRunId,
+	otherView,
+	runFields,
+	type SavedRun,
+	savedRun,
+	UnfollowableRun,
+} from "../saved.ts";
 import type { PickItem } from "../terminal/pick.ts";
 
 export const SHOW = "workflows show (<run-id> [--agents] [--json] | [<run-id>] --pick)";
@@ -110,14 +120,14 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 
 	const id = oneRunId(positionals, SHOW);
 	const agents = values.agents === true;
-	const shown = await readRun(await savedRun(id, SHOW), agents || json, "be shown");
-	const { input, title, head, ended, todos, calls, progress, footer, end } = shown;
+	const shown = await readRun(await savedRun(id, SHOW), agents || json);
+	const { workflow, title, head, ended, todos, calls, progress, footer, end } = shown;
 	const now = Date.now();
 	const rows = agentRows(calls, 0, now);
 
 	const fields: Static<Type.TObject<typeof RUN_FIELDS>> & { agent?: Static<typeof RUN_AGENT> } = await runFields(
 		id,
-		input.name,
+		workflow,
 		title,
 		shown.fields,
 	);
@@ -142,12 +152,11 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 }
 
 /**
- * A saved run as `show` prints it. `task` is the task that it reads, `todos` is the list of todos of the run, and
- * `end` has the report lines or the error of a run that ended.
+ * A saved run as `show` prints it. `todos` is the list of todos of the run, and `end` has the report lines or the error
+ * of a run that ended.
  */
 type ShownRun = {
-	readonly task: RunTask;
-	readonly input: ShownInput;
+	readonly workflow: string;
 	readonly title: string;
 	readonly fields: TaskFields;
 	/** The project of the run, whose host has its agents. */
@@ -162,18 +171,22 @@ type ShownRun = {
 };
 
 /**
- * The saved run `run` as `show` prints it: its task, its head line, its steps, its list of todos, its calls, and its
- * footer lines. It reads the call records `withCalls`, or when the run has no steps, and the lists of todos of the run
- * and of the child runs of those records. It reads a task of this version, and a task of another version that ended,
- * as `readable` gives them. The footer tells how to resume only a run of this version. `verb` completes the error for a
- * run that cannot be read, as in `cannot <verb>`.
+ * The saved run `run` as `show` prints it: its head line, its steps, its list of todos, its calls, and its footer lines.
+ * It reads the call records `withCalls`, or when the run has no steps, and the lists of todos of the run and of the
+ * child runs of those records. The footer tells how to resume only a run of this version. A run of another version
+ * gives only what its task record gives, as `otherRun` reads it. It throws `UnfollowableRun` for a run without a task.
  */
-export async function readRun(run: SavedRun, withCalls: boolean, verb: string): Promise<ShownRun> {
+export async function readRun(run: SavedRun, withCalls: boolean): Promise<ShownRun> {
 	const { id } = run;
 	const read = await runRecords(run.store, id, (progress) => withCalls || !progress.stepped);
 	const { events, progress, records, live, todos } = read;
-	const { task: checkedTask, input } = readable(taskOf(read.tasks), id, verb);
-	const fields = taskFields(read.tasks, checkedTask);
+	const task = taskOf(read.tasks);
+
+	if (task === undefined) throw new UnfollowableRun(`run ${id} has no workflow`);
+	const fields = taskFields(read.tasks, task);
+
+	if (!current(task)) return otherRun(run, task, fields);
+	const { input } = task;
 	const known = fields.state;
 	const ended = hasEnded(known);
 	const title = titleOf(input, events);
@@ -181,13 +194,13 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 	let end: ShownEnd | undefined;
 
 	if (ended) {
-		const outcome = runOutcome(input, checkedTask);
+		const outcome = runOutcome(input, task);
 
 		if ("report" in outcome) {
 			footer.push(...outcome.report);
 			end = { report: footer };
 		} else {
-			const shown = endOf(outcome, title, fields.resumable);
+			const shown = endOf(outcome, title);
 			footer.push(...shown.lines);
 
 			if (shown.error !== undefined) end = { error: shown.error };
@@ -200,8 +213,7 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 	const calls = callTree(records, todos, id, { ended, waiting: known === "waiting", live });
 
 	return {
-		task: checkedTask,
-		input,
+		workflow: input.name,
 		title,
 		fields,
 		project: run.project,
@@ -212,6 +224,33 @@ export async function readRun(run: SavedRun, withCalls: boolean, verb: string): 
 		progress,
 		footer,
 		end,
+	};
+}
+
+/**
+ * The run `run` whose task `task` another version saved, as `show` prints it: its workflow name as its title, its
+ * state, and a footer that tells which version saved it. It has no steps, calls or todos, and nothing of it changes
+ * for this version, so it counts as ended.
+ */
+function otherRun(run: SavedRun, task: RunTask, fields: TaskFields): ShownRun {
+	const { workflow, title, progress } = otherView(task);
+
+	const footer = [
+		`version ${task.version} of ${TASK.name} saved this run, and this is version ${TASK.version}: it cannot resume`,
+	];
+
+	return {
+		workflow,
+		title,
+		fields,
+		project: run.project,
+		head: `run ${run.id} ${workflow} ${stateText(fields.state)} ${title}`,
+		ended: true,
+		todos: [],
+		calls: [],
+		progress,
+		footer,
+		end: undefined,
 	};
 }
 
@@ -231,11 +270,11 @@ function shownLines(read: ShownRun, now: number): TreeEntry[] {
  */
 async function pickAgent(run: SavedRun, terminal: Terminal, choose: Choose): Promise<number> {
 	for (;;) {
-		const read = await readRun(run, true, "be shown");
+		const read = await readRun(run, true);
 		const entries = shownLines(read, Date.now());
 
 		if (entries.some((entry) => entry.conversation !== undefined)) {
-			const refresh = async () => agentItems(shownLines(await readRun(run, true, "be shown"), Date.now()));
+			const refresh = async () => agentItems(shownLines(await readRun(run, true), Date.now()));
 			const conversation = await choose("Pick an agent:", agentItems(entries), refresh);
 
 			if (conversation === undefined) return 130;

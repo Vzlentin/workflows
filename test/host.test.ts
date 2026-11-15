@@ -233,24 +233,33 @@ export default function ({ durable }) {
 }
 
 /**
- * Starts the run `x` in a host of the earlier version of the workflows task, which leaves its task pending, and gives
- * its run ID. The key number of the task is not the count of the run's tasks.
+ * Starts the run `x` in a host of the earlier version of the workflows task, which runs it, and gives its run ID and
+ * that host. The entry of this workflows is set again. The key number of the task is not the count of the run's tasks.
  */
-async function pendingOldRun(): Promise<string> {
+async function oldRun() {
 	await setEntries({ workflows: await oldWorkflows(TASK.version - 1) });
 	const id = newRunId();
 	await mkdir(join(runsOf(root), id), { recursive: true });
 	await writeFile(join(runsOf(root), id, "project"), "main\n");
-	const old = await startHost();
+	const host = await startHost();
 
 	try {
 		const input = { runId: id, name: "x", args: {}, meta: { args: {}, exit: {} } };
 		await request({ type: "start", kind: TASK.name, input, key: `wf:${id}#2` }, { start: false });
+	} catch (error) {
+		await host.close();
+		throw error;
 	} finally {
-		await old.close();
+		await setEntries();
 	}
 
-	await setEntries();
+	return { id, host };
+}
+
+/** Starts the run `x` as `oldRun` does, and closes its host, which leaves its task pending, and gives its run ID. */
+async function pendingOldRun(): Promise<string> {
+	const { id, host } = await oldRun();
+	await host.close();
 
 	return id;
 }
@@ -483,7 +492,6 @@ describe("runs in the harness host", () => {
 				workflow: "gated",
 				title: "gated",
 				state: "aborted",
-				resumable: true,
 				startedAt: expect.any(String),
 				repository: null,
 				steps: [],
@@ -492,7 +500,7 @@ describe("runs in the harness host", () => {
 		expect(Value.Check(Type.Array(LISTED), rows)).toBe(true);
 		const shownJson = await workflows(["show", id, "--json"], { cwd: root });
 		const shownRun = JSON.parse(shownJson.stdout[0] ?? "");
-		expect([shownRun.state, shownRun.resumable, "result" in shownRun]).toEqual(["aborted", true, false]);
+		expect([shownRun.state, "result" in shownRun]).toEqual(["aborted", false]);
 		expect(Value.Check(SHOWN, shownRun)).toBe(true);
 		const shown = await workflows(["show", id], { cwd: root });
 		expect(shown.stdout).toEqual([
@@ -521,7 +529,6 @@ describe("runs in the harness host", () => {
 				title: "x",
 				state: "done",
 				result: { status: "stopped", code: 1 },
-				resumable: true,
 				startedAt: expect.any(String),
 				repository: null,
 				steps: [],
@@ -801,15 +808,12 @@ describe("runs in the harness host", () => {
 		}
 	});
 
-	it("logs a run that show refuses because another version saved it", async () => {
+	it("logs the calls of a run that another version saved, which show leaves out", async () => {
 		const { id, host } = await detachedRun();
 		await host.close();
-		saveAs(TASK.version - 1, false);
+		saveAs(TASK.version - 1);
 		const shown = await workflows(["show", id], { cwd: root });
-		expect([shown.code, shown.stderr]).toEqual([
-			1,
-			[`workflows: run ${id} was saved by an earlier version of gated and cannot be shown`],
-		]);
+		expect([shown.code, shown.stdout[0], shown.stdout.length]).toEqual([0, `run ${id} gated earlier-version gated`, 2]);
 		const logged = await workflows(["log", id], { cwd: root });
 		expect([logged.code, logged.stdout]).toEqual([
 			0,
@@ -894,7 +898,7 @@ describe("runs in the harness host", () => {
 		expect(resumed.stderr).toEqual([`workflows: run ${id} was saved by an earlier version of x and cannot resume`]);
 		const waited = await workflows(["wait", id], { cwd: root });
 		expect([waited.code, waited.stderr]).toEqual([
-			1,
+			4,
 			[`workflows: run ${id} was saved by an earlier version of x and cannot be waited for`],
 		]);
 		const stopped = await workflows(["stop", id], { cwd: root });
@@ -903,9 +907,24 @@ describe("runs in the harness host", () => {
 			["orphaned x, which an earlier version saved; it cannot resume"],
 		]);
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "orphaned" }]);
-		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x orphaned x`]);
+		expect((await workflows(["list"], { cwd: root })).stdout).toEqual([`${id} x earlier-version x`]);
 		const again = await workflows(["stop", id], { cwd: root });
 		expect(again.stderr).toEqual([`workflows: run ${id} is not running`]);
+	});
+
+	it("stops a run of an earlier version in the host of that version, which aborts it, and tells no resume", async () => {
+		const { id, host } = await oldRun();
+
+		try {
+			const stopped = await workflows(["stop", id], { cwd: root, host });
+			expect([stopped.code, stopped.stdout]).toEqual([0, ["aborted x, which an earlier version saved"]]);
+			expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "aborted" }]);
+		} finally {
+			await host.close();
+		}
+
+		const waited = await workflows(["wait", id], { cwd: root });
+		expect(waited.code).toBe(4);
 	});
 
 	it("logs end orphaned for a pending run of an earlier version that workflows stop orphaned", async () => {
@@ -917,13 +936,14 @@ describe("runs in the harness host", () => {
 		const shown = await workflows(["show", id, "--json"], { cwd: root });
 		expect([shown.code, JSON.parse(shown.stdout[0] ?? "null")]).toEqual([
 			0,
-			expect.objectContaining({ state: "orphaned", error: outcome.error }),
+			expect.not.objectContaining({ error: expect.anything() }),
 		]);
+		expect(JSON.parse(shown.stdout[0] ?? "null")).toMatchObject({ state: "earlier-version" });
 		expect(outcome.error).not.toContain("\n");
 		const logged = await workflows(["log", id], { cwd: root });
 		expect([logged.code, logged.stdout[0], logged.stdout.at(-2), logged.stdout.at(-1)]).toEqual([
 			0,
-			`run ${id} x orphaned`,
+			`run ${id} x earlier-version`,
 			expect.stringMatching(/ {2}end orphaned$/),
 			`${" ".repeat(14)}| ${outcome.error}`,
 		]);
@@ -941,17 +961,18 @@ describe("runs in the harness host", () => {
 		expect(rows[0].steps.map(untimed)).toEqual(["✓ one", "✓ two"]);
 	});
 
-	it("lists the step that ran when a run was orphaned with the mark of its end, as show --json gives it", async () => {
+	it("lists a run that was orphaned after another version saved it with no steps, as show --json gives it", async () => {
 		await writeFile(join(root, "phased.js"), 'phase("wait")\nawait sh("./gate.sh g")\nphase("after")\nreturn "done"');
 		const { id, host } = await detachedRun("phased.js", ["wait"]);
 		await host.close();
-		saveAs(TASK.version - 1, false);
+		saveAs(TASK.version - 1);
 		const stopped = await workflows(["stop", id], { cwd: root });
 		expect(stopped.code).toBe(0);
 		const rows = JSON.parse((await workflows(["list", "--json"], { cwd: root })).stdout[0] ?? "");
 		const shown = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
-		expect([rows[0].state, rows[0].steps]).toEqual(["orphaned", shown.steps]);
-		expect(rows[0].steps[0]).toMatch(/^✗ wait/);
+		expect([rows[0].state, rows[0].steps, shown.steps]).toEqual(["earlier-version", [], []]);
+		const logged = await workflows(["log", id], { cwd: root });
+		expect(logged.stdout.at(-2)).toMatch(/ {2}end orphaned$/);
 	});
 
 	it("lists the step that runs of a running run", async () => {
@@ -1027,7 +1048,6 @@ describe("runs in the harness host", () => {
 					workflow: "thrown",
 					title: "thrown",
 					state: "failed",
-					resumable: true,
 					startedAt: expect.any(String),
 					repository: null,
 					steps: [],
@@ -1038,7 +1058,6 @@ describe("runs in the harness host", () => {
 					title: "result",
 					state: "done",
 					result: { status: "failed", code: 1 },
-					resumable: true,
 					startedAt: expect.any(String),
 					repository: null,
 					steps: [],

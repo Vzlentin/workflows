@@ -9,7 +9,7 @@ import { Value } from "typebox/value";
 import { childInput, newRunId, type ScriptInput } from "../launch/input.ts";
 import { mergeRoles, type Roles } from "../workflow/roles.ts";
 import { CallDoc, type CallRecord, type Calls, callOfKind, type Child, type ScriptRun } from "./calls.ts";
-import { hasEnded, hasResult, runStatus, savedBundle, scanRuns } from "./past.ts";
+import { endedStatus, hasResult, runStatus, savedBundle, scanRuns } from "./past.ts";
 import { current, type Runtime, type ScriptTask, TASK } from "./version.ts";
 
 /** The record of a `run` call. */
@@ -159,8 +159,8 @@ export async function childResult(
 	const saved = (await runRecord(runtime, key, context))?.child;
 	const started = saved ?? (await startChild(runtime, context, script, cwd, key, name, args));
 	const record = await runtime.getTask(started.task, context);
-	const before = record === undefined ? undefined : runStatus(record);
-	const ended = before !== undefined && hasEnded(before) && !hasResult(before);
+	const before = record === undefined ? undefined : endedStatus(record);
+	const ended = before !== undefined && !hasResult(before);
 	const { task, runId } = ended ? await restartChild(script.definition, runtime, context, key, started.task) : started;
 	const waited = await runtime.waitForTask(task, context);
 	const { outcome } = waited.state;

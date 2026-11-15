@@ -311,8 +311,11 @@ export type Output = {
 	readonly stderr: readonly string[];
 };
 
-/** The exit code of a command on a saved run that is gone: its run directory or its task is missing. */
-export const GONE_EXIT = 4;
+/**
+ * The exit code of a command on a saved run that it can never follow: its run directory or its task is missing, or
+ * another version saved it.
+ */
+export const UNFOLLOWABLE_EXIT = 4;
 
 /**
  * The outcome line after `run <run-id>`; throws the stderr text when the command stopped without one, after `run

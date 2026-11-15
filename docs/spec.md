@@ -803,7 +803,7 @@ export const meta = {
   `meta.repo is for a script without meta.worktree`.
 - `exit` maps `result.status` to the exit code. A script declares each status that it returns, also the ones that exit
   0. A code is an integer from 0 to 255: another code fails with `meta.exit.<status> is <code>, not an exit code from 0
-  to 255`. The codes 2 (usage), 3 (waiting), 4 (gone run) and 130 (Ctrl+C or aborted) are the command's own, and fail
+  to 255`. The codes 2 (usage), 3 (waiting), 4 (a run that the command can never follow) and 130 (Ctrl+C or aborted) are the command's own, and fail
   with `meta.exit.<status> is <code>, which the command reserves`. A status that `exit` does not declare exits 1, and a
   result without `status` exits 0. The status `waiting` always exits 3, whatever `exit` says. See [Input](#input).
 - `outline` is the map of the script before a run: an array of the steps that a user sees in the progress of the
@@ -1309,7 +1309,7 @@ workflows resume <run-id> [--answer <text>]
 
 `workflows resume` finds the workflow that the run saved and continues the run. A run that is gone, with no run
 directory or no task, prints `workflows: no run <run-id> in <runs>` or `workflows: run <run-id> has no workflow`, and
-exits 4. Every command that reads a saved run (`resume`, `wait`, `stop`, `show`, `log`, `save` and `attach`) does the same. A run of a workflow script continues
+exits 4 (`UNFOLLOWABLE_EXIT` of `src/tool.ts`). Every command that reads a saved run (`resume`, `wait`, `stop`, `show`, `log`, `save` and `attach`) does the same. A run of a workflow script continues
 with the script that the run saved. The `project` file of the run directory names the run's project, so resume reaches
 the host of that project from any directory.
 
@@ -1371,8 +1371,10 @@ with the status `waiting` prints `workflows: run <run-id> does not wait for an a
 <run-id> [--answer <text>] [--background] [--json]`, and exits 2. See [Input](#input).
 
 A run saved by another version of workflows cannot resume. Resume prints `workflows: run <run-id> was saved by an
-earlier version of <workflow> and cannot resume`, or `a later version`, and exits 1. `list` shows these runs as
-`earlier-version` or `later-version` while their task has not ended. The host still starts with such a run in its
+earlier version of <workflow> and cannot resume`, or `a later version`, and exits 4, as for a run that is gone.
+`<workflow>` is the `name` of its saved input as this version reads it, or `?`. `list` and `show` show these runs as
+`earlier-version` or `later-version`, also when their task ended, and read only their task record (see [List](#list)).
+The host still starts with such a run in its
 store: it leaves the run pending, prints a `warning:` line in its log for an earlier version, and continues the others.
 Such a run does not keep the host from exiting when it is idle. `workflows stop` ends it as `orphaned`.
 
@@ -1413,14 +1415,18 @@ workflows stop <run-id>
 ```
 
 `workflows stop` stops a run that runs, from any directory: it aborts the run's task with its child runs, sessions and
-Git steps, prints `aborted <title>; continue with: workflows resume <run-id>` and exits 0. It does so also when the host
+Git steps, prints `aborted <title>; continue with: workflows resume <run-id>` and exits 0. The text follows the state
+that the abort gave. It does so also when the host
 closes the connection after it replied to the abort, which it saved then. When no host runs, `stop`
 starts the run's host, and the host resumes the run before the abort reaches it: a `sh` or `ok` command that a host
 stop cut runs again from its start, and an ask that was in progress continues its turn, until the abort stops them. With `--json`, it prints `{ "runId",
 "state": "aborted" }`. A run whose last task has ended prints `workflows: run <run-id> is not running` and exits 1.
 `stop` also stops a pending run of another version of workflows, which no host can run: its task ends as `orphaned`,
 and the command prints `orphaned <workflow>, which an earlier version saved; it cannot resume` (or `a later version`),
-or with `--json` `{ "runId", "state": "orphaned", "error" }`. A command that follows a run that `stop` stops prints the
+or with `--json` `{ "runId", "state": "orphaned", "error" }`. When a host of that other version runs and ends the task
+as `aborted`, the command prints `aborted <workflow>, which an earlier version saved` (or `a later version`), with no
+`continue with` line, as `resume` refuses that run. A task of this version that the abort ends as `orphaned` prints
+`orphaned <title>; it cannot resume`. A command that follows a run that `stop` stops prints the
 `aborted` line and exits 130. An aborted run resumes in a new task.
 
 Model requests use the retry, stream timeout and compaction settings of Pi's `settings.json` in `~/.pi/agent`, as the
@@ -1437,7 +1443,8 @@ the same outcome lines, JSON line and exit code as `resume`. A waiting run print
 outcome from the project store: `wait` starts no host and no task, so a failed run prints its `failed` and `continue
 with` lines and exits 1. A run whose task has not ended is followed as `resume` follows it, with every step of the run
 from its first line, and `wait` starts the host when none runs. `wait` checks the version of the host's task as `resume` does, and refuses a run that another version
-saved with `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot be waited for`.
+saved with `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot be waited for`, and exits
+4: no wait can ever follow that run.
 
 Ctrl+C detaches `wait` at once: it prints the `detached` line, or the `detached` JSON line, and exits 130. The run goes
 on in the host. A second Ctrl+C exits and never stops the run. Bad usage prints `usage: workflows wait <run-id>
@@ -1510,17 +1517,15 @@ else the script name. `<state>` is the state of the run, which `runStatus` in `s
 its result when it has one: `done, result <status> exit <code>`, such as `done, result shipped exit 0` or
 `done, result blocked exit 1`, or `done, exit 0` when the result has no `status`. A run that waits for an answer to
 `input()` is `waiting`, with its result `result waiting exit 3`. A run whose task has not ended is `running`, also when it waits for its host
-to start. A run whose task ended without a result is `aborted` (a second Ctrl+C or `workflows stop` aborted it), `failed` (also a task that pi-durable faulted) or `orphaned`, with no result. A pending run that
-another version of workflows saved is `earlier-version` or `later-version`: it cannot resume. A run that another
-version saved has its title as a run of this version has it, when its saved input has the fields of a title (the
-run ID, the script name, the arguments, and the `args` and `exit` of its `meta`); a run whose input does not have them
-has its workflow name as its title. With `--json`, the command prints one JSON array of
-`{ "runId", "workflow", "title", "state", "result"?, "question"?, "resumable", "branch"?, "startedAt"?, "serves"?,
+to start. A run whose task ended without a result is `aborted` (a second Ctrl+C or `workflows stop` aborted it), `failed` (also a task that pi-durable faulted) or `orphaned`, with no result. A run that
+another version of workflows saved is `earlier-version` or `later-version`, also when its task ended: it cannot resume.
+For such a run, the command reads only its task record and reads its input only with the input schema of this version:
+its workflow is the `name` of its saved input, or `?`, its title is its workflow, and it has no `result`, `question`,
+`branch` or `serves`, no `repository` and no steps. With `--json`, the command prints one JSON array of
+`{ "runId", "workflow", "title", "state", "result"?, "question"?, "branch"?, "startedAt"?, "serves"?,
 "swept"?, "repository", "steps" }`, with the schema `LISTED` of `src/cli/commands/list.ts`. The fields before `repository`
 are the run fields, `RUN_FIELDS` of `src/records/run.ts`, which `show --json` and `show --agents --json` give too. `result` is
-`{ "status"?, "code", "score"? }` as in [JSON output](#json-output), for a run that is `done` or `waiting` and whose saved input has the
-fields of a title. `question` is the question of a run that is `waiting`. `resumable` is true when this version of
-workflows saved the run's task, so that `resume` can take it; it is false for a run of another version. `branch` is
+`{ "status"?, "code", "score"? }` as in [JSON output](#json-output), for a run that is `done` or `waiting`. `question` is the question of a run that is `waiting`. `branch` is
 the `branch` of the value of the result, the branch that the worktree ends on, else the branch of the run's worktree;
 `runBranch` of `src/run/result.ts` gives it, also for the catch-up. A run without a worktree and without a `branch` in
 its result has none. `startedAt` is the time when the first task of the run started, as an ISO string. `serves` is
@@ -1652,9 +1657,9 @@ run <run-id> <workflow> <state> <title>
   the time since the call started.
 - A finished run ends with its report lines. A failed run ends with `failed <title>: <error>` and `continue with:
   workflows resume <run-id>`, an aborted run with `aborted <title>; continue with: workflows resume <run-id>`, and an
-  orphaned run with `orphaned <title>: <reason>` and the `continue with` line. A run that another version saved, which
-  `resume` refuses, has no `continue with` line: an aborted one ends with `aborted <title>`. Any other run ends after
-  its calls.
+  orphaned run with `orphaned <title>: <reason>` and the `continue with` line. A run that another version saved shows
+  only its first line, with its workflow as its title, and the line `version <v> of workflows.run saved this run, and
+  this is version <n>: it cannot resume`. Any other run ends after its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
 object with both trees: `{ <run fields>, "agent"?, "todos", "steps", "calls", "agents" }`, with `report` for a run with a
@@ -1664,7 +1669,7 @@ union of these three strict shapes. The run fields are those of [List](#list). `
 else the last agent to start, as [Attach](#attach) takes it (`runAgent` of `src/records/tree.ts`), and the project of
 the run; a run without an agent has none. `error` is the error of a failed run or the reason of an orphaned run, and
 `todos` is the list of todos of the run, as in [Todos](#todos): an array of `{ "id", "text", "state" }` in ID order,
-or `[]` when the run has no todo, also for a run that an earlier version saved, and
+or `[]` when the run has no todo, and
 `steps` has the step lines of the text, without the first line and the footer. Each call is
 `{ "kind", "args", "runId", "label", "phase", "state", "mark", "startedAt", "end"? }`, with
 ISO times and the arguments of its kind as in [Saved inputs and resume](#saved-inputs-and-resume), and the fields of
@@ -1703,7 +1708,7 @@ run <run-id> <workflow> <state> <title>
 
 With `--agents --json`, the command prints one JSON object `{ <run fields>, "agent"?, "ended", "agents" }`, with the
 schema `SHOWN_AGENTS` of `src/cli/commands/show.ts`, where the run fields and `agent` are those of `show --json`, and
-`ended` is true when the run has ended, also when it waits for an answer.
+`ended` is true when the run has ended, also when it waits for an answer, and for a run that another version saved.
 `agents` has one object for each line of the tree, in order, with the schema `AGENT_ROW` of `src/records/tree.ts`:
 `{ "kind": "phase", "depth", "text" }`, `{ "kind": "run", "depth", "mark", "text" }` with the text `run <workflow>
 <child run-id>`, or `{ "kind": "agent", "depth", "mark", "text", "phase", "model"?, "asks", "conversation",
@@ -1748,11 +1753,9 @@ usage.
 `show` exits 0 for every run it can show. It reads the project store through pi-durable's storage functions, as `list`
 does, and does not start the host. It reads the file read-only as `list` does. An unknown run ID, or a run directory
 without a `project` file, prints the
-`no run` error of `resume`. `show` shows a run that another version saved when its task ended and its saved input
-has the fields of a title, as `list` reads them. `show` and `attach` read such a run: `resume`, `wait` and `save`
-refuse it. Another run that another version saved, such as a run whose task has not ended, prints `workflows: run
-<run-id> was saved by an earlier version of <workflow> and cannot be shown`, or `workflows: run <run-id> was saved by
-a later version of <workflow> and cannot be shown`. These exit 1. Bad usage, such
+`no run` error of `resume`. `show` shows a run that another version saved, ended or not, from its task record only,
+as `list` does: with `--json` it has empty `todos`, `steps`, `calls` and `agents`, and no `report` or `error`.
+`resume`, `wait` and `save` refuse it. Bad usage, such
 as no run ID without `--pick`, prints `usage: workflows show (<run-id> [--agents] [--json] | [<run-id>] --pick)` and
 exits 2.
 
@@ -1767,7 +1770,9 @@ workflows log <run-id> --follow
 
 `workflows log` prints what a run did from the store of its project: its steps first, then the calls of one step, and
 the full output of one call. It reads only the root tasks, the progress and the call records of the run, in one read,
-so it also prints a run that another version saved, which `show` refuses.
+so it also prints the steps, the calls and the end of a run that another version saved, which `show` leaves out. Its
+first line has the state that `list` gives, such as `earlier-version`, and the end line has the state of the outcome
+of its task.
 
 The short log:
 
@@ -1869,8 +1874,8 @@ workflows attach <run-id> [--conversation <id>] [--side]
   right of this terminal instead, and exits 0. See the harness spec, Open in Pi.
 
 A run with no session prints `workflows: run <run-id> has no session`. A conversation that is not a session of the run prints
-`workflows: run <run-id> has no session with conversation <id>`. An unknown run ID prints the `no run` error of `resume`, and a run
-of another version that `show` cannot show prints the error of `show` with `cannot be attached`. These exit 1. An
+`workflows: run <run-id> has no session with conversation <id>`. A run of another version has no session. These exit
+1. An unknown run ID prints the `no run` error of `resume`, and exits 4. An
 error of harness, such as an unknown conversation or an hc failure, is the stderr of harness, and exits 1. Bad usage,
 such as no run ID or a second argument, prints `usage: workflows attach <run-id> [--conversation <id>] [--side]` and
 exits 2.
@@ -1893,7 +1898,7 @@ with its `export const meta` header. Only the script is saved: no prompts, agent
   workflow name` and exits 1.
 - An unknown run ID, or the ID of a child run, prints the `no run` error of `resume`. A run saved by an earlier
   version prints `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot be saved`, and a
-  run saved by a later version prints the same with `a later version`. These exit 1.
+  run saved by a later version prints the same with `a later version`. These exit 4. Another error exits 1.
 - When a project or package workflow of the name exists, the command prints `workflows: a workflow <name> exists;
   replace it with --force` and exits 1. With `--force`, the file replaces the project script of the name, or adds a
   project script before the package script of the name.
@@ -2213,7 +2218,8 @@ second wait. `session_shutdown` sends SIGINT to the waits, which detach and post
 When the context of `session_start` has a UI (`hasUI`), the extension sets the widget `workflows` below the editor,
 one time at each `session_start`. It sits above the subagents widget of pi-agents, because `pi/package.json` lists
 `./index.ts` first. The widget shows a dim `workflows` header line, then the runs that the session follows, in the
-order that they started to be followed, one run on each line: `<workflow>: <repository> <id> <step>`, such as
+order that they started to be followed, one run on each line: `<workflow>: <repository> <id> <step>`, or `<workflow>: <repository> <id> <step> (<error>)`
+after a wait that failed, such as
 
 ```text
 campaign: harness 935f6d89 item 2/3: Add a thanks line › round 1/3: review
@@ -2230,10 +2236,12 @@ shutdown, the extension asks for no redraw. As `session_start` follows the pendi
 
 An outcome whose `state` is `running`, an outcome line that is not valid, no outcome line, or a wait that does not
 start posts nothing and appends no end entry. The extension then waits 1 s and runs the wait again, and doubles the time
-before each next wait, up to 60 s. `session_shutdown` ends these retries, so the next `session_start` follows the run
-again. A wait that exits 4 with no outcome line, for a run that is gone, posts nothing and appends the end entry with
-the data `{ runId, reason }`, where `reason` is the error text that the tool gives for that output: the stderr text, or
-`workflows exited with <code>` when it is empty, after `run <id>: ` when the wait printed its run line. A crash between the message and the end entry
+before each next wait, up to 60 s. The widget shows the last line of the error of that wait as `<error>`, in
+parentheses after the step, until a later progress line. `session_shutdown` ends these retries, so the next
+`session_start` follows the run again. A wait that exits 4 with no outcome line, for a run that it can never follow (a run that is gone or
+that another version saved), posts nothing and appends the end entry with the data `{ runId, reason }`, where `reason`
+is the last line of the error text that the tool gives for that output: of the stderr text, or `workflows exited with
+<code>` when it is empty, after `run <id>: ` when the wait printed its run line. A crash between the message and the end entry
 posts the outcome again at the next `session_start`.
 
 A call without `background` that resumes a run that the session follows gives the outcome in its own result. When that

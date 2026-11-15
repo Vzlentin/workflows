@@ -91,6 +91,14 @@ wait)
 	longbad) x=$(printf '%2100s' '' | tr ' ' x); echo '{"runId":"longbad","state":"failed","error":"'"$x"'"}'; exit 1 ;;
 	aborted) echo '{"runId":"aborted","state":"aborted"}'; exit 130 ;;
 	gone) echo "workflows: no run gone" >&2; exit 4 ;;
+	old) echo "warning: slow disk" >&2; echo "workflows: run old was saved by an earlier version of x and cannot be waited for" >&2; exit 4 ;;
+	lost) echo "workflows: lost the host" >&2; exit 1 ;;
+	recover)
+		if [ -e recover-once ]; then
+			echo '{"progress":["◉ plan"]}' >&2
+			until [ -e end-recover ]; do sleep 0.02; done
+			echo '{"runId":"recover","state":"done","result":{"code":0},"value":1,"report":["one"]}'
+		else touch recover-once; echo "workflows: lost the host" >&2; exit 1; fi ;;
 	sleepy) echo '{"runId":"sleepy","state":"running","follow":"host-stopped"}'; exit 1 ;;
 	flaky)
 		if [ -e flaky-once ]; then echo '{"runId":"flaky","state":"done","result":{"code":0},"value":1,"report":["one"]}'
@@ -842,13 +850,52 @@ describe("a background run of the workflow tool", () => {
 		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: "run rb done, exit 0: 1\none" }]);
 	});
 
-	it("ends a gone run with its reason, and posts nothing", async () => {
+	it("ends a gone run with its error line as its reason, and posts nothing", async () => {
 		const pi = fakePi([startEntry("gone", root)]);
 		await pi.fire("session_start");
 		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
 		expect(pi.entries[1]?.data).toEqual({ runId: "gone", reason: "run gone: workflows: no run gone" });
 		expect(pi.messages).toEqual([]);
 		expect(await waits()).toEqual(["wait gone --json"]);
+	});
+
+	it("ends a run of another version with the last line of its error, and posts nothing", async () => {
+		const pi = fakePi([startEntry("old", root)]);
+		await pi.fire("session_start");
+		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
+		expect(pi.entries[1]?.data).toEqual({
+			runId: "old",
+			reason: "workflows: run old was saved by an earlier version of x and cannot be waited for",
+		});
+		expect(pi.messages).toEqual([]);
+		expect(await waits()).toEqual(["wait old --json"]);
+	});
+
+	it("waits again after a wait that fails, and shows its error in the widget", async () => {
+		const pi = fakePi([startEntry("lost", root)]);
+		const { ui, lines } = fakeUi();
+		await pi.fire("session_start", ui);
+		await vi.waitFor(() =>
+			expect(lines()).toEqual([" workflows", " ?: lost starting (run lost: workflows: lost the host)"]),
+		);
+		await vi.waitFor(async () => expect(await waits()).toEqual(["wait lost --json", "wait lost --json"]), {
+			timeout: 3000,
+		});
+		expect(pi.messages).toEqual([]);
+		expect(pi.entries).toHaveLength(1);
+		await pi.fire("session_shutdown");
+	});
+
+	it("clears the error of a wait in the widget at the next progress line", async () => {
+		const pi = fakePi([startEntry("recover", root)]);
+		const { ui, lines } = fakeUi();
+		await pi.fire("session_start", ui);
+		await vi.waitFor(() =>
+			expect(lines()).toEqual([" workflows", " ?: recover starting (run recover: workflows: lost the host)"]),
+		);
+		await vi.waitFor(() => expect(lines()).toEqual([" workflows", " ?: recover ◉ plan"]), { timeout: 3000 });
+		await writeFile(join(root, "end-recover"), "");
+		await vi.waitFor(() => expect(pi.messages).toHaveLength(1));
 	});
 
 	it("waits again after a wait that gives no outcome to post, and posts the next outcome", async () => {
@@ -990,15 +1037,14 @@ describe("the /workflows command", () => {
 	const old = "20261022T120000-eeee5555";
 
 	const runs = [
-		{ runId: good, workflow: "ship", title: "Fix the typo", state: "running", resumable: true, repository: null },
-		{ runId: bad, workflow: "campaign", title: "Docs", state: "failed", resumable: true, repository: null },
+		{ runId: good, workflow: "ship", title: "Fix the typo", state: "running", repository: null },
+		{ runId: bad, workflow: "campaign", title: "Docs", state: "failed", repository: null },
 		{
 			runId: shipped,
 			workflow: "ship",
 			title: "Fix the docs",
 			state: "done",
 			result: { status: "shipped", code: 0 },
-			resumable: true,
 			repository: null,
 		},
 		{
@@ -1007,7 +1053,6 @@ describe("the /workflows command", () => {
 			title: "Judge",
 			state: "done",
 			result: { code: 1 },
-			resumable: false,
 			repository: null,
 		},
 	];
@@ -1063,7 +1108,6 @@ describe("the /workflows command", () => {
 		workflow: "mine",
 		title: "Mine",
 		state: "running",
-		resumable: true,
 		ended: false,
 		agents: [
 			{ kind: "phase", depth: 0, text: "plan" },
