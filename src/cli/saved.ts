@@ -12,7 +12,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { readProject, type ScriptInput } from "../launch/input.ts";
 import { RUN_FIELDS, SWEPT, type TaskFields, taskFields } from "../records/run.ts";
-import { progressOf as stepsOf } from "../records/steps.ts";
+import { type Progress, progressOf } from "../records/steps.ts";
 import {
 	inputName,
 	inputWorktree,
@@ -68,9 +68,12 @@ export const ROW = Type.Object(
 
 export type Row = Static<typeof ROW>;
 
+/** A listed run: its row, and the progress of its steps, which `steps` of the row gives as lines. */
+export type ListedRun = { readonly row: Row; readonly progress: Progress };
+
 /** The runs `runs` of the open project store `store` that have a run directory, newest run ID first. */
-export async function listedRuns(store: Store, runs: ReadonlyMap<string, readonly RunTask[]>): Promise<Row[]> {
-	const listed: Row[] = [];
+export async function listedRuns(store: Store, runs: ReadonlyMap<string, readonly RunTask[]>): Promise<ListedRun[]> {
+	const listed: ListedRun[] = [];
 
 	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
 		const task = taskOf(tasks);
@@ -84,10 +87,12 @@ export async function listedRuns(store: Store, runs: ReadonlyMap<string, readonl
 		const events = await progressEvents(store, id);
 		const title = input === undefined ? workflow : titleOf(input, events);
 		const fields = taskFields(tasks, task);
-		const progress = stepsOf(events);
+		const progress = progressOf(events);
 
 		progress.end(fields.state);
-		listed.push({ ...(await runFields(id, workflow, title, fields)), repository, steps: progress.lines() });
+		const row = { ...(await runFields(id, workflow, title, fields)), repository, steps: progress.lines() };
+
+		listed.push({ row, progress });
 	}
 
 	return listed;
@@ -154,7 +159,7 @@ export async function unstartedRuns(project: string, runs: ReadonlyMap<string, u
 
 /** The root tasks of `run`, oldest first. */
 export function tasksOf(run: SavedRun): Promise<RunTask[]> {
-	return reading(run.store, [], async (store) => (await runTasks(store)).get(run.id) ?? []);
+	return reading(run.store, [], async ({ store }) => (await runTasks(store)).get(run.id) ?? []);
 }
 
 /** The `start` keys of the tasks of a run: the key of its task `task`, and the key of a new task. */
@@ -176,7 +181,7 @@ export async function lastTaskIn(
  * is missing.
  */
 export async function lastTask(run: SavedRun) {
-	const read = await reading(run.store, undefined, (store) => lastTaskIn(store, run.id));
+	const read = await reading(run.store, undefined, ({ store }) => lastTaskIn(store, run.id));
 
 	if (read === undefined) throw new GoneRun(`run ${run.id} has no workflow`);
 
@@ -209,12 +214,12 @@ async function runKeys(store: Store, id: string): Promise<RunKeys> {
 
 /** The saved input of the task `task` in the store of `run`, or undefined when the store has no such task. */
 export function inputOf(run: SavedRun, task: TaskId<JsonValue>): Promise<JsonValue | undefined> {
-	return reading(run.store, undefined, async (store) => (await store.task(task, BACKGROUND_CONTEXT))?.input);
+	return reading(run.store, undefined, async ({ store }) => (await store.task(task, BACKGROUND_CONTEXT))?.input);
 }
 
 /** The progress events of the root run `run`. */
-export function progressOf(run: SavedRun): Promise<readonly ProgressEvent[]> {
-	return reading(run.store, [], (store) => progressEvents(store, run.id));
+export function eventsOf(run: SavedRun): Promise<readonly ProgressEvent[]> {
+	return reading(run.store, [], ({ store }) => progressEvents(store, run.id));
 }
 
 const PREFIX = "workflows.";

@@ -203,17 +203,13 @@ export async function openReadOnly(path: string): Promise<Opened | undefined> {
  * `read` on the store at `path`, open for reads, in one read transaction, so that all its reads see one committed
  * state; `fallback` when the store does not exist.
  */
-export async function reading<T>(
-	path: string,
-	fallback: T,
-	read: (store: Store, database: ReadOnlyDatabase) => Promise<T>,
-): Promise<T> {
+export async function reading<T>(path: string, fallback: T, read: (opened: Opened) => Promise<T>): Promise<T> {
 	const opened = await openReadOnly(path);
 
 	if (opened === undefined) return fallback;
 
 	try {
-		return await opened.database.snapshot(() => read(opened.store, opened.database));
+		return await opened.database.snapshot(() => read(opened));
 	} finally {
 		await opened.store.close(BACKGROUND_CONTEXT);
 	}
@@ -310,38 +306,31 @@ async function todoTasks(store: Store): Promise<number[]> {
 
 /**
  * The list of todos of each child run of `children`, the task of its `run` record by run ID, in the order of
- * `children`. The script of a child run writes its list to the first task of the run, which comes after `first`, the
- * first task of the root run, and no later than the task of the `run` record: the list is the one of the first task in
- * that range whose saved input has the run ID, or empty when no such task has a list.
+ * `children`: the list of the first task of the run after `first`, the first task of the root run, or empty.
  */
 async function childTodos(
 	store: Store,
 	first: RunTask | undefined,
 	children: ReadonlyMap<string, number>,
 ): Promise<Map<string, Todo[]>> {
-	const todos = new Map<string, Todo[]>();
+	const found = new Map<string, Todo[]>();
 
-	if (children.size === 0) return todos;
-	const listed = await todoTasks(store);
+	if (children.size === 0) return found;
 	const after = first?.id ?? 0;
+	const last = Math.max(...children.values());
 
-	for (const [runId, upTo] of children) {
-		let list: Todo[] = [];
+	for (const id of await todoTasks(store)) {
+		if (id > last) break;
 
-		for (const id of listed) {
-			if (id <= after || id > upTo) continue;
-			const task = await taskById(store, id);
+		const task = id > after ? await taskById(store, id) : undefined;
 
-			if (task !== undefined && isOfRun(task, runId)) {
-				list = await todosOf(store, task);
-				break;
-			}
-		}
+		if (task === undefined) continue;
+		const runId = [...children.keys()].find((child) => !found.has(child) && isOfRun(task, child));
 
-		todos.set(runId, list);
+		if (runId !== undefined) found.set(runId, await todosOf(store, task));
 	}
 
-	return todos;
+	return new Map([...children.keys()].map((runId) => [runId, found.get(runId) ?? []]));
 }
 
 /**
@@ -472,10 +461,11 @@ export async function runRecords(
 		todos: new Map<string, Todo[]>(),
 	};
 
-	return reading(path, empty, async (store, database) => {
+	return reading(path, empty, async (opened) => {
+		const { store } = opened;
 		const events = await progressEvents(store, id);
 		const progress = progressOf(events);
-		const records = withCalls(progress) ? await callRecords({ store, database }, id) : new Map<string, SavedCall>();
+		const records = withCalls(progress) ? await callRecords(opened, id) : new Map<string, SavedCall>();
 		const tasks = (await rootTasks(store, `wf:${id}#`)).get(id) ?? [];
 		const children = new Map<string, number>();
 

@@ -4,7 +4,7 @@ import { title as titleOf } from "../../run/result.ts";
 import { current } from "../../run/version.ts";
 import { abortRun } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { GoneRun, lastTask, oneRunId, progressOf, savedBy, savedRun } from "../saved.ts";
+import { GoneRun, eventsOf, lastTask, oneRunId, savedBy, savedRun } from "../saved.ts";
 
 export const STOP = "workflows stop <run-id> [--json]";
 
@@ -29,7 +29,7 @@ export async function stop(args: readonly string[], terminal: Terminal, json: bo
 
 	if (json) terminal.stdout(JSON.stringify(stopped));
 	else if (current(latest)) {
-		const title = titleOf(latest.input, await progressOf(run));
+		const title = titleOf(latest.input, await eventsOf(run));
 		terminal.stdout(`aborted ${title}; continue with: workflows resume ${run.id}`);
 	} else {
 		const { name, later } = savedBy(latest);

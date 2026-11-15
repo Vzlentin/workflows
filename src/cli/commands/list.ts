@@ -58,10 +58,11 @@ async function projectRuns(project: string): Promise<Listed[]> {
 	const { rows, runs } = await reading(
 		storeOf(project),
 		{ rows: [], runs: new Map<string, RunTask[]>() },
-		async (store) => {
+		async ({ store }) => {
 			const tasks = await runTasks(store);
+			const rows = (await listedRuns(store, tasks)).map(({ row }) => row);
 
-			return { rows: await listedRuns(store, tasks), runs: tasks };
+			return { rows, runs: tasks };
 		},
 	);
 

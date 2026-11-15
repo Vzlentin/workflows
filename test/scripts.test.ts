@@ -571,7 +571,7 @@ describe("input", () => {
 		const id = run.id ?? "";
 		const versionOf = async (store: Parameters<typeof runTasks>[0]) => (await runTasks(store)).get(id)?.[0]?.version;
 
-		const versions = await reading(storeOf(), [0, 0], async (store) => {
+		const versions = await reading(storeOf(), [0, 0], async ({ store }) => {
 			const before = await versionOf(store);
 			const database = new DatabaseSync(storeOf());
 			database
@@ -585,7 +585,7 @@ describe("input", () => {
 		});
 
 		expect(versions).toEqual([TASK.version, TASK.version]);
-		expect(await reading(storeOf(), 0, async (store) => versionOf(store))).toBe(99);
+		expect(await reading(storeOf(), 0, async ({ store }) => versionOf(store))).toBe(99);
 	});
 
 	it("asks each question on a terminal, and goes on with the typed answer", async () => {
@@ -1118,13 +1118,13 @@ describe("store reads", () => {
 		const current = await saveRun(root, "workflows.run", TASK.version, { name: "x" }, { started: true });
 		const earlier = await saveRun(root, "workflows.run", TASK.version - 1, { name: "x" }, { started: true });
 
-		const scanned = await reading(storeOf(), [], (store) =>
+		const scanned = await reading(storeOf(), [], ({ store }) =>
 			allPages((cursor) => store.scanTasks({ kind: TASK.name }, 256, cursor, BACKGROUND_CONTEXT)),
 		);
 
 		const roots = rootRuns(scanned);
 		expect([...roots.keys()].toSorted()).toEqual([id, current, earlier].toSorted());
-		expect(await reading(storeOf(), new Map(), runTasks)).toEqual(roots);
+		expect(await reading(storeOf(), new Map(), ({ store }) => runTasks(store))).toEqual(roots);
 
 		const read = await runRecords(storeOf(), id, () => true);
 		const [child] = await childTasks(id);
@@ -1164,7 +1164,7 @@ describe("store reads", () => {
 
 	/** The call records of the `main` store under each of `runs`, from a full scan of the call documents, run by run. */
 	async function scannedCalls(...runs: string[]): Promise<Map<string, SavedCall>> {
-		return await reading(storeOf(), new Map<string, SavedCall>(), async (store) => {
+		return await reading(storeOf(), new Map<string, SavedCall>(), async ({ store }) => {
 			const scanned = await allPages((cursor) =>
 				store.scanDocuments(
 					{ scope: { kind: "session" }, at: "current", kind: CALL_KIND },
@@ -1191,9 +1191,7 @@ describe("store reads", () => {
 
 	/** The call records that `callRecords` reads for `run` in the `main` store. */
 	async function readCalls(run: string): Promise<Map<string, SavedCall>> {
-		return await reading(storeOf(), new Map<string, SavedCall>(), (store, database) =>
-			callRecords({ store, database }, run),
-		);
+		return await reading(storeOf(), new Map<string, SavedCall>(), (opened) => callRecords(opened, run));
 	}
 
 	it("read the call records of a run and its child runs by key prefix", async () => {
@@ -2187,9 +2185,7 @@ return [args.n, args.t, args.other].join(" ")`,
 		const id = first.id ?? "";
 		expect(first.code).toBe(1);
 
-		const records = await reading(storeOf(), new Map<string, SavedCall>(), (store, database) =>
-			callRecords({ store, database }, id),
-		);
+		const records = await reading(storeOf(), new Map<string, SavedCall>(), (opened) => callRecords(opened, id));
 
 		const child = [...records.values()].find((record) => record.kind === "run")?.childRun ?? "";
 		expect(child).not.toBe("");

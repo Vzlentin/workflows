@@ -79,7 +79,7 @@ export async function sweep(args: readonly string[], terminal: Terminal, json: b
 	if (values["install-hook"]) return installHook(terminal);
 	const project = resolveProject(process.env, terminal.cwd);
 	const store = storeOf(project);
-	const runs = await reading(store, undefined, runTasks);
+	const runs = await reading(store, undefined, (opened) => runTasks(opened.store));
 
 	if (runs === undefined) {
 		throw new Error(

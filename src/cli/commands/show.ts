@@ -4,8 +4,8 @@ import { resolveProject } from "@vzlentin/harness/projects";
 import { Todo } from "@vzlentin/harness/todo";
 import { type Static, Type } from "typebox";
 import { RUN_FIELDS, type TaskFields, taskFields } from "../../records/run.ts";
-import { endMark, type Mark, Progress } from "../../records/steps.ts";
-import { progressEvents, reading, runRecords, runTasks } from "../../records/store.ts";
+import { endMark, type Mark, type Progress } from "../../records/steps.ts";
+import { reading, runRecords, runTasks } from "../../records/store.ts";
 import {
 	AGENT_ROW,
 	agentLines,
@@ -24,7 +24,7 @@ import { UsageError, withUsage } from "../../workflow/find.ts";
 import { abortedWithin, endOf } from "../follow.ts";
 import { storeOf } from "../host.ts";
 import type { Choose, Terminal } from "../main.ts";
-import { listedRuns, runFields, oneRunId, readable, type Row, type SavedRun, savedRun } from "../saved.ts";
+import { type ListedRun, listedRuns, runFields, oneRunId, readable, type SavedRun, savedRun } from "../saved.ts";
 import type { PickItem } from "../terminal/pick.ts";
 
 export const SHOW = "workflows show (<run-id> [--agents] [--json] | [<run-id>] --pick)";
@@ -272,25 +272,27 @@ async function pickRun(terminal: Terminal, choose: Choose): Promise<string | und
 async function runItems(terminal: Terminal): Promise<PickItem<string>[]> {
 	const empty = { runs: [], steps: new Map<string, string>() };
 
-	const { runs, steps } = await reading(storeOf(resolveProject(process.env, terminal.cwd)), empty, async (store) => {
-		// The runs that have not ended come first in the picker.
-		const live = ({ state }: Row) => state === "running" || state === "waiting";
-		// A stable sort keeps the newest first within each group.
-		const tasks = await runTasks(store);
-		const sorted = (await listedRuns(store, tasks)).toSorted((a, b) => Number(live(b)) - Number(live(a)));
-		const found = new Map<string, string>();
+	const { runs, steps } = await reading(
+		storeOf(resolveProject(process.env, terminal.cwd)),
+		empty,
+		async ({ store }) => {
+			// The runs that have not ended come first in the picker.
+			const live = ({ row }: ListedRun) => row.state === "running" || row.state === "waiting";
+			// A stable sort keeps the newest first within each group.
+			const tasks = await runTasks(store);
+			const sorted = (await listedRuns(store, tasks)).toSorted((a, b) => Number(live(b)) - Number(live(a)));
 
-		for (const { runId } of sorted.filter((each) => each.state === "running")) {
-			const progress = new Progress();
+			const found = new Map<string, string>();
 
-			for (const event of await progressEvents(store, runId)) progress.add(event);
-			const status = progress.status();
+			for (const { row, progress } of sorted) {
+				const status = row.state === "running" ? progress.status() : undefined;
 
-			if (status !== undefined) found.set(runId, status);
-		}
+				if (status !== undefined) found.set(row.runId, status);
+			}
 
-		return { runs: sorted, steps: found };
-	});
+			return { runs: sorted.map(({ row }) => row), steps: found };
+		},
+	);
 
 	return runs.map(({ runId, title, workflow, state, result }) => {
 		const step = steps.get(runId);

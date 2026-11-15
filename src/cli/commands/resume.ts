@@ -10,7 +10,7 @@ import { UsageError, withUsage } from "../../workflow/find.ts";
 import { type Following, follow, outcomeOf, reportOutcome } from "../follow.ts";
 import { checkVersion, connectTo, startTask } from "../host.ts";
 import type { Terminal } from "../main.ts";
-import { checked, GoneRun, inputOf, lastTaskIn, oneRunId, progressOf, savedRun } from "../saved.ts";
+import { checked, GoneRun, inputOf, lastTaskIn, oneRunId, eventsOf, savedRun } from "../saved.ts";
 import { programStatus } from "../terminal/redraw.ts";
 
 export const RESUME = "workflows resume <run-id> [--answer <text>] [--background] [--json]";
@@ -37,9 +37,9 @@ export async function resume(
 	const run = await savedRun(id, usage);
 
 	// The ask of the open input call comes from the same read as the task and its keys.
-	const read = await reading(run.store, undefined, async (store, database) => ({
-		...(await lastTaskIn(store, run.id)),
-		ask: await openAsk({ store, database }, run.id),
+	const read = await reading(run.store, undefined, async (opened) => ({
+		...(await lastTaskIn(opened.store, run.id)),
+		ask: await openAsk(opened, run.id),
 	}));
 
 	if (read === undefined) throw new GoneRun(`run ${run.id} has no workflow`);
@@ -59,7 +59,7 @@ export async function resume(
 
 	if (waiting && answer === undefined && !wait && !json && !background && terminal.readLine !== undefined) {
 		terminal.stdout(`run ${run.id}`);
-		reportOutcome(input, task, terminal, json, await progressOf(run), true);
+		reportOutcome(input, task, terminal, json, await eventsOf(run), true);
 
 		return answering(run.id, terminal);
 	}
@@ -67,7 +67,7 @@ export async function resume(
 	if (ended && (wait || waiting || status === "done")) {
 		terminal.stdout(`run ${run.id}`);
 
-		return outcomeOf(input, task, terminal, json, await progressOf(run));
+		return outcomeOf(input, task, terminal, json, await eventsOf(run));
 	}
 
 	const key = ended ? read.keys.next : read.keys.keyOf(task);
@@ -86,7 +86,7 @@ export async function resume(
 		if (ended) {
 			// The new task is never the first task of the run, so it refuses what its phase would refuse.
 			if (input.worktree !== undefined) await checkWorktree(run.id, input.worktree, false);
-			from = (await progressOf(run)).length;
+			from = (await eventsOf(run)).length;
 			client = await connectTo(terminal, run.project, true);
 			// The new task posts its outcome only when this resume runs in the background, whatever the last task did.
 			const { notify: _ended, ...saved } = input;
@@ -100,14 +100,14 @@ export async function resume(
 				);
 			}
 		} else {
-			const before = (await progressOf(run)).length;
+			const before = (await eventsOf(run)).length;
 			client = await connectTo(terminal, run.project, false);
 
 			if (client === undefined) {
 				from = before;
 				client = await connectTo(terminal, run.project, true);
 			} else {
-				const events = await progressOf(run);
+				const events = await eventsOf(run);
 				const started = events.findLastIndex((event) => event.kind === "start" && event.run === run.id);
 				from = started === -1 ? events.length : started;
 			}
