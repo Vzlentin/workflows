@@ -2,7 +2,6 @@
 /** The `workflows` executable: the terminal, Ctrl+C, and Pi's models for `check`. */
 import { createInterface } from "node:readline";
 import { text } from "node:stream/consumers";
-import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { StdinBuffer } from "@earendil-works/pi-tui";
 import { CtrlC } from "./cli/follow.ts";
 import { main } from "./cli/main.ts";
@@ -130,5 +129,9 @@ process.exitCode = await main(process.argv.slice(2), {
 	following: (active) => ctrlC.following(active),
 	readLine: process.stdin.isTTY && process.stderr.isTTY ? readLine : undefined,
 	choose: process.stdin.isTTY && process.stderr.isTTY ? choose : undefined,
-	models: async () => (await createAgentSessionServices({ cwd: process.cwd() })).modelRuntime,
+	models: async () => {
+		const { createAgentSessionServices } = await import("@earendil-works/pi-coding-agent");
+
+		return (await createAgentSessionServices({ cwd: process.cwd() })).modelRuntime;
+	},
 });
