@@ -3,7 +3,7 @@ import { isDeepStrictEqual, parseArgs } from "node:util";
 import type { Client } from "@vzlentin/harness/client";
 import type { ScriptInput } from "../../launch/input.ts";
 import { checkWorktree } from "../../launch/worktree.ts";
-import { callRecords, reading, type Store } from "../../records/store.ts";
+import { callRecords, type Opened, reading } from "../../records/store.ts";
 import { answerAsk, type Asks, readAsk } from "../../run/asks.ts";
 import { hasEnded, runStatus } from "../../run/past.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
@@ -37,9 +37,9 @@ export async function resume(
 	const run = await savedRun(id, usage);
 
 	// The ask of the open input call comes from the same read as the task and its keys.
-	const read = await reading(run.store, undefined, async (store) => ({
+	const read = await reading(run.store, undefined, async (store, database) => ({
 		...(await lastTaskIn(store, run.id)),
-		ask: await openAsk(store, run.id),
+		ask: await openAsk({ store, database }, run.id),
 	}));
 
 	if (read === undefined) throw new GoneRun(`run ${run.id} has no workflow`);
@@ -180,11 +180,11 @@ function resumeArgs(args: readonly string[]) {
 }
 
 /**
- * The ask of the `input` call that the run `id` waits for an answer to, in the call records of `store`: the ask of the
+ * The ask of the `input` call that the run `id` waits for an answer to, in the call records of `opened`: the ask of the
  * last open `input` call, or undefined when there is none or its record has no ask.
  */
-async function openAsk(store: Store, id: string): Promise<number | undefined> {
-	const open = [...(await callRecords(store, id))]
+async function openAsk(opened: Opened, id: string): Promise<number | undefined> {
+	const open = [...(await callRecords(opened, id))]
 		.flatMap(([key, record]) =>
 			key.startsWith(`${id}/`) && record.kind === "input" && record.end === undefined ? [record] : [],
 		)

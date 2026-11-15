@@ -8,7 +8,6 @@ import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type {
-	Cursor,
 	DocumentId,
 	DocumentReader,
 	JsonObject,
@@ -44,6 +43,8 @@ process.emitWarning = () => {};
 const sqlite = process.getBuiltinModule("node:sqlite");
 
 process.emitWarning = emitWarning;
+
+const DOCUMENT_ROW = Type.Object({ id: Type.Number(), key_value: Type.String() });
 
 /** How long a read waits for the lock of the host's commit. */
 const BUSY_TIMEOUT_MS = 60_000;
@@ -145,6 +146,29 @@ class ReadOnlyDatabase implements SqliteDatabase {
 		return result;
 	}
 
+	/**
+	 * The current session documents of the kind `kind` whose key starts with `prefix`, as key and document ID, in
+	 * document ID order. It reads the index of document addresses, and no document record.
+	 */
+	sessionDocuments(kind: string, prefix: string): Array<{ key: string; id: DocumentId }> {
+		// The storage keeps the kind and the key as JSON strings. Escapes go character by character, so the JSON of
+		// `prefix` without its closing quote is a prefix of the JSON of each key that starts with `prefix`.
+		const start = JSON.stringify(prefix).slice(0, -1);
+		const end = start.slice(0, -1) + String.fromCharCode(start.charCodeAt(start.length - 1) + 1);
+
+		const rows = this.#statement(
+			"SELECT id, key_value FROM documents WHERE kind = ? AND scope_kind = 'session' AND owner_id = 0 AND family = 1 AND key_value >= ? AND key_value < ? AND retired_at IS NULL ORDER BY id",
+		).all(JSON.stringify(kind), start, end);
+
+		return rows.flatMap((row) => {
+			if (!Value.Check(DOCUMENT_ROW, row)) return [];
+			const key: unknown = JSON.parse(row.key_value);
+
+			// SAFETY: `id` is the ID of a document that pi-durable wrote in this store.
+			return Value.Check(Type.String(), key) ? [{ key, id: row.id as DocumentId }] : [];
+		});
+	}
+
 	async close(): Promise<void> {
 		this.#statements.clear();
 		this.#database.close();
@@ -179,13 +203,17 @@ export async function openReadOnly(path: string): Promise<Opened | undefined> {
  * `read` on the store at `path`, open for reads, in one read transaction, so that all its reads see one committed
  * state; `fallback` when the store does not exist.
  */
-export async function reading<T>(path: string, fallback: T, read: (store: Store) => Promise<T>): Promise<T> {
+export async function reading<T>(
+	path: string,
+	fallback: T,
+	read: (store: Store, database: ReadOnlyDatabase) => Promise<T>,
+): Promise<T> {
 	const opened = await openReadOnly(path);
 
 	if (opened === undefined) return fallback;
 
 	try {
-		return await opened.database.snapshot(() => read(opened.store));
+		return await opened.database.snapshot(() => read(opened.store, opened.database));
 	} finally {
 		await opened.store.close(BACKGROUND_CONTEXT);
 	}
@@ -386,29 +414,16 @@ export async function progressEvents(store: Store, id: string): Promise<readonly
 }
 
 /**
- * The call records of the run `runId` and of its child runs, by key. The storage has no scan by key prefix, so it lists
- * the keys of every call record of the store, and reads only those of the run.
+ * The call records of the run `runId` and of its child runs, by key, in document order for each run. It lists the keys
+ * of each run by key prefix, and reads only those documents.
  */
-export async function callRecords(store: Store, runId: string): Promise<Map<string, SavedCall>> {
-	const documents = new Map<string, DocumentId>();
-	let cursor: Cursor | undefined;
-
-	do {
-		const query = { scope: { kind: "session" as const }, at: "current" as const, kind: CALL_KIND };
-		const page = await store.scanDocuments(query, 256, cursor, BACKGROUND_CONTEXT);
-
-		for (const record of page.items) if (record.key !== undefined) documents.set(record.key, record.id);
-		cursor = page.next;
-	} while (cursor !== undefined);
-
+export async function callRecords({ store, database }: Opened, runId: string): Promise<Map<string, SavedCall>> {
 	const records = new Map<string, SavedCall>();
 	const runs = [runId];
 
 	for (const run of runs) {
-		for (const [key, id] of documents) {
-			if (!key.startsWith(`${run}/`)) continue;
+		for (const { key, id } of database.sessionDocuments(CALL_KIND, `${run}/`)) {
 			const stored = await store.document(id, "current", BACKGROUND_CONTEXT);
-
 			const record = stored?.value;
 
 			if (!Value.Check(CALL_RECORD, record)) continue;
@@ -457,10 +472,10 @@ export async function runRecords(
 		todos: new Map<string, Todo[]>(),
 	};
 
-	return reading(path, empty, async (store) => {
+	return reading(path, empty, async (store, database) => {
 		const events = await progressEvents(store, id);
 		const progress = progressOf(events);
-		const records = withCalls(progress) ? await callRecords(store, id) : new Map<string, SavedCall>();
+		const records = withCalls(progress) ? await callRecords({ store, database }, id) : new Map<string, SavedCall>();
 		const tasks = (await rootTasks(store, `wf:${id}#`)).get(id) ?? [];
 		const children = new Map<string, number>();
 

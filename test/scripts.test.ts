@@ -20,7 +20,7 @@ import type { Choose } from "../src/cli/main.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
 import { branchOf, renameBranch } from "../src/launch/worktree.ts";
 import { callRecords, reading, runRecords, runTasks } from "../src/records/store.ts";
-import { CallDoc, type SavedCall } from "../src/run/calls.ts";
+import { CALL_KIND, CALL_RECORD, CallDoc, type SavedCall } from "../src/run/calls.ts";
 import { allPages, rootRuns, runStatus } from "../src/run/past.ts";
 import { RESULT_OBJECT } from "../src/run/result.ts";
 import { prelude } from "../src/run/sandbox.ts";
@@ -1162,6 +1162,76 @@ describe("store reads", () => {
 		repair(unrelated);
 	});
 
+	/** The call records of the `main` store under each of `runs`, from a full scan of the call documents, run by run. */
+	async function scannedCalls(...runs: string[]): Promise<Map<string, SavedCall>> {
+		return await reading(storeOf(), new Map<string, SavedCall>(), async (store) => {
+			const scanned = await allPages((cursor) =>
+				store.scanDocuments(
+					{ scope: { kind: "session" }, at: "current", kind: CALL_KIND },
+					256,
+					cursor,
+					BACKGROUND_CONTEXT,
+				),
+			);
+
+			const expected = new Map<string, SavedCall>();
+
+			for (const run of runs) {
+				for (const { key, id } of scanned) {
+					if (key === undefined || !key.startsWith(`${run}/`)) continue;
+					const value = (await store.document(id, "current", BACKGROUND_CONTEXT))?.value;
+
+					if (Value.Check(CALL_RECORD, value)) expected.set(key, value);
+				}
+			}
+
+			return expected;
+		});
+	}
+
+	/** The call records that `callRecords` reads for `run` in the `main` store. */
+	async function readCalls(run: string): Promise<Map<string, SavedCall>> {
+		return await reading(storeOf(), new Map<string, SavedCall>(), (store, database) =>
+			callRecords({ store, database }, run),
+		);
+	}
+
+	it("read the call records of a run and its child runs by key prefix", async () => {
+		const id = await parentAndChild();
+		expect(await runProbe(storeOf(), { key: "ab/k.1", value: "other" })).toMatchObject({ status: "failed" });
+		const [child] = await childTasks(id);
+		const childRun = child?.runId ?? "";
+
+		const expected = await scannedCalls(id, childRun);
+		expect(expected.size).toBeGreaterThan(2);
+		expect([...(await readCalls(id))]).toEqual([...expected]);
+
+		const expectedChild = await scannedCalls(childRun);
+		expect(expectedChild.size).toBeGreaterThan(0);
+		expect([...(await readCalls(childRun))]).toEqual([...expectedChild]);
+
+		const database = new DatabaseSync(storeOf());
+
+		const damaged = database
+			.prepare("UPDATE documents SET record = 'null' WHERE kind = ? AND key_value = ? RETURNING id")
+			.all(JSON.stringify(CALL_KIND), JSON.stringify("ab/k.1"));
+
+		database.close();
+		expect(damaged.length).toBe(1);
+		expect([...(await readCalls(id))]).toEqual([...expected]);
+	});
+
+	it("keep apart the call records of two runs whose IDs share a prefix", async () => {
+		expect(await runProbe(storeOf(), { key: "a/k.1", value: "short" })).toMatchObject({ status: "failed" });
+		expect(await runProbe(storeOf(), { key: "ab/k.1", value: "long" })).toMatchObject({ status: "failed" });
+
+		for (const run of ["a", "ab"]) {
+			const expected = await scannedCalls(run);
+			expect([...expected.keys()]).toEqual([`${run}/k.1`]);
+			expect([...(await readCalls(run))]).toEqual([...expected]);
+		}
+	});
+
 	it("list the runs of a store without harness's document of the keys", async () => {
 		await writeFile(join(root, "x.js"), "return 0");
 		const run = await workflows(["x.js"], { cwd: root });
@@ -2116,7 +2186,11 @@ return [args.n, args.t, args.other].join(" ")`,
 		const first = await workflows(["parent"], { cwd: root });
 		const id = first.id ?? "";
 		expect(first.code).toBe(1);
-		const records = await reading(storeOf(), new Map<string, SavedCall>(), (store) => callRecords(store, id));
+
+		const records = await reading(storeOf(), new Map<string, SavedCall>(), (store, database) =>
+			callRecords({ store, database }, id),
+		);
+
 		const child = [...records.values()].find((record) => record.kind === "run")?.childRun ?? "";
 		expect(child).not.toBe("");
 		// A crash after the directory existed and before the child task, such as with part of a clone in it.
