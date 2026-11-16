@@ -1,9 +1,10 @@
 // The split and the items of `workflows campaign`, in its worktree. Each item ships through ship.js as one commit on
 // top of the item before it. An item that ships with a judge score of 0 gets one fix round, fix.js: an implement turn
-// on the judge's findings, and a new judge. An item still at 0, or whose judge failed, is one squashed commit, and
-// the user answers keep, one more fix round on their words, reset or stop. A failed or reset item gets a rundown and a
-// question, and the answer goes back to the split. When every item shipped, judge.js judges the change of the whole
-// campaign against the goal, which no item's judge sees. The engine names the branch from `subject` of the result.
+// on the judge's findings, and a new judge. A failed judge fails the campaign. An item still at 0 is one squashed
+// commit, and the user answers keep, one more fix round on their words, reset or stop. A failed or reset item gets a
+// rundown and a question, and the answer goes back to the split. When every item shipped, judge.js judges the change of
+// the whole campaign against the goal, which no item's judge sees. The engine names the branch from `subject` of the
+// result.
 // Each item is a todo of the run: `open` after its split, `doing` from its item step, `done` when it ships, and
 // `dropped` at its reset, at a stop at it, or when a new split replaces it.
 // Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
@@ -14,7 +15,7 @@ export const meta = {
 		rounds: { type: "number", default: 3 },
 	},
 	worktree: true,
-	exit: { done: 0, rejected: 1, unjudged: 1, stopped: 1 },
+	exit: { done: 0, rejected: 1, stopped: 1 },
 	outline: [
 		{ kind: "agent", role: "planner", label: "split" },
 		{ kind: "loop", label: "each item: ship", steps: [{ kind: "run", workflow: "ship", label: "ship" }] },
@@ -81,7 +82,6 @@ async function split(inputs) {
 const FIX_FAILED = {
 	failed: (fixed) => `the fix round failed: ${fixed.error}`,
 	blocked: () => "the fix round left no change",
-	unjudged: () => "no judge score after one fix round",
 	rejected: () => "still 0 after one fix round",
 }
 
@@ -160,31 +160,20 @@ async function askStillZero(question) {
 	}
 }
 
-// The judge fields of a ship result, which a fix round replaces.
-const JUDGE_FIELDS = ["score", "answers", "findings", "judgeError", "divergence"]
-
-// The ship result `result` with the head, subject and judge fields of `shipped`, the result of `judgeCommit` in a
-// fix round. The judge fields of `result` go first, also when `shipped` has no value for them: a saved result comes
-// back from JSON with no undefined keys.
-function withFixRound(result, shipped) {
-	const kept = Object.entries(result).filter(([key]) => !JUDGE_FIELDS.includes(key))
-
-	return { ...Object.fromEntries(kept), ...shipped }
-}
-
 // The outcome of an item's ship: `shipped`, the `done` entry of an item that shipped, without its `item`, `stopped`,
 // the result of an item at which the user stopped the campaign, or `failure`, the rundown inputs of an item that the
 // campaign resets: `status`, `reply`, `findings` and an optional `summary` block of the question. The entry is
 // `{ result }`, or `{ result, kept: true, findings }` when the user kept the item at 0, with the findings of its
 // question. An item that shipped with a judge score of 0 and findings gets one fix round, the child run fix.js, which
 // squashes the item again with a new commit message and judges it again. After a fix round, the result of the item is
-// `withFixRound`. With a score above 0 the item ships. An item whose judge failed, that is at 0 with no findings, or
-// that the fix round left at 0 or unjudged, is one squashed commit, so the user answers keep, fix: <words> for one
-// more fix round, reset or stop. A fix round that fails, leaves no change or ends with an unknown status is a failure.
+// the item's result with the head, subject and judge fields of the fix round. With a score above 0 the item ships. An
+// item at 0 with no findings, or that the fix round left at 0, is one squashed commit, so the user answers keep, fix:
+// <words> for one more fix round, reset or stop. A fix round that fails, leaves no change or ends with an unknown
+// status is a failure.
 async function settle(n, item, start, result) {
 	if (result.status === "shipped") return { shipped: { result } }
 
-	if (result.status !== "rejected" && result.status !== "unjudged") {
+	if (result.status !== "rejected") {
 		return { failure: { status: result.status, reply: result.reply ?? "", findings: result.findings ?? [] } }
 	}
 
@@ -199,8 +188,7 @@ async function settle(n, item, start, result) {
 	// The findings of the next fix round, or undefined when the user answers next.
 	let pending
 
-	if (result.score === undefined) status = `shipped with a failed judge: ${result.judgeError}`
-	else if (findings.length === 0) status = "shipped with judge score 0"
+	if (findings.length === 0) status = "shipped with judge score 0"
 	else pending = findings
 
 	for (;;) {
@@ -218,7 +206,7 @@ async function settle(n, item, start, result) {
 
 			pending = undefined
 
-			if (fixed.shipped !== undefined) current = withFixRound(result, fixed.shipped)
+			if (fixed.shipped !== undefined) current = { ...result, ...fixed.shipped }
 
 			if (fixed.status === "judged") return { shipped: { result: { ...current, status: "shipped" } } }
 
@@ -232,7 +220,7 @@ async function settle(n, item, start, result) {
 			findings = latest.length > 0 ? latest : findings
 			summary = [`Fix round: ${outcome}`, ...latest.map((finding) => `- ${finding}`)].join("\n")
 
-			if (fixed.status !== "rejected" && fixed.status !== "unjudged") {
+			if (fixed.status !== "rejected") {
 				return { failure: { status, reply, findings, summary } }
 			}
 		}
@@ -355,16 +343,15 @@ await ensureBranch()
 if (stopped !== undefined) return notes.finish(goal, stopped)
 
 const head = done.at(-1).result.head
-const judgedOf = (score) => (score === undefined ? "failed" : score.toFixed(2))
 
 // The judge of the whole campaign sees the change of every item at once, against the goal.
 phase(`all ${count(done.length)}`)
 
-const { status: verdict, score, findings, judgeError } = await run("judge", { item: goal, start: first })
+const { status: verdict, score, findings } = await run("judge", { item: goal, start: first })
 
-// The final judge decides the status: `done` when it judged above 0, else its own `rejected` or `unjudged`.
+// The final judge decides the status: `done` when it judged above 0, else its own `rejected`.
 const status = verdict === "judged" ? "done" : verdict
-const report = [`${status} ${name} in ${count(done.length)}, judge ${judgedOf(score)}, ${head}`]
+const report = [`${status} ${name} in ${count(done.length)}, judge ${score.toFixed(2)}, ${head}`]
 
 // A divergence of `none` or an empty one adds nothing to the item line.
 const divergedOf = (divergence) =>
@@ -373,11 +360,11 @@ const divergedOf = (divergence) =>
 // A kept item is still at 0: the findings of its question follow its item line.
 for (const entry of done) {
 	const { result } = entry
-	report.push(`  ${result.head} ${result.subject}, judge ${judgedOf(result.score)}${divergedOf(result.divergence)}`)
+	report.push(`  ${result.head} ${result.subject}, judge ${result.score.toFixed(2)}${divergedOf(result.divergence)}`)
 
 	if (entry.kept) for (const finding of entry.findings) report.push(`    finding ${finding}`)
 }
 
-for (const finding of findings ?? []) report.push(`  finding ${finding}`)
+for (const finding of findings) report.push(`  finding ${finding}`)
 
-return notes.finish(goal, { status, subject, head, score, findings, judgeError, items: done, report })
+return notes.finish(goal, { status, subject, head, score, findings, items: done, report })

@@ -123,21 +123,24 @@ describe("workflows campaign", () => {
 		expect(run.model.calls).toEqual([]);
 	});
 
-	it("gives judgeError and no score, and exits 1 as unjudged, when the campaign judge fails", async () => {
+	it("fails the campaign when the campaign judge fails, and judges again on resume", async () => {
 		const failing = "1 PASS\n2 PASS";
 
-		const run = await workflows(["campaign", "--json", GOAL], {
+		const run = await workflows(["campaign", GOAL], {
 			cwd: repo,
 			script: { items: [[FIRST]], edits: [FIXED], commit: [COMMIT], judge: [PASSING_JUDGE, failing, failing, failing] },
 		});
 
 		expect(run.code).toBe(1);
-		const { value: result, report, result: runResult } = JSON.parse(run.stdout[1] ?? "");
-		expect(result.status).toBe("unjudged");
-		expect(report[0]).toMatch(/^unjudged Fix the README in 1 item, judge failed, [0-9a-f]+$/);
-		expect(result.judgeError).toBe("the answer did not call respond");
-		expect(result).not.toHaveProperty("score");
-		expect(runResult).toEqual({ status: "unjudged", code: 1 });
+		expect(run.stderr.at(-2)).toMatch(/^failed Fix the README: child run \S+ failed: the answer did not call respond$/);
+
+		const resumed = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
+
+		expect(resumed.code).toBe(0);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["judge", "harvest"]);
+		const { value: result, result: runResult } = JSON.parse(resumed.stdout[1] ?? "");
+		expect(result.status).toBe("done");
+		expect(runResult).toEqual({ status: "done", code: 0, score: 5 / 6 });
 	});
 
 	it("ships two items as two commits on the campaign branch", async () => {
@@ -160,7 +163,6 @@ describe("workflows campaign", () => {
 		expect(result).toMatchObject({ subject: "docs: readme", branch: "docs/readme" });
 		expect([result.score, result.findings]).toEqual([5 / 6, PASSING_JUDGE.findings]);
 		expect(runResult).toEqual({ status: "done", code: 0, score: 5 / 6 });
-		expect(result).not.toHaveProperty("judgeError");
 		expect(result.items[0].result).toMatchObject({
 			status: "shipped",
 			findings: PASSING_JUDGE.findings,
@@ -395,30 +397,25 @@ describe("workflows campaign", () => {
 		expect(run.stdout.join("\n")).not.toContain("Fix round:");
 	});
 
-	it("fails an item whose judge failed, with no fix round", async () => {
+	it("fails the campaign when an item judge fails, and judges the item again on resume", async () => {
 		const failing = "1 PASS\n2 PASS";
 
 		const run = await workflows(["campaign", GOAL], {
 			cwd: repo,
-			script: { items: [[FIRST]], edits: [FIXED, FIX], judge: [failing, failing, failing] },
+			script: { items: [[FIRST]], edits: [FIXED, FIX], commit: [COMMIT], judge: [failing, failing, failing] },
 		});
 
-		expect(run.code).toBe(3);
+		expect(run.code).toBe(1);
+		expect(run.stderr.at(-2)).toMatch(/^failed Fix the README: child run \S+ failed: the answer did not call respond$/);
 		expect(run.model.count("implement")).toBe(1);
 		expect(run.model.count("rundown")).toBe(0);
-		expect(run.stdout[1]).toMatch(
-			/^Item 1 shipped with a failed judge: the answer did not call respond: [0-9a-f]+ fix: correct the README typo\n\n/,
-		);
-		const worktree = worktreeOf(run.id);
-		expect(git(worktree, "rev-parse", "HEAD")).not.toBe(start);
+		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).not.toBe(start);
 
-		const reset = await workflows(["resume", run.id ?? "", "--answer", "reset"], { cwd: root });
+		const resumed = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
 
-		expect(reset.code).toBe(3);
-		expect(reset.model.find("rundown")?.prompt).toContain(
-			"## status\nshipped with a failed judge: the answer did not call respond\n",
-		);
-		expect(git(worktree, "rev-parse", "HEAD")).toBe(start);
+		expect(resumed.code).toBe(0);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["judge", "judge", "harvest"]);
+		expect(JSON.parse(resumed.stdout[1] ?? "").value.items[0].result.score).toBe(5 / 6);
 	});
 
 	it("fails an item cleanly when the fix round ends with an unknown status", async () => {
@@ -609,35 +606,27 @@ describe("workflows campaign", () => {
 		expect(fixes).toHaveLength(2);
 	});
 
-	it("keeps an item whose fix round judge failed, and ships the next item on top of it", async () => {
+	it("fails the campaign when the judge of a fix round fails, and judges the item again on resume", async () => {
 		const failing = "1 PASS\n2 PASS";
 
 		const run = await workflows(["campaign", GOAL], {
 			cwd: repo,
-			script: { items: [[FIRST, SECOND]], edits: [FIXED, FIX], judge: [ZERO, failing, failing, failing] },
+			script: { items: [[FIRST]], edits: [FIXED, FIX], commit: [COMMIT], judge: [ZERO, failing, failing, failing] },
 		});
 
-		expect(run.code).toBe(3);
-		const worktree = worktreeOf(run.id);
-		const head = git(worktree, "rev-parse", "--short", "HEAD");
-		expect(run.stdout[1]).toMatch(
-			new RegExp(
-				`^Item 1 shipped with judge score 0, no judge score after one fix round: ${head} ${COMMIT.subject}\\n`,
-			),
-		);
+		expect(run.code).toBe(1);
+		expect(run.stderr.at(-2)).toMatch(/^failed Fix the README: child run \S+ failed: the answer did not call respond$/);
+		expect(run.model.count("implement")).toBe(2);
+		expect(run.model.count("rundown")).toBe(0);
 
-		const kept = await workflows(["resume", run.id ?? "", "--answer", "keep", "--json"], {
-			cwd: root,
-			script: { edits: [`${FIX}Thanks.\n`], commit: [THANKS] },
-		});
+		const resumed = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
 
-		expect(kept.code).toBe(0);
-		const { report } = JSON.parse(kept.stdout[1] ?? "");
-		expect(report[1]).toEqual(expect.stringMatching(new RegExp(`^ {2}${head} ${COMMIT.subject}, judge failed$`)));
-		// The fix round judge gave no findings, so the kept item has the findings of the question, from the ship judge.
-		expect(report[2]).toBe(`    finding ${ZERO.findings[0]}`);
-		expect(report[3]).toEqual(itemLine(THANKS.subject));
-		expect(git(worktree, "rev-parse", "--short", "HEAD~1")).toBe(head);
+		expect(resumed.code).toBe(0);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["judge", "judge", "harvest"]);
+		const { value: result } = JSON.parse(resumed.stdout[1] ?? "");
+		expect(result.items[0].result.score).toBe(5 / 6);
+		expect(result.items[0]).not.toHaveProperty("kept");
+		expect(await readFile(join(worktreeOf(run.id), "README.md"), "utf8")).toBe(FIX);
 	});
 
 	it("asks again on an unknown answer about an item still at 0", async () => {

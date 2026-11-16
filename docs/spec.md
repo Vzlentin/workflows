@@ -161,19 +161,19 @@ report has that line too. The failure is the saved result of the turn, so a resu
 
 Then the run starts the child run `judge` in the worktree, with the work item and the start commit, so the judge
 judges the squashed commit and its message: see [Judge](#judge). If the judge fails or does not answer through
-`respond`, the command prints `judge failed on <subject>: <error>` on stderr, and the run still keeps the squashed
-commit.
+`respond`, the child run fails, so the run fails as [Resume](#resume) says, and keeps the squashed commit. A resume
+judges the commit again.
 
-The status of the run follows the judge: `shipped` when the score is above 0, `rejected` when it is 0, and `unjudged`
-when the judge failed. The command prints `<status> <subject> in <n> rounds, judge <score or failed>, <commit>`, then
+The status of the run follows the judge: `shipped` when the score is above 0, and `rejected` when it is 0. The command
+prints `<status> <subject> in <n> rounds, judge <score>, <commit>`, then
 the line `commit message failed on ...` when the message turn failed, then the line `branch <name>` of
-[Branch name](#branch-name). It exits 0 when `shipped`, and 1 when `rejected` or
-`unjudged`; these two keep the squashed commit, the branch and the worktree.
+[Branch name](#branch-name). It exits 0 when `shipped`, and 1 when `rejected`, which keeps the squashed commit, the
+branch and the worktree.
 
 The result of the run, which `--json` prints, has `status` and `rounds`; `head`, `subject`, the subject of the
-squashed commit, and `branch`, the branch that the worktree ends on, when `shipped`, `rejected` or `unjudged`; `worktree`, the path of the
+squashed commit, and `branch`, the branch that the worktree ends on, when `shipped` or `rejected`; `worktree`, the path of the
 directory that the run ran in, for every status; `score`, `answers`, the eight answers in question order, and `findings`, the finding
-lines of the judge, when the judge answered; `judgeError` when the judge failed; `divergence`, the divergence line of
+lines of the judge, when the judge answered; `divergence`, the divergence line of
 the judge with its whitespace runs made one space, when the judge answered; `reply` when blocked; `handoff`, the
 handoff that the last round used, when blocked or stopped; `memory`, the
 notes of the run memory in order as `#<k> <note>` lines, or `[]` when there are none, for every status; and `lessons`,
@@ -256,12 +256,11 @@ The command prints
 `judge <score>: <subject>`, one line `  <finding>` for each finding, and the line `commit message failed on ...` of
 [Ship](#ship) when the message turn failed, and exits 0. A score of 0 gives the status
 `rejected` in place of `judged`, and exits 1. When the implement is blocked, because the item has no change from `--start`, or the
-round left the same tree and message as `HEAD` before it, the result is `{ "status": "blocked", "reply" }` and the command prints `blocked <subject>` and the reply. When the judge
-gives no score, the result is `{ "status": "unjudged", "judgeError", "shipped", "reply" }`, with `shipped` the result
-of `judgeCommit`, with its `head` and `subject`, and the command prints `judge failed
-on <subject>: <error>`. When a child run fails, the run does not fail: the result is `{ "status": "failed", "error" }`,
+round left the same tree and message as `HEAD` before it, the result is `{ "status": "blocked", "reply" }` and the command prints `blocked <subject>` and the reply. When a child
+run fails before the judge, the run does not fail: the result is `{ "status": "failed", "error" }`,
 with `reply` when the implement ended, and the command prints `fix failed on <subject>: <error>`. So a caller saves the
-result, and a resume does not run the fix round again. These three exit 1. A child run that was aborted or orphaned,
+result, and a resume does not run the fix round again. These two exit 1. A judge that fails or does not answer through
+`respond` fails the run, so a resume judges the squashed commit again. A child run that was aborted or orphaned,
 whose error is `child run <id> aborted: <reason>` or `child run <id> orphaned: <reason>`, fails the run with that error,
 so that a resume of the caller runs it again.
 
@@ -364,8 +363,8 @@ and exits 0. The result is `{ "status": "judged", "score", "answers", "findings"
 the one line of the judge on how the change differs from its intent, or `none`, with its whitespace runs made one space.
 A score of 0 gives the status `rejected` in place of `judged`, and exits 1.
 
-If the judge fails or does not answer through `respond`, the run logs and prints `judge failed on <subject>: <error>`,
-and exits 1. The result is `{ "status": "unjudged", "judgeError" }`.
+If the judge fails or does not answer through `respond`, the run fails with that error, as [Resume](#resume) says,
+and a resume asks the judge again.
 
 ## Campaign
 
@@ -376,7 +375,7 @@ workflows campaign --repo calibre --base develop --rounds 2 "Make the docs compl
 
 The goal comes from one argument or from stdin, as the work item of `ship` does, and `--repo`, `--base`, `--rounds`
 and `--prompts` work as for `ship`. `--rounds` applies to each work item. Errors name the goal, such as `the goal is empty`.
-When the judge of an item fails, the command prints `judge failed on <item subject>: <error>` on stderr, as `ship` does.
+When the judge of an item fails, the item's ship fails, so the campaign fails, and a resume judges the item again.
 
 In the step `split`, a planner session splits the goal into work items with the `split` prompt, and answers through
 `respond` with a `subject`, a Conventional Commit subject for the whole goal, and the work items. The step logs the
@@ -447,13 +446,13 @@ terminal and in Pi they move under the item step when it comes.
 - When every item shipped, the step `all <n> item(s)` runs the child run `judge` on the change of the whole campaign,
   from the start commit to the last item, against the goal: the judge of an item sees only its item, and not how the
   items fit together. The command prints
-  `<status> <subject> in <n> item(s), judge <score or failed>, <commit>` with the commit of the last item, then one line
-  `  <commit> <commit subject>, judge <score or failed>` for each shipped item, in order, with
+  `<status> <subject> in <n> item(s), judge <score>, <commit>` with the commit of the last item, then one line
+  `  <commit> <commit subject>, judge <score>` for each shipped item, in order, with
   `, divergence <divergence>` at the end when the item's divergence is there, not empty and not `none`, then one line
   `  finding <finding>` for each finding of the campaign judge, then the lesson lines, then the line `branch <name>` of
   [Branch name](#branch-name), with the `subject` of the last split. The campaign judge gives the status: `done` and
-  exit 0 when its score is above 0, `rejected` and exit 1 when it is 0, and `unjudged` and exit 1 when it failed. The
-  commits and the branch stay in each case.
+  exit 0 when its score is above 0, and `rejected` and exit 1 when it is 0. The commits and the branch stay in each
+  case. A campaign judge that fails fails the run, and a resume judges the campaign again.
 
 - An item whose ship is `shipped` ships. An item whose ship is `rejected` (a judge score of 0) and whose judge gave
   findings gets one fix round: the child run
@@ -462,7 +461,7 @@ terminal and in Pi they move under the item step when it comes.
   squashes the change of the item again into one commit with a new commit message, and logs
   `commit <commit> <commit subject>`. When `fix` is `judged`, with a score above 0, the item ships: its result is the
   ship result with the status `shipped` and the judge fields of the ship result replaced by the `head`, `subject`,
-  `score`, `answers`, `findings`, `judgeError` and `divergence` of `fix`. The step `fix` comes
+  `score`, `answers`, `findings` and `divergence` of `fix`. The step `fix` comes
   under the item step, and its log line and its `judge` step under it:
 
   ```text
@@ -479,12 +478,12 @@ terminal and in Pi they move under the item step when it comes.
   ```
 
   Otherwise the fix round ends with an outcome: `the fix round failed: <error>` when `fix` is `failed`, `the fix
-  round left no change` when it is `blocked`, `no judge score after one fix round` when it is `unjudged`, `still 0
+  round left no change` when it is `blocked`, `still 0
   after one fix round` when it is `rejected`, a score of 0 again, and `the fix round ended with the unknown status <status>` for any
-  other status. After `unjudged` or a score of 0 again, the run asks as below; after any other outcome the item fails
-  as below.
-- When an item's ship is `unjudged` (its judge failed), or `rejected` with no findings, or its fix round ends
-  `unjudged` or with a score of 0 again, the item is one squashed commit, and the run asks the question of
+  other status. After a score of 0 again, the run asks as below; after any other outcome the item fails
+  as below. A judge that fails in the fix round fails `fix`, so the campaign fails, and a resume judges the item again.
+- When an item's ship is `rejected` with no findings, or its fix round ends
+  with a score of 0 again, the item is one squashed commit, and the run asks the question of
   [Input](#input), with no reset, no patch and no rundown:
 
   ```text
@@ -502,7 +501,7 @@ terminal and in Pi they move under the item step when it comes.
   - `keep` ships the item as it is: its entry in `items` gets `"kept": true` and `findings`, the findings of the
     question, and its item line in the `done` report is followed by one line `    finding <finding>` for each of them.
   - `fix: <words>`, with words that are not empty, runs one more fix round as above, with the words as its one finding
-    and `round` one more than the fix round before it. A score above 0 ships the item, `unjudged` or a score of 0
+    and `round` one more than the fix round before it. A score above 0 ships the item, a score of 0
     again asks again, and any other outcome fails the item as below.
   - `reset` fails the item as below.
   - `stop` prints `stopped <subject> at item <n>: <worktree>`, then the lesson lines, and exits 1.
@@ -516,7 +515,7 @@ terminal and in Pi they move under the item step when it comes.
   campaign does not reset it`. Then it resets the worktree with `git reset --hard` to that commit, and adds the note `campaign: item <n>
 failed and was reset: its notes describe code that is gone` to the run memory. Then a new planner session gets the
   `rundown` prompt with the inputs `goal`, `shipped` (the shipped items, each one as `{ item, commit, divergence }`, as JSON), `item`, `status`
-  (the ship status, `shipped with a failed judge: <judge error>`, or `shipped with judge score 0`, with `, <outcome>`
+  (the ship status, or `shipped with judge score 0`, with `, <outcome>`
   of the fix round after it when the item had one), `reply` (the reply of the fix round's implementer after a fix round that has one), `handoff`, `findings` (the findings of the
   fix round's judge when it gave some), `memory` (the notes of the run memory of the campaign, as `#<k> <note>` lines), `remaining` (the
   remaining items, as JSON) and `patch` (the path of `item-<n>/item.patch`, when the item changed something). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and proposed items.
@@ -537,8 +536,7 @@ failed and was reset: its notes describe code that is gone` to the run memory. T
 items. The number of the item step counts every item that ran. The result is
 `{ "status": "done", "subject", "head", "score", "findings", "branch", "items": [{ "item", "result" }], "lessons" }`,
 where `score` and `findings` are those of the campaign judge, as in a ship result, with the status `rejected` when the
-campaign judge gave 0, and the status `unjudged` and `judgeError` in place of `score` and `findings` when the campaign
-judge failed, or `{ "status": "stopped", "items", "rundown", "lessons" }`,
+campaign judge gave 0, or `{ "status": "stopped", "items", "rundown", "lessons" }`,
 with no `rundown` when the user stopped at the question about an item still at 0. An item that the user kept has `"kept": true` and `findings`. The `result` of
 each shipped item, and of the failed item in a stopped result, is its `ship` result, with its `divergence` and its child run ID as
 `runId`, and after a fix round that shipped, that the user kept or at which the user stopped, the `head`, `subject` and judge fields of the last fix round. `head` is the commit of the last item, and `branch` is the
@@ -563,7 +561,7 @@ The work items and their baselines come from one of two places:
 
 - By default, from past runs: `pastRuns("ship", ...)` gives the completed root ship runs of the project store, the
   newest `--limit` (default 8), or with `--runs` the run IDs of that comma list, in that order. A saved run keeps its
-  result as its baseline when its status is `shipped`, `rejected` or `unjudged` and its `head` is still a commit of its repository; its diff is
+  result as its baseline when its status is `shipped` or `rejected` and its `head` is still a commit of its repository; its diff is
   `git diff <start> <head>`. Any other saved run runs its baseline again once, as the child run
   `run("ship", { item, repo: repository, base: start, from: runId })`, with its saved prompts and agents table.
 - With `--items <folder>`, relative to the current directory, from `<name>.md` files. Each file has the frontmatter
@@ -1119,7 +1117,7 @@ the run started with. A script's own declaration of the same name takes their pl
 | `await commitAll(message)` | Stages every change, and commits it as `message` when something is staged, with the check and the commit in one command, so that a repeat makes no second commit. The shell runs the commit with `exec`, so a stop of the run also stops the commit |
 | `await squash(start, message, subject)` | Squashes the commits since `start` into one commit with `message`, logs `commit <short> <subject>` and returns the short head. When nothing changed since `start`, it makes no commit, logs `nothing to commit since <short>` and returns the short head. Safe to repeat: it is one command, so a repeat resets a squash commit that was made but not saved. The shell runs the commit in the background and kills it on `TERM`, so a stop of the run also stops the commit |
 | `await commitChange(item, start, findings)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base`, `head` and `findings`, the lines of `findings` (default `[]`) joined with newlines, squashes the change into one commit with it, and returns `{ head, subject, warnings }`, `head` the short head, `subject` the commit subject, and `warnings` the lines that it logged for a script's report. When the turn fails or gives an empty subject, the message is the subject of `item`. The turn has `settle: true`: a failed turn logs `commit message failed on <subject of item>: <error>, so the message is the subject of the item`, and `warnings` is that line; else `warnings` is `[]` |
-| `await judgeCommit(item, start, committed)` | Runs the child run `judge` with `item` and `start`, and returns `head` and `subject` of `committed`, the result of `commitChange`, with the judge fields `status`, `score`, `answers`, `findings`, `judgeError` and `divergence` |
+| `await judgeCommit(item, start, committed)` | Runs the child run `judge` with `item` and `start`, and returns `head` and `subject` of `committed`, the result of `commitChange`, with the judge fields `status`, `score`, `answers`, `findings` and `divergence`. A failed judge fails the caller |
 | `await writePatch(path, from)` | Writes `git diff --binary` from `from` to `HEAD` to the file `path`, and returns `path` |
 | `await changeOf(args, { wip })` | `{ start, intent, checkout, dirty }` of the change of a script's `args`. With `args.start`, it is `args.start` and `args.item`, not dirty, with no Git step. Else it is the change that `args.change` points at from `args.base`, with the rules of [Thermoloop](#thermoloop), and it calls `title` with the subject of the intent: `start` is the start commit, `intent` is `args.item` or the pull request or the commit messages, `checkout` is the branch of a change that must run in a worktree of its own, and `dirty` says that the checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip` |
 | `await inCheckout(name, change, args)` | Runs the script `name` again as a child run with `args`, the `item` and `start` of the change, and `checkout`, the branch of the change, and returns its result with the last report line `worktree <path>`, the worktree that has the branch |
@@ -1366,7 +1364,7 @@ the note. A run whose task ended in another way, such as an aborted or orphaned 
 stopped for a reason other than its end, such as its length, fails its call, and a resume asks again. So does an ask
 whose answer did not call `respond`. A resumed ask never returns the answer of another ask in its session.
 
-A shipped, rejected, unjudged, blocked or stopped run is final: resume prints the same result and exits with the same code. A waiting
+A shipped, rejected, blocked or stopped run is final: resume prints the same result and exits with the same code. A waiting
 run without `--answer` whose ask is open prints its question again and exits 3. When the command can ask, it reads the
 answer on the terminal and continues the run with it, or prints the `waits for an answer` line and exits 130 when no
 answer comes. A waiting run whose ask has an answer or was dropped continues in a new task. See [Input](#input).

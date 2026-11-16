@@ -1,8 +1,8 @@
 // `workflows ship` and each `workflows campaign` item, in its worktree: the child runs `rpi.js` and `thermoloop.js`,
 // then `commitChange` and `judgeCommit`: the commit message turn, the squash, and the child run `judge.js` on the
 // squashed commit. A caller may give `memory`, the `ref` of a run memory to go on with. The engine names the branch
-// from `subject` of the result. The ship is `shipped` when the judge scores above 0, `rejected` at 0 and `unjudged`
-// when the judge fails; the two last exit 1 and keep the commit. Every Git step is safe to repeat: a resume runs a step
+// from `subject` of the result. The ship is `shipped` when the judge scores above 0, and `rejected` at 0, which exits 1
+// and keeps the commit. A judge that fails fails the ship, and a resume judges again. Every Git step is safe to repeat: a resume runs a step
 // again when its result was not saved.
 export const meta = {
 	description: "Ship one work item onto a new branch: research, plan, implement, review rounds, one squashed commit, and judge.",
@@ -11,7 +11,7 @@ export const meta = {
 		rounds: { type: "number", default: 3 },
 	},
 	worktree: true,
-	exit: { shipped: 0, rejected: 1, unjudged: 1, blocked: 1, stopped: 1 },
+	exit: { shipped: 0, rejected: 1, blocked: 1, stopped: 1 },
 	outline: [
 		{ kind: "agent", role: "researcher", label: "research" },
 		{ kind: "agent", role: "planner", label: "plan" },
@@ -58,7 +58,7 @@ if (reviewed.status !== "approved") return notes.finish(item, unshipped(reviewed
 
 const committed = await commitChange(item, start)
 const { status: verdict, ...shipped } = await judgeCommit(item, start, committed)
-const judged = shipped.score === undefined ? "failed" : shipped.score.toFixed(2)
+const judged = shipped.score.toFixed(2)
 const status = verdict === "judged" ? "shipped" : verdict
 
 return notes.finish(item, {

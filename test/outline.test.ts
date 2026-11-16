@@ -215,7 +215,7 @@ describe("workflows outline", () => {
 					rounds: { type: "number", default: 3 },
 				},
 				placement: "worktree",
-				exit: { shipped: 0, rejected: 1, unjudged: 1, blocked: 1, stopped: 1 },
+				exit: { shipped: 0, rejected: 1, blocked: 1, stopped: 1 },
 				outline: OUTLINES.ship,
 				usage:
 					"workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] [<item.md> | <text>] [--background] [--json]",

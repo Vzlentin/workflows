@@ -3,7 +3,8 @@
 // commits nothing: it says that it does not judge the changes of the checkout that are not committed. A change on a
 // branch that no worktree has runs again as a child run in a worktree on that branch. A caller gives `start`, the
 // commit that its change starts from, with `item`. The result also gives `divergence`, one line on how the change
-// differs from its intent, or `none`. A score of 0 is `rejected`, and exits 1. `ship.js` runs it on the squashed commit of an item, `fix.js` on the squashed
+// differs from its intent, or `none`. A score of 0 is `rejected`, and exits 1. A judge that gives no verdict fails the
+// run, and a resume judges again. `ship.js` runs it on the squashed commit of an item, `fix.js` on the squashed
 // commit of an item after its fix, and `campaign.js` on the change of all its items. `--repo <path>` runs it in the
 // checkout of that local repository, as from its directory.
 export const meta = {
@@ -14,7 +15,7 @@ export const meta = {
 		base: { type: "string", default: "main" },
 	},
 	repo: true,
-	exit: { judged: 0, rejected: 1, unjudged: 1 },
+	exit: { judged: 0, rejected: 1 },
 	outline: [{ kind: "agent", role: "judge", label: "judge" }],
 }
 
@@ -43,17 +44,7 @@ const VERDICT = {
 }
 
 const judge = session("judge")
-let verdict
-
-try {
-	verdict = await judge.ask(prompts.judge({ item, base: start, head }), { schema: VERDICT })
-} catch (error) {
-	log(`judge failed on ${subject}: ${error.message}`)
-
-	const report = [`judge failed on ${subject}: ${error.message}`, ...notes]
-
-	return { status: "unjudged", judgeError: error.message, report }
-}
+const verdict = await judge.ask(prompts.judge({ item, base: start, head }), { schema: VERDICT })
 
 const { answers, findings } = verdict
 const score = scoreOf(answers)

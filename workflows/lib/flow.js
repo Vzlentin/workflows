@@ -54,11 +54,11 @@ async function commitChange(item, start, findings = []) {
 
 /**
  * The child run `judge.js` on the squashed commit from `start`. Returns `head` and `subject` of `committed`, the result
- * of `commitChange`, with the judge fields `status` (`judged`, `rejected` or `unjudged`), `score`, `answers`,
- * `findings`, `judgeError` and `divergence`.
+ * of `commitChange`, with the judge fields `status` (`judged` or `rejected`), `score`, `answers`, `findings` and
+ * `divergence`. A failed judge fails the caller.
  */
 async function judgeCommit(item, start, { head, subject }) {
-	const { status, score, answers, findings, judgeError, divergence } = await run("judge", { item, start });
+	const { status, score, answers, findings, divergence } = await run("judge", { item, start });
 
-	return { head, subject, status, score, answers, findings, judgeError, divergence };
+	return { head, subject, status, score, answers, findings, divergence };
 }

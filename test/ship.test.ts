@@ -62,9 +62,8 @@ type Stored = {
 };
 
 const worktreeOf = (id: string | undefined) => worktreeAt(repo, id);
-const progress = /^ *(research|plan|implement|judge|round \d\/\d: (implement|review))$/;
 const FIXED = "# Demo\n\nHello world\n";
-const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+|failed), [0-9a-f]+$/;
+const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+), [0-9a-f]+$/;
 
 // The branch name of the subject of COMMIT.
 const BRANCH = "fix/correct-the-readme-typo";
@@ -615,7 +614,27 @@ export default function ({ events }) {
 		expect(existsSync(runs()) ? await readdir(runs()) : []).toEqual([]);
 	});
 
-	it("clones a GitHub repository through gh, and keeps the commit of an unjudged ship that exits 1", async () => {
+	it("fails the ship when the judge fails, keeps its commit, and judges again on resume", async () => {
+		const run = await workflows(["ship", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED], judge: "1 PASS\n2 PASS" },
+		});
+
+		expect(run.code).toBe(1);
+		expect(run.stderr.at(-2)).toMatch(
+			/^failed Fix the README typo: child run \S+ failed: the answer did not call respond$/,
+		);
+		const worktree = worktreeOf(run.id);
+		expect(git(worktree, "log", "-1", "--format=%B")).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
+		expect(run.model.count("commit")).toBe(1);
+
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: repo });
+		expect(resumed.code).toBe(0);
+		expect(resumed.stdout).toEqual([`run ${run.id}`, expect.stringMatching(SHIPPED), `branch ${BRANCH}`]);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["judge", "harvest"]);
+	});
+
+	it("clones a GitHub repository through gh", async () => {
 		const remote = join(root, "github", "octocat", "calibre");
 		await repository(remote);
 		git(remote, "checkout", "-qb", "develop");
@@ -627,20 +646,14 @@ export default function ({ events }) {
 
 		const run = await workflows(["ship", "--repo", "calibre", "--base", "develop", "Fix the README typo"], {
 			cwd: root,
-			script: { edits: [FIXED], judge: "1 PASS\n2 PASS" },
+			script: { edits: [FIXED], judge: PASSING_JUDGE },
 		});
 
-		expect(run.code).toBe(1);
+		expect(run.code).toBe(0);
 		expect(await readFile(join(root, "gh.log"), "utf8")).toBe(
 			`repo clone calibre ${join(runs(), run.id ?? "", "repository")}\n`,
 		);
-		expect(run.stdout[1]).toMatch(/^unjudged Fix the README typo in 1 rounds, judge failed, [0-9a-f]+$/);
-		expect(run.stderr.filter((line) => !progress.test(line))).toEqual([
-			"  +1 -1 in 1 file",
-			"  SHIP",
-			expect.stringMatching(new RegExp(`^commit [0-9a-f]+ ${COMMIT.subject}$`)),
-			"  judge failed on Fix the README typo: the answer did not call respond",
-		]);
+		expect(run.stdout[1]).toMatch(SHIPPED);
 		const worktree = join(runs(), run.id ?? "", ".worktrees", "repository", run.id ?? "");
 		expect(git(worktree, "rev-parse", "HEAD^")).toBe(develop);
 		expect(git(worktree, "log", "-1", "--format=%B")).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);

@@ -116,10 +116,14 @@ describe("workflows judge", () => {
 		expect(run.model.calls).toEqual([]);
 	});
 
-	it("exits 1 when the judge does not answer", async () => {
+	it("fails when the judge does not answer, and judges again on resume", async () => {
 		const run = await workflows(["judge", "--item", ITEM], { cwd: repo, script: { judge: "1 PASS" } });
 
 		expect(run.code).toBe(1);
-		expect(run.stdout.slice(1)).toEqual([`judge failed on ${ITEM}: the answer did not call respond`]);
+		expect(run.stderr.at(-2)).toBe(`failed ${ITEM}: the answer did not call respond`);
+
+		const resumed = await workflows(["resume", run.id ?? ""], { cwd: repo });
+		expect(resumed.code).toBe(0);
+		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["judge"]);
 	});
 });

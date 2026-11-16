@@ -315,24 +315,14 @@ declare function commitChange(
 	findings?: readonly string[],
 ): Promise<{ head: string; subject: string; warnings: string[] }>;
 
-/** The judge fields of `judgeCommit`: the status of the judge with a score, or the error of the judge. */
-type JudgeFields =
-	| {
-			status: "judged" | "rejected";
-			score: number;
-			answers: ("PASS" | "FAIL")[];
-			findings: string[];
-			divergence: string;
-			judgeError?: undefined;
-	  }
-	| {
-			status: "unjudged";
-			judgeError: string;
-			score?: undefined;
-			answers?: undefined;
-			findings?: undefined;
-			divergence?: undefined;
-	  };
+/** The judge fields of `judgeCommit`: the status of the judge and its score. A failed judge fails the caller. */
+type JudgeFields = {
+	status: "judged" | "rejected";
+	score: number;
+	answers: ("PASS" | "FAIL")[];
+	findings: string[];
+	divergence: string;
+};
 
 /**
  * The child run `judge` on the squashed commit from `start`. Returns `head` and `subject` of `committed` with the judge

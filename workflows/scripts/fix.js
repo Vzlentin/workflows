@@ -5,9 +5,9 @@
 // `campaign.js` runs it in its worktree. A caller gives `start`, the commit that the item started from, `findings`, the
 // judge's findings as an array of lines, `message`, the commit message of the implement turn before the squash,
 // `round`, the round of the implementer's notes, and may give `memory`, the `ref` of a run memory to go on with. A
-// failed child run is a result of this run, `failed`, so that the caller saves it and a resume does not run the fix
-// round again. An aborted or orphaned child run fails this run, so that a resume runs it again. Every Git step is safe to repeat: a
-// resume runs a step again when its result was not saved.
+// failure before the judge is a result of this run, `failed`, so that the caller saves it and a resume does not run the
+// fix round again. An aborted or orphaned child run, and a failed judge, fail this run, so that a resume runs it again.
+// Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
 export const meta = {
 	description: "Fix a work item on the judge's findings in one implement turn, squash it into one commit, and judge it again.",
 	args: {
@@ -16,7 +16,7 @@ export const meta = {
 		round: { type: "number", default: 1 },
 		message: { type: "string" },
 	},
-	exit: { judged: 0, rejected: 1, failed: 1, blocked: 1, unjudged: 1 },
+	exit: { judged: 0, rejected: 1, failed: 1, blocked: 1 },
 	outline: [
 		{ kind: "run", workflow: "implement", label: "fix" },
 		{ kind: "run", workflow: "judge", label: "judge" },
@@ -36,6 +36,7 @@ if (args.memory !== undefined) implement.memory = args.memory
 if (args.message !== undefined) implement.message = args.message
 
 let reply
+let committed
 
 try {
 	const before = await sh(["git", "rev-parse", "HEAD"])
@@ -44,7 +45,7 @@ try {
 
 	if (fixed.status !== "implemented") return { status: fixed.status, reply, report: [`${fixed.status} ${subject}`, reply] }
 
-	const committed = await commitChange(item, start, findings)
+	committed = await commitChange(item, start, findings)
 	const messageOf = (commit) => sh(["git", "log", "-1", "--format=%B", commit])
 	const sameTree = await ok(["git", "diff", "--quiet", before, "HEAD"])
 
@@ -53,23 +54,6 @@ try {
 
 		return { status: "blocked", reply, report: [`blocked ${subject}`, ...committed.warnings, reply] }
 	}
-
-	const { status, ...shipped } = await judgeCommit(item, start, committed)
-	const { score, judgeError } = shipped
-
-	if (score === undefined) {
-		const report = [`judge failed on ${subject}: ${judgeError}`, ...committed.warnings]
-
-		return { status, judgeError, shipped, reply, report }
-	}
-
-	const report = [
-		`judge ${score.toFixed(2)}: ${subject}`,
-		...shipped.findings.map((finding) => `  ${finding}`),
-		...committed.warnings,
-	]
-
-	return { status, shipped, reply, report }
 } catch (error) {
 	const message = error?.message ?? String(error)
 
@@ -82,3 +66,13 @@ try {
 
 	return failed
 }
+
+const { status, ...shipped } = await judgeCommit(item, start, committed)
+
+const report = [
+	`judge ${shipped.score.toFixed(2)}: ${subject}`,
+	...shipped.findings.map((finding) => `  ${finding}`),
+	...committed.warnings,
+]
+
+return { status, shipped, reply, report }

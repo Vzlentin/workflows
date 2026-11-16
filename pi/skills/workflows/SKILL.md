@@ -105,11 +105,10 @@ The values of `result.status` for a `done` run. The fields that the table names,
 | --- | --- | --- |
 | ship | `shipped` | The branch (`value.branch`, and the report line `branch <name>`), the rounds, the judge score and `value.findings`. The change is one squashed commit, and the judge judged that commit and its message. |
 | ship | `rejected` | The judge scored the squashed commit 0. The commit and the branch stay. Give the branch and `value.findings`. |
-| ship | `unjudged` | The judge gave no verdict: `value.judgeError` says why. The commit and the branch stay. |
 | ship | `stopped` | The review rounds ended without SHIP. Give the worktree (`value.worktree`), the round patches in the run directory, and `value.handoff`, the handoff that the last round followed. |
 | ship, rpi, thermoloop | `blocked` | A round changed nothing. Give the worktree and `value.reply`, the implementer's reason. |
 | campaign | `done` | The branch, one line for each item with its commit and score, and the score and findings of the campaign judge (`result.score` and `value.findings`). |
-| campaign | `rejected`, `unjudged` | The campaign judge gave 0, or no verdict. The commits and the branch stay. Give the same lines as for `done`. |
+| campaign | `rejected` | The campaign judge gave 0. The commits and the branch stay. Give the same lines as for `done`. |
 | campaign | `stopped` | The user stopped the campaign at an item. Give the rundown when the result has one. |
 | campaign | `waiting` | An item failed, or is still at judge 0, and the campaign asks how to continue. See below. |
 | rpi | `implemented` | The commit `value.head` and the branch. |
@@ -117,7 +116,6 @@ The values of `result.status` for a `done` run. The fields that the table names,
 | thermoloop | `stopped` | The rounds ended without SHIP. Give `value.handoff`, and the last review (see below). |
 | judge | `judged` | `result.score`, from 0 to 1, and `value.findings`. |
 | judge | `rejected` | The score is 0. Give `value.findings`. |
-| judge | `unjudged` | The judge gave no verdict. Quote `value.judgeError`. |
 
 Do not guess findings. No result field holds the last review: its `ask` returns only SHIP or FIX. To read its
 findings:
