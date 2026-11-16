@@ -6,6 +6,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { childOf, type SavedCall, SHELL_OUTPUT } from "../run/calls.ts";
+import { nameOfKey, type StepRef, stepName } from "../run/keys.ts";
 import { hasEnded, type RunStatus } from "../run/past.ts";
 import type { ProgressEvent } from "../run/progress.ts";
 import { duration, type Progress, type RunStep, stepIndexOf, stepTime } from "./steps.ts";
@@ -44,24 +45,6 @@ type StepGroup = {
 
 /** The progress events of a root run and their steps, and the state of each task of the store by task ID. */
 export type RunProgress = Pick<RunRecords, "progress" | "events" | "states">;
-
-/** The name of a step: `s<n>` in the root run, `<run>/s<n>` in a child run. */
-const STEP_NAME = /^(?:(.+)\/)?s(\d+)$/;
-
-/** Whether `name` names a step and not a call: call keys are hex and never start with `s`. */
-export function isStepName(name: string): boolean {
-	return STEP_NAME.test(name);
-}
-
-/** The name of the call `key` in the run `root`: the key without `<root>/`, or the whole key for a child run. */
-export function callName(root: string, key: string): string {
-	return key.startsWith(`${root}/`) ? key.slice(root.length + 1) : key;
-}
-
-/** The store key of the call named `name` in the run `root`. */
-export function callKey(root: string, name: string): string {
-	return name.includes("/") ? name : `${root}/${name}`;
-}
 
 /** `ms` as local `HH:MM:SS`, or a blank column when there is no time. */
 function clock(ms: number | undefined): string {
@@ -151,11 +134,6 @@ function lastEnd(events: readonly ProgressEvent[], runId: string): number | unde
 	return event?.kind === "end" ? event.at : undefined;
 }
 
-/** The name of the step `n` of the run `runId` in the root run `root`. */
-function stepName(root: string, runId: string, n: number): string {
-	return runId === root ? `s${n}` : `${runId}/s${n}`;
-}
-
 /**
  * The line of the step `group` of the run `runId` at `indent`: its text, its duration, the count and output size of its
  * own calls, and its name. Group 0 has the text `-`, and ends at `end`, the time of the end of its run.
@@ -181,7 +159,7 @@ function callLines(root: string, node: CallNode, indent: string): LogLine[] {
 	const shell = shellResult(record);
 	const exit = shell === undefined ? [] : [`exit ${shell.code}`];
 	const bytes = outputBytes(record);
-	const facts = [time, ...exit, ...(bytes === undefined ? [] : [sizeOf(bytes)]), callName(root, key)];
+	const facts = [time, ...exit, ...(bytes === undefined ? [] : [sizeOf(bytes)]), nameOfKey(root, key)];
 	const text = `${clock(started)}  ${indent}  ${markOf(state)} ${record.kind} ${node.label}  ${facts.join("  ")}`;
 	// A call prints again in `log --follow` when its state changes.
 	const lines = [{ item: `${key}:${state}`, text }];
@@ -247,17 +225,16 @@ export function runLines(
 }
 
 /**
- * The step named `name` in the root run `root`: its line, then the line of each of its own calls with the last lines of
+ * The step `step` in the root run `root`: its line, then the line of each of its own calls with the last lines of
  * the error of a failed one, without the calls of its child runs. Undefined when there is no such step.
  */
 export function stepLog(
 	root: string,
 	read: RunProgress,
 	calls: readonly CallNode[],
-	name: string,
+	step: StepRef,
 ): string[] | undefined {
-	const [, child, n] = STEP_NAME.exec(name) ?? [];
-	const runId = child ?? root;
+	const { runId, n } = step;
 	const own = runId === root ? calls : (findCall(calls, (node) => childOf(node.record)?.runId === runId)?.calls ?? []);
 	const group = groupsOf(read.progress, runId, own).find((g) => String(g.n) === n);
 
@@ -286,7 +263,7 @@ export function callText(root: string, node: CallNode): string[] {
 	const { key, record, label } = node;
 	const { kind, args } = record;
 	const what = record.kind === "sh" || record.kind === "ok" ? commandOf(record.args) : label;
-	const lines = [`call ${callName(root, key)}`, `${kind} ${what}`, `phase ${record.phase ?? "-"}`];
+	const lines = [`call ${nameOfKey(root, key)}`, `${kind} ${what}`, `phase ${record.phase ?? "-"}`];
 	lines.push(`started ${record.startedAt}`);
 
 	const ended = endedAt(record.end);

@@ -1,17 +1,9 @@
 /** `workflows log <run-id>`: the short log of a run, the full output of one call, or the log as the run goes on. */
 import { parseArgs } from "node:util";
-import {
-	callKey,
-	callText,
-	errorLines,
-	findCall,
-	isStepName,
-	type RunProgress,
-	runLines,
-	stepLog,
-} from "../../records/log.ts";
+import { callText, errorLines, findCall, type RunProgress, runLines, stepLog } from "../../records/log.ts";
 import { runRecords } from "../../records/store.ts";
 import { type CallNode, callNodes } from "../../records/tree.ts";
+import { keyOfName, stepOf } from "../../run/keys.ts";
 import {
 	endedOutcome,
 	endedStatus,
@@ -51,10 +43,10 @@ export async function log(args: readonly string[], terminal: Terminal, json: boo
 
 	if (id === undefined || id.startsWith("-") || rest.length > 0) throw new UsageError("give one run ID", LOG);
 
-	const step = named !== undefined && isStepName(named);
+	const step = named === undefined ? undefined : stepOf(id, named);
 
 	if (values.follow && named !== undefined) {
-		throw new UsageError(`give --follow or a ${step ? "step" : "call"}, not both`, LOG);
+		throw new UsageError(`give --follow or a ${step !== undefined ? "step" : "call"}, not both`, LOG);
 	}
 
 	const run = await savedRun(id, LOG);
@@ -63,14 +55,15 @@ export async function log(args: readonly string[], terminal: Terminal, json: boo
 		const { calls, progress } = await readLog(run);
 		let lines: string[] | undefined;
 
-		if (step) {
-			lines = stepLog(id, progress, calls, named);
+		if (step !== undefined) {
+			lines = stepLog(id, progress, calls, step);
 		} else {
-			const node = findCall(calls, (n) => n.key === callKey(id, named));
+			const node = findCall(calls, (n) => n.key === keyOfName(id, named));
 			lines = node && callText(id, node);
 		}
 
-		if (lines === undefined) throw new UsageError(`no ${step ? "step" : "call"} ${named} in run ${id}`, LOG);
+		if (lines === undefined)
+			throw new UsageError(`no ${step !== undefined ? "step" : "call"} ${named} in run ${id}`, LOG);
 
 		for (const line of lines) terminal.stdout(line);
 

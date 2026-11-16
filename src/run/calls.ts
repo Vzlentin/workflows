@@ -24,6 +24,7 @@ import { cutTail, JSON_VALUE, OUTPUT_BYTES } from "../tool.ts";
 import type { RunBundle } from "../workflow/bundle.ts";
 import type { Roles } from "../workflow/roles.ts";
 import { answerOf, asksOf, newAsk, openAsk, plainText, readAsk } from "./asks.ts";
+import { keyIn } from "./keys.ts";
 import { firstTask, PAST_OPTIONS, type PastOptions, pastRuns, scanRuns, scanTasks } from "./past.ts";
 import { addProgress, checkpointWhen, type PhaseLines, takeLines } from "./progress.ts";
 import type { Host, Runtime, ScriptTask } from "./version.ts";
@@ -325,7 +326,7 @@ export type Calls = {
 
 /** The document key of the call `name` with `args` in this execution: `<run ID>/<call key>`. */
 export function callKey(calls: Calls, name: string, args: JsonObject): string {
-	return `${calls.script.runId}/${keyOf(name, args, calls.counters)}`;
+	return keyIn(calls.script.runId, keyOf(name, args, calls.counters));
 }
 
 /** What a call records when it starts: its kind with its args, and the ask of an `input` call. */

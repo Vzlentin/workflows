@@ -27,6 +27,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { ScriptInput } from "../launch/input.ts";
 import { CALL_KIND, CALL_RECORD, childOf, type SavedCall } from "../run/calls.ts";
+import { callPrefix } from "../run/keys.ts";
 import { allPages, isOfRun, type RunStatus, type RunTask, rootRuns, runStatus } from "../run/past.ts";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "../run/progress.ts";
 import { TASK } from "../run/version.ts";
@@ -410,7 +411,7 @@ export async function callRecords({ store, database }: Opened, runId: string): P
 	const runs = [runId];
 
 	for (const run of runs) {
-		for (const { key, id } of database.sessionDocuments(CALL_KIND, `${run}/`)) {
+		for (const { key, id } of database.sessionDocuments(CALL_KIND, callPrefix(run))) {
 			const stored = await store.document(id, "current", BACKGROUND_CONTEXT);
 			const record = stored?.value;
 

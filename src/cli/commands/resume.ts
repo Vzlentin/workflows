@@ -5,6 +5,7 @@ import { drivenInput, driverOf, postsTo } from "../../launch/input.ts";
 import { checkWorktree } from "../../launch/worktree.ts";
 import { callRecords, type Opened, reading } from "../../records/store.ts";
 import { answerAsk, type Asks, readAsk } from "../../run/asks.ts";
+import { ownedBy } from "../../run/keys.ts";
 import { hasEnded, runStatus } from "../../run/past.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
 import { type Background, type Following, follow, outcomeOf, reportOutcome } from "../follow.ts";
@@ -187,7 +188,7 @@ function resumeArgs(args: readonly string[]) {
 async function openAsk(opened: Opened, id: string): Promise<number | undefined> {
 	const open = [...(await callRecords(opened, id))]
 		.flatMap(([key, record]) =>
-			key.startsWith(`${id}/`) && record.kind === "input" && record.end === undefined ? [record] : [],
+			ownedBy(id, key) && record.kind === "input" && record.end === undefined ? [record] : [],
 		)
 		.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
 

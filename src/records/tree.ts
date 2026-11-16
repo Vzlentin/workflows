@@ -14,6 +14,7 @@ import {
 	SESSION_MODEL,
 	SHELL_OUTPUT,
 } from "../run/calls.ts";
+import { ownedBy } from "../run/keys.ts";
 import { duration, type Progress, type StepView, stepIndexOf } from "./steps.ts";
 
 /** The mark of a call: running, done, or any other state. */
@@ -122,7 +123,7 @@ export type CallNode = {
 
 /** The calls of the run `runId` in the order they started, each `run` call with the calls of its child run. */
 export function callNodes(records: Map<string, SavedCall>, runId: string, run: RunState): CallNode[] {
-	const own = [...records].filter(([key]) => key.startsWith(`${runId}/`));
+	const own = [...records].filter(([key]) => ownedBy(runId, key));
 
 	return own
 		.sort(([, a], [, b]) => a.startedAt.localeCompare(b.startedAt))
