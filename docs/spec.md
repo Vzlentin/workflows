@@ -337,7 +337,7 @@ next round fixes all of them.
 On SHIP, the command prints `approved <subject> in <n> rounds, <commit>` and exits 0. A run that is not approved
 after `--rounds` rounds prints `stopped <subject> after <n> rounds` and exits 1. The memory works as in `ship`, in the store
 that `ship` gives, or in its own store without a caller. The result has `status` (`approved`, `blocked` or `stopped`),
-`rounds`, `handoff`, the handoff that the last round used, `memory`, and `reply` when blocked. Without a caller, the run
+`rounds`, `handoff`, the handoff that the last round used, when blocked or stopped, `memory`, and `reply` when blocked. Without a caller, the run
 ends with the harvest of `ship` at each end: approved, stopped or blocked. Its result then has `lessons`, and the report
 has a line for each lesson. A run that runs again in a worktree gives the lessons of that child run.
 
@@ -1484,7 +1484,7 @@ line of JSON in place of the report lines, for every outcome. Its `state` is the
   last judge of a ship, a campaign or a judge run. `value` is the whole result of the script, for example
   `{"status":"shipped","rounds":1,"head":"1a2b3c4",...}` for ship; the [Ship](#ship) section lists its fields.
   `report` is the list of report lines that the command prints without `--json`, such as
-  `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4 on fix/readme-typo"]`.
+  `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4", "branch fix/readme-typo"]`.
 - `{ "runId", "state": "waiting", "question", "result": { "status"?, "code", "score"? }, "value", "report" }`: the run waits for
   an answer. `question` is the question of its open `input` call, the value is
   `{"status":"waiting","question":"<question>","report":["<question>"]}`, and the exit code is 3.
@@ -2192,7 +2192,7 @@ file name of a `.md` file without `.md`, or else the first 40 characters of its 
 command draws them on a terminal, with the marks in the theme's colors, then the last 100 other stderr lines, such as a warning.
 See [Progress](#progress). So a campaign shows its item steps with the ship steps of each item under them. The tool
 does not make the steps itself. A run that is `done` or `waiting` ends with its `report` lines,
-such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8 on fix/readme-typo`. A failed, orphaned, aborted or detached run ends with
+such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8` and `branch fix/readme-typo`. A failed, orphaned, aborted or detached run ends with
 the error or the state, and the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the
 same after a reload. The model gets the result text of the host tool: the summary, then the `report` lines of a
 run that is `done`, with the limit on the summary of
@@ -2331,9 +2331,12 @@ A ship run also has:
 A campaign run has `repository/` and `.worktrees/repository/<run-id>/` in the same way, plus:
 
 - `item-<n>/`: the `round-<n>.patch` and `round-<n>-fix.patch` files of item `n`
+- `item-<n>/item.patch`: the whole change of a failed item
 - `memory/`: the OptMem store of the run memory of every item
 
-An `rpi`, `thermoloop` or `implement` run without a caller has `memory/`, the OptMem store of its run memory.
+An `rpi`, `thermoloop` or `implement` run without a caller has `memory/`, the OptMem store of its run memory. A
+`thermoloop` run without the `patches` of a caller writes `round-<n>.patch` and `round-<n>-fix.patch` into its own run
+directory.
 
 An optimize run has:
 
@@ -2348,13 +2351,15 @@ task of the caller's run. A child run without a worktree can have an empty run d
 ## Prompts
 
 `workflows/prompts/` holds the Pi prompt templates `research`, `plan`, `handoff`, `implement`, `review`, `judge` and
-`commit`, `split` and `rundown` for `campaign`, and `inv`, `dom`, `compose` and `select` for `optimize`. Edit the wording there. Keep the
+`commit`, `split` and `rundown` for `campaign`, `inv`, `dom`, `compose` and `select` for `optimize`, and `harvest`, the
+summarizer turn that distils the lessons of the run memory. Edit the wording there. Keep the
 frontmatter and the last line `$@`: the run removes them, then adds its inputs as `## <name>` sections.
 `workflows/scripts/thermoloop.js` adds the rules of the [review loop](#thermoloop), so a template edit cannot
 remove them. `memory(...).session(...).noted` of the [script lib](#the-script-lib) adds the `respond` answer rule
 of the handoff and implement turns. In the same way,
 `workflows/scripts/campaign.js` adds the `respond` answer rule of `split`. The judge rubric is fixed: its eight
-answers, in question order, make the score. `judge`, `commit` and `rundown` hold their own `respond` answer rules. A run uses the
+answers, in question order, make the score. `commit`, `compose`, `dom`, `harvest`, `inv`, `judge`, `rundown` and
+`select` hold their own `respond` answer rules. A run uses the
 templates as they were when it started.
 
 Workflow scripts get every template of `prompts/` as `prompts.<name>`, from the package and the project.
@@ -2373,6 +2378,12 @@ The engine files in `src/`:
   `attach.ts`, `save.ts`, `sweep.ts` and `outline.ts`.
 - `command.ts`: the `workflows` command of the package, for the `workflow` tool of the host, which runs it with
   `runCli` of `tool.ts`.
+- `cli/commands/log.ts`: `workflows log <run-id>`: the short log of a run, the full output of one call, or the log as
+  the run goes on.
+- `tool.ts`: the one definition of the `workflow` tool: its description, parameters and output schema, the `workflows`
+  command of a call and how it runs, its progress lines and steps, the outcome and text of a result, and the cut rule
+  of long texts. The tool of the harness host and the tool of the Pi extension both use it. It imports at runtime only
+  `typebox` and Node built-in modules (`node:*`).
 - `cli/terminal/pick.ts` and `cli/terminal/keys.ts`: the picker of `show --pick`, and its keys.
 - `entry.ts`: the entry that the harness host loads, with the script task and the catch-up hook. It first checks
   that its pi-durable and the pi-durable of its harness have the same version.
@@ -2381,6 +2392,8 @@ The engine files in `src/`:
 - `records/run.ts`: the run fields that `list --json`, `show --json` and `show --agents --json` share, from the root
   tasks of a run.
 - `records/steps.ts`: the tree of steps of a run.
+- `records/log.ts`: the text of `workflows log`: the short log of a run, with its steps, the calls that did not end
+  done, its child runs and their ends, the calls of one step, and the full text of one call.
 - `records/store.ts`: the command's read-only reads of the project store: the tasks of the runs, harness's task
   keys, their progress, calls and lists of todos.
 - `cli/terminal/redraw.ts`: how the command draws the tree of steps of a run on stderr.

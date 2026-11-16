@@ -106,7 +106,7 @@ The values of `result.status` for a `done` run. The fields that the table names,
 | ship | `shipped` | The branch (`value.branch`, and the report line `branch <name>`), the rounds, the judge score and `value.findings`. The change is one squashed commit, and the judge judged that commit and its message. |
 | ship | `rejected` | The judge scored the squashed commit 0. The commit and the branch stay. Give the branch and `value.findings`. |
 | ship | `unjudged` | The judge gave no verdict: `value.judgeError` says why. The commit and the branch stay. |
-| ship | `stopped` | The review rounds ended without SHIP. Give the worktree, the last patches and the findings of the last review. |
+| ship | `stopped` | The review rounds ended without SHIP. Give the worktree (`value.worktree`), the round patches in the run directory, and `value.handoff`, the handoff that the last round followed. |
 | ship, rpi, thermoloop | `blocked` | A round changed nothing. Give the worktree and `value.reply`, the implementer's reason. |
 | campaign | `done` | The branch, one line for each item with its commit and score, and the score and findings of the campaign judge (`result.score` and `value.findings`). |
 | campaign | `rejected`, `unjudged` | The campaign judge gave 0, or no verdict. The commits and the branch stay. Give the same lines as for `done`. |
@@ -114,15 +114,22 @@ The values of `result.status` for a `done` run. The fields that the table names,
 | campaign | `waiting` | An item failed, or is still at judge 0, and the campaign asks how to continue. See below. |
 | rpi | `implemented` | The commit `value.head` and the branch. |
 | thermoloop | `approved` | The reviewer answered SHIP. Give `value.rounds` and the report line. |
-| thermoloop | `stopped` | The rounds ended without SHIP. Give the findings of the last review. |
+| thermoloop | `stopped` | The rounds ended without SHIP. Give `value.handoff`, and the last review (see below). |
 | judge | `judged` | `result.score`, from 0 to 1, and `value.findings`. |
 | judge | `rejected` | The score is 0. Give `value.findings`. |
 | judge | `unjudged` | The judge gave no verdict. Quote `value.judgeError`. |
 
-Do not guess findings. To read the findings of the last review, use `workflows log <runId>`: it gives the steps, and
-the review rounds are under the `run thermoloop` line. Then `workflows log <runId> <step>` gives the calls of one step,
-with the step name at the end of its line, and `workflows log <runId> <call>` the full output of one call, with the
-call name at the end of its line. `log` only reads.
+Do not guess findings. No result field holds the last review: its `ask` returns only SHIP or FIX. To read its
+findings:
+
+1. `workflows log <runId>` gives the steps. The review rounds are under the `run thermoloop` line.
+   `workflows log <runId> <step>` gives the calls of one step, with the call name at the end of each line.
+2. `workflows log <runId> <call>` of the last review `ask` gives its verdict and the line
+   `conversation <id>: workflows attach <runId> --conversation <id>`.
+3. That attach command opens the reviewer session, which holds the findings.
+
+Use `--conversation <id>`. A plain `workflows attach <runId>` can open a later session, such as the summarizer of
+the harvest. `log` only reads.
 
 ### A waiting run
 
