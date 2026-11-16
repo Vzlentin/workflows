@@ -1,4 +1,15 @@
 import { defineConfig } from "vite-plus";
+import type { OxlintOverride } from "vite-plus/lint";
+
+// The groups of `src/` in the order of the import chain of `AGENTS.md`.
+const CHAIN = ["workflow", "launch", "run", "records", "cli"];
+
+function banImports(files: string[], group: string[], message: string): OxlintOverride {
+	return {
+		files,
+		rules: { "no-restricted-imports": ["error", { patterns: [{ group, allowTypeImports: true, message }] }] },
+	};
+}
 
 export default defineConfig({
 	fmt: {
@@ -31,6 +42,8 @@ export default defineConfig({
 			".windsurf/**",
 			"tools/oxlint/anti-slop/**",
 		],
+		// The `plugins` key replaces the defaults, so it keeps them. The `import` plugin only finds cycles when it is on here.
+		plugins: ["unicorn", "typescript", "oxc", "import"],
 		jsPlugins: [{ name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" }],
 		rules: {
 			"oxc/no-accumulating-spread": "error",
@@ -61,6 +74,31 @@ export default defineConfig({
 				files: ["workflows/lib/*.js"],
 				rules: { "no-unused-vars": "off" },
 			},
+			{
+				// No module import cycle in `src/`. A type-only import does not count, as in `AGENTS.md`.
+				files: ["src/**/*.ts"],
+				rules: { "import/no-cycle": ["error", { ignoreTypes: true }] },
+			},
+			// The chain of `CHAIN`: a group imports at runtime only the groups before it.
+			...CHAIN.slice(0, -1).map((name, index) =>
+				banImports(
+					[`src/${name}/**`],
+					CHAIN.slice(index + 1).map((later) => `**/${later}/**`),
+					`${name}/ imports at runtime only the groups before it in the chain ${CHAIN.join(" ← ")}.`,
+				),
+			),
+			// Pi loads `dist/tool.js` alone in Node, so `tool.ts` imports at runtime only typebox and Node built-in modules.
+			banImports(
+				["src/tool.ts"],
+				["*", "!typebox", "!typebox/*", "!node:*", "!node:*/*"],
+				"tool.ts imports at runtime only typebox and node:* modules.",
+			),
+			// `git.ts` and `command.ts` are leaves that every group can import, so they import no group at runtime.
+			banImports(
+				["src/git.ts", "src/command.ts"],
+				CHAIN.map((name) => `**/${name}/**`),
+				"A top-level leaf imports no group of src/ at runtime.",
+			),
 		],
 		options: { typeAware: true, typeCheck: true },
 	},
