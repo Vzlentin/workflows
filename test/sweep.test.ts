@@ -27,9 +27,15 @@ beforeEach(async () => {
 	root = await sandbox();
 	repo = join(root, "repo");
 	await repository(repo);
+	// gh is asked only in a repository with an origin.
+	git(repo, "remote", "add", "origin", join(root, "origin.git"));
 	const scripts = join(repo, ".workflows", "scripts");
 	await mkdir(scripts, { recursive: true });
-	await writeFile(join(scripts, "w.js"), 'export const meta = { worktree: true }\nreturn "done"');
+	// Each run commits, so its HEAD is not in the local main.
+	await writeFile(
+		join(scripts, "w.js"),
+		'export const meta = { worktree: true }\nawait sh("git commit -q --allow-empty -m work")\nreturn "done"',
+	);
 	await writeFile(
 		join(scripts, "slow.js"),
 		'export const meta = { worktree: true }\nreturn await agent("Script: one")',
@@ -408,14 +414,36 @@ exec "${real}" "$@"
 		expect([await sweptFile(dirty.id), await sweptFile(id)]).toEqual([undefined, "landed\n"]);
 	});
 
-	it("removes nothing when gh fails", async () => {
-		const { worktree } = await mergedRun();
+	it("counts a branch as not merged, with one warning line, when gh fails", async () => {
+		const { id, worktree } = await mergedRun();
 		await fake("gh", 'echo "gh: not logged in" >&2\nexit 1\n');
 
 		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
-		expect(swept.code).toBe(1);
-		expect(swept.stderr.join("\n")).toContain("gh: not logged in");
-		expect(existsSync(worktree)).toBe(true);
+		expect([swept.code, swept.stdout, swept.stderr.length]).toEqual([0, [], 1]);
+		expect(swept.stderr[0]).toContain("workflows: cannot ask gh whether feat/x is merged, so it counts as not merged");
+		expect(swept.stderr[0]).toContain("gh: not logged in");
+		expect([existsSync(worktree), hasBranch("feat/x"), await sweptFile(id)]).toEqual([true, true, undefined]);
+
+		const given = await workflows(["sweep", id, "--json"], { cwd: repo });
+		expect([given.code, JSON.parse(given.stdout[0] ?? "")]).toEqual([
+			0,
+			[{ runId: id, swept: "dropped", branch: "feat/x", worktree }],
+		]);
+	});
+
+	it("takes a run whose HEAD is in the local main as landed, with no origin and no gh call", async () => {
+		git(repo, "remote", "remove", "origin");
+		const { id, worktree } = await mergedRun();
+		const kept = await workflows(["w"], { cwd: repo });
+		expect(kept.code).toBe(0);
+		git(worktreeAt(repo, kept.id), "commit", "-q", "--allow-empty", "-m", "more");
+		git(repo, "merge", "-q", "--ff-only", "feat/x");
+
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout, swept.stderr]).toEqual([0, [`${id} landed feat/x ${worktree}`], []]);
+		expect([existsSync(worktree), existsSync(worktreeAt(repo, kept.id))]).toEqual([false, true]);
+		expect(await sweptFile(id)).toBe("landed\n");
+		expect(existsSync(join(root, "gh.log"))).toBe(false);
 	});
 
 	it("refuses, and removes nothing, when the project store does not exist", async () => {
@@ -482,6 +510,7 @@ exec "${real}" "$@"
 		const id = failed.id ?? "";
 		const worktree = worktreeAt(repo, id);
 		git(worktree, "branch", "-m", "feat/x");
+		git(worktree, "commit", "-q", "--allow-empty", "-m", "work");
 		// gh waits at a gate, after the first read of the store and before any removal.
 		await fake(
 			"gh",

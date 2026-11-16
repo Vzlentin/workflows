@@ -1414,7 +1414,7 @@ A run that fails with an error prints `failed <subject>: <error>` and `continue 
 exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. The run's task ends as
 failed. Resume runs the script again in a new task of the same run, with the same input: a failed Git step runs again,
 a failed turn is sent again in the same session, saved calls return their results, and child runs continue. The error of a failed Git command of the engine, and of a
-failed `gh` call of `sweep`, has the output of the command cut as the error of a failed `sh` call is, with no call in
+failed `gh` call of `sweep` in its warning line, has the output of the command cut as the error of a failed `sh` call is, with no call in
 the note. A run whose task ended in another way, such as an aborted or orphaned task, or one that pi-durable faulted, resumes in the same way. An ask whose answer
 stopped for a reason other than its end, such as its length, fails its call, and a resume asks again. So does an ask
 whose answer did not call `respond`. A resumed ask never returns the answer of another ask in its session.
@@ -1628,13 +1628,17 @@ file does not exist, `sweep` prints `workflows: cannot sweep: the project store 
 directory counts as unstarted; remove the run directories that you do not need from <runs directory> by hand`, removes
 nothing and exits 1, also without `--yes` and with run IDs.
 
-For each candidate, `sweep` first runs `git merge-base --is-ancestor HEAD origin/main` in the worktree. A branch is
-merged when that succeeds: the commit that the worktree is on is in `origin/main`, which is also true of a worktree
-with no commit of its own. Otherwise `sweep` runs `gh pr list --head <branch> --state merged --json headRefOid` in the
-worktree, and a branch is merged when one pull request in the list has the commit that the worktree is on as its head.
-A branch name that comes back in a later run, with a merged pull request of an earlier commit, is not merged. `sweep`
-runs every `gh` call before it removes anything: a failed `gh` call, or a missing `gh`, prints `workflows: <error>`,
-removes nothing and exits 1.
+For each candidate, `sweep` first runs `git merge-base --is-ancestor HEAD refs/heads/main` in the worktree, then
+`git merge-base --is-ancestor HEAD origin/main`. A branch is merged when one of them succeeds: the commit that the
+worktree is on is in the local `main` or in `origin/main`, which is also true of a worktree with no commit of its own.
+Otherwise, when `git remote get-url origin` succeeds, `sweep` runs
+`gh pr list --head <branch> --state merged --json headRefOid` in the worktree, and a branch is merged when one pull
+request in the list has the commit that the worktree is on as its head. A repository with no `origin` gets no `gh`
+call, and its branch is not merged. A branch name that comes back in a later run, with a merged pull request of an
+earlier commit, is not merged. `sweep` runs every `gh` call before it removes anything. A failed `gh` call, a missing
+`gh`, or a `gh` output that is not a list, prints `workflows: cannot ask gh whether <branch> is merged, so it counts as
+not merged: <error>` on stderr, and the branch is not merged: a run of the project is left out, and a given run gets
+`dropped`.
 
 With `--yes`, `sweep` removes each worktree in order, and prints its line after the removal. It runs
 `git worktree remove <worktree>` in the run's repository, without `--force`, and deletes the branch with

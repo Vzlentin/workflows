@@ -53,7 +53,8 @@ export const SWEPT_RUNS = Type.Array(
 
 /**
  * Prints the ended runs of the project of the current directory whose worktree is on a merged branch: its HEAD is in
- * `origin/main`, or GitHub merged a pull request at its HEAD. With `--yes`, it removes their worktrees and branches,
+ * the local `main` or in `origin/main`, or GitHub merged a pull request at its HEAD; a failed `gh` call prints a line to
+ * stderr and counts the branch as not merged. With `--yes`, it removes their worktrees and branches,
  * and writes `landed` to the `swept` file of each run. It also prints the run directories of the project whose run has
  * no task and whose `project` file is more than an hour old, and `--yes` removes them. With run IDs, it takes only
  * these runs, and each one must be an ended run of the project with a worktree on a branch; a merged one gets `landed`
@@ -96,7 +97,8 @@ export async function sweep(args: readonly string[], terminal: Terminal, json: b
 	}
 
 	const given = positionals.length > 0;
-	const taken = given ? await givenRuns(positionals, ended) : await mergedRuns(ended);
+	const warn = (line: string) => terminal.stderr(`workflows: ${line}`);
+	const taken = given ? await givenRuns(positionals, ended, warn) : await mergedRuns(ended, warn);
 
 	// A run directory gets its task within moments of its `project` file, so a younger one may be a run that starts.
 	const unstarted = given ? [] : await unstartedRuns(project, runs);
@@ -193,11 +195,11 @@ function endedTask(tasks: readonly RunTask[]): RunTask | undefined {
  * The runs of `ended`, newest first, that have a marker, with its word, or that are sweepable on a merged branch, with
  * `landed`.
  */
-async function mergedRuns(ended: ReadonlyMap<string, RunTask>): Promise<Swept[]> {
+async function mergedRuns(ended: ReadonlyMap<string, RunTask>, warn: (line: string) => void): Promise<Swept[]> {
 	const merged: Swept[] = [];
 
 	for (const [id, task] of [...ended].sort(([a], [b]) => b.localeCompare(a))) {
-		const found = await candidate(id, task, undefined);
+		const found = await candidate(id, task, undefined, warn);
 
 		if (found !== undefined) merged.push(found);
 	}
@@ -210,11 +212,15 @@ async function mergedRuns(ended: ReadonlyMap<string, RunTask>): Promise<Swept[]>
  * when it is merged and `dropped` when it is not. It throws for the first ID that is neither, before anything is
  * removed.
  */
-async function givenRuns(ids: readonly string[], ended: ReadonlyMap<string, RunTask>): Promise<Swept[]> {
+async function givenRuns(
+	ids: readonly string[],
+	ended: ReadonlyMap<string, RunTask>,
+	warn: (line: string) => void,
+): Promise<Swept[]> {
 	const found: Swept[] = [];
 
 	for (const id of new Set(ids)) {
-		const run = await candidate(id, ended.get(id), "dropped");
+		const run = await candidate(id, ended.get(id), "dropped", warn);
 
 		if (run === undefined) {
 			throw new Error(`cannot sweep ${id}: not an ended run of this project with a worktree on a branch`);
@@ -235,6 +241,7 @@ async function candidate(
 	id: string,
 	task: RunTask | undefined,
 	unmerged: Static<typeof SWEPT> | undefined,
+	warn: (line: string) => void,
 ): Promise<Swept | undefined> {
 	if (task === undefined) return undefined;
 	const marked = await markedRun(id);
@@ -243,7 +250,7 @@ async function candidate(
 	const found = await sweepable(id, task);
 
 	if (found === undefined) return undefined;
-	const swept = (await isMerged(found)) ? "landed" : unmerged;
+	const swept = (await isMerged(found, warn)) ? "landed" : unmerged;
 
 	return swept === undefined ? undefined : { ...found, swept };
 }
@@ -278,12 +285,38 @@ async function sweepable(id: string, task: RunTask): Promise<Sweepable | undefin
 const MERGED = Type.Array(Type.Object({ headRefOid: Type.String() }));
 
 /**
- * Whether the branch of `found` is merged: the commit that it is on now is in `origin/main`, or GitHub merged a pull
- * request from the branch at that commit. It calls `gh` only when the commit is not in `origin/main`. A branch name can
- * come back in a later run, so a merged pull request of an earlier commit does not count.
+ * Whether the branch of `found` is merged: the commit that it is on now is in the local `main`, or in `origin/main`, or
+ * GitHub merged a pull request from the branch at that commit. It calls `gh` only when Git finds the commit in neither
+ * `main` and the repository has an `origin`. When `gh` fails, the branch counts as not merged and `warn` gets one line
+ * with the reason. A branch name can come back in a later run, so a merged pull request of an earlier commit does not
+ * count.
  */
-async function isMerged({ branch, path }: Sweepable): Promise<boolean> {
+async function isMerged({ branch, path }: Sweepable, warn: (line: string) => void): Promise<boolean> {
+	if (await gitSucceeds(path, "merge-base", "--is-ancestor", "HEAD", "refs/heads/main")) return true;
+
 	if (await gitSucceeds(path, "merge-base", "--is-ancestor", "HEAD", "origin/main")) return true;
+
+	if (!(await gitSucceeds(path, "remote", "get-url", "origin"))) return false;
+	const head = await git(path, "rev-parse", "HEAD");
+	let merged: Static<typeof MERGED>;
+
+	try {
+		merged = await mergedPullRequests(branch, path);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		warn(`cannot ask gh whether ${branch} is merged, so it counts as not merged: ${message}`);
+
+		return false;
+	}
+
+	return merged.some(({ headRefOid }) => headRefOid === head);
+}
+
+/**
+ * The merged pull requests from `branch` that `gh pr list` prints in `path`. It throws when `gh` is missing, fails or
+ * prints no list.
+ */
+async function mergedPullRequests(branch: string, path: string): Promise<Static<typeof MERGED>> {
 	const argv = ["pr", "list", "--head", branch, "--state", "merged", "--json", "headRefOid"];
 	const result = await runCommand("gh", argv, path);
 
@@ -291,9 +324,8 @@ async function isMerged({ branch, path }: Sweepable): Promise<boolean> {
 	const parsed: unknown = JSON.parse(result.stdout);
 
 	if (!Value.Check(MERGED, parsed)) throw new Error(`gh pr list printed no list: ${result.stdout}`);
-	const head = await git(path, "rev-parse", "HEAD");
 
-	return parsed.some(({ headRefOid }) => headRefOid === head);
+	return parsed;
 }
 
 /**
