@@ -335,7 +335,7 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 
 		expect(first.code).toBe(130);
 		// The removals ran, but their results are not saved, as after a stop between the two.
-		expect(forgetResults("worktree remove --force", 'branch -D \\"$2\\"')).toBe(4);
+		expect(forgetResults("sh", "worktree remove --force", 'branch -D \\"$2\\"')).toBe(4);
 
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root, script: { select: ["tie"] } });
 		expect(resumed.code).toBe(0);
@@ -374,7 +374,7 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 
 		expect(first.code).toBe(130);
 		// The removals ran, but their results are not saved, and Git still lists each worktree, whose folder is gone.
-		expect(forgetResults("worktree remove --force", 'branch -D \\"$2\\"')).toBe(4);
+		expect(forgetResults("sh", "worktree remove --force", 'branch -D \\"$2\\"')).toBe(4);
 		const shipped = (await readFile(ships, "utf8")).trimEnd().split("\n");
 		expect(shipped).toHaveLength(2);
 

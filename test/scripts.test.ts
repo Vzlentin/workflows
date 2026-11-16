@@ -92,6 +92,11 @@ async function stopped(argv: string[], stop: { readonly nth: number } | { readon
 	return outcome;
 }
 
+/** The `calls` of `show <id> --json`. */
+async function shownCalls(id: string) {
+	return Value.Parse(SHOWN, JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "")).calls;
+}
+
 /** A task that saves `value` as the call `key` and fails, or, without `value`, returns the saved value of `key`. */
 const probe = defineTask<{ key: string; value?: string }, { phase: "run" }, JsonValue>({
 	name: "probe",
@@ -740,6 +745,52 @@ describe("workflows show", () => {
 			logLine(`  ✓ session default conversation ${b}  \\d+s  \\d+ B  [0-9a-f]{16}\\.\\d`),
 		]);
 		expect(done.stdout.filter((text) => text.includes("◉"))).toEqual([]);
+	});
+
+	it("shows a failed call that a resume runs again as running, without its old end", async () => {
+		await writeFile(join(root, "x.js"), 'return await agent("Script: one")');
+		const first = await workflows(["x.js"], { cwd: root, script: { failAt: { kind: "script", nth: 1 } } });
+		expect(first.code).toBe(1);
+		const id = first.id ?? "";
+		expect((await shownCalls(id))[1]).toMatchObject({ kind: "ask", state: "failed" });
+
+		const resumed = await stopped(["resume", id], { nth: 1 });
+		expect(resumed.code).toBe(130);
+		const ask = (await shownCalls(id))[1];
+		expect(ask).toMatchObject({ kind: "ask", state: "running" });
+		expect(ask).not.toHaveProperty("end");
+	});
+
+	it("shows a cancelled call that a resume runs again as running, without its old end", async () => {
+		await writeFile(join(root, "x.js"), 'const p = sh("./gate.sh c")\nawait sh("test -f ok")\nreturn await p');
+		const first = await workflows(["x.js"], { cwd: root });
+		expect(first.code).toBe(1);
+		const id = first.id ?? "";
+		expect((await shownCalls(id))[0]).toMatchObject({ kind: "sh", state: "cancelled" });
+
+		// The cancel can come before the gate is reached.
+		await rm(join(root, "c.reached"), { force: true });
+		await writeFile(join(root, "ok"), "");
+		const resumed = await stopped(["resume", id], { gate: "c" });
+		expect(resumed.code).toBe(130);
+		const call = (await shownCalls(id))[0];
+		expect(call).toMatchObject({ kind: "sh", state: "running" });
+		expect(call).not.toHaveProperty("end");
+	});
+
+	it("shows an sh call that a resume runs again without its old output", async () => {
+		await writeFile(join(root, "x.js"), 'await sh("echo first; test -f ok && ./gate.sh g")');
+		const first = await workflows(["x.js"], { cwd: root });
+		expect(first.code).toBe(1);
+		const id = first.id ?? "";
+		expect((await shownCalls(id))[0]).toMatchObject({ output: { code: 1, stdout: "first\n", stderr: "" } });
+
+		await writeFile(join(root, "ok"), "");
+		const resumed = await stopped(["resume", id], { gate: "g" });
+		expect(resumed.code).toBe(130);
+		const call = (await shownCalls(id))[0];
+		expect(call).toMatchObject({ kind: "sh", state: "running" });
+		expect(call).not.toHaveProperty("output");
 	});
 
 	it("shows the agents of a run and of its child runs, named by their first prompt line", async () => {
@@ -1441,7 +1492,7 @@ return a + " | " + b`,
 		await writeFile(join(root, "b.open"), "");
 		const first = await stopped(["x.js"], { gate: "end" });
 		expect(first.code).toBe(130);
-		expect(forgetResults("./gate.sh b", "touch b.open")).toBe(2);
+		expect(forgetResults("sh", "./gate.sh b", "touch b.open")).toBe(2);
 		await rm(join(root, "b.open"));
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to a | Reply to b"]);
@@ -1463,7 +1514,7 @@ return (await noteLines(notes)).join(" | ")`,
 		await writeFile(join(root, "order"), "A");
 		const first = await stopped(["x.js"], { gate: "end" });
 		expect(first.code).toBe(130);
-		expect(forgetResults("cat order")).toBe(1);
+		expect(forgetResults("sh", "cat order")).toBe(1);
 		await writeFile(join(root, "order"), "B A A");
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "#0 planner: A | #1 planner: B | #2 planner: A"]);
@@ -1487,7 +1538,7 @@ return a + " | " + b`,
 		await writeFile(join(root, "b.open"), "");
 		const first = await stopped(["x.js"], { gate: "end" });
 		expect(first.code).toBe(130);
-		expect(forgetResults("./gate.sh b", "touch b.open")).toBe(2);
+		expect(forgetResults("sh", "./gate.sh b", "touch b.open")).toBe(2);
 		await rm(join(root, "b.open"));
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to a1, Reply to a2 | Reply to b1, Reply to b2"]);
@@ -1799,7 +1850,7 @@ return "done"`,
 		const first = await stopped(["x.js"], { gate: "../g" }, repo);
 		expect(first.code).toBe(130);
 		// The commit ran, but its result is not saved, as after a stop between the two.
-		expect(forgetResults("commit-once")).toBe(1);
+		expect(forgetResults("sh", "commit-once")).toBe(1);
 
 		const resumed = await workflows(["resume", first.id ?? ""], { cwd: repo });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "done"]);
@@ -2487,6 +2538,24 @@ return [one.reply, two.reply].join(", ")`,
 			{ runId: child, status: "terminal", outcome: "failed" },
 			{ runId: child, status: "terminal", outcome: "completed" },
 		]);
+	});
+
+	it("takes the result of a child task that ended before the caller recorded it, and starts no other", async () => {
+		await writeFile(join(root, "parent.js"), 'const r = await run("child")\nawait sh("test -f ok")\nreturn r');
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(root, ".workflows", "scripts", "child.js"), 'return "c"');
+
+		const run = await workflows(["parent.js"], { cwd: root });
+		expect(run.code).toBe(1);
+		const id = run.id ?? "";
+		// As a stop after the child task ended and before the caller saved the end of its `run` call.
+		expect(forgetResults("run", '"name":"child"')).toBe(1);
+
+		await writeFile(join(root, "ok"), "");
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "c"]);
+		const [child] = await childTasks(id);
+		expect(await childTasks(id)).toEqual([{ runId: child?.runId, status: "terminal", outcome: "completed" }]);
 	});
 
 	it("names the kind and version of a failed child task that another version saved", async () => {

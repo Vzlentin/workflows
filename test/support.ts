@@ -116,20 +116,20 @@ export const detached = (id: string | undefined) =>
 export const storeOf = (project = "main") => join(statePaths(project).dir, "durable.sqlite");
 
 /**
- * Deletes the saved result of each `sh` call whose record contains one of the texts, case-sensitive, as after a stop
- * between the call and its save. Gives the count of call documents whose result it deleted.
+ * Deletes the saved result of each call of `kind` whose record contains one of the texts, case-sensitive, as after a
+ * stop between the call and its save. Gives the count of call documents whose result it deleted.
  */
-export function forgetResults(...texts: string[]): number {
+export function forgetResults(kind: "sh" | "run", ...texts: string[]): number {
 	const database = new DatabaseSync(storeOf());
 	const matches = texts.map(() => `instr(content, ?) > 0`).join(" OR ");
 
 	const forgotten = database
 		.prepare(
 			`DELETE FROM document_revisions WHERE kind = 'delta' AND instr(content, '"result"') > 0 AND document_id IN
-			(SELECT document_id FROM document_revisions WHERE content GLOB '{"kind":"sh"*' AND (${matches}))
+			(SELECT document_id FROM document_revisions WHERE content GLOB '{"kind":"' || ? || '"*' AND (${matches}))
 			RETURNING document_id`,
 		)
-		.all(...texts);
+		.all(kind, ...texts);
 
 	database.close();
 

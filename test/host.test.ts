@@ -36,6 +36,7 @@ import { TASK } from "../src/run/version.ts";
 import { OUTCOME, OUTPUT_BYTES } from "../src/tool.ts";
 import { failEnd } from "./failing-end-entry.ts";
 import {
+	conversationOf,
 	detached,
 	escAgent,
 	FakeModel,
@@ -1323,6 +1324,43 @@ await Promise.all([...asks, Promise.reject(new Error("no"))])`,
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to two"]);
 		expect(Object.values(await children())).toEqual([true, true]);
+	});
+
+	it("keeps the sessions of a caller open when its child run completes and the caller fails", async () => {
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(root, ".workflows", "scripts", "child.js"), 'return await session().ask("Script: child")');
+		await writeFile(
+			join(root, "parent.js"),
+			'const s = session()\nawait s.ask("Script: one")\nawait run("child")\nawait sh("test -f ok")\nreturn await s.ask("Script: two")',
+		);
+		const run = await workflows(["parent.js"], { cwd: root });
+		expect(run.code).toBe(1);
+		const id = run.id ?? "";
+		const states = Object.entries(await children());
+		expect(states).toHaveLength(2);
+		// The completed child run closes its own session, and not the session of its caller.
+		expect(states.find(([key]) => key.startsWith(`wf:${id}/`))?.[1]).toBe(false);
+		expect(states.find(([key]) => !key.startsWith(`wf:${id}/`))?.[1]).toBe(true);
+
+		await writeFile(join(root, "ok"), "");
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to two"]);
+		expect(await conversationOf(/Script: two/)).toBe(await conversationOf(/Script: one/));
+	});
+
+	it("keeps the sessions of a run open while it waits for an answer", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'const s = session()\nawait s.ask("Script: one")\nconst a = await input("A?")\nreturn await s.ask("Script: " + a)',
+		);
+		const run = await workflows(["x.js"], { cwd: root });
+		expect(run.code).toBe(3);
+		const id = run.id ?? "";
+		expect(Object.values(await children())).toEqual([false]);
+
+		const resumed = await workflows(["resume", id, "--answer", "two"], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to two"]);
+		expect(await conversationOf(/Script: two/)).toBe(await conversationOf(/Script: one/));
 	});
 
 	it("labels each session of a run with the name of its agent profile", async () => {

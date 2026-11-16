@@ -166,7 +166,7 @@ describe("workflows thermoloop", () => {
 		expect(await readFile(notes, "utf8")).toBe("#0 reviewer r1: Handoff 1: one word changes.\n");
 
 		// The add ran, but its result is not saved, as after a stop between the two.
-		expect(forgetResults("reviewer r1: Handoff 1")).toBe(1);
+		expect(forgetResults("sh", "reviewer r1: Handoff 1")).toBe(1);
 
 		const resumed = await workflows(["resume", first.id ?? ""], {
 			cwd: repo,
@@ -188,7 +188,7 @@ describe("workflows thermoloop", () => {
 		expect(first.code).toBe(130);
 
 		// The note ran, but its result is not saved, as after a stop between the two.
-		expect(forgetResults("reviewer r1: Handoff 1")).toBe(1);
+		expect(forgetResults("sh", "reviewer r1: Handoff 1")).toBe(1);
 
 		const resumed = await workflows(["resume", first.id ?? ""], {
 			cwd: repo,
