@@ -2099,6 +2099,7 @@ the `/workflows` command. Its `package.json` has the keyword `pi-package`, the P
 dependencies at `"*"`, and the version of `@vzlentin/workflows`. Its `dependencies` are `@vzlentin/workflows` at that
 exact version and `@vzlentin/pi-agents` at a caret range; release-please sets the version and the dependency on
 workflows. Both packages are released together, at one version: the publish job publishes the root and then `pi/`.
+The publish job first refuses a `@vzlentin/harness` dependency that is not a registry range, such as a Git pin.
 
 `pi.extensions` names `./index.ts` and the extension of pi-agents at both places where npm can put it,
 `../pi-agents/index.ts` and `./node_modules/@vzlentin/pi-agents/index.ts`. Pi skips the one that does not exist, and

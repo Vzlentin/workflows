@@ -18,6 +18,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      # The release PR stays red until harness is on npm and package.json names its range.
+      - name: Refuse a harness that is not on npm
+        if: startsWith(github.ref_name, 'release-please--')
+        run: bash .github/scripts/harness-range.sh
       - run: npm ci
       - run: npm run check
 
@@ -62,6 +66,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      # When this step fails, the tag and the GitHub release exist already.
+      - name: Refuse a harness that is not on npm
+        run: bash .github/scripts/harness-range.sh
       - run: npm ci
       - name: Publish the version of each package
         run: |
