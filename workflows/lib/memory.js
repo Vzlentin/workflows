@@ -85,29 +85,48 @@ async function openStore() {
 	return { path, plain };
 }
 
+/** The first words of the compression prompt of `memo`, at the start of its first line. */
+const PROMPT_HEADER = "Compress memories #";
+
+/** The last line of a compression request of `memo`, with the block `<lo>-<hi>` to summarize. */
+const RUN_LINE = /^Run: .+ nap (\d+)-(\d+) "<your line>"$/;
+
+/**
+ * The compression that the output of `memo` asks for, as `{ prompt, lo, hi }`, or undefined. `memo` prints its request
+ * last, so only a run line at the end asks: a note that holds the same words asks nothing.
+ */
+function requestOf(output) {
+	const lines = output.trimEnd().split("\n");
+	const last = lines.at(-1);
+	const run = RUN_LINE.exec(last);
+
+	if (run === null) {
+		return undefined;
+	}
+
+	const start = lines.findLastIndex((line) => line.startsWith(PROMPT_HEADER));
+
+	if (start === -1) {
+		throw new Error(`memo asked for a compression without its prompt: ${last}`);
+	}
+
+	return { prompt: lines.slice(start, -1).join("\n").trim(), lo: run[1], hi: run[2] };
+}
+
 /** The OptMem store `path`, through `memo`. */
 function optmemStore(path) {
 	// Answers each compression that `output` asks for with a summarizer turn, until none is left.
 	const compress = async (output) => {
-		for (let pass = 0; output.includes("Compress memories"); pass++) {
+		for (let pass = 0, asked = requestOf(output); asked !== undefined; pass++, asked = requestOf(output)) {
 			if (pass === COMPRESS_PASSES) {
 				throw new Error(`memo still asks for compressions after ${COMPRESS_PASSES} summaries`);
 			}
 
-			const asked = output.slice(output.indexOf("Compress memories"));
-			const prompt = asked.slice(0, asked.search(/^Run:/m)).trim();
-			const nap = /nap (\d+)-(\d+)/.exec(asked);
-
-			if (nap === null) {
-				throw new Error(`memo asked for a compression without "nap <a>-<b>": ${asked.split("\n")[0]}`);
-			}
-
-			const [, lo, hi] = nap;
 			const answer = "When you are done, answer with only the one line, with no other text.";
-			const summary = await agent(`${prompt}\n\n${answer}`, { as: "summarizer" });
+			const summary = await agent(`${asked.prompt}\n\n${answer}`, { as: "summarizer" });
 
 			const line = cutNote("", oneLine(String(summary)));
-			output = await memo(path, "nap", `${lo}-${hi}`, line);
+			output = await memo(path, "nap", `${asked.lo}-${asked.hi}`, line);
 		}
 	};
 

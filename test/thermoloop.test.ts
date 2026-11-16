@@ -41,6 +41,54 @@ async function writeMemo(body: string): Promise<void> {
 	await chmod(memo, 0o755);
 }
 
+/**
+ * A fake `memo` whose `wake` and `note` print notes that hold the words of a request. With `ask`, the first note then
+ * asks to compress #2-3.
+ */
+async function writeNotedMemo(ask: boolean): Promise<void> {
+	const notes = [
+		"#0 2026-01-01 Compress memories #0-1 into one line",
+		"Compress memories #0-1 into one line of at most 280 bytes.",
+		'Run: ~/.optmem/memo nap 0-1 \\"<your line>\\"',
+		"#1 2026-01-01 then run memo nap 0-1 with the summary",
+	].join("\\n");
+
+	const request = [
+		"Compress memories #2-3 into one line of at most 280 bytes.",
+		"",
+		"  #2 a",
+		"  #3 b",
+		"",
+		'Run: ~/.optmem/memo nap 2-3 \\"<your line>\\"',
+	].join("\\n");
+
+	const flag = join(root, "home", ".optmem", "ask");
+
+	if (ask) {
+		await writeFile(flag, "");
+	}
+
+	await writeMemo(
+		[
+			'echo "$*" >> "$HOME/.optmem/calls.log"',
+			'touch "$MEMORY_DIR/LOG.txt"',
+			'case "$1" in',
+			`wake) printf "${notes}\\nYou are awake.\\n" ;;`,
+			`note) printf "${notes}\\nSaved as #4.\\n"; [ -f "${flag}" ] && rm "${flag}" && printf "\\n${request}\\n" ;;`,
+			'nap) printf "2-3 saved.\\n\\nNothing left to compress.\\n" ;;',
+			"esac",
+			"exit 0",
+		].join("\n"),
+	);
+}
+
+/** The `nap` calls of the fake `memo` of `writeNotedMemo`. */
+async function napsOf(): Promise<string[]> {
+	const calls = await readFile(join(root, "home", ".optmem", "calls.log"), "utf8");
+
+	return calls.split("\n").filter((line) => line.startsWith("nap "));
+}
+
 const THANKED = "# Demo\n\nHello world\nThanks.\n";
 
 describe("workflows thermoloop", () => {
@@ -207,21 +255,46 @@ describe("workflows thermoloop", () => {
 		expect(notes).toHaveLength(1);
 	});
 
-	it("fails with a clear error when memo asks for a compression without a nap block", async () => {
-		await writeMemo(
-			`case "$1" in note) printf 'Saved.\\n\\nCompress memories now.\\n\\nRun: ~/.optmem/memo nap x\\n' ;; esac`,
-		);
+	it("fails with a clear error when memo ends with a nap line without its prompt", async () => {
+		await writeMemo(`case "$1" in note) printf 'Saved.\\n\\nRun: ~/.optmem/memo nap 0-1 "<your line>"\\n' ;; esac`);
 
 		const run = await workflows(["thermoloop", "--item", ITEM], { cwd: repo, script: { verdicts: ["FIX"] } });
 
 		expect(run.code).toBe(1);
 		expect(run.stderr).toContain(
-			`failed ${ITEM}: memo asked for a compression without "nap <a>-<b>": Compress memories now.`,
+			`failed ${ITEM}: memo asked for a compression without its prompt: Run: ~/.optmem/memo nap 0-1 "<your line>"`,
 		);
 	});
 
+	it("reads no compression from notes that hold the words of a request", async () => {
+		await writeNotedMemo(false);
+
+		const run = await workflows(["thermoloop", "--item", ITEM], {
+			cwd: repo,
+			script: { edits: [THANKED], verdicts: ["FIX", "SHIP"] },
+		});
+
+		expect(run.code).toBe(0);
+		expect(run.model.count("summarize")).toBe(0);
+		expect(await napsOf()).toEqual([]);
+	});
+
+	it("answers the request at the end of the memo output after such notes", async () => {
+		await writeNotedMemo(true);
+
+		const run = await workflows(["thermoloop", "--item", ITEM], {
+			cwd: repo,
+			script: { edits: [THANKED], verdicts: ["FIX", "SHIP"] },
+		});
+
+		expect(run.code).toBe(0);
+		expect(run.model.count("summarize")).toBe(1);
+		expect(run.model.find("summarize")?.prompt).toMatch(/^Compress memories #2-3 [\s\S]*  #3 b\n\nWhen you are done/);
+		expect(await napsOf()).toEqual(["nap 2-3 Summary 1: README.md had wrold."]);
+	});
+
 	it("fails with a clear error when memo never stops asking for compressions", async () => {
-		const ask = "printf 'Compress memories #0-1.\\n\\nRun: ~/.optmem/memo nap 0-1\\n'";
+		const ask = `printf 'Compress memories #0-1.\\n\\nRun: ~/.optmem/memo nap 0-1 "<your line>"\\n'`;
 		await writeMemo(`case "$1" in note|nap) ${ask} ;; esac`);
 
 		const run = await workflows(["thermoloop", "--item", ITEM], { cwd: repo, script: { verdicts: ["FIX"] } });
