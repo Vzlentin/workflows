@@ -1,6 +1,6 @@
 ---
 name: workflows
-description: Use it when the user asks to ship, run a campaign, review, fix or judge a change, or asks about a workflows run, its status, its result, its worktree or its report.
+description: Use it when the user asks to ship, run a campaign, review, fix, judge or land a change, or asks about a workflows run, its status, its result, its worktree or its report.
 ---
 # workflows
 
@@ -12,7 +12,7 @@ and judge. A run costs minutes and model calls.
 - Start a run, or resume one, only when the user asks for that run in his message. A contract or a goal file is not a
   go. To answer a question about workflows or about a run, read; do not start a run.
 - Never plan, edit or commit in the run's worktree yourself while the run goes on. Never merge, push or delete its
-  branch.
+  branch yourself: when the user asks to land it, run `land`.
 - Call the tool once for each run. Do not poll it, and do not call it again while it follows the run.
 - Use the `workflow` tool, not `workflows` through bash, to start or resume a run. If the tool is not available, stop
   and tell the user.
@@ -26,6 +26,7 @@ and judge. A run costs minutes and model calls.
 | one change implemented in one commit, with no review loop | `rpi` | `item` |
 | a review of a change that exists, with fixes in rounds | `thermoloop` | `change`, optional `item` |
 | a score of a change that exists, with no edit | `judge` | `change`, optional `item` |
+| the branch of an ended run on `main`, after its CI passed | `land` | `run` |
 
 This skill does not cover `optimize`, `implement` or workflow scripts.
 
@@ -53,6 +54,7 @@ Each arg becomes a flag of `workflows <name>`. Give only the args that the user 
 { name: "rpi", serves?: "<todo ID | parley slug>", args: { item: "<absolute path of the work item>", base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
 { name: "thermoloop", serves?: "<todo ID | parley slug>", args: { change?: "<change>", item?: "<work item>", base?: "main", rounds?: 3, repo?: "<absolute path of a local repository>" } }
 { name: "judge", serves?: "<todo ID | parley slug>", args: { change?: "<change>", item?: "<work item>", base?: "main", repo?: "<absolute path of a local repository>" } }
+{ name: "land", args: { run: "<run ID>", wait?: 1800 } }
 ```
 
 - `serves`: what the run builds: the ID of a todo of the list of the project, or the slug of an open parley or a
@@ -116,6 +118,9 @@ The values of `result.status` for a `done` run. The fields that the table names,
 | thermoloop | `stopped` | The rounds ended without SHIP. Give `value.handoff`, and the last review (see below). |
 | judge | `judged` | `result.score`, from 0 to 1, and `value.findings`. |
 | judge | `rejected` | The score is 0. Give `value.findings`. |
+| land | `landed` | The CI passed on the branch and on `main`. `main` is at `value.head` locally and on `origin`, and the run is swept. Give the first report line, and each `check failed:` line. |
+| land | `landed-red` | The branch is on `main`, but the CI of `main` failed or gave no result. Nothing is reverted. Give the first report line, which names the failed run. |
+| land | `refused` | The report line `refused at step <n>: <reason>`. Before step 5, `main` is untouched. Give that line. |
 
 Do not guess findings. No result field holds the last review: its `ask` returns only SHIP or FIX. To read its
 findings:
@@ -154,7 +159,8 @@ commit).
   The branch is `<workflow>/<runId>` until a shipped run renames it from its commit subject.
 - The run directory is `${XDG_STATE_HOME:-$HOME/.local/state}/workflows/runs/<runId>`. It holds the patches of each
   review, `round-<n>.patch` and `round-<n>-fix.patch`, and for a campaign `item-<n>/`.
-- After a run's branch is merged or fast-forwarded onto `origin/main`, run `workflows sweep --yes` (or
+- `land` sweeps the run that it lands. After a run's branch is merged or fast-forwarded onto `origin/main` in another
+  way, run `workflows sweep --yes` (or
   `workflows sweep <runId>... --yes` for a branch that went into another pull request or that you drop) to remove its
   worktree and its local branch. The sweep writes `landed` or `dropped` to the `swept` file of the run directory, and
   `list --json` and `show --json` give it as `swept`.
@@ -162,7 +168,7 @@ commit).
 ## /skill:workflows
 
 With `/skill:workflows <workflow> <input>`, Pi adds the text after the command at the end of this skill. The first
-word is the workflow, and the rest is its input: the work item for ship and rpi, the goal for campaign, and the change for
-thermoloop and judge. Flags such as `--rounds 2` or `--base develop` become the args of the same name. The user asked
-for the run, so start it. When the first word is not one of the five workflows, the whole text is the work item of
+word is the workflow, and the rest is its input: the work item for ship and rpi, the goal for campaign, the change for
+thermoloop and judge, and the run ID for land. Flags such as `--rounds 2` or `--base develop` become the args of the same name. The user asked
+for the run, so start it. When the first word is not one of the six workflows, the whole text is the work item of
 `ship`.

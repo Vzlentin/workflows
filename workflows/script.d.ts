@@ -344,6 +344,13 @@ declare function judgeCommit(
 declare function writePatch(path: string, from: string): Promise<string>;
 
 /**
+ * The worktrees of the repository of `dir`, default the directory of `sh`, from `git worktree list --porcelain`, the
+ * main checkout first. `branch` is the full ref (`refs/heads/<name>`), or undefined when the worktree is detached or
+ * bare. `prunable` says that the directory of the worktree is gone.
+ */
+declare function worktrees(dir?: string): Promise<{ path: string; branch: string | undefined; bare: boolean; prunable: boolean }[]>;
+
+/**
  * The change of a script's `args`. With `args.start`, a caller gives the change: `start`, and `args.item` as the
  * intent, with no Git step. Else the change is the one that `args.change` points at, from the current directory, and
  * the run gets the subject of its intent as its title. `args.change` is nothing (the current branch from its merge base

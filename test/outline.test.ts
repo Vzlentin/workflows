@@ -42,6 +42,7 @@ const OUTLINES = {
 	implement: [agent("implementer", "implement")],
 	fix: [run("implement", "fix"), run("judge", "judge")],
 	judge: [agent("judge", "judge")],
+	land: [],
 	optimize: [
 		loop("each item: baseline", [run("ship", "baseline")]),
 		agent("default", "inv"),
@@ -57,6 +58,7 @@ const PACKAGE_LINES = [
 	"fix         fix ─ judge",
 	"implement   implement",
 	"judge       judge",
+	"land",
 	"optimize    each item: baseline ─ inv ─ dom ─ compose ─ each item: ship ─ select",
 	"rpi         research ─ plan ─ implement",
 	"ship        research ─ plan ─ implement ─ review, in rounds ─ judge",
@@ -307,7 +309,7 @@ return 1`,
 		expect([every.code, every.stdout, every.stderr]).toEqual([
 			0,
 			[
-				...PACKAGE_LINES.slice(0, 6),
+				...PACKAGE_LINES.slice(0, 7),
 				"ship        draft ─ rounds",
 				"thermoloop  review ─ fix, in rounds",
 				"mine        ship ─ items",
@@ -321,7 +323,7 @@ return 1`,
 			0,
 			[
 				[
-					...(["campaign", "fix", "implement", "judge", "optimize", "rpi"] as const).map((workflow) =>
+					...(["campaign", "fix", "implement", "judge", "land", "optimize", "rpi"] as const).map((workflow) =>
 						expect.objectContaining({ workflow, outline: OUTLINES[workflow] }),
 					),
 					plainEntry("ship", own),

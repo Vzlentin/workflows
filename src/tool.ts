@@ -230,6 +230,8 @@ export const DESCRIPTION =
 	"(`ship`), and optional `runs`, `limit`, `items` and `always-on-max` (the most characters of `AGENTS.md`). For " +
 	"`thermoloop`, which reviews a change and fixes it in rounds, and `judge`, which scores a change: optional " +
 	"`change`, `item`, `base`, `rounds` (thermoloop only), and `repo`, the path of a local repository to run in. " +
+	"For `land`, which lands the branch of a completed ship or campaign run on `main` when its CI " +
+	"passes, then sweeps the run: `run` (the run ID), and optional `wait` (the bound of each CI wait, in seconds). " +
 	"Each `run()` call of a " +
 	"script starts a child run, which a resume of its caller continues. A run goes on in the harness host of the " +
 	"project: Esc detaches from it, and `resume` follows it again. A failed or aborted run stays resumable. With " +

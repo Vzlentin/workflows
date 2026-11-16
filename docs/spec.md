@@ -8,7 +8,8 @@ The behaviour of the `workflows` command, the workflow scripts, runs and the `wo
 `workflows rpi` researches, plans and implements one work item in one commit, `workflows thermoloop` reviews a change
 (the current branch, a PR, a ref or a range) and fixes it in rounds, and `workflows judge` judges it.
 `workflows optimize ship` proposes edits to the ship prompts, skills and `AGENTS.md` from past ship runs,
-and keeps them when a blind judge prefers the diffs they give. The run is
+and keeps them when a blind judge prefers the diffs they give. `workflows land <run-id>` lands the branch of a run on
+`main` when its CI passes. The run is
 headless and resumable. It runs in the [harness](https://github.com/Vzlentin/harness) host of its project, whose
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) store keeps the sessions, model calls, tool
 calls and the progress of the run. See [Runs in the harness host](#runs-in-the-harness-host).
@@ -665,6 +666,59 @@ row, so its `lessons` is `[]` with no turn.
 A ship child run that fails stops the optimization with `failed optimize: child run <id> failed: <error>`, as any
 failed `run()` call does. `workflows resume <run-id>` runs the script again: `pastRuns`, the finished ship runs and the
 turns and the `memo` calls of the run memory return their saved results, and the failed ship run continues. `workflows list` shows only the optimize run.
+
+## Land
+
+```sh
+workflows land <run-id>
+workflows land <run-id> --wait 600
+```
+
+`workflows land <run-id>` lands the branch of a run on `main` with no model call. The run is a completed root run of
+`ship` or `campaign` of the project store, with a worktree of its own and a `branch` in its result. It runs these
+steps in order, with `git -C` in the repository of the run:
+
+1. Find the run: the run `<run-id>` in `pastRuns` of `ship`, then of `campaign`. The repository is `repository`, and
+   the branch is `result.branch`. `git worktree list --porcelain` of the repository gives the main checkout, its first
+   entry, and the worktree on the branch. It refuses a run that is not one of these completed root runs, a run with no
+   `repository` or no `result.branch` (such as a `ship` or `campaign` that stopped), a branch that no worktree has or
+   whose worktree is gone, and a worktree with changes that are not committed, also untracked files.
+2. Check `main`: it refuses a main checkout that is bare, is not on `main`, or has changes that are not committed. It
+   runs `git fetch -q origin`, and refuses when `main` differs from `origin/main`, except when `origin/main` is already
+   the head of the branch and `main` is an ancestor of it, as after a step 5 that stopped between its push and its
+   merge. It refuses a branch that is not a fast-forward of `main`.
+3. `git push -q origin <head>:refs/heads/<branch>`.
+4. Wait for the CI of the branch, then refuse when it did not pass.
+5. `git push -q origin <head>:refs/heads/main`, then `git merge -q --ff-only <head>` in the main checkout. The push
+   comes first, so that a rejected push leaves `main` untouched on both sides. When `main` is already the head, both
+   do nothing.
+6. Delete the branch on `origin` when `git ls-remote` still lists it, and its remote-tracking branch.
+7. Wait for the CI of `main` at the head.
+8. Run `workflows sweep <run-id> --yes` of this package (`workflowsCommand`) in the directory of the land run (see [Sweep](#sweep)), unless the
+   worktree and the local branch are already gone.
+9. Check the repository: `core.bare` is not true, `main` equals `main` on `origin`, and the branch is gone locally, as
+   a remote-tracking branch and on `origin`.
+
+A CI wait is one shell command in the main checkout. Every 15 seconds it runs
+`gh run list --commit <head> --branch <branch> --json databaseId,workflowName,status,conclusion,url`, until the list
+is not empty and each run has the status `completed`, or until `--wait` seconds have passed (default 1800). The CI
+passes when each run ends with `success`, `skipped` or `neutral`. Otherwise its reason is `no CI run for <short> on
+<branch> after <wait> s`, `CI failed on <branch> at <short>: <workflow> <url>, ...` with each failed run, or `the CI
+of <branch> at <short> did not finish in <wait> s: <workflow> <url>, ...`, where `<short>` is the short head. No CI is
+not a green CI.
+
+The result is `{ "status", "head", "branch", "report" }`, with `head` the short head. `head` and `branch` are there
+once step 1 found them. A failed step from 1 to 6, or a failed Git or `gh` command in it, gives the status `refused`
+and the one report line `refused at step <n>: <reason>`. A refusal does nothing after the failed step, so a refusal
+before step 5 leaves `main` untouched on both sides. When step 7 passes, the status is `landed` and the first line
+is `landed <subject of the head> <short>, CI passed on the branch and on main`. Otherwise the status is `landed-red`,
+the first line is `landed-red <subject of the head> <short>, CI passed on the branch; <reason>`, with the reason of
+the CI wait or `the CI of main is unknown: <error>` when `gh` fails, and `land` reverts nothing. A failed sweep and each failed check of step 9 add a line
+`check failed: <what>`, and do not change the status. `landed` exits 0; `landed-red` and `refused` exit 1.
+
+`land` never squashes, never merges through a pull request and never force-pushes: the commits of the branch reach
+`main` as they are. It lands one run, and starts no review and no judge. Each step is safe to repeat, so `workflows
+resume <run-id>` of a land run that stopped at any step ends in the same state.
 
 ## Sessions
 

@@ -41,16 +41,29 @@ async function writePatch(path, from) {
 	return path;
 }
 
-/** The path of the worktree that has `branch` checked out, or undefined when no worktree has it. */
-async function checkedOutAt(branch) {
-	let path;
+/**
+ * The worktrees of the repository of `dir`, default the directory of `sh`, from `git worktree list --porcelain`, the
+ * main checkout first: `{ path, branch, bare, prunable }`, where `branch` is the full ref, or undefined when the
+ * worktree is detached or bare.
+ */
+async function worktrees(dir) {
+	const entries = [];
+	const listed = await sh(["git", ...(dir === undefined ? [] : ["-C", dir]), "worktree", "list", "--porcelain"]);
 
-	for (const line of (await sh(["git", "worktree", "list", "--porcelain"])).split("\n")) {
-		if (line.startsWith("worktree ")) path = line.slice("worktree ".length);
-		else if (line === `branch refs/heads/${branch}`) return path;
+	for (const line of listed.split("\n")) {
+		if (line.startsWith("worktree "))
+			entries.push({ path: line.slice("worktree ".length), branch: undefined, bare: false, prunable: false });
+		else if (line.startsWith("branch ")) entries.at(-1).branch = line.slice("branch ".length);
+		else if (line === "bare") entries.at(-1).bare = true;
+		else if (line === "prunable" || line.startsWith("prunable ")) entries.at(-1).prunable = true;
 	}
 
-	return undefined;
+	return entries;
+}
+
+/** The path of the worktree that has `branch` checked out, or undefined when no worktree has it. */
+async function checkedOutAt(branch) {
+	return (await worktrees()).find((entry) => entry.branch === `refs/heads/${branch}`)?.path;
 }
 
 /** `# <title>` and the body of `pr`. */
