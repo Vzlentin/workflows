@@ -319,6 +319,15 @@ export type Output = {
  */
 export const UNFOLLOWABLE_EXIT = 4;
 
+/** The name of the tool, in the harness host and in Pi. */
+export const TOOL_NAME = "workflow";
+
+/**
+ * The name of the entry of workflows: its key in harness's `entries.json`, and the name of the extension that the
+ * entry gives the tool in.
+ */
+export const ENTRY_NAME = "workflows";
+
 /**
  * The outcome line after `run <run-id>`; throws the stderr text when the command stopped without one, after `run
  * <run-id>: ` when the command printed that line.

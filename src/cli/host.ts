@@ -8,6 +8,7 @@ import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
 import type { TaskEnd } from "../run/past.ts";
 import { TASK } from "../run/version.ts";
+import { ENTRY_NAME } from "../tool.ts";
 import type { Terminal } from "./main.ts";
 
 /**
@@ -32,7 +33,7 @@ export async function connectTo(terminal: Terminal, project: string, start: true
 export async function connectTo(terminal: Terminal, project: string, start: boolean): Promise<Client | undefined>;
 export async function connectTo(terminal: Terminal, project: string, start: boolean): Promise<Client | undefined> {
 	// A host that starts from here loads this entry. A host that runs already loads it only after it starts again.
-	if (start) setEntry("workflows", ENTRY);
+	if (start) setEntry(ENTRY_NAME, ENTRY);
 
 	const connected =
 		terminal.connect === undefined ? await connect({ project, start }) : await terminal.connect(project, start);

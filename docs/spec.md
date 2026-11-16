@@ -2120,10 +2120,11 @@ When Pi loads the extension, it resolves `@vzlentin/workflows/package.json` from
 1. It puts the `.bin` folder of the `node_modules` folder that holds `@vzlentin/workflows` last on the `PATH` of Pi's
    process, so Pi's tools find `workflows` and `harness`. It goes last because the folder also holds the commands of
    other dependencies, such as an older `pi`. It removes the folder first, so each load leaves it on `PATH` once.
-2. It sets the entry `workflows` in harness's `entries.json` to `dist/entry.js` of that package, with the harness that
-   the package imports, so a host that the tool starts loads the entry of the same install.
-3. It loads `dist/tool.js` of that package, the definition of the `workflow` tool in `src/tool.ts`, and registers the
-   tool with it.
+2. It loads `dist/tool.js` of that package, the definition of the `workflow` tool in `src/tool.ts`, with the names of
+   the tool and of the entry.
+3. It sets the entry `workflows` in harness's `entries.json` to `dist/entry.js` of that package, with the harness that
+   the package imports, so a host that the tool starts loads the entry of the same install. Then it registers the tool
+   with the module of step 2.
 4. It loads `inHerdr` of `@vzlentin/harness/herdr`, with the harness that the package imports, for the `/workflows`
    command. Another copy of harness in the install, such as an older one of pi-agents, may check another variable.
 

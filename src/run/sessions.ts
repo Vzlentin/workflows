@@ -9,13 +9,11 @@ import type { Failure, Owner, Spec } from "@vzlentin/harness/children";
 import { PROJECT_EXTENSION } from "@vzlentin/harness/protocol";
 import type { Static } from "typebox";
 import type { ScriptInput } from "../launch/input.ts";
+import { ENTRY_NAME } from "../tool.ts";
 import type { Writable } from "../workflow/bundle.ts";
 import { roleOf } from "../workflow/roles.ts";
 import { CallDoc, type Calls, callOfKind, type SESSION_ARGS } from "./calls.ts";
 import type { Host, Runtime } from "./version.ts";
-
-/** The extension of the `workflow` tool, which the entry gives every conversation of the host but the sessions. */
-export const TOOL_EXTENSION = "workflows";
 
 /**
  * One session of a run: its run ID, its conversation, the task that opened it, and `label`, the role name that opened
@@ -94,7 +92,7 @@ export async function sessionOf(calls: Calls, key: string, cwd: string, args: Se
 			const selection = agent.extensions;
 
 			if (!Array.isArray(selection)) {
-				agent.extensions = { ...selection, remove: [...(selection?.remove ?? []), TOOL_EXTENSION, PROJECT_EXTENSION] };
+				agent.extensions = { ...selection, remove: [...(selection?.remove ?? []), ENTRY_NAME, PROJECT_EXTENSION] };
 			}
 
 			const call = callOfKind(await tx.doc(CallDoc, key, null), "session", key);

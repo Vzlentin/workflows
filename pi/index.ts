@@ -261,7 +261,7 @@ function detailLines(
 /** The `workflow` tool, which runs `command`, and gives `watcher` each run that it started in the background. */
 export function workflowTool(command: readonly string[], watcher: Watcher, tool: ToolModule) {
 	return {
-		name: "workflow",
+		name: tool.TOOL_NAME,
 		label: "Workflow",
 		description: tool.DESCRIPTION,
 		promptGuidelines: tool.GUIDELINES,
@@ -758,10 +758,11 @@ export default async function workflows(
 	const require = createRequire(import.meta.url);
 	const folder = dirname(require.resolve(`${WORKFLOWS_PACKAGE}/package.json`));
 	putWorkflowsBinLast(require);
-	await setWorkflowsEntry(folder);
+	const tool = await loadTool(folder);
+	await setWorkflowsEntry(folder, tool);
 	const command = [process.execPath, join(folder, "dist", "cli.js")];
 	const { inHerdr } = await harnessModule(folder, "herdr");
-	register(pi, command, await loadTool(folder), inHerdr);
+	register(pi, command, tool, inHerdr);
 }
 
 /**
@@ -781,11 +782,12 @@ function putWorkflowsBinLast(require: NodeJS.Require): void {
 }
 
 /**
- * Sets the entry `workflows` in harness's `entries.json` to `dist/entry.js` of the workflows package in `folder`, with
- * the harness that this package imports, so a host that the tool starts loads the entry of the same install.
+ * Sets the entry `tool.ENTRY_NAME` in harness's `entries.json` to `dist/entry.js` of the workflows package in
+ * `folder`, with the harness that this package imports, so a host that the tool starts loads the entry of the same
+ * install.
  */
-async function setWorkflowsEntry(folder: string): Promise<void> {
-	(await harnessModule(folder, "entries")).setEntry("workflows", join(folder, "dist", "entry.js"));
+async function setWorkflowsEntry(folder: string, tool: ToolModule): Promise<void> {
+	(await harnessModule(folder, "entries")).setEntry(tool.ENTRY_NAME, join(folder, "dist", "entry.js"));
 }
 
 /** The harness modules that the extension loads from the harness of the workflows package. */

@@ -14,18 +14,19 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { runCli } from "./command.ts";
 import { runsCatchUp } from "./run/catchup.ts";
-import { TOOL_EXTENSION } from "./run/sessions.ts";
 import { scriptTask } from "./run/task.ts";
 import type { Host } from "./run/version.ts";
 import {
 	commandOf,
 	DESCRIPTION,
+	ENTRY_NAME,
 	OUTCOME,
 	outcomeOf,
 	outcomeText,
 	PARAMETERS,
 	savedOutcome,
 	succeeded,
+	TOOL_NAME,
 	type WorkflowCall,
 } from "./tool.ts";
 
@@ -136,7 +137,7 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 /** The `workflow` tool, in an extension that every conversation of the host selects, and that sessions remove. */
 function workflowExtension(host: Host) {
 	const tool = defineTool<typeof PARAMETERS, WorkflowDetails>({
-		name: "workflow",
+		name: TOOL_NAME,
 		description: DESCRIPTION,
 		parameters: PARAMETERS,
 		structuredOutputSchema: OUTCOME,
@@ -145,7 +146,7 @@ function workflowExtension(host: Host) {
 		execute: (params, api, context) => runTool(host, params, api, context),
 	});
 
-	return defineExtension({ name: TOOL_EXTENSION, tools: [tool] });
+	return defineExtension({ name: ENTRY_NAME, tools: [tool] });
 }
 
 const PACKAGE = Type.Object({ version: Type.String() });
