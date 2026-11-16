@@ -29,6 +29,9 @@ export const JSON_VALUE = Type.Cyclic(
 	"Json",
 );
 
+/** A JSON object, which is a plain object and not an array or null. */
+const JSON_OBJECT = Type.Record(Type.String(), JSON_VALUE);
+
 /** The names of the commands of `workflows`. No workflow can have one of these names. */
 export const COMMAND_NAMES = [
 	"list",
@@ -515,29 +518,45 @@ export function waits(result: unknown): result is Static<typeof WAITING> {
 	return Value.Check(WAITING, result);
 }
 
-/** The most UTF-8 bytes of a summary text. A longer text keeps its first line and its end, with a cut line between. */
+/**
+ * The most UTF-8 bytes of the summary text of a run that is `done`, `failed` or `orphaned`. A longer text keeps its
+ * first line and its end, with a cut line between.
+ */
 const OUTCOME_BYTES = 2000;
+
+/**
+ * The most UTF-8 bytes of the summary text of a run that waits for an answer, so that a long question reaches the
+ * caller whole. A longer text keeps its first line and its end, with a cut line between.
+ */
+const QUESTION_BYTES = 16000;
 
 /** The most UTF-8 bytes of command output in the error text of a failed command. */
 export const OUTPUT_BYTES = 4096;
 
-/** The most UTF-8 bytes of the first line of a cut summary text. */
+/** The most UTF-8 bytes of the first line of a cut summary text, for every bound. */
 const HEAD_BYTES = 500;
 
-/** The most UTF-8 bytes of a report line in the text for the caller, with its `…` when it is cut. */
-const REPORT_LINE_BYTES = 500;
+/**
+ * The most UTF-8 bytes of a report line in the text for the caller, with its `…` when it is cut. It is large enough
+ * that a whole finding line fits.
+ */
+const REPORT_LINE_BYTES = 4000;
 
 const ENCODER = new TextEncoder();
 
 /**
- * The text of `outcome` for the caller, at most {@link OUTCOME_BYTES} UTF-8 bytes. A longer text keeps its first line,
- * then a line with the count of cut bytes and the command that shows the rest, then its end.
+ * The text of `outcome` for the caller, at most {@link QUESTION_BYTES} UTF-8 bytes for a run that waits, else at most
+ * {@link OUTCOME_BYTES}. A longer text keeps its first line, then a line with the count of cut bytes and the command
+ * that shows the rest, then its end. The value of a run that is `done` has no top-level `memory` or `report` key.
  */
 export function summary(outcome: WorkflowOutcome): string {
 	return texts(outcome).summary;
 }
 
-/** The text of `outcome` for the model: its summary, then the report lines of a run that is `done`. */
+/**
+ * The text of `outcome` for the model: its summary, then the report lines of a run that is `done`, each at most
+ * {@link REPORT_LINE_BYTES} UTF-8 bytes.
+ */
 export function outcomeText(outcome: WorkflowOutcome): string {
 	const { summary, report } = texts(outcome);
 
@@ -555,24 +574,32 @@ function texts(outcome: WorkflowOutcome): Texts {
 		case "waiting": {
 			const text = `run ${id} waits for an answer: ${outcome.question}; answer it with resume: "${id}" and answer: "<your answer>"`;
 
-			return { summary: bounded(text, log), report: [] };
+			return {
+				summary: bounded(
+					text,
+					QUESTION_BYTES,
+					`the command workflows wait ${id} --json prints the whole question, and workflows log ${id} <call> prints the whole output of a call`,
+				),
+				report: [],
+			};
 		}
 
 		case "done":
 			return {
 				summary: bounded(
-					`run ${id} ${stateText(outcome.state, outcome.result)}: ${JSON.stringify(outcome.value)}`,
+					`run ${id} ${stateText(outcome.state, outcome.result)}: ${valueText(outcome.value)}`,
+					OUTCOME_BYTES,
 					`the command workflows wait ${id} --json prints the whole result`,
 				),
 				report: outcome.report.map(reportLine),
 			};
 		case "failed":
 			return {
-				summary: bounded(`run ${id} failed: ${outcome.error}; continue it with resume: "${id}"`, log),
+				summary: bounded(`run ${id} failed: ${outcome.error}; continue it with resume: "${id}"`, OUTCOME_BYTES, log),
 				report: [],
 			};
 		case "orphaned":
-			return { summary: bounded(`run ${id} orphaned: ${outcome.error}`, log), report: [] };
+			return { summary: bounded(`run ${id} orphaned: ${outcome.error}`, OUTCOME_BYTES, log), report: [] };
 		case "aborted":
 			return { summary: `run ${id} aborted; continue it with resume: "${id}"`, report: [] };
 		case "running":
@@ -581,6 +608,17 @@ function texts(outcome: WorkflowOutcome): Texts {
 				report: [],
 			};
 	}
+}
+
+/**
+ * The JSON of the value of a run that is `done`, without the top-level `memory` and `report` keys of a plain object:
+ * the report lines follow the summary, and the memory is for the run.
+ */
+function valueText(value: Static<typeof JSON_VALUE>): string {
+	if (!Value.Check(JSON_OBJECT, value)) return JSON.stringify(value);
+	const { memory: _memory, report: _report, ...rest } = value;
+
+	return JSON.stringify(rest);
 }
 
 /** The text of the run `id` started in the background, whose result comes as a message when it `posts`. */
@@ -600,16 +638,19 @@ function runningText(id: string, follow: "detached" | "host-stopped"): string {
 	}
 }
 
-/** `text` when it fits in {@link OUTCOME_BYTES}, else its first line, the cut line with `hint`, and its end. */
-function bounded(text: string, hint: string): string {
+/**
+ * `text` when it fits in `max` UTF-8 bytes, else its first line of at most {@link HEAD_BYTES}, the cut line with
+ * `hint`, and its end, together at most `max` bytes.
+ */
+function bounded(text: string, max: number, hint: string): string {
 	const bytes = ENCODER.encode(text);
 
-	if (bytes.length <= OUTCOME_BYTES) return text;
+	if (bytes.length <= max) return text;
 	const newline = bytes.indexOf(0x0a);
 	const head = prefix(bytes.subarray(0, newline === -1 ? bytes.length : newline), HEAD_BYTES);
 	const decoder = new TextDecoder();
 
-	return `${decoder.decode(head)}\n${cutTail(decoder.decode(bytes.subarray(head.length)), OUTCOME_BYTES - head.length - 1, hint)}`;
+	return `${decoder.decode(head)}\n${cutTail(decoder.decode(bytes.subarray(head.length)), max - head.length - 1, hint)}`;
 }
 
 /**

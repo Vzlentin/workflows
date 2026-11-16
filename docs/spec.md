@@ -2044,22 +2044,25 @@ error result of the command's usage error, before a run exists. It sets `HARNESS
   The result keeps the last `details`. The host follows the rule of Pi for progress lines: a progress line is a JSON
   object with a `progress` array, whatever the order of its keys, and the host keeps only the last 100 stderr lines
   that are not progress lines, for the steps and for the error text of a failed command, which has no progress line.
-- The result text of a run that is `done` is its summary, then the `report` lines. A report line longer than 500 bytes in
-  UTF-8 is cut at a character to 497 bytes, then `…`, so it is at most 500 bytes; the structured output, `--json` and
-  the saved result keep the whole line. The summary is
+- The result text of a run that is `done` is its summary, then the `report` lines. A report line longer than 4000 bytes
+  in UTF-8 is cut at a character to 3997 bytes, then `…`, so it is at most 4000 bytes; the structured output, `--json`
+  and the saved result keep the whole line. The summary is
   `run <run-id> <state>: <value>`, with the state and the result as [List](#list) gives them, such as
-  `run <run-id> done, result shipped exit 0: {...}`, and the JSON of the value of the result. A run that waits for an
+  `run <run-id> done, result shipped exit 0: {...}`, and the JSON of the value of the result. When the value is an
+  object, the summary leaves out its top-level `memory` and `report` keys, so the report lines are not given twice;
+  nested keys and the structured output stay whole. A run that waits for an
   answer has only the summary, `run <run-id> waits for an answer: <question>; answer it with resume: "<run-id>" and answer: "<your answer>"`, and is not an error. Only the result of an open `input` call, `{ "status": "waiting", "question", "report" }`, gives this text. A run that is `done` is not an
   error either, whatever its exit code. A failed, orphaned, aborted, detached or host-stopped run is an error result
   with its summary, such as `run <run-id> failed: <error>; continue it with resume: "<run-id>"`, `run <run-id>
   orphaned: <reason>` or `run <run-id> aborted; continue it with resume: "<run-id>"`, and keeps the structured output,
   the outcome of [Wait](#wait), with the whole value and error.
-- A summary is at most 2000 bytes in UTF-8, with its prefix and its suffix. A longer summary is three lines: its first
-  line, cut to 500 bytes at a character, then the cut line, then the longest end of the text that fits, from a line
+- A summary is at most 2000 bytes in UTF-8, with its prefix and its suffix, and the summary of a waiting run at most
+  16000 bytes. A longer summary is three lines: its first line, cut to 500 bytes at a character, then the cut line, then the longest end of the text that fits, from a line
   start when that end has one, else from a character. The cut line of a run that is `done` is `[… <n> bytes cut; the
-  command workflows wait <run-id> --json prints the whole result]`. The cut line of a failed or waiting run is `[… <n>
-  bytes cut; the command workflows log <run-id> shows the run and its calls, and workflows log <run-id> <call> prints
-  the whole output of a call]`. `<n>` is the count of bytes between the two parts. `<run-id>` is the run of the outcome, also
+  command workflows wait <run-id> --json prints the whole result]`. The cut line of a waiting run is `[… <n> bytes cut;
+  the command workflows wait <run-id> --json prints the whole question, and workflows log <run-id> <call> prints the
+  whole output of a call]`. The cut line of a failed or orphaned run is `[… <n> bytes cut; the command workflows log
+  <run-id> shows the run and its calls, and workflows log <run-id> <call> prints the whole output of a call]`. `<n>` is the count of bytes between the two parts. `<run-id>` is the run of the outcome, also
   when the error comes from a child run, whose calls `log` shows under the root. A JSON on one line is cut the same
   way. Every caller text comes from the summary: the result text of the tool, the posted text of a background run,
   and in Pi the tool text, the background message and the drawn outcome line.
@@ -2074,7 +2077,7 @@ error result of the command's usage error, before a run exists. It sets `HARNESS
   after it ends its sessions. An end commit that fails posts nothing, so the post is always the outcome that the task
   ends with. The post is a follow-up input of the entry kind `workflows.result`, with the
   data `{ runId, state }` and the text of the tool result for that outcome, which the same builder as the command
-  makes from the end of the task: `done` with the report lines (with the limit on the summary above), `waiting` with
+  makes from the end of the task: `done` with the report lines (with the limits on the summary and the report lines above), `waiting` with
   the question and how to answer it, `failed` with the error, or `aborted`. Its request ID is `workflows.result:<run-id>/<task-id>`, so each later task of the run posts again. A child run never has `notify`. Nothing is posted
   when the task has no driver, such as a task that a terminal or Pi started, or when the host stops: the task
   stays pending and posts when it ends after the restart. A failed post goes to the host's report and does not
@@ -2195,7 +2198,7 @@ does not make the steps itself. A run that is `done` or `waiting` ends with its 
 such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8` and `branch fix/readme-typo`. A failed, orphaned, aborted or detached run ends with
 the error or the state, and the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the
 same after a reload. The model gets the result text of the host tool: the summary, then the `report` lines of a
-run that is `done`, with the limit on the summary of
+run that is `done`, with the limits on the summary and the report lines of
 [The `workflow` tool of the host](#the-workflow-tool-of-the-host).
 
 The tool declares an `outputSchema`, `OUTCOME`, the union of the outcomes of [Wait](#wait). Its `structuredContent`
@@ -2224,8 +2227,8 @@ After a result with `follow: "started"`, the extension appends the session entry
 `workflow` and the `repository` of the outcome, and follows the run with `workflows wait <run-id> --json` in `cwd`. The wait finds the run
 by its ID, so it also follows a run of another project. When the wait prints an
 outcome whose `state` is not `running`, the extension sends the message `workflow-result`, with the text of a
-call without `background` for that outcome (the summary, then the report lines of a run that is `done`, with the limit on
-the summary of the host tool; for a waiting run,
+call without `background` for that outcome (the summary, then the report lines of a run that is `done`, with the limits on
+the summary and the report lines of the host tool; for a waiting run,
 the question and how to answer it), the `details` `{ steps, outcome }`,
 `display: true`, `triggerTurn: true` and `deliverAs: "followUp"`. It then appends the session entry
 `workflow-background-end` with the data `{ runId }`. The renderer of `workflow-result` draws the steps and the outcome

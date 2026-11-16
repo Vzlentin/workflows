@@ -1848,7 +1848,7 @@ return "done"`;
 
 		try {
 			// Its JSON has fewer than 2000 characters, but more than 2000 bytes.
-			const script = 'return { text: "é".repeat(1000), report: ["first", "second"] }';
+			const script = 'return { text: "é".repeat(1100), report: ["first", "second"] }';
 			await tellAgent(`Script workflow: ${JSON.stringify({ script })}`);
 			const result = await nextResult(0);
 			const id = /^run (\S+) /.exec(result.text)?.[1] ?? "";
@@ -1859,7 +1859,8 @@ return "done"`;
 			expect(lines[1]).toMatch(
 				new RegExp(`^\\[… \\d+ bytes cut; the command workflows wait ${id} --json prints the whole result\\]$`),
 			);
-			expect(lines[2]).toMatch(/^é+","report":\["first","second"\]\}$/);
+			// The value leaves its report key out: the report lines follow the summary.
+			expect(lines[2]).toMatch(/^é+"\}$/);
 			expect(lines.slice(3)).toEqual(["first", "second"]);
 			expect(Buffer.byteLength(lines.slice(0, 3).join("\n"))).toBeLessThanOrEqual(2000);
 			expect(result.isError).toBe(false);
@@ -1939,11 +1940,27 @@ return "done"`;
 		}
 	});
 
-	it("cuts a long question of a waiting run, and names the log command", async () => {
+	it("keeps a waiting question of 5000 bytes whole", async () => {
 		const host = await startHost("main", hostModel().models);
 
 		try {
 			const script = 'return await input("q".repeat(5000))';
+			await tellAgent(`Script workflow: ${JSON.stringify({ script })}`);
+			const waiting = await nextResult(0);
+			const id = /^run (\S+) /.exec(waiting.text)?.[1] ?? "";
+			expect(waiting.text).toBe(
+				`run ${id} waits for an answer: ${"q".repeat(5000)}; answer it with resume: "${id}" and answer: "<your answer>"`,
+			);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("cuts a waiting question longer than 16000 bytes, and names the wait and log commands", async () => {
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			const script = 'return await input("q".repeat(20000))';
 			await tellAgent(`Script workflow: ${JSON.stringify({ script })}`);
 			const waiting = await nextResult(0);
 			const id = /^run (\S+) /.exec(waiting.text)?.[1] ?? "";
@@ -1952,12 +1969,13 @@ return "done"`;
 			expect(head).toBe(start + "q".repeat(500 - start.length));
 			expect(cut).toMatch(
 				new RegExp(
-					`^\\[… \\d+ bytes cut; the command workflows log ${id} shows the run and its calls, and workflows log ${id} <call> prints the whole output of a call\\]$`,
+					`^\\[… \\d+ bytes cut; the command workflows wait ${id} --json prints the whole question, and workflows log ${id} <call> prints the whole output of a call\\]$`,
 				),
 			);
 			expect(end).toMatch(new RegExp(`^q+; answer it with resume: "${id}" and answer: "<your answer>"$`));
 			expect(rest).toEqual([]);
-			expect(Buffer.byteLength(waiting.text)).toBeLessThanOrEqual(2000);
+			expect(Buffer.byteLength(waiting.text)).toBeLessThanOrEqual(16000);
+			expect(Buffer.byteLength(waiting.text)).toBeGreaterThan(15900);
 		} finally {
 			await host.close();
 		}
@@ -2055,7 +2073,7 @@ return "done"`;
 			await until(async () => model.count("result") === 1);
 			expect(await postedResults("demo")).toEqual([
 				{
-					text: `run ${id} done, exit 0: {"report":["ran","child"]}\nran\nchild`,
+					text: `run ${id} done, exit 0: {}\nran\nchild`,
 					data: { runId: id, state: "done" },
 					conversation: 1,
 				},

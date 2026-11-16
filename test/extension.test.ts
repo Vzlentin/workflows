@@ -52,7 +52,7 @@ ok)
 -)
 	echo "run r2"; cat > stdin.js
 	echo '{"runId":"r2","state":"done","result":{"code":0},"value":"from stdin","report":["from stdin"]}' ;;
-long) echo "run r14"; x=$(printf '%2100s' '' | tr ' ' x); echo '{"runId":"r14","state":"done","result":{"code":0},"value":"'"$x"'","report":["one","'"$x"'"]}' ;;
+long) echo "run r14"; x=$(printf '%2100s' '' | tr ' ' x); y=$(printf '%4100s' '' | tr ' ' x); echo '{"runId":"r14","state":"done","result":{"code":0},"value":"'"$x"'","report":["one","'"$y"'"]}' ;;
 keys) echo "run r12"; echo '{"status":"s","progress":["◉ one"]}' >&2; echo '{"runId":"r12","state":"done","result":{"code":0},"value":1,"report":["one"]}' ;;
 many|cutmany)
 	echo "run r13"; i=1; while [ $i -le 150 ]; do echo "warning: $i" >&2; i=$((i + 1)); done
@@ -529,7 +529,7 @@ describe("the workflow tool", () => {
 		]);
 	});
 
-	it("cuts a done text longer than 2000 bytes and a report line longer than 500 bytes, and keeps both whole in the structured output", async () => {
+	it("cuts a done text longer than 2000 bytes and a report line longer than 4000 bytes, and keeps both whole in the structured output", async () => {
 		const { result } = await call({ name: "long" });
 		// The text is `run r14 done, exit 0: "<2100 x>"`, 2124 bytes on one line: its first 500 bytes, the cut line, its end.
 		const start = 'run r14 done, exit 0: "';
@@ -546,13 +546,13 @@ describe("the workflow tool", () => {
 		expect(500 + count + (end ?? "").length).toBe(2124);
 		expect(Buffer.byteLength([head, cut, end].join("\n"))).toBeLessThanOrEqual(2000);
 		expect(Buffer.byteLength([head, cut, end].join("\n"))).toBeGreaterThan(1990);
-		expect(report).toEqual(["one", `${"x".repeat(497)}…`]);
+		expect(report).toEqual(["one", `${"x".repeat(3997)}…`]);
 		expect(result.structuredContent).toEqual({
 			runId: "r14",
 			state: "done",
 			result: { code: 0 },
 			value: "x".repeat(2100),
-			report: ["one", "x".repeat(2100)],
+			report: ["one", "x".repeat(4100)],
 		});
 	});
 

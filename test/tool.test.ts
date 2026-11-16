@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { runCli, Steps } from "../src/tool.ts";
+import { outcomeText, runCli, Steps } from "../src/tool.ts";
 
 /** The command that runs `script` with `/bin/sh -c`; the args of a call are `$1`, `$2`, … */
 function sh(script: string): string[] {
@@ -99,5 +99,35 @@ describe("Steps", () => {
 		expect(steps.lines).toHaveLength(101);
 		expect(steps.lines.slice(0, 2)).toEqual(["◉ judge", "w21"]);
 		expect(steps.lines.at(-1)).toBe("w120");
+	});
+});
+
+describe("outcomeText", () => {
+	it("gives the whole findings of a done value, without its top-level memory and report", () => {
+		const findings = Array.from({ length: 8 }, (_, n) => `finding ${n}: ${"f".repeat(85)}`);
+		const value = { findings, memory: ["m".repeat(5000)], report: ["r"], items: [{ memory: "kept" }] };
+		const text = outcomeText({ runId: "r1", state: "done", result: { code: 0 }, value, report: [] });
+
+		expect(text).toBe(`run r1 done, exit 0: ${JSON.stringify({ findings, items: [{ memory: "kept" }] })}`);
+	});
+
+	it("gives a string value as its JSON", () => {
+		const text = outcomeText({ runId: "r1", state: "done", result: { code: 0 }, value: 'a "b"', report: [] });
+
+		expect(text).toBe('run r1 done, exit 0: "a \\"b\\""');
+	});
+
+	it("keeps a report line of 1000 bytes whole, and cuts a report line longer than 4000 bytes to 3997 bytes and …", () => {
+		const whole = "é".repeat(500);
+
+		const text = outcomeText({
+			runId: "r1",
+			state: "done",
+			result: { code: 0 },
+			value: 1,
+			report: [whole, "x".repeat(4100)],
+		});
+
+		expect(text.split("\n")).toEqual(["run r1 done, exit 0: 1", whole, `${"x".repeat(3997)}…`]);
 	});
 });
