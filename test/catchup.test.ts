@@ -13,7 +13,17 @@ import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { CATCH_UP } from "../src/run/catchup.ts";
 import { TASK } from "../src/run/version.ts";
-import { catchUps, hostModel, piSettings, sandbox, startHost, storeOf, tellAgent, workflows } from "./support.ts";
+import {
+	catchUps,
+	catchUpsAtLeast,
+	hostModel,
+	piSettings,
+	sandbox,
+	startHost,
+	storeOf,
+	tellAgent,
+	workflows,
+} from "./support.ts";
 
 /** The `harness.seen` document of the project agent, version 2, as harness writes it. */
 const Seen = defineDoc<{ mainSha: string | null; catchups: number; hooks: Record<string, JsonValue> }>({
@@ -86,7 +96,7 @@ describe("the catch-up of workflows runs", () => {
 			await reached("g");
 
 			await tellAgent("Script: Second");
-			const [second, ...none] = await catchUps();
+			const [second, ...none] = await catchUpsAtLeast(1);
 			expect(none).toEqual([]);
 			const [, aConversation] = /sessions: \[run \S+: default #(\d+)\]/.exec(second?.text ?? "") ?? [];
 			expect(second?.text).toBe(
@@ -101,7 +111,7 @@ describe("the catch-up of workflows runs", () => {
 			const b = await pending;
 			expect(b.code).toBe(0);
 			await tellAgent("Script: Third");
-			const [, third, ...more] = await catchUps();
+			const [, third, ...more] = await catchUpsAtLeast(2);
 			expect(more).toEqual([]);
 			const [, planner, reviewer] = /\[run \S+: planner #(\d+), reviewer #(\d+)\]/.exec(third?.text ?? "") ?? [];
 			expect(third).toEqual({
@@ -157,6 +167,7 @@ describe("the catch-up of workflows runs", () => {
 			const d = await workflows(["d.js"], { cwd: root, host });
 			expect([c.code, d.code]).toEqual([1, 1]);
 			await tellAgent("Script: Second");
+			await catchUpsAtLeast(1);
 		} finally {
 			await host.close();
 		}
@@ -208,6 +219,7 @@ describe("the catch-up of workflows runs", () => {
 
 		try {
 			await tellAgent("Script: Second");
+			await catchUpsAtLeast(1);
 		} finally {
 			await host.close();
 		}
@@ -273,6 +285,7 @@ describe("the catch-up of workflows runs", () => {
 
 		try {
 			await tellAgent("Script: Second");
+			await catchUpsAtLeast(1);
 		} finally {
 			await host.close();
 		}

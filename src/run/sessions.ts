@@ -63,7 +63,7 @@ async function treeOf(calls: Calls): Promise<{ parent: string } | { root: string
  * The session of the call `key`, opened in the children library under the key `wf:<key>` in `cwd`, with
  * `INSTRUCTIONS`. Each field of `args` overrides the role of `args.profile` in the agents table of the bundle, and the
  * role fills the rest; a field that neither gives comes from the project agent. The session does not get the
- * `workflow` tool, nor harness's store tools `thread`, `rule`, `term`, `part` and `parley`. The commit that opens it
+ * `workflow` tool, nor harness's store tools `thread`, `rule` and `parley`. The commit that opens it
  * saves its conversation and the model that the library set in the call record, and its conversation in the sessions
  * of the run. The same key again gives the same session.
  */

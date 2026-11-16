@@ -1188,6 +1188,32 @@ export async function catchUps(project = "main"): Promise<CatchUp[]> {
 	);
 }
 
+/** How long `catchUpsAtLeast` waits for its entries. */
+const CATCH_UP_WAIT_MS = 10_000;
+
+/**
+ * Waits until the store of `project` has at least `count` catch-up entries, and gives them all. An input returns when
+ * the host has submitted its catch-up entry, and the project agent can write the entry later, so a test waits for the
+ * entry before it reads it or closes the host. It throws after `CATCH_UP_WAIT_MS`, below the timeout of a test.
+ */
+export async function catchUpsAtLeast(count: number, project = "main"): Promise<CatchUp[]> {
+	const deadline = Date.now() + CATCH_UP_WAIT_MS;
+
+	for (;;) {
+		const found = await catchUps(project);
+
+		if (found.length >= count) return found;
+
+		if (Date.now() >= deadline) {
+			throw new Error(
+				`expected at least ${count} catch-up entries, found ${found.length} after ${CATCH_UP_WAIT_MS} ms`,
+			);
+		}
+
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
 /** Waits until the store of `project` has more than `count` results of the `workflow` tool, and gives the next one. */
 export async function nextResult(count: number, project = "main"): Promise<WorkflowResult> {
 	for (;;) {
