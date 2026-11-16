@@ -3,12 +3,9 @@
  * command of `@vzlentin/workflows`, the dependency of this package, so a run started in Pi is a normal run that
  * `workflows resume` also continues. The `.bin` folder that holds its `workflows` command goes last on `PATH`.
  */
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, delimiter, dirname, join } from "node:path";
-import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import type {
@@ -25,7 +22,7 @@ import type {
 import { type Component, Text, type TUI } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import type { Output, Saved, WorkflowCall, WorkflowOutcome } from "../src/tool.ts";
+import type { Output, Saved, Steps, WorkflowCall, WorkflowOutcome } from "../src/tool.ts";
 
 const WORKFLOWS_PACKAGE = "@vzlentin/workflows";
 
@@ -47,8 +44,6 @@ type WorkflowDetails = Static<ReturnType<typeof detailsOf>>;
 
 /** The part of the details that a result of an older session must have to draw its steps. */
 const STEPS = Type.Object({ steps: Type.Array(Type.String()) });
-
-const PROGRESS = Type.Object({ progress: Type.Array(Type.Unknown()), status: Type.Optional(Type.String()) });
 
 /** The entry that a background call records, so a later start of the session watches the run again. */
 const STARTED_ENTRY = Type.Object({
@@ -77,111 +72,6 @@ const ENDED_ENTRY = Type.Object({
 /** The first wait between two waits of a background run that gave no outcome to post, and the longest one, in ms. */
 const RETRY_MS = 1000;
 const MAX_RETRY_MS = 60_000;
-
-/** The most stderr lines that are not progress lines that a call keeps: the last ones. */
-const MAX_STDERR_LINES = 100;
-
-/** Adds `line` to `lines`, and drops the first lines past `MAX_STDERR_LINES`. */
-function keepLast(lines: string[], line: string): void {
-	lines.push(line);
-
-	if (lines.length > MAX_STDERR_LINES) lines.splice(0, lines.length - MAX_STDERR_LINES);
-}
-
-/** The lines and the status of a progress stderr line of `workflows --json`. */
-interface ProgressLine {
-	readonly lines: string[];
-	readonly status: string | undefined;
-}
-
-/** The progress line of a stderr line of `workflows --json`, a JSON object with `progress`, or undefined. */
-function progressLines(line: string): ProgressLine | undefined {
-	try {
-		const parsed = JSON.parse(line);
-
-		return Value.Check(PROGRESS, parsed) ? { lines: parsed.progress.map(String), status: parsed.status } : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * Runs `command` with `args` in `cwd`; each stderr line goes to `progress` with its progress line, or undefined for
- * another line, and `signal` sends SIGINT, which detaches.
- * The output keeps the last `MAX_STDERR_LINES` stderr lines that are not progress lines.
- */
-async function runCli(
-	command: readonly string[],
-	args: readonly string[],
-	cwd: string,
-	options: {
-		stdin?: string | undefined;
-		signal?: AbortSignal | undefined;
-		progress?: (line: string, progress: ProgressLine | undefined) => void;
-	},
-): Promise<Output> {
-	const [program = "", ...prefix] = command;
-	const child = spawn(program, [...prefix, ...args], { cwd, stdio: ["pipe", "pipe", "pipe"] });
-	child.stdin.on("error", () => {});
-	const stdout: string[] = [];
-	const stderr: string[] = [];
-	const out = createInterface({ input: child.stdout });
-	const err = createInterface({ input: child.stderr });
-	out.on("line", (line) => stdout.push(line));
-	err.on("line", (line) => {
-		const progress = progressLines(line);
-
-		if (progress === undefined) keepLast(stderr, line);
-		options.progress?.(line, progress);
-	});
-	const interrupt = () => child.kill("SIGINT");
-	options.signal?.addEventListener("abort", interrupt, { once: true });
-
-	try {
-		child.stdin.end(options.stdin ?? "");
-		await Promise.all([once(child, "close"), once(out, "close"), once(err, "close")]);
-
-		return { code: child.exitCode, stdout, stderr };
-	} finally {
-		options.signal?.removeEventListener("abort", interrupt);
-	}
-}
-
-/**
- * The steps of the stderr lines of the command: the lines of the last progress line, then the last `MAX_STDERR_LINES`
- * other lines.
- */
-class Steps {
-	#drawn: readonly string[] = [];
-	#status: string | undefined;
-	readonly #other: string[] = [];
-
-	/**
-	 * Adds a stderr line and its progress line, undefined for another line, and returns the text of its update: the
-	 * last progress line, or the line itself.
-	 */
-	add(line: string, progress: ProgressLine | undefined): string {
-		if (progress === undefined) {
-			keepLast(this.#other, line);
-
-			return line;
-		}
-
-		this.#drawn = progress.lines;
-		this.#status = progress.status;
-
-		return progress.lines.at(-1)?.trim() ?? "";
-	}
-
-	get lines(): string[] {
-		return [...this.#drawn, ...this.#other];
-	}
-
-	/** The status of the last progress line, else its last line, trimmed, or `starting` before the first one. */
-	get step(): string {
-		return this.#status ?? this.#drawn.at(-1)?.trim() ?? "starting";
-	}
-}
 
 /** The result of a `save` call. */
 function savedOf({ text, outcome }: Saved): AgentToolResult<WorkflowDetails> {
@@ -271,21 +161,23 @@ export function workflowTool(command: readonly string[], watcher: Watcher, tool:
 			const { args, cwd: directory } = await tool.commandOf(params, ctx.cwd);
 
 			if (params.save !== undefined) {
-				const output = await runCli(command, args, directory, { signal });
+				const output = await tool.runCli(command, args, directory, { signal });
 
 				return savedOf(tool.savedOutcome(output, params.save.runId));
 			}
 
-			const steps = new Steps();
+			const steps = new tool.Steps();
 
-			const call = runCli(command, args, directory, {
-				stdin: params.script,
-				signal,
-				progress: (line, progress) => {
-					const text = steps.add(line, progress);
-					onUpdate?.({ content: [{ type: "text", text }], details: { steps: steps.lines } });
-				},
-			}).then((output) => tool.outcomeOf(output));
+			const call = tool
+				.runCli(command, args, directory, {
+					stdin: params.script,
+					signal,
+					steps,
+					stderr: (text) => {
+						onUpdate?.({ content: [{ type: "text", text }], details: { steps: steps.lines } });
+					},
+				})
+				.then((output) => tool.outcomeOf(output));
 
 			if (params.resume !== undefined) watcher.foreground(params.resume, call);
 			const outcome = await call;
@@ -406,7 +298,7 @@ export function workflowsCommand(command: readonly string[], inHerdr: InHerdr, t
 		description:
 			"Pick a workflow run of this project, then one of its agents, and attach to it in a herdr-app pane to the right",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
-			const listed = await runCli(command, ["list", "--json"], ctx.cwd, {});
+			const listed = await tool.runCli(command, ["list", "--json"], ctx.cwd);
 			const runs = listed.code === 0 ? JSON.parse(listed.stdout.join("\n")) : undefined;
 
 			if (!Value.Check(LISTED, runs)) {
@@ -434,7 +326,7 @@ export function workflowsCommand(command: readonly string[], inHerdr: InHerdr, t
 
 			if (runId === undefined) return;
 
-			const shown = agentsOf(await runCli(command, ["show", runId, "--agents", "--json"], ctx.cwd, {}));
+			const shown = agentsOf(await tool.runCli(command, ["show", runId, "--agents", "--json"], ctx.cwd));
 
 			if (Value.Check(Type.String(), shown)) {
 				ctx.ui.notify(shown, "error");
@@ -463,7 +355,7 @@ export function workflowsCommand(command: readonly string[], inHerdr: InHerdr, t
 				return;
 			}
 
-			const output = await runCli(command, [...attach, "--side"], ctx.cwd, {});
+			const output = await tool.runCli(command, [...attach, "--side"], ctx.cwd);
 
 			if (output.code !== 0) ctx.ui.notify(`${output.stderr.join("\n")}. ${hint}`, "error");
 		},
@@ -596,7 +488,7 @@ class Watcher {
 
 	#watch(runId: string, background: Background): void {
 		if (this.#watched.has(runId)) return;
-		const run: Followed = { ...background, runId, steps: new Steps(), done: new AbortController() };
+		const run: Followed = { ...background, runId, steps: new this.#tool.Steps(), done: new AbortController() };
 		this.#watched.set(runId, run);
 		this.#draw();
 		this.#post(run)
@@ -702,12 +594,11 @@ class Watcher {
 		let output: Output;
 
 		try {
-			output = await runCli(this.#command, ["wait", runId, "--json"], cwd, {
+			output = await this.#tool.runCli(this.#command, ["wait", runId, "--json"], cwd, {
 				signal: this.#controller.signal,
-				progress: (line, progress) => {
-					steps.add(line, progress);
-
-					if (progress !== undefined) run.error = undefined;
+				steps,
+				stderr: (_text, progress) => {
+					if (progress) run.error = undefined;
 					this.#draw();
 				},
 			});

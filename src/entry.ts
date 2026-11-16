@@ -12,7 +12,7 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { HARNESS_PROJECT, PI_SESSION_ID } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { runCli } from "./command.ts";
+import { CLI } from "./command.ts";
 import { runsCatchUp } from "./run/catchup.ts";
 import { scriptTask } from "./run/task.ts";
 import type { Host } from "./run/version.ts";
@@ -24,7 +24,9 @@ import {
 	outcomeOf,
 	outcomeText,
 	PARAMETERS,
+	runCli,
 	savedOutcome,
+	Steps,
 	succeeded,
 	TOOL_NAME,
 	type WorkflowCall,
@@ -32,21 +34,6 @@ import {
 
 /** The `details` of a call: the progress lines that the command drew last, then any other stderr line. */
 type WorkflowDetails = { steps: string[] };
-
-const PROGRESS = Type.Object({ progress: Type.Array(Type.Unknown()) });
-
-/** The lines of a `{"progress":[...]}` stderr line of `workflows --json`, or undefined for any other line. */
-function progressLines(line: string): string[] | undefined {
-	if (!line.startsWith('{"progress":')) return undefined;
-
-	try {
-		const parsed = JSON.parse(line);
-
-		return Value.Check(PROGRESS, parsed) ? parsed.progress.map(String) : undefined;
-	} catch {
-		return undefined;
-	}
-}
 
 /** The project of the host, which the host gives only to the shell of each conversation. */
 async function projectOf(env: ExecutionEnv, context: Context): Promise<string> {
@@ -88,12 +75,11 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 		[PI_SESSION_ID]: String(api.conversationId),
 	};
 
-	let drawn: readonly string[] = [];
-	const other: string[] = [];
+	const steps = new Steps();
 	let named = false;
 	let details = Promise.resolve();
 
-	const output = await runCli(args, directory, {
+	const output = await runCli(CLI, args, directory, {
 		env,
 		stdin: params.script,
 		signal: context.abortSignal,
@@ -107,15 +93,12 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 				`run ${id}: if this call stops, the run is detached and goes on in the harness host; follow it with resume: "${id}"\n`,
 			);
 		},
-		stderr: (line) => {
-			const lines = progressLines(line);
-
-			if (lines === undefined) other.push(line);
-			else drawn = lines;
-			const steps = [...drawn, ...other];
-			details = details.then(() => api.details({ steps }, context));
+		steps,
+		stderr: (text) => {
+			const lines = steps.lines;
+			details = details.then(() => api.details({ steps: lines }, context));
 			details.catch(() => {});
-			api.output(`${lines === undefined ? line : (lines.at(-1)?.trim() ?? "")}\n`);
+			api.output(`${text}\n`);
 		},
 	});
 

@@ -2029,8 +2029,8 @@ directory, starts the host when none runs, asks it to start the run's task, and 
 
 The entry also gives the conversations of the host the `workflow` tool: the project agent, its subagents, and the
 subagents of sessions. The sessions of a run do not get it. `src/tool.ts` defines it once for the host and for Pi: its
-description, its parameters, its output schema, the command arguments of a call, and the text and the outcome of a
-result. The description tells the model to start or resume a run only when the user asks for that run in his
+description, its parameters, its output schema, the command arguments of a call, how the command runs and how its
+stderr lines become progress updates and steps, and the text and the outcome of a result. The description tells the model to start or resume a run only when the user asks for that run in his
 message, and that a contract or a goal file is not a go; the skill gives the same rule. The host tool has no prompt
 guidelines. It takes the parameters of [The `workflow` tool](#the-workflow-tool) of
 Pi, and runs the `workflows` command of the same install as a child process with the Node of the host, in the
@@ -2041,7 +2041,9 @@ error result of the command's usage error, before a run exists. It sets `HARNESS
 - When the command prints `run <run-id>`, the running output of the call gets `run <run-id>: if this call stops, the
   run is detached and goes on in the harness host; follow it with resume: "<run-id>"`. Each stderr line appends a line to the running output, the last progress line or the line itself,
   and sets the `details` of the call to `{ steps }`, the progress lines of the command then any other stderr line.
-  The result keeps the last `details`.
+  The result keeps the last `details`. The host follows the rule of Pi for progress lines: a progress line is a JSON
+  object with a `progress` array, whatever the order of its keys, and the host keeps only the last 100 stderr lines
+  that are not progress lines, for the steps and for the error text of a failed command, which has no progress line.
 - The result text of a run that is `done` is its summary, then the `report` lines. A report line longer than 500 bytes in
   UTF-8 is cut at a character to 497 bytes, then `…`, so it is at most 500 bytes; the structured output, `--json` and
   the saved result keep the whole line. The summary is
@@ -2369,7 +2371,8 @@ The engine files in `src/`:
 - `cli/follow.ts`: how the command follows a run to its outcome, the answer of a waiting run, and the Ctrl+C presses.
 - `cli/commands/`: one file for each command: `start.ts`, `resume.ts` (also `wait`), `stop.ts`, `list.ts`, `show.ts`,
   `attach.ts`, `save.ts`, `sweep.ts` and `outline.ts`.
-- `command.ts`: the `workflows` command of the package as a child process, for the `workflow` tool of the host.
+- `command.ts`: the `workflows` command of the package, for the `workflow` tool of the host, which runs it with
+  `runCli` of `tool.ts`.
 - `cli/terminal/pick.ts` and `cli/terminal/keys.ts`: the picker of `show --pick`, and its keys.
 - `entry.ts`: the entry that the harness host loads, with the script task and the catch-up hook. It first checks
   that its pi-durable and the pi-durable of its harness have the same version.

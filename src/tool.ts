@@ -1,11 +1,15 @@
 /**
  * The one definition of the `workflow` tool: its description, parameters and output schema, the `workflows` command
- * of a call, the outcome and text of a result, and the cut rule of long texts, which the error text of a failed command
- * also uses. The tool of the harness host (`entry.ts`) and the tool of the Pi extension (`pi/index.ts`, which loads
- * `dist/tool.js`) both use it. It imports only `typebox`, `node:fs/promises`, `node:path` and `node:url`.
+ * of a call and how it runs, its progress lines and steps, the outcome and text of a result, and the cut rule of long
+ * texts, which the error text of a failed command also uses. The tool of the harness host (`entry.ts`) and the tool of
+ * the Pi extension (`pi/index.ts`, which loads `dist/tool.js`) both use it. It imports at runtime only `typebox` and Node
+ * built-in modules (`node:*`).
  */
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
@@ -312,6 +316,134 @@ export type Output = {
 	readonly stdout: readonly string[];
 	readonly stderr: readonly string[];
 };
+
+/** The callbacks and inputs of one run of the command. Without `env`, the command inherits the environment. */
+export type CliOptions = {
+	readonly env?: NodeJS.ProcessEnv | undefined;
+	readonly stdin?: string | undefined;
+	readonly signal?: AbortSignal | undefined;
+	readonly stdout?: (line: string) => void;
+	/** The steps that read the stderr lines; without it, the call makes its own. */
+	readonly steps?: Steps | undefined;
+	/** Gets the update text of each stderr line, and whether the line was a progress line. */
+	readonly stderr?: (text: string, progress: boolean) => void;
+};
+
+const PROGRESS = Type.Object({ progress: Type.Array(Type.Unknown()), status: Type.Optional(Type.String()) });
+
+/** The lines and the status of a progress stderr line of `workflows --json`. */
+interface ProgressLine {
+	readonly lines: string[];
+	readonly status: string | undefined;
+}
+
+/** The progress line of a stderr line of `workflows --json`, a JSON object with `progress`, or undefined. */
+function progressLines(line: string): ProgressLine | undefined {
+	try {
+		const parsed = JSON.parse(line);
+
+		return Value.Check(PROGRESS, parsed) ? { lines: parsed.progress.map(String), status: parsed.status } : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** The most stderr lines that are not progress lines that a call keeps: the last ones. */
+const MAX_STDERR_LINES = 100;
+
+/** Adds `line` to `lines`, and drops the first lines past `MAX_STDERR_LINES`. */
+function keepLast(lines: string[], line: string): void {
+	lines.push(line);
+
+	if (lines.length > MAX_STDERR_LINES) lines.splice(0, lines.length - MAX_STDERR_LINES);
+}
+
+/**
+ * Runs `command` with `args` in `cwd`. Each stdout line goes to `stdout`. Each stderr line goes to `steps`, and its
+ * update text goes to `stderr`. `signal` sends SIGINT, which detaches. The output keeps the last `MAX_STDERR_LINES`
+ * stderr lines of this call that are not progress lines. Rejects when the command cannot start.
+ */
+export async function runCli(
+	command: readonly string[],
+	args: readonly string[],
+	cwd: string,
+	options: CliOptions = {},
+): Promise<Output> {
+	const [program = "", ...before] = command;
+	const child = spawn(program, [...before, ...args], { cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"] });
+	child.stdin.on("error", () => {});
+	const stdout: string[] = [];
+	const stderr: string[] = [];
+	const steps = options.steps ?? new Steps();
+	const out = createInterface({ input: child.stdout });
+	const err = createInterface({ input: child.stderr });
+
+	out.on("line", (line) => {
+		stdout.push(line);
+		options.stdout?.(line);
+	});
+
+	err.on("line", (line) => {
+		const { text, progress } = steps.add(line);
+
+		if (!progress) keepLast(stderr, line);
+		options.stderr?.(text, progress);
+	});
+
+	const interrupt = () => child.kill("SIGINT");
+	options.signal?.addEventListener("abort", interrupt, { once: true });
+
+	try {
+		child.stdin.end(options.stdin ?? "");
+		await Promise.all([once(child, "close"), once(out, "close"), once(err, "close")]);
+
+		return { code: child.exitCode, stdout, stderr };
+	} finally {
+		options.signal?.removeEventListener("abort", interrupt);
+	}
+}
+
+/** The update of a stderr line: the last line of a progress line or the line itself, and whether it was a progress line. */
+export type Update = { readonly text: string; readonly progress: boolean };
+
+/**
+ * The steps of the stderr lines of the command: the lines of the last progress line, then the last `MAX_STDERR_LINES`
+ * other lines.
+ */
+export class Steps {
+	#drawn: readonly string[] = [];
+	#status: string | undefined;
+	readonly #other: string[] = [];
+
+	/**
+	 * Adds a stderr line, and returns the text of its update, the last line of a progress line or the line itself, and
+	 * whether it was a progress line.
+	 */
+	add(line: string): Update {
+		const progress = progressLines(line);
+
+		if (progress === undefined) {
+			keepLast(this.#other, line);
+
+			return { text: line, progress: false };
+		}
+
+		this.#drawn = progress.lines;
+		this.#status = progress.status;
+
+		return { text: progress.lines.at(-1)?.trim() ?? "", progress: true };
+	}
+
+	/** The lines of the last progress line, then the other lines. */
+	get lines(): string[] {
+		return [...this.#drawn, ...this.#other];
+	}
+
+	/** The status of the last progress line, else its last line, trimmed, or `starting` before the first one. */
+	get step(): string {
+		return this.#status ?? this.#drawn.at(-1)?.trim() ?? "starting";
+	}
+}
 
 /**
  * The exit code of a command on a saved run that it can never follow: its run directory or its task is missing, or
