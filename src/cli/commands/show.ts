@@ -17,6 +17,7 @@ import {
 	showEntries,
 	type TreeEntry,
 } from "../../records/tree.ts";
+import { stepName } from "../../run/keys.ts";
 import { hasEnded, type RunStatus, type RunTask, runOutcome, taskOf } from "../../run/past.ts";
 import { title as titleOf } from "../../run/result.ts";
 import { current, TASK } from "../../run/version.ts";
@@ -45,14 +46,16 @@ export const SHOW = "workflows show (<run-id> [--agents] [--json] | [<run-id>] -
 const RUN_AGENT = Type.Object({ conversation: Type.Number(), project: Type.String() }, { additionalProperties: false });
 
 /**
- * The fields of every run of `show --json`: the run fields, its agent when it has one, its todos, its step lines, its
- * calls and its agents, as `show --agents --json` gives them.
+ * The fields of every run of `show --json`: the run fields, its agent when it has one, its todos, its step lines, the
+ * name that `workflows log` takes for each step line, or null for a line that is no step, its calls and its agents, as
+ * `show --agents --json` gives them.
  */
 const SHOWN_FIELDS = {
 	...RUN_FIELDS,
 	agent: Type.Optional(RUN_AGENT),
 	todos: Type.Array(Todo),
 	steps: Type.Array(Type.String()),
+	stepNames: Type.Array(Type.Union([Type.String(), Type.Null()])),
 	calls: Type.Array(SHOWN_CALL),
 	agents: Type.Array(AGENT_ROW),
 };
@@ -142,7 +145,12 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 	} else if (agents) {
 		for (const line of [head, ...agentLines(rows), ...footer]) terminal.stdout(line);
 	} else if (json) {
-		const runShown: Static<typeof SHOWN> = { ...fields, ...end, todos, steps: progress.lines(), calls, agents: rows };
+		const entries = progress.entries();
+		const steps = entries.map((entry) => entry.text);
+
+		const stepNames = entries.map(({ step, n }) => (n === undefined ? null : stepName(id, step.runId, n)));
+
+		const runShown: Static<typeof SHOWN> = { ...fields, ...end, todos, steps, stepNames, calls, agents: rows };
 		terminal.stdout(JSON.stringify(runShown));
 	} else {
 		for (const entry of shownLines(shown, now)) terminal.stdout(entry.text);

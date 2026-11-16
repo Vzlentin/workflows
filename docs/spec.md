@@ -1727,7 +1727,7 @@ run <run-id> <workflow> <state> <title>
   this is version <n>: it cannot resume`. Any other run ends after its calls.
 
 When a call runs again after a resume, `show` shows only its latest attempt. With `--json`, the command prints one JSON
-object with both trees: `{ <run fields>, "agent"?, "todos", "steps", "calls", "agents" }`, with `report` for a run with a
+object with both trees: `{ <run fields>, "agent"?, "todos", "steps", "stepNames", "calls", "agents" }`, with `report` for a run with a
 result or `error` for a failed or orphaned run, never both, with the schema `SHOWN` of `src/cli/commands/show.ts`, a
 union of these three strict shapes. The run fields are those of [List](#list). `agent` is
 `{ "conversation", "project" }`, what `harness attach` needs to open the agent of the run: the agent that works now,
@@ -1735,7 +1735,9 @@ else the last agent to start, as [Attach](#attach) takes it (`runAgent` of `src/
 the run; a run without an agent has none. `error` is the error of a failed run or the reason of an orphaned run, and
 `todos` is the list of todos of the run, as in [Todos](#todos): an array of `{ "id", "text", "state" }` in ID order,
 or `[]` when the run has no todo, and
-`steps` has the step lines of the text, without the first line and the footer. Each call is
+`steps` has the step lines of the text, without the first line and the footer. `stepNames` has one item for each
+line of `steps`, in the same order: the name of the step of that line, as `workflows log <run-id> <step>` takes it (see
+[Log](#log)), or `null` for a log line. Each call is
 `{ "kind", "args", "runId", "label", "phase", "state", "mark", "startedAt", "end"? }`, with
 ISO times and the arguments of its kind as in [Saved inputs and resume](#saved-inputs-and-resume), and the fields of
 its kind: a `session` call has `conversation`?, the conversation ID of a session that opened, and `model`?, the model

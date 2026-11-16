@@ -10,7 +10,7 @@ import { SHOWN, SHOWN_AGENTS } from "../src/cli/commands/show.ts";
 import { ROW } from "../src/cli/saved.ts";
 import { LABELS, type Labels } from "../src/records/tree.ts";
 import type { CallKind } from "../src/run/calls.ts";
-import { conversationOf, hostModel, inputsOf, sandbox, startHost, workflows } from "./support.ts";
+import { conversationOf, hostModel, inputsOf, logLine, sandbox, startHost, untimed, workflows } from "./support.ts";
 
 let root: string;
 
@@ -100,6 +100,32 @@ describe("the JSON of list and show", () => {
 		]);
 		const text = await workflows(["show", id, "--agents"], { cwd: root });
 		expect(text.stdout[1]).toMatch(/^ {2}✓ Script: one {2}o-1 {2}1 ask {2}\d+s$/);
+	});
+
+	it("names each step line of show as log takes it, and gives null to a log line", async () => {
+		await workflowsDir({
+			caller: 'await run("child", {})\nphase("a")\nlog("note")\nawait sh("true")\nphase("b")\nawait sh("true")',
+			child: 'phase("c1")\nawait sh("true")\nphase("c2")\nawait sh("true")\nreturn {}',
+		});
+		const run = await workflows(["caller"], { cwd: root });
+		expect(run.code).toBe(0);
+		const id = run.id ?? "";
+
+		const shown = await printed(SHOWN, ["show", id, "--json"]);
+		const call = shown.calls.find((each) => each.kind === "run");
+		const ended = call?.end?.kind === "done" ? call.end.result : undefined;
+		const child = Value.Parse(Type.Object({ runId: Type.String() }), ended).runId;
+		expect(child).toMatch(/^\d{8}T\d{6}-[0-9a-f]{8}$/);
+		expect(shown.stepNames).toEqual(["s1", `${child}/s1`, `${child}/s2`, null, "s2"]);
+		expect(shown.steps.map(untimed)).toEqual(["✓ a", "  ✓ c1", "  ✓ c2", "  note", "✓ b"]);
+
+		for (const [i, name] of shown.stepNames.entries()) {
+			if (name === null) continue;
+			const logged = await workflows(["log", id, name], { cwd: root });
+			expect([logged.code, logged.stderr], name).toEqual([0, []]);
+			const text = untimed(shown.steps[i] ?? "").replace(/^ *[✓◉✗·] /, "");
+			expect(logged.stdout[0], name).toEqual(logLine(`${text}  \\d+s  1 call  0 B  ${name}`));
+		}
 	});
 
 	it("has a label for each kind of call", () => {

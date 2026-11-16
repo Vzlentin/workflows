@@ -103,6 +103,27 @@ describe("the steps of child runs", () => {
 		expect(progress.lines()).toEqual(["◉ item 1/1: one", "  ◉ research"]);
 		expect(progress.status()).toBe("item 1/1: one › research");
 	});
+
+	it("move a child run that starts before any step of its caller under the first step, and number each step in its run", () => {
+		const progress = new Progress();
+		progress.add({ kind: "start", run: "c" });
+		progress.add({ kind: "start", run: "k", parent: "c" });
+		progress.add({ kind: "phase", run: "k", parent: "c", text: "c1", at: 0 });
+		progress.add({ kind: "phase", run: "k", parent: "c", text: "c2", at: 1 });
+		progress.add({ kind: "end", run: "k", failed: false, at: 2 });
+		progress.add({ kind: "phase", run: "c", parent: null, text: "a", at: 3 });
+		progress.add({ kind: "log", run: "c", parent: null, text: "note", at: 4 });
+		progress.add({ kind: "phase", run: "c", parent: null, text: "b", at: 5 });
+		const entries = progress.entries().map((entry) => [entry.text.trim(), entry.step?.runId, entry.n]);
+
+		expect(entries).toEqual([
+			["✓ a  0s", "c", 1],
+			["✓ c1  0s", "k", 1],
+			["✓ c2  0s", "k", 2],
+			["note", "c", undefined],
+			["◉ b", "c", 2],
+		]);
+	});
 });
 
 describe("the status of a run", () => {

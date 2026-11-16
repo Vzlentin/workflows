@@ -716,6 +716,7 @@ describe("workflows show", () => {
 			startedAt: expect.any(String),
 			error: "sh exited with 3: exit 3",
 			todos: [],
+			stepNames: ["s1", null],
 			agents: [],
 		});
 		expect(Value.Check(SHOWN, JSON.parse(shownJson.stdout[0] ?? ""))).toBe(true);

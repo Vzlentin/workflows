@@ -151,7 +151,8 @@ commit).
   shipped exit 0`. A run in the state `earlier-version` or `later-version` was saved by another version of
   workflows, and cannot resume. `workflows list --json` also gives the `question` of a waiting run, its `branch`,
   its `startedAt`, what it `serves`, and the `item`, the `.md` file that the run was started with. `workflows show <runId>` gives the steps and the report of one run, and `workflows show <runId> --json` also gives its `agent`, the conversation and
-  the project that `harness attach` opens. `workflows log <runId>` gives its steps with their times, call counts and sizes,
+  the project that `harness attach` opens, and `stepNames`, the name that `workflows log <runId> <step>` takes for
+  each line of `steps`. `workflows log <runId>` gives its steps with their times, call counts and sizes,
   and the calls that failed or still run, `workflows log <runId> <step>` the calls of one step with their exit codes
   and sizes, `workflows log <runId> <call>` the full output of one call, and `--follow` follows the run. Read the calls
   and the output of a run with `log`. These commands only read; run them with bash.

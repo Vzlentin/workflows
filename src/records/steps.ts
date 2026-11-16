@@ -40,8 +40,14 @@ export type StepView = Readonly<Pick<Step, "runId" | "text" | "firstStart">>;
  */
 export type RunStep = Readonly<Pick<Step, "text" | "firstStart" | "started" | "ended">>;
 
-/** A line of the tree, with the step that it belongs to, if any. The lines of one step share one `step` object. */
-export type Entry = { readonly text: string; readonly step?: StepView | undefined };
+/**
+ * A line of the tree, with the step that it belongs to, if any. The lines of one step share one `step` object. The line
+ * of a step has its own step and `n`, the number of the step in its run, as `Progress.steps` counts it from 1. Every other
+ * line has no `n`.
+ */
+export type Entry =
+	| { readonly text: string; readonly step: StepView; readonly n: number }
+	| { readonly text: string; readonly step?: StepView | undefined; readonly n?: undefined };
 
 /**
  * A run: its steps and log lines, its caller, and whether it is under a step of the caller. A child run whose caller
@@ -167,8 +173,8 @@ export class Progress {
 	}
 
 	/**
-	 * The lines of `lines()`, each with the step that it belongs to: a step line its own step, and a log line or a line
-	 * of a child run the step that encloses it. A line outside every step has none.
+	 * The lines of `lines()`, each with the step that it belongs to: a step line its own step and its number in its run,
+	 * and a log line or a line of a child run the step that encloses it. A line outside every step has none.
 	 */
 	entries(): Entry[] {
 		const entries: Entry[] = [];
@@ -178,7 +184,8 @@ export class Progress {
 				if ("run" in item) visit(item.run.items, indent, step);
 				else if ("log" in item) entries.push({ text: `${indent}${item.log}`, step });
 				else {
-					entries.push({ text: `${indent}${item.mark} ${item.text}${stepTime(item)}`, step: item });
+					const text = `${indent}${item.mark} ${item.text}${stepTime(item)}`;
+					entries.push({ text, step: item, n: this.steps(item.runId).indexOf(item) + 1 });
 					visit(item.items, `${indent}  `, item);
 				}
 			}
