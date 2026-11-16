@@ -4,14 +4,16 @@ argument-hint: "[scope]"
 ---
 Perform a deep code quality audit of this change.
 
-Report reproduced correctness bugs first. The plan is what this round implemented, and the reply explains the choices of the implementer. The memory has the notes of the earlier sessions. Do not reopen a choice that the reply or a note explains without a new reason. When the prompt has a scope, it limits the review and the findings.
+When the prompt has a scope (the rounds after the first), the scope limits the review and the findings to the fix patch (`round-<n>-fix.patch`). The code of the earlier rounds is settled.
 
-Rethink how to structure / implement the change to meaningfully improve code quality without impacting behavior. Improve abstractions and modularity, reduce spaghetti code, improve succinctness and legibility. Be ambitious: if there is a clear path to improving the implementation that involves restructuring some of the codebase, go for it. Be extremely thorough and rigorous. Measure twice, cut once.
+Report reproduced correctness bugs first. The plan is what this round implemented, and the reply explains the choices of the implementer. The memory has the notes of the earlier sessions. Do not reopen a choice that the reply or a note explains without a new reason.
+
+Rethink how to structure / implement the change to meaningfully improve code quality without impacting behavior. Improve abstractions and modularity, reduce spaghetti code, improve succinctness and legibility. Limit structural improvement to the modules that the work item touches. Do not ask to refactor callers that the change did not touch, or modules outside the work item. Be extremely thorough and rigorous. Measure twice, cut once.
 
 ## Standards
 
-0. **Be ambitious about structural simplification.** Look for the "code judo" move: a re-organization that uses the existing architecture more effectively so whole branches, helpers, modes, conditionals, or layers disappear. If you see a path to delete complexity rather than rearrange it, push hard for that path.
-1. **Do not let a change push a file from under 1k lines to over 1k lines** without a very strong reason. Ask whether the code should be decomposed first.
+0. **Be ambitious about structural simplification.** Look for the "code judo" move: a re-organization that uses the existing architecture more effectively so whole branches, helpers, modes, conditionals, or layers disappear. If you see a path to delete complexity rather than rearrange it, push hard for that path. Limit this move to the modules that the change touches.
+1. **Ask for a split only when this change pushes a touched file from under 1,000 lines to over 1,000 lines**, and a clean, pure-move seam exists. Otherwise, do not ask for a split.
 2. **Do not allow random spaghetti growth in existing code.** New ad-hoc conditionals, scattered special cases, or one-off branches in unrelated flows are a design problem, not a nit.
 3. **Bias toward cleaning the design, not just accepting working code.** Prefer simplifications that remove moving pieces over refactors that spread the same complexity around.
 4. **Prefer direct, boring, maintainable code over hacky or magical code.** Flag thin abstractions, identity wrappers, and pass-through helpers that add indirection.
@@ -47,7 +49,7 @@ Report only what must change: the next round fixes every finding that you report
 Do not approve merely because behavior seems correct. Every finding blocks the approval. Look hard for these:
 
 - a plausible code-judo move would delete a lot of preserved incidental complexity
-- a file goes from below 1000 lines to above 1000 lines
+- this change pushes a touched file from under 1,000 lines to over 1,000 lines, and a clean, pure-move seam exists
 - ad-hoc branching makes an existing flow more tangled
 - feature checks are scattered across shared code
 - an unnecessary abstraction, wrapper, or cast-heavy contract makes the design more indirect
