@@ -44,19 +44,19 @@ export const INSTRUCTIONS =
 type SessionArgs = Readonly<Static<typeof SESSION_ARGS>>;
 
 /**
- * Where the sessions of the run sit in the children tree: under the conversation that started the run, when it is the
- * project agent or a conversation of the children library, else in the tree `workflows:<root run ID>`.
+ * Where the sessions of the run sit in the children tree: under the driver of the current task, when it is the project
+ * agent or a conversation of the children library, else in the tree `workflows:<root run ID>`.
  */
 async function treeOf(calls: Calls): Promise<{ parent: string } | { root: string }> {
 	const { runtime, context, host, script } = calls;
-	const { session } = script;
+	const { driver } = script;
 
-	if (session === undefined) return { root: `workflows:${script.root}` };
+	if (driver === undefined) return { root: `workflows:${script.root}` };
 
-	if (session === String(runtime.conversationId)) return { parent: session };
-	const lineage = await host.children.lineage(host.place.store, session, context);
+	if (driver === String(runtime.conversationId)) return { parent: driver };
+	const lineage = await host.children.lineage(host.place.store, driver, context);
 
-	return lineage === undefined ? { root: `workflows:${script.root}` } : { parent: session };
+	return lineage === undefined ? { root: `workflows:${script.root}` } : { parent: driver };
 }
 
 /**

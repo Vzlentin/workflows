@@ -39,9 +39,9 @@ let tool: Tool;
 /** A fake `workflows` command: its behavior comes from its arguments, which it appends to `args.log`. */
 const FAKE = `#!/bin/sh
 echo "$@" >> args.log
-case "$1 $3" in "resume --background") echo "run $2"; echo '{"runId":"'"$2"'","state":"running","follow":"started","workflow":"campaign","repository":"/repos/orda"}'; exit 0 ;; esac
-case "$1 $2" in "gated --background") echo "run 20261115T000000-cc000001"; echo '{"runId":"20261115T000000-cc000001","state":"running","follow":"started","workflow":"gated","repository":"/repos/harness"}'; exit 0 ;; esac
-case " $* " in *" --background "*) echo "run rb"; echo '{"runId":"rb","state":"running","follow":"started","workflow":"ship","repository":"/repos/workflows"}'; exit 0 ;; esac
+case "$1 $3" in "resume --background") echo "run $2"; echo '{"runId":"'"$2"'","state":"running","follow":"started","workflow":"campaign","repository":"/repos/orda","posts":false}'; exit 0 ;; esac
+case "$1 $2" in "gated --background") echo "run 20261115T000000-cc000001"; echo '{"runId":"20261115T000000-cc000001","state":"running","follow":"started","workflow":"gated","repository":"/repos/harness","posts":false}'; exit 0 ;; esac
+case " $* " in *" --background "*) echo "run rb"; echo '{"runId":"rb","state":"running","follow":"started","workflow":"ship","repository":"/repos/workflows","posts":false}'; exit 0 ;; esac
 case "$1" in
 ok)
 	echo "run r1"; echo '{"progress":["◉ item 1/2: one"]}' >&2
@@ -737,6 +737,7 @@ describe("a background run of the workflow tool", () => {
 			follow: "started",
 			workflow: "ship",
 			repository: "/repos/workflows",
+			posts: true,
 		});
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toEqual([
@@ -784,6 +785,7 @@ describe("a background run of the workflow tool", () => {
 			follow: "started",
 			workflow: "gated",
 			repository: "/repos/harness",
+			posts: true,
 		});
 		expect(await readFile(join(other, "args.log"), "utf8")).toBe("gated --background --json\n");
 		expect(pi.entries.map((entry) => [entry.customType, entry.data])).toEqual([

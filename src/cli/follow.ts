@@ -114,6 +114,9 @@ export type Following = {
 	readonly from: number;
 };
 
+/** How the command follows a run: in the foreground, or in the background, where the run `posts` to its conversation. */
+export type Background = false | { readonly posts: boolean };
+
 /** How a followed run ended: the exit code, and whether the run waits for an answer that this terminal reads. */
 export type Followed = { readonly code: number; readonly asking: boolean };
 
@@ -126,11 +129,11 @@ export async function follow(
 	run: Following,
 	terminal: Terminal,
 	json: boolean,
-	background: boolean,
+	background: Background,
 ): Promise<Followed> {
 	const { id, input, client } = run;
 
-	if (background) {
+	if (background !== false) {
 		client.close();
 		terminal.following(false);
 
@@ -141,6 +144,7 @@ export async function follow(
 				follow: "started",
 				workflow: input.name,
 				repository: input.worktree?.repository ?? input.cwd,
+				posts: background.posts,
 			};
 
 			terminal.stdout(JSON.stringify(started));

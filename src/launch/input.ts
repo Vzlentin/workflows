@@ -7,7 +7,7 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import type { Overlay } from "@vzlentin/harness/overlay";
-import type { ServesInput } from "@vzlentin/harness/protocol";
+import { HARNESS_PROJECT, PI_SESSION_ID, type ServesInput } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { editBundle, loadBundle, type RunBundle } from "../workflow/bundle.ts";
@@ -120,12 +120,61 @@ export type ScriptInput = Omit<Args, "repo" | "base" | "branch"> & {
 	 * `--repo` or of `repo` with `meta.repo`. A run with `worktree` runs in the worktree in its place.
 	 */
 	readonly cwd: string;
-	/** The conversation whose `workflow` tool started the run, from `PI_SESSION_ID`; a child run has its caller's. */
-	readonly parent?: string;
-	/** Set by `--background`: the end of the run posts its outcome as a message to the conversation `parent`. */
+	/**
+	 * The driver: the host conversation of the current task, from `driverOf`. The run's new sessions go under it. A child
+	 * run has the driver of its caller's current task.
+	 */
+	readonly driver?: string;
+	/**
+	 * Set by `--background`, and saved only with `driver`: the end of the task posts its outcome as a message to the
+	 * conversation `driver`.
+	 */
 	readonly notify?: true;
 	readonly worktree?: Worktree;
 };
+
+/**
+ * The driver of a task that a command of the environment `env` starts in `project`: the host conversation
+ * `PI_SESSION_ID`, when the command runs in a shell of a conversation of that project's host, or undefined.
+ */
+export function driverOf(env: NodeJS.ProcessEnv, project: string): string | undefined {
+	const conversation = env[PI_SESSION_ID];
+
+	if (env[HARNESS_PROJECT] !== project || conversation === undefined) return undefined;
+
+	return /^\d+$/.test(conversation) ? conversation : undefined;
+}
+
+/**
+ * The input of a new task of the run `input`, with the driver `driver`, or no driver when it is undefined, and with
+ * `notify` only when the task runs in the `background` and has a driver.
+ */
+export function drivenInput(input: ScriptInput, driver: string | undefined, background: boolean): ScriptInput {
+	const { notify: _replaced, ...rest } = input;
+	const driven = withDriver(rest, driver);
+
+	return background && driver !== undefined ? { ...driven, notify: true } : driven;
+}
+
+/** Whether the end of the task of `input` posts its outcome to the conversation `driver`. */
+export function posts(input: ScriptInput): input is ScriptInput & { readonly notify: true; readonly driver: string } {
+	return input.notify === true && input.driver !== undefined;
+}
+
+/**
+ * Whether the end of the task of `input` posts its outcome to the conversation `driver`, the driver of the command that
+ * follows the task. A task that another conversation drives posts to that conversation, not to `driver`.
+ */
+export function postsTo(input: ScriptInput, driver: string | undefined): boolean {
+	return posts(input) && input.driver === driver;
+}
+
+/** `input` with the driver `driver`, or with no driver when it is undefined. */
+export function withDriver(input: ScriptInput, driver: string | undefined): ScriptInput {
+	const { driver: _replaced, ...rest } = input;
+
+	return driver === undefined ? rest : { ...rest, driver };
+}
 
 /**
  * The project of the root run whose run directory is `runDir`, from its `project` file, which the start of the run
@@ -201,7 +250,7 @@ export async function prepare(
  * directory, and then needs `start` as a string. `runArgs` checks the declared args against `meta` before any worktree
  * exists. With `meta.worktree`, `checkArgs` first checks `repo`, `base`, `branch` and `start` as optional strings, with
  * the same wording. `prompts` and `overlay` edit the bundle as `editBundle` says. The child keeps `agents`, the caller's
- * run layer, and `serves`, what the caller serves.
+ * run layer, `serves`, what the caller serves, and `driver`, the driver of the caller's current task.
  */
 export async function childInput(
 	request: {
@@ -211,10 +260,11 @@ export async function childInput(
 		readonly agents: Roles;
 		readonly serves: ServesInput | undefined;
 		readonly overlay?: Overlay | undefined;
+		readonly driver: string | undefined;
 	},
 	run: Run & { readonly root: string },
 ): Promise<ScriptInput> {
-	const { name, bundle, agents, serves } = request;
+	const { name, bundle, agents, serves, driver } = request;
 	const source = Object.hasOwn(bundle.scripts, name) ? bundle.scripts[name] : undefined;
 
 	if (source === undefined) throw new Error(`no workflow ${name}`);
@@ -238,7 +288,8 @@ export async function childInput(
 	};
 
 	const served = serves === undefined ? bundled : { ...bundled, serves };
-	const script = Object.keys(edited.files).length === 0 ? served : { ...served, overlay: edited.files };
+	const driven = driver === undefined ? served : { ...served, driver };
+	const script = Object.keys(edited.files).length === 0 ? driven : { ...driven, overlay: edited.files };
 
 	const here = { runId: run.id, root: run.root, runDir: run.directory, cwd: run.cwd };
 

@@ -363,6 +363,7 @@ describe("runs in the harness host", () => {
 				follow: "started",
 				workflow: "gated",
 				repository: root,
+				posts: false,
 			});
 
 			expect([started.code, started.stdout]).toEqual([0, [`run ${id}`, line]]);
@@ -442,7 +443,14 @@ describe("runs in the harness host", () => {
 		try {
 			const id = started.id ?? "";
 			const outcome: unknown = JSON.parse(started.stdout.at(-1) ?? "null");
-			expect(outcome).toEqual({ runId: id, state: "running", follow: "started", workflow: "w", repository: repo });
+			expect(outcome).toEqual({
+				runId: id,
+				state: "running",
+				follow: "started",
+				workflow: "w",
+				repository: repo,
+				posts: false,
+			});
 			const waited = await workflows(["wait", id], { cwd: repo, host });
 			expect(waited.stdout.at(-1)).not.toBe(repo);
 		} finally {
@@ -2079,6 +2087,141 @@ return "done"`;
 				{ status: "terminal", outcome: "failed" },
 				{ status: "terminal", outcome: "aborted" },
 			]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("posts nothing for a background resume from a terminal, which does not drive the run", async () => {
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			const script = `await sh(${JSON.stringify(`test -f ${root}/ok`)})\nreturn "done"`;
+			await tellAgent(`Script workflow: ${JSON.stringify({ script, background: true })}`);
+			const id = /^run (\S+) /.exec((await nextResult(0)).text)?.[1] ?? "";
+			await until(async () => (await postedResults()).length === 1);
+			await writeFile(join(root, "ok"), "");
+			const resumed = await workflows(["resume", id, "--background", "--json"], { cwd: root, host });
+
+			const line = JSON.stringify({
+				runId: id,
+				state: "running",
+				follow: "started",
+				workflow: "stdin",
+				repository: await realpath(join(root, "home")),
+				posts: false,
+			});
+
+			expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${id}`, line]]);
+			await until(async () => (await rootTasks(id))[1]?.status === "terminal");
+			expect(await rootTasks(id)).toEqual([
+				{ status: "terminal", outcome: "failed" },
+				{ status: "terminal", outcome: "completed" },
+			]);
+			expect((await postedResults()).map(({ data }) => data)).toEqual([{ runId: id, state: "failed" }]);
+			expect((await inputsOf(id)).map(({ driver, notify }) => ({ driver, notify }))).toEqual([
+				{ driver: "1", notify: true },
+				{ driver: undefined, notify: undefined },
+			]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("posts the end of a terminal background run once a conversation resumes it in the background", async () => {
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			await writeFile(
+				join(root, "flaky.js"),
+				`await sh(${JSON.stringify(`test -f ${root}/ok`)})\nawait agent('Script respond: {"ok":true}', { schema: { type: "object" } })\nreturn "done"`,
+			);
+			const started = await workflows(["flaky.js", "--background", "--json"], { cwd: root, host });
+			const id = started.id ?? "";
+
+			const line = JSON.stringify({
+				runId: id,
+				state: "running",
+				follow: "started",
+				workflow: "flaky",
+				repository: root,
+				posts: false,
+			});
+
+			expect([started.code, started.stdout]).toEqual([0, [`run ${id}`, line]]);
+			await until(async () => (await rootTasks(id))[0]?.status === "terminal");
+			expect(await postedResults()).toEqual([]);
+			await writeFile(join(root, "ok"), "");
+			await tellAgent(`Script workflow: ${JSON.stringify({ resume: id, background: true })}`);
+			expect((await nextResult(0)).text).toBe(
+				`run ${id} started in the background; its result comes as a message in this conversation when it ends; follow it with resume: "${id}", or stop it with the command workflows stop ${id}`,
+			);
+			await until(async () => (await rootTasks(id))[1]?.status === "terminal");
+			expect(await postedResults()).toEqual([
+				{ text: `run ${id} done, exit 0: "done"\ndone`, data: { runId: id, state: "done" }, conversation: 1 },
+			]);
+			// The sessions of the second task go under the conversation that drives it.
+			expect(await lineages()).toEqual([{ root: "1", parent: "1", depth: 1 }]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("gives posts only to the conversation that drives a running task, at a background resume", async () => {
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			const script = `await sh(${JSON.stringify(`cd ${root} && ./gate.sh g`)})\nreturn "done"`;
+			await tellAgent(`Script workflow: ${JSON.stringify({ script, background: true })}`);
+			const id = /^run (\S+) /.exec((await nextResult(0)).text)?.[1] ?? "";
+			await reached("g");
+			process.env.HARNESS_PROJECT = "main";
+
+			const postsOf = async (conversation: string) => {
+				process.env.PI_SESSION_ID = conversation;
+				const resumed = await workflows(["resume", id, "--background", "--json"], { cwd: root, host });
+				const outcome: unknown = JSON.parse(resumed.stdout.at(-1) ?? "null");
+
+				return [resumed.code, outcome];
+			};
+
+			expect(await postsOf("2")).toEqual([0, expect.objectContaining({ follow: "started", posts: false })]);
+			expect(await postsOf("1")).toEqual([0, expect.objectContaining({ follow: "started", posts: true })]);
+			await writeFile(join(root, "g.open"), "");
+			await until(async () => (await postedResults()).length === 1);
+			expect((await postedResults()).map(({ conversation }) => conversation)).toEqual([1]);
+			expect((await inputsOf(id)).map(({ driver }) => driver)).toEqual(["1"]);
+		} finally {
+			await host.close();
+		}
+	});
+
+	it("gives no driver to a resume from a conversation of another project", async () => {
+		const host = await startHost("main", hostModel().models);
+
+		try {
+			await writeFile(join(root, "flaky.js"), `await sh(${JSON.stringify(`test -f ${root}/ok`)})\nreturn "done"`);
+			const started = await workflows(["flaky.js"], { cwd: root, host });
+			const id = started.id ?? "";
+			expect(started.code).not.toBe(0);
+			await writeFile(join(root, "ok"), "");
+			process.env.HARNESS_PROJECT = "other";
+			process.env.PI_SESSION_ID = "1";
+			const resumed = await workflows(["resume", id, "--background", "--json"], { cwd: root, host });
+
+			const line = JSON.stringify({
+				runId: id,
+				state: "running",
+				follow: "started",
+				workflow: "flaky",
+				repository: root,
+				posts: false,
+			});
+
+			expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${id}`, line]]);
+			await until(async () => (await rootTasks(id))[1]?.status === "terminal");
+			expect(await postedResults()).toEqual([]);
+			expect((await inputsOf(id)).map(({ driver }) => driver)).toEqual([undefined, undefined]);
 		} finally {
 			await host.close();
 		}

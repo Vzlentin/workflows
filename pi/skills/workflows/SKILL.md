@@ -67,8 +67,8 @@ Each arg becomes a flag of `workflows <name>`. Give only the args that the user 
   `A..B` for a range, or a ref such as `HEAD~1`. Without `item`, the intent is the pull request, or else the commit
   messages of the change.
 - thermoloop commits its fixes on the branch of the change. When the user asks for a review only, use judge.
-- `background: true` starts the run and returns at once with `state: "running"` and `follow: "started"`. The outcome comes later as a
-  message in this conversation. Use it for a campaign, or when the user wants to go on with other work. Without it,
+- `background: true` starts the run and returns at once with `state: "running"` and `follow: "started"`. With
+  `posts: true`, the outcome comes later as a message in this conversation, which drives the run. Use it for a campaign, or when the user wants to go on with other work. Without it,
   the call waits until the run ends.
 
 ### Models
@@ -92,7 +92,7 @@ The tool result has `runId` and `state`, the state of the run. A run that is `do
 | `failed` | The run failed. `error` gives the reason, such as a Git hook or a model error after the retries. The text keeps at most 2000 bytes: a longer error keeps its first line and its end, with a line `[… <n> bytes cut; the command workflows log <runId> shows the run and its calls, and workflows log <runId> <call> prints the whole output of a call]`. | Quote the error, or the lines that `workflows log <runId>` prints. `workflows log <runId> <call>` prints the whole error of the failed call. `{ resume: "<runId>" }` continues the run. Do not resume it yourself. |
 | `orphaned` | No host can run the task, such as a task of another version. `error` gives the reason. | Quote the reason. |
 | `aborted` | `workflows stop` or a second Ctrl+C aborted the run. | `{ resume: "<runId>" }` continues it. |
-| `running`, `follow: "started"` | A `background` call started the run. | The outcome comes as a message. |
+| `running`, `follow: "started"` | A `background` call started the run. | With `posts: true`, the outcome comes as a message. |
 | `running`, `follow: "detached"` | Esc detached the tool. The run goes on. | `{ resume: "<runId>" }` follows it again. |
 | `running`, `follow: "host-stopped"` | The host stopped. The run continues when the host starts again. | `{ resume: "<runId>" }` follows it. |
 
@@ -135,7 +135,8 @@ commit).
 ## Follow a run
 
 - `{ resume: "<runId>" }` follows a run that goes on, or continues one that ended without a result. Add `background:
-  true` to return at once.
+  true` to return at once. A background resume moves the run to this conversation: the outcome of the new task
+  comes here as a message.
 - `workflows list` gives the runs of this project, newest first, with their state and result, such as `done, result
   shipped exit 0`. A run in the state `earlier-version` or `later-version` was saved by another version of
   workflows, and cannot resume. `workflows list --json` also gives the `question` of a waiting run, its `branch`,

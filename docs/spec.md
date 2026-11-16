@@ -693,8 +693,8 @@ host restarts. A session of a run gets none of harness's store tools (`thread`, 
 in its model tools or in `codemode`. A subagent that a session spawns is a child of that session.
 
 A session of a run that a command starts is at depth 1 of harness's tree of children, in the tree
-`workflows:<root-run-id>`, and its subagents at depth 2, the deepest that harness allows. A run that the `workflow`
-tool of a conversation of the host starts puts its sessions under that conversation instead, see
+`workflows:<root-run-id>`, and its subagents at depth 2, the deepest that harness allows. A task that a conversation
+of the host drives puts its new sessions under that conversation instead, see
 [The `workflow` tool of the host](#the-workflow-tool-of-the-host).
 
 ## Workflow scripts
@@ -1326,12 +1326,17 @@ refuses, it prints `workflows: <line>`, exits 1 and starts no task.
 
 With `--background`, at any position before `--`, start and resume print `run <run-id>` once the host has the run's
 task, and exit 0 without following it. With `--json`, they also print
-`{"runId":"<run-id>","state":"running","follow":"started","workflow":"<workflow>","repository":"<repository>"}`, where `<workflow>` is the name of the run's workflow,
-as `workflows show` gives it, and `<repository>` is the repository of the run's worktree, else the directory of the run. A Ctrl+C after the host accepted the task does not change this. The other commands
+`{"runId":"<run-id>","state":"running","follow":"started","workflow":"<workflow>","repository":"<repository>","posts":<posts>}`, where `<workflow>` is the name of the run's workflow,
+as `workflows show` gives it, `<repository>` is the repository of the run's worktree, else the directory of the run, and `<posts>` is `true` when the end of the task posts
+its outcome to the conversation of the command: the task has `notify`, and its driver is the driver of the command.
+Else it is `false`, also for a task that has not ended and that another conversation drives. A Ctrl+C after the host accepted the task does not change this. The other commands
 ignore `--background`. Follow such a run with `workflows wait <run-id>` or `workflows resume <run-id>`. A start with `--background` saves `notify` in the
 input of the run. A resume that starts a new task saves `notify` only with `--background`, whatever the last task
-had. A resume that follows a task that has not ended does not change it. See
-[The `workflow` tool of the host](#the-workflow-tool-of-the-host) for what `notify` does.
+had. A task saves `notify` only with a driver, so a task without a driver never has it. The driver of a task is the conversation of the host that the command runs in: `PI_SESSION_ID`, when
+`HARNESS_PROJECT` is the project of the run and `PI_SESSION_ID` is a conversation ID of the host (a number). A start
+saves it in the input of the run as `driver`. A resume that starts a new task saves the driver of the resume, or
+no driver, whatever the last task had. A resume that follows a task that has not ended does not change it. See
+[The `workflow` tool of the host](#the-workflow-tool-of-the-host) for what `notify` and the driver do.
 
 A run has one live task at a time. When the run's last task has not ended, because it runs in the host or waits for
 the host to start, resume follows that task and prints its outcome. When the host runs, resume prints the progress
@@ -1487,9 +1492,11 @@ line of JSON in place of the report lines, for every outcome. Its `state` is the
 - `{ "runId", "state": "failed" | "orphaned", "error" }`: the task ended without a result. `error` is the error
   message, or the reason of the orphaned task.
 - `{ "runId", "state": "aborted" }`: a second Ctrl+C or `workflows stop` aborted the run.
-- `{ "runId", "state": "running", "follow": "started", "workflow", "repository" }`: with `--background`, the host has
-  the run's task, and the command does not follow it. `workflow` is the name of the run's workflow, and `repository`
-  the repository of its worktree, else its directory. The `workflow` tool of the
+- `{ "runId", "state": "running", "follow": "started", "workflow", "repository", "posts" }`: with `--background`, the
+  host has the run's task, and the command does not follow it. `workflow` is the name of the run's workflow, and
+  `repository` the repository of its worktree, else its directory. `posts` is `true` when the end of the task posts
+  its outcome to the conversation of the command (the task has `notify`, and its driver is the driver of the
+  command), else `false`. The `workflow` tool of the
   host and the `workflow` tool of Pi give it as a result that is not an error.
 - `{ "runId", "state": "running", "follow": "detached" }`: Ctrl+C detached the command, and the run goes on in the host.
 - `{ "runId", "state": "running", "follow": "host-stopped" }`: the host stopped while the command followed the run,
@@ -2050,27 +2057,32 @@ error result of the command's usage error, before a run exists. It sets `HARNESS
   way. Every caller text comes from the summary: the result text of the tool, the posted text of a background run,
   and in Pi the tool text, the background message and the drawn outcome line.
 - `background: true`, with `name`, `script` or `resume`, adds `--background` to the command. With `save`, it is an
-  error and no command starts. The result is the outcome with `follow: "started"`, which is not an error: `run <run-id> started in the
-  background; its result comes as a message in this conversation when it ends; follow it with resume: "<run-id>", or
-  stop it with the command workflows stop <run-id>`.
-- A task whose input has `notify` posts its outcome to the conversation `parent` in the commit that ends its task,
+  error and no command starts. The result is the outcome with `follow: "started"`, which is not an error. With
+  `posts: true`, its text is `run <run-id> started in the background; its result comes as a message in this
+  conversation when it ends; follow it with resume: "<run-id>", or stop it with the command workflows stop
+  <run-id>`. With `posts: false`, its text is `run <run-id> started in the background; no message in this
+  conversation gives its result; follow it with resume: "<run-id>", or stop it with the command workflows stop
+  <run-id>`.
+- A task whose input has `notify` and `driver` (it saves `notify` only with a driver) posts its outcome to the conversation `driver` in the commit that ends its task,
   after it ends its sessions. An end commit that fails posts nothing, so the post is always the outcome that the task
   ends with. The post is a follow-up input of the entry kind `workflows.result`, with the
   data `{ runId, state }` and the text of the tool result for that outcome, which the same builder as the command
   makes from the end of the task: `done` with the report lines (with the limit on the summary above), `waiting` with
   the question and how to answer it, `failed` with the error, or `aborted`. Its request ID is `workflows.result:<run-id>/<task-id>`, so each later task of the run posts again. A child run never has `notify`. Nothing is posted
-  when `parent` is not a conversation ID of the host, such as the session ID of Pi, or when the host stops: the task
+  when the task has no driver, such as a task that a terminal or Pi started, or when the host stops: the task
   stays pending and posts when it ends after the restart. A failed post goes to the host's report and does not
-  change the outcome of the run. A `background` resume of a task that has not ended, such as a run that a call
-  without `background` started, posts nothing.
+  change the outcome of the run. A `background` resume of a task that has not ended changes nothing: the task
+  posts to its own driver, only when it has `notify`, and the outcome of the resume has `posts: true` only when that
+  driver is the conversation of the resume.
 - Esc in a conversation aborts the call: the command gets SIGINT, detaches, and the run goes on in the host. The
   result is an error that keeps the running output, so it names the run, says that it is detached, and says to follow
   it with `resume`. A call
   that a host restart interrupts does not run again; its error result also keeps the running output.
-- The command saves `PI_SESSION_ID` in the input of the run as `parent`, and the child runs get the same `parent`.
-  When it is the project agent or a conversation of the children library, the sessions of the run are children of
-  that conversation: under the project agent at depth 1, under a subagent at depth 2. Else, such as for the session ID
-  of Pi, they are in the tree `workflows:<root-run-id>`. A session of a run under a subagent is in the subagent's
+- The command saves the conversation as the `driver` of the task, and each child run, also a new task of a child
+  run, gets the driver of its caller's current task. When the driver is the project agent or a conversation of the
+  children library, the new sessions of the task are children of that conversation: under the project agent at depth
+  1, under a subagent at depth 2. Else, such as for a task with no driver, they are in the tree
+  `workflows:<root-run-id>`. A session of a run under a subagent is in the subagent's
   list of children, so closing that subagent closes the session.
 - A conversation at the depth limit of its tree, such as a subagent of a session, gets the error `a subagent at depth
   <depth> cannot use workflow: the sessions of a run would be deeper than the depth limit <limit>`, and no command
@@ -2187,7 +2199,7 @@ is that outcome:
 - `state` `failed` or `orphaned`: the run ended without a result, and `error` is its error message or reason.
 - `state` `aborted`: `workflows stop` or a second Ctrl+C aborted the run.
 - `state` `running` with `follow` `started`: a `background` call started the run, or a new task of it, and does not
-  follow it. It is not an error, its text is `run <run-id> started in the background; its result comes as a message
+  follow it. The extension sets `posts` to `true`, because its wait posts the outcome. It is not an error, its text is `run <run-id> started in the background; its result comes as a message
   in this conversation when it ends; follow it with resume: "<run-id>", or stop it with the command workflows stop
   <run-id>`, and it draws `◉ started in the background`.
 - `state` `running` with `follow` `detached`: Esc detached the command, and the run goes on in the host.
@@ -2362,7 +2374,7 @@ The engine files in `src/`:
   keys, their progress, calls and lists of todos.
 - `cli/terminal/redraw.ts`: how the command draws the tree of steps of a run on stderr.
 - `launch/input.ts`: the generic entry point `workflows <wf>`: the checked arguments of a run, its run ID, its saved
-  input, and the input of a child run.
+  input, its driver, and the input of a child run.
 - `launch/args.ts`: the `meta.args` values of the command line, and the texts that they name, and the args of a
   `run()` call, with one check of both against `meta.args`.
 - `launch/worktree.ts`: repository selection, the worktree of a run, made by Git, and the name of its branch.

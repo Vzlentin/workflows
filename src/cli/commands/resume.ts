@@ -1,13 +1,13 @@
 /** `workflows resume <run-id>` and `workflows wait <run-id>`: continue or follow a run. */
 import { isDeepStrictEqual, parseArgs } from "node:util";
 import type { Client } from "@vzlentin/harness/client";
-import type { ScriptInput } from "../../launch/input.ts";
+import { drivenInput, driverOf, postsTo } from "../../launch/input.ts";
 import { checkWorktree } from "../../launch/worktree.ts";
 import { callRecords, type Opened, reading } from "../../records/store.ts";
 import { answerAsk, type Asks, readAsk } from "../../run/asks.ts";
 import { hasEnded, runStatus } from "../../run/past.ts";
 import { UsageError, withUsage } from "../../workflow/find.ts";
-import { type Following, follow, outcomeOf, reportOutcome } from "../follow.ts";
+import { type Background, type Following, follow, outcomeOf, reportOutcome } from "../follow.ts";
 import { checkVersion, connectTo, startTask } from "../host.ts";
 import type { Terminal } from "../main.ts";
 import { checked, inputOf, lastTaskIn, oneRunId, eventsOf, savedRun, UnfollowableRun } from "../saved.ts";
@@ -78,6 +78,10 @@ export async function resume(
 		? { ...terminal, following: () => {}, stopWindowMs: 0, readLine: undefined }
 		: terminal;
 
+	// The new task has the driver of this command, and posts only with `--background`. A task that has not ended keeps
+	// its driver, so it posts to this command's conversation only when it drives the task.
+	const driver = driverOf(process.env, run.project);
+	const sent = ended ? drivenInput(input, driver, background) : input;
 	followed.following(true);
 	let client: Client | undefined;
 	let from: number;
@@ -88,9 +92,6 @@ export async function resume(
 			if (input.worktree !== undefined) await checkWorktree(run.id, input.worktree, false);
 			from = (await eventsOf(run)).length;
 			client = await connectTo(terminal, run.project, true);
-			// The new task posts its outcome only when this resume runs in the background, whatever the last task did.
-			const { notify: _ended, ...saved } = input;
-			const sent: ScriptInput = background ? { ...saved, notify: true } : saved;
 			const started = await startTask(client, run.project, sent, key);
 
 			// Another resume of the run that took the same key first started its task, which this one then follows.
@@ -124,10 +125,10 @@ export async function resume(
 
 	// A wait shows every step of the run, from its first execution.
 	return followAnswering(
-		{ id: run.id, project: run.project, key, input, client, from: wait ? 0 : from },
+		{ id: run.id, project: run.project, key, input: sent, client, from: wait ? 0 : from },
 		followed,
 		json,
-		background,
+		background && { posts: postsTo(sent, driver) },
 	);
 }
 
@@ -139,7 +140,7 @@ export async function followAnswering(
 	run: Following,
 	terminal: Terminal,
 	json: boolean,
-	background: boolean,
+	background: Background,
 ): Promise<number> {
 	const { code, asking } = await follow(run, terminal, json, background);
 

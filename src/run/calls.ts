@@ -47,8 +47,8 @@ export type ScriptRun = {
 	readonly args: JsonObject;
 	/** The files that the sessions of the run see in place of the disk, from the saved input. */
 	readonly overlay: Overlay | undefined;
-	/** The conversation whose `workflow` tool started the run, from `PI_SESSION_ID`. */
-	readonly session: string | undefined;
+	/** The driver of the current task, from the saved input, which its child runs get. */
+	readonly driver: string | undefined;
 	/** The task of every script run, which the child runs of the `run` calls are tasks of. */
 	readonly definition: ScriptTask;
 };

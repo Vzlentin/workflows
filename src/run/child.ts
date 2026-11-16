@@ -6,11 +6,11 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import type { JsonObject, TaskId } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { childInput, newRunId, type ScriptInput } from "../launch/input.ts";
+import { childInput, newRunId, type ScriptInput, withDriver } from "../launch/input.ts";
 import { mergeRoles, type Roles } from "../workflow/roles.ts";
 import { CallDoc, type CallRecord, type Calls, callOfKind, type Child, type ScriptRun } from "./calls.ts";
 import { endedStatus, hasResult, runStatus, savedBundle, scanRuns } from "./past.ts";
-import { current, type Runtime, type ScriptTask, TASK } from "./version.ts";
+import { current, type Runtime, TASK } from "./version.ts";
 
 /** The record of a `run` call. */
 type RunRecord = Extract<CallRecord, { kind: "run" }>;
@@ -77,10 +77,8 @@ async function startChild(
 
 	try {
 		const run = { id, directory, cwd, root: script.root };
-		const { agents, serves, overlay } = script;
-		const own = await childInput({ name, args, bundle, agents, serves, overlay }, run);
-		const { session: parent, definition } = script;
-		const input = parent === undefined ? own : { ...own, parent };
+		const { agents, serves, overlay, driver, definition } = script;
+		const input = await childInput({ name, args, bundle, agents, serves, overlay, driver }, run);
 		await runtime.commit(async (tx) => {
 			const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 			callOfKind(await tx.doc(CallDoc, key, null), "run", key).child = { task, runId: id };
@@ -112,11 +110,11 @@ async function childRunId(runtime: Runtime, context: Context, key: string): Prom
 }
 
 /**
- * A new child task with the input, so also the run ID and directory, of the ended child task `ended`. The commit that
- * creates it also saves it in the record of the `run` call `key`.
+ * A new child task with the input, so also the run ID and directory, of the ended child task `ended`, and the driver of
+ * the caller's current task `script`. The commit that creates it also saves it in the record of the `run` call `key`.
  */
 async function restartChild(
-	definition: ScriptTask,
+	script: ScriptRun,
 	runtime: Runtime,
 	context: Context,
 	key: string,
@@ -131,9 +129,9 @@ async function restartChild(
 		throw new Error(`the child task ${ended} is ${record.kind} version ${record.version}, not ${expected}`);
 	}
 
-	const { input } = record;
+	const input = withDriver(record.input, script.driver);
 	await runtime.commit(async (tx) => {
-		const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
+		const task = await tx.createTask(script.definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 		callOfKind(await tx.doc(CallDoc, key, null), "run", key).child = { task, runId: input.runId };
 
 		return undefined;
@@ -161,7 +159,7 @@ export async function childResult(
 	const record = await runtime.getTask(started.task, context);
 	const before = record === undefined ? undefined : endedStatus(record);
 	const ended = before !== undefined && !hasResult(before);
-	const { task, runId } = ended ? await restartChild(script.definition, runtime, context, key, started.task) : started;
+	const { task, runId } = ended ? await restartChild(script, runtime, context, key, started.task) : started;
 	const waited = await runtime.waitForTask(task, context);
 	const { outcome } = waited.state;
 	const status = runStatus(waited);

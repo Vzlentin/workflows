@@ -3,7 +3,8 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Client } from "@vzlentin/harness/client";
 import { resolveProject } from "@vzlentin/harness/projects";
-import { newRunId, parse, prepare, type ScriptInput } from "../../launch/input.ts";
+import { drivenInput, driverOf, newRunId, parse, postsTo, prepare, type ScriptInput } from "../../launch/input.ts";
+import type { Background } from "../follow.ts";
 import { connectTo, Refused, runsDirectory, startTask, taskKey } from "../host.ts";
 import type { Terminal } from "../main.ts";
 import { followAnswering } from "./resume.ts";
@@ -22,17 +23,16 @@ export async function start(
 	await mkdir(directory, { recursive: true });
 	// A run directory whose `project` names no task is an unstarted run, which `list` shows and `sweep` removes.
 	await writeFile(join(directory, "project"), `${project}\n`);
+	const driver = driverOf(process.env, project);
 	let client: Client | undefined;
 	let input: ScriptInput | undefined;
 	let sent = false;
 
 	try {
 		const prepared = await prepare(parsed, { id, directory, cwd: terminal.cwd });
-		// The `workflow` tool of a conversation of the host sets `PI_SESSION_ID`, so the run's sessions go under it.
-		const session = process.env.PI_SESSION_ID;
-		const parented = session ? { ...prepared, parent: session } : prepared;
-		// A run started in the background posts its outcome to that conversation when it ends.
-		input = background ? { ...parented, notify: true } : parented;
+		// The `workflow` tool of a conversation of the host drives the run, so the run's sessions go under it.
+		// A run started in the background posts its outcome to its driver when it ends.
+		input = drivenInput(prepared, driver, background);
 		terminal.interrupt.throwIfAborted();
 		terminal.following(true);
 		client = await connectTo(terminal, project, true);
@@ -46,7 +46,12 @@ export async function start(
 		if (sent && input !== undefined && !(error instanceof Refused)) {
 			// The host may have created the task before the error, such as a closed connection. The host creates the task
 			// of a key once, so the same `start` again gives that task, or creates it.
-			return startAgain({ id, project, key, input, error }, terminal, json, background);
+			return startAgain(
+				{ id, project, key, input, error },
+				terminal,
+				json,
+				background && { posts: postsTo(input, driver) },
+			);
 		}
 
 		await rm(directory, { recursive: true, force: true });
@@ -59,7 +64,12 @@ export async function start(
 
 	terminal.stdout(`run ${id}`);
 
-	return followAnswering({ id, project, key, input, client, from: 0 }, terminal, json, background);
+	return followAnswering(
+		{ id, project, key, input, client, from: 0 },
+		terminal,
+		json,
+		background && { posts: postsTo(input, driver) },
+	);
 }
 
 /**
@@ -70,7 +80,7 @@ async function startAgain(
 	run: { id: string; project: string; key: string; input: ScriptInput; error: unknown },
 	terminal: Terminal,
 	json: boolean,
-	background: boolean,
+	background: Background,
 ): Promise<number> {
 	const { id, project, key, input, error } = run;
 	let client: Client | undefined;

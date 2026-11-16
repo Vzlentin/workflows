@@ -77,7 +77,7 @@ export const PARAMETERS = Type.Object({
 	background: Type.Optional(
 		Type.Boolean({
 			description:
-				"With `name`, `script` or `resume`: start the run and return at once; its result comes as a message in this conversation",
+				"With `name`, `script` or `resume`: start the run and return at once; its result comes as a message in this conversation, which drives the run",
 		}),
 	),
 	cwd: Type.Optional(
@@ -135,7 +135,8 @@ export function stateText(state: string, result?: RunResult): string {
  * that a background run posts. It is also the output schema of the `workflow` tool. `state` is the state of the run. A
  * run that is `done` or `waiting` gives its `result`, and `value`, the whole result of its script. A run that still
  * runs gives `follow`: the command `started` it in the background, `detached` from it, or lost its host, which
- * `host-stopped`.
+ * `host-stopped`. A run `started` in the background `posts` its outcome to the conversation of the command when its
+ * task ends, or posts nothing there.
  */
 export const OUTCOME = Type.Union([
 	Type.Object(
@@ -181,6 +182,7 @@ export const OUTCOME = Type.Union([
 			follow: Type.Literal("started"),
 			workflow: Type.String(),
 			repository: Type.String(),
+			posts: Type.Boolean(),
 		},
 		{ additionalProperties: false },
 	),
@@ -225,7 +227,7 @@ export const DESCRIPTION =
 	"script starts a child run, which a resume of its caller continues. A run goes on in the harness host of the " +
 	"project: Esc detaches from it, and `resume` follows it again. A failed or aborted run stays resumable. With " +
 	"`background: true`, the call returns at once and the result of the run comes later as a message in this " +
-	"conversation: use it for long runs such as `campaign` or `optimize`, or for work that can go on while the " +
+	"conversation, which drives the run: use it for long runs such as `campaign` or `optimize`, or for work that can go on while the " +
 	"conversation continues. `input(question)` in a root run asks the user, as an ask of the project, and stops the " +
 	"run: the tool gives a `waiting` result with the question; answer it with `workflow` `resume: <run-id>` and " +
 	"`answer`, and `input` then returns the answer. `input` in a child run fails. With " +
@@ -433,15 +435,23 @@ function texts(outcome: WorkflowOutcome): Texts {
 		case "aborted":
 			return { summary: `run ${id} aborted; continue it with resume: "${id}"`, report: [] };
 		case "running":
-			return { summary: runningText(id, outcome.follow), report: [] };
+			return {
+				summary: outcome.follow === "started" ? startedText(id, outcome.posts) : runningText(id, outcome.follow),
+				report: [],
+			};
 	}
 }
 
+/** The text of the run `id` started in the background, whose result comes as a message when it `posts`. */
+function startedText(id: string, posts: boolean): string {
+	return posts
+		? `run ${id} started in the background; its result comes as a message in this conversation when it ends; follow it with resume: "${id}", or stop it with the command workflows stop ${id}`
+		: `run ${id} started in the background; no message in this conversation gives its result; follow it with resume: "${id}", or stop it with the command workflows stop ${id}`;
+}
+
 /** The text of the run `id` that still runs after the command `follow`. */
-function runningText(id: string, follow: "started" | "detached" | "host-stopped"): string {
+function runningText(id: string, follow: "detached" | "host-stopped"): string {
 	switch (follow) {
-		case "started":
-			return `run ${id} started in the background; its result comes as a message in this conversation when it ends; follow it with resume: "${id}", or stop it with the command workflows stop ${id}`;
 		case "detached":
 			return `run ${id} detached and goes on in the harness host; follow it with resume: "${id}", or stop it with the command workflows stop ${id}`;
 		case "host-stopped":

@@ -7,6 +7,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import { HARNESS_PROJECT, PI_SESSION_ID } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { runCli } from "./command.ts";
@@ -49,7 +50,7 @@ async function projectOf(env: ExecutionEnv, context: Context): Promise<string> {
 	let printed = "";
 
 	const result = await env.exec(
-		["printenv", "HARNESS_PROJECT"],
+		["printenv", HARNESS_PROJECT],
 		{
 			onOutput: (text, _context, info) => {
 				if (info.stream === "stdout") printed += text;
@@ -61,7 +62,7 @@ async function projectOf(env: ExecutionEnv, context: Context): Promise<string> {
 	const project = printed.trim();
 
 	if (!result.ok || result.value.exitCode !== 0 || project === "") {
-		throw new Error("the shell of this conversation has no HARNESS_PROJECT");
+		throw new Error(`the shell of this conversation has no ${HARNESS_PROJECT}`);
 	}
 
 	return project;
@@ -80,8 +81,8 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 
 	const env = {
 		...process.env,
-		HARNESS_PROJECT: await projectOf(api.env, context),
-		PI_SESSION_ID: String(api.conversationId),
+		[HARNESS_PROJECT]: await projectOf(api.env, context),
+		[PI_SESSION_ID]: String(api.conversationId),
 	};
 
 	let drawn: readonly string[] = [];

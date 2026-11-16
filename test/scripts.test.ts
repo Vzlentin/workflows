@@ -2873,6 +2873,34 @@ return await todo.list()`,
 		expect(JSON.parse(shown.stdout[0] ?? "").todos).toEqual(todos);
 	});
 
+	it("give a child run the driver of its caller's current task, also in a new child task", async () => {
+		await writeFile(join(root, "parent.js"), 'return await run("child")');
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(root, ".workflows", "scripts", "child.js"), 'await sh("test -f fixed")\nreturn "child"');
+		process.env.HARNESS_PROJECT = "main";
+		process.env.PI_SESSION_ID = "1";
+		const failed = await workflows(["parent.js"], { cwd: root });
+		expect(failed.code).toBe(1);
+		const id = failed.id ?? "";
+		const drivers = async () => (await inputsOf(id)).map(({ runId, driver }) => [runId === id, driver]);
+		expect(await drivers()).toEqual([
+			[true, "1"],
+			[false, "1"],
+		]);
+
+		delete process.env.HARNESS_PROJECT;
+		delete process.env.PI_SESSION_ID;
+		await writeFile(join(root, "fixed"), "");
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect(resumed.code).toBe(0);
+		expect(await drivers()).toEqual([
+			[true, "1"],
+			[false, "1"],
+			[true, undefined],
+			[false, undefined],
+		]);
+	});
+
 	it("keep the list of a child run apart from the list of its caller, also in a new child task", async () => {
 		await writeFile(
 			join(root, "parent.js"),

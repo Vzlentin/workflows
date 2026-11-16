@@ -291,9 +291,12 @@ export function workflowTool(command: readonly string[], watcher: Watcher, tool:
 			const outcome = await call;
 
 			// The CLI finds a run by its ID from any directory, so the wait runs in the session's, also for a call with `cwd`.
+			// The watcher posts the result of the run, which no host conversation drives.
 			if (outcome.state === "running" && outcome.follow === "started") {
 				const { runId, workflow, repository } = outcome;
 				watcher.started(runId, { cwd: ctx.cwd, workflow, repository });
+
+				return resultOf(tool, { ...outcome, posts: true }, steps.lines);
 			}
 
 			return resultOf(tool, outcome, steps.lines);
