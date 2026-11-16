@@ -1984,7 +1984,11 @@ directory, starts the host when none runs, asks it to start the run's task, and 
   version until it restarts. A host that started before the entry was set refuses a start with
   `workflows: Unknown task kind: workflows.run: the harness host started before it had the entry of workflows; stop it
   so it starts again with the entry (the harness host of project <project> has pid <pid>: kill <pid>)`, and no run
-  directory stays. A host of a project inherits the environment of
+  directory stays. When the entry loads, it compares the version of its `@earendil-works/pi-durable` with the version of
+  the one that its harness resolves. When they differ, the load fails with `workflows uses
+  @earendil-works/pi-durable <version>, but its harness uses <version>; install equal versions of the @earendil-works
+  packages for harness and workflows`, and the host does not start: the command says `The harness host exited
+  with code 1; see <host.log>`, and the error is in `host.log`. A host of a project inherits the environment of
   the command that starts it, so `sh` and `ok` calls and the sessions' tools see that environment.
 - `sh` and `ok` run in the host's process. A host that stops, or crashes, stops its runs, and the host continues them
   when it starts again.
@@ -2364,7 +2368,8 @@ The engine files in `src/`:
   `attach.ts`, `save.ts`, `sweep.ts` and `outline.ts`.
 - `command.ts`: the `workflows` command of the package as a child process, for the `workflow` tool of the host.
 - `cli/terminal/pick.ts` and `cli/terminal/keys.ts`: the picker of `show --pick`, and its keys.
-- `entry.ts`: the entry that the harness host loads, with the script task and the catch-up hook.
+- `entry.ts`: the entry that the harness host loads, with the script task and the catch-up hook. It first checks
+  that its pi-durable and the pi-durable of its harness have the same version.
 - `records/tree.ts`: the call tree of a saved run, its lines and agent rows for `show` and `attach`, and the lines of
   `show` with the agent of each step, for `show --pick`.
 - `records/run.ts`: the run fields that `list --json`, `show --json` and `show --agents --json` share, from the root

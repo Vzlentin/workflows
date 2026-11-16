@@ -4,6 +4,8 @@
  * conversations of the host the `workflow` tool, which runs the `workflows` command of this package as a child process,
  * and the project agent the catch-up hook `workflows.runs`, which tells it about the runs that ended.
  */
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
@@ -146,7 +148,33 @@ function workflowExtension(host: Host) {
 	return defineExtension({ name: TOOL_EXTENSION, tools: [tool] });
 }
 
+const PACKAGE = Type.Object({ version: Type.String() });
+
+/** The version of the package whose `package.json` `require` resolves at `path`. */
+function versionAt(require: NodeJS.Require, path: string): string {
+	return Value.Parse(PACKAGE, JSON.parse(readFileSync(require.resolve(path), "utf8"))).version;
+}
+
+/**
+ * Throws when the pi-durable of workflows is not the pi-durable of the harness that it imports: the host loads both,
+ * and the tasks and tools of the entry need the same version as the host.
+ */
+function checkPiDurable(): void {
+	const require = createRequire(import.meta.url);
+	const own = versionAt(require, "@earendil-works/pi-durable/package.json");
+	const harness = createRequire(require.resolve("@vzlentin/harness/package.json"));
+	const theirs = versionAt(harness, "@earendil-works/pi-durable/package.json");
+
+	if (own !== theirs) {
+		throw new Error(
+			`workflows uses @earendil-works/pi-durable ${own}, but its harness uses ${theirs}; install equal versions of the @earendil-works packages for harness and workflows`,
+		);
+	}
+}
+
 export default function workflowsEntry(host: Host) {
+	checkPiDurable();
+
 	return {
 		extensions: [workflowExtension(host)],
 		tasks: [scriptTask(host)],

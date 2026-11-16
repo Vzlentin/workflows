@@ -1322,8 +1322,16 @@ describe("the installed extension", () => {
 });
 
 describe("the Pi package", () => {
+	const read = (path: string) => JSON.parse(readFileSync(join(import.meta.dirname, "..", path), "utf8"));
+
+	it("has the @earendil-works versions of its harness", () => {
+		const earendil = (pkg: { dependencies: Record<string, string> }) =>
+			Object.fromEntries(Object.entries(pkg.dependencies).filter(([name]) => name.startsWith("@earendil-works/")));
+
+		expect(earendil(read("package.json"))).toEqual(earendil(read("node_modules/@vzlentin/harness/package.json")));
+	});
+
 	it("is @vzlentin/pi-workflows at the version of workflows, and brings workflows and pi-agents", () => {
-		const read = (path: string) => JSON.parse(readFileSync(join(import.meta.dirname, "..", path), "utf8"));
 		const pi = read("pi/package.json");
 		const root = read("package.json");
 

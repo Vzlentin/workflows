@@ -1,7 +1,19 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, copyFile, mkdir, readdir, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	copyFile,
+	cp,
+	mkdir,
+	readdir,
+	readFile,
+	realpath,
+	rm,
+	symlink,
+	utimes,
+	writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -262,6 +274,31 @@ async function pendingOldRun(): Promise<string> {
 	await host.close();
 
 	return id;
+}
+
+const REPO = fileURLToPath(new URL("..", import.meta.url));
+
+/**
+ * The path of the entry of a copy of this workflows whose harness has pi-durable 0.0.1. The copy of `src/` is not a
+ * symlink, so its imports resolve from the copy, and the other packages come from the repo's `node_modules`.
+ */
+async function otherDurableEntry(): Promise<string> {
+	const fake = join(root, "fake");
+	const harness = join(fake, "node_modules", "@vzlentin", "harness");
+	const durable = join(harness, "node_modules", "@earendil-works", "pi-durable");
+	await cp(join(REPO, "src"), join(fake, "src"), { recursive: true });
+	await copyFile(join(REPO, "package.json"), join(fake, "package.json"));
+	await symlink(join(REPO, "workflows"), join(fake, "workflows"));
+	await mkdir(durable, { recursive: true });
+	await copyFile(join(REPO, "node_modules/@vzlentin/harness/package.json"), join(harness, "package.json"));
+	await symlink(join(REPO, "node_modules/@vzlentin/harness/dist"), join(harness, "dist"));
+	await writeFile(
+		join(durable, "package.json"),
+		JSON.stringify({ name: "@earendil-works/pi-durable", version: "0.0.1" }),
+	);
+	await symlink(join(REPO, "node_modules"), join(root, "node_modules"));
+
+	return join(fake, "src", "entry.ts");
 }
 
 /** The line of a command that a host of the version `version` of the workflows task refused. */
@@ -612,6 +649,20 @@ describe("runs in the harness host", () => {
 		const resumed = await workflows(["resume", id, "--json"], { cwd: root });
 		expect(resumed.code).toBe(0);
 		expect(await rootTasks(id)).toEqual([{ status: "terminal", outcome: "completed" }]);
+	});
+
+	it("does not start a host whose harness has another pi-durable than workflows", async () => {
+		const pkg = join(REPO, "node_modules/@earendil-works/pi-durable/package.json");
+		const { version } = JSON.parse(await readFile(pkg, "utf8"));
+		await setEntries({ workflows: await otherDurableEntry() });
+
+		try {
+			await expect(startHost()).rejects.toThrow(
+				`workflows uses @earendil-works/pi-durable ${version}, but its harness uses 0.0.1; install equal versions of the @earendil-works packages for harness and workflows`,
+			);
+		} finally {
+			await setEntries();
+		}
 	});
 
 	it("refuses a host that runs another version of workflows, which starts no task", async () => {
