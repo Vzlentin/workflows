@@ -76,7 +76,6 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 	};
 
 	const steps = new Steps();
-	let named = false;
 	let details = Promise.resolve();
 
 	const output = await runCli(CLI, args, directory, {
@@ -84,11 +83,7 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 		stdin: params.script,
 		signal: context.abortSignal,
 		// The run ID comes first, so the result of an aborted or interrupted call, which keeps this output, names the run.
-		stdout: (line) => {
-			const id = /^run (\S+)$/.exec(line)?.[1];
-
-			if (id === undefined || named) return;
-			named = true;
+		run: (id) => {
 			api.output(
 				`run ${id}: if this call stops, the run is detached and goes on in the harness host; follow it with resume: "${id}"\n`,
 			);

@@ -2275,10 +2275,15 @@ These are the fields of the JSON outcome line of the command.
 
 ### Background runs in Pi
 
-After a result with `follow: "started"`, the extension appends the session entry `workflow-background` with the data
-`{ runId, cwd, workflow, repository }`, with the directory of the session as `cwd`, also for a call with `cwd`, and the
-`workflow` and the `repository` of the outcome, and follows the run with `workflows wait <run-id> --json` in `cwd`. The wait finds the run
-by its ID, so it also follows a run of another project. When the wait prints an
+At the first `run <run-id>` line of a call with `background`, the extension appends the session entry
+`workflow-background` with the data `{ runId, cwd, workflow }`, with the directory of the session as `cwd`, also for a
+call with `cwd`, and the `name` of the call as `workflow`, which a `script` or a `resume` call does not give. The entry
+has no `repository`. The extension then follows the run with `workflows wait <run-id> --json` in `cwd`. So a call that
+is cut after its run line, with no outcome, still posts the result of its run. A result with `follow: "started"` fills
+the `workflow` and the `repository` of the outcome into the run that the session follows, and the widget shows them; it
+appends no entry. A call with `background` whose own outcome has a `state` that is not `running`, such as a
+resume of a run that ended, ends the run as a resume without `background` does, so the wait posts nothing. The wait
+finds the run by its ID, so it also follows a run of another project. When the wait prints an
 outcome whose `state` is not `running`, the extension sends the message `workflow-result`, with the text of a
 call without `background` for that outcome (the summary, then the report lines of a run that is `done`, with the limits on
 the summary and the report lines of the host tool; for a waiting run,
@@ -2290,7 +2295,7 @@ as the tool result draws them, or the text of the message when its `details` are
 At each `session_start`, the extension reads all the entries of the session, of every branch, and follows each run
 whose last `workflow-background` entry comes after its last `workflow-background-end` entry. One extension instance
 has at most one wait for a run, so a second `session_start` or a `background` resume of a followed run starts no
-second wait. `session_shutdown` sends SIGINT to the waits, which detach and post nothing.
+second wait, and that resume appends no entry. `session_shutdown` sends SIGINT to the waits, which detach and post nothing.
 
 When the context of `session_start` has a UI (`hasUI`), the extension sets the widget `workflows` below the editor,
 one time at each `session_start`. It sits above the subagents widget of pi-agents, because `pi/package.json` lists
@@ -2333,7 +2338,8 @@ An outcome whose `state` is not `done` or `waiting`, other than `follow: "starte
 `await tools.workflow({ name: "ship", args: { item } })` in a codemode script gets this object. A call that fails
 before a run exists, such as an unknown workflow name, is a normal tool error with the stderr text. A call whose
 command printed `run <run-id>` and then stopped with no outcome line is a normal tool error `run <run-id>: <stderr
-text>`, or `run <run-id>: workflows exited with <code>` with no stderr, so the error keeps the run ID to resume.
+text>`, or `run <run-id>: workflows exited with <code>` with no stderr, so the error keeps the run ID to resume. A call with
+`background` follows its run from that run line, so the session gets the result of the run also after this error.
 
 ### The `/workflows` command
 

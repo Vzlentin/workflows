@@ -7,7 +7,7 @@ function sh(script: string): string[] {
 }
 
 describe("runCli", () => {
-	it("gives the stdout lines, the exit code, and the update text of each stderr line to the steps", async () => {
+	it("gives the stdout lines, the exit code, the first run ID, and the update text of each stderr line to the steps", async () => {
 		const seen: { text: string; progress: boolean; lines: string[] }[] = [];
 		const out: string[] = [];
 		const steps = new Steps();
@@ -16,6 +16,7 @@ describe("runCli", () => {
 			sh(
 				[
 					`echo "run $1"`,
+					`echo "run other"`,
 					`echo '{"status":"review","progress":["✓ plan","◉ review"]}' >&2`,
 					"echo warning >&2",
 					`printf 'last'`,
@@ -26,13 +27,13 @@ describe("runCli", () => {
 			"/",
 			{
 				steps,
-				stdout: (line) => out.push(line),
+				run: (runId) => out.push(runId),
 				stderr: (text, progress) => seen.push({ text, progress, lines: steps.lines }),
 			},
 		);
 
-		expect(output).toEqual({ code: 3, stdout: ["run r-1", "last"], stderr: ["warning"] });
-		expect(out).toEqual(["run r-1", "last"]);
+		expect(output).toEqual({ code: 3, stdout: ["run r-1", "run other", "last"], stderr: ["warning"] });
+		expect(out).toEqual(["r-1"]);
 		expect(seen).toEqual([
 			{ text: "◉ review", progress: true, lines: ["✓ plan", "◉ review"] },
 			{ text: "warning", progress: false, lines: ["✓ plan", "◉ review", "warning"] },

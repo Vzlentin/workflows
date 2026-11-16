@@ -327,7 +327,8 @@ export type CliOptions = {
 	readonly env?: NodeJS.ProcessEnv | undefined;
 	readonly stdin?: string | undefined;
 	readonly signal?: AbortSignal | undefined;
-	readonly stdout?: (line: string) => void;
+	/** Gets the run ID of the first stdout line that is `run <run-id>`, one time only. */
+	readonly run?: ((runId: string) => void) | undefined;
 	/** The steps that read the stderr lines; without it, the call makes its own. */
 	readonly steps?: Steps | undefined;
 	/** Gets the update text of each stderr line, and whether the line was a progress line. */
@@ -364,9 +365,10 @@ function keepLast(lines: string[], line: string): void {
 }
 
 /**
- * Runs `command` with `args` in `cwd`. Each stdout line goes to `stdout`. Each stderr line goes to `steps`, and its
- * update text goes to `stderr`. `signal` sends SIGINT, which detaches. The output keeps the last `MAX_STDERR_LINES`
- * stderr lines of this call that are not progress lines. Rejects when the command cannot start.
+ * Runs `command` with `args` in `cwd`. The run ID of the first stdout line `run <run-id>` goes to `run`. Each stderr
+ * line goes to `steps`, and its update text goes to `stderr`. `signal` sends SIGINT, which detaches. The output keeps
+ * the last `MAX_STDERR_LINES` stderr lines of this call that are not progress lines. Rejects when the command cannot
+ * start.
  */
 export async function runCli(
 	command: readonly string[],
@@ -383,9 +385,15 @@ export async function runCli(
 	const out = createInterface({ input: child.stdout });
 	const err = createInterface({ input: child.stderr });
 
+	let named = false;
+
 	out.on("line", (line) => {
 		stdout.push(line);
-		options.stdout?.(line);
+		const runId = /^run (\S+)$/.exec(line)?.[1];
+
+		if (runId === undefined || named) return;
+		named = true;
+		options.run?.(runId);
 	});
 
 	err.on("line", (line) => {

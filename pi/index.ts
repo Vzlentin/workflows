@@ -168,10 +168,19 @@ export function workflowTool(command: readonly string[], watcher: Watcher, tool:
 
 			const steps = new tool.Steps();
 
-			const call = tool
+			const call: Promise<WorkflowOutcome> = tool
 				.runCli(command, args, directory, {
 					stdin: params.script,
 					signal,
+					// The follow of a background run starts at its run line, so a call that is cut after it still posts the result.
+					// Readline gives the lines after this statement, so `call` is set when this runs.
+					run:
+						params.background === true
+							? (runId) => {
+									watcher.started(runId, { cwd: ctx.cwd, workflow: params.name });
+									watcher.foreground(runId, call);
+								}
+							: undefined,
 					steps,
 					stderr: (text) => {
 						onUpdate?.({ content: [{ type: "text", text }], details: { steps: steps.lines } });
@@ -183,10 +192,11 @@ export function workflowTool(command: readonly string[], watcher: Watcher, tool:
 			const outcome = await call;
 
 			// The CLI finds a run by its ID from any directory, so the wait runs in the session's, also for a call with `cwd`.
-			// The watcher posts the result of the run, which no host conversation drives.
+			// The watcher posts the result of the run, which no host conversation drives. It follows the run since the run
+			// line, so the outcome only fills its workflow and repository.
 			if (outcome.state === "running" && outcome.follow === "started") {
 				const { runId, workflow, repository } = outcome;
-				watcher.started(runId, { cwd: ctx.cwd, workflow, repository });
+				watcher.described(runId, { workflow, repository });
 
 				return resultOf(tool, { ...outcome, posts: true }, steps.lines);
 			}
@@ -368,17 +378,25 @@ type Api = Pick<
 >;
 
 /**
- * What the start entry of a background run gives: the directory of the session, the workflow name, or `?` when unknown,
- * and the repository of the run, when known.
+ * What the start entry of a background run gives: the directory of the session, and the workflow name and the
+ * repository of the run, when known.
  */
-type Background = { readonly cwd: string; readonly workflow: string; readonly repository?: string | undefined };
+type Background = {
+	readonly cwd: string;
+	readonly workflow?: string | undefined;
+	readonly repository?: string | undefined;
+};
 
 /**
- * A run that the watcher follows: its ID, its start entry, its steps, the controller that is aborted when its end entry
- * is recorded, and the foreground call of the tool that resumes it.
+ * A run that the watcher follows: its ID, its directory, its workflow name, or `?` when unknown, its repository when
+ * known, its steps, the controller that is aborted when its end entry is recorded, and the foreground call of the tool
+ * that resumes it.
  */
-type Followed = Background & {
+type Followed = {
 	readonly runId: string;
+	readonly cwd: string;
+	workflow: string;
+	repository?: string | undefined;
 	readonly steps: Steps;
 	readonly done: AbortController;
 	foreground?: Promise<void>;
@@ -404,7 +422,8 @@ function postable(outcome: WorkflowOutcome | undefined): outcome is WorkflowOutc
  * its error until a progress line comes. A run that `wait` can never follow, which it gives with the exit code
  * `UNFOLLOWABLE_EXIT`, such as a gone run or a run of another version, gets an end entry with the last line of the
  * error as its reason, and no message. A call of the tool that resumes a
- * followed run in the foreground gives the outcome itself: the watcher posts only when that call gave none. Shutdown
+ * followed run in the foreground, or a background call that follows its run since the run line, gives the outcome
+ * itself: the watcher posts only when that call gave none. Shutdown
  * sends SIGINT to the waits, which detach and post nothing, and ends the retries. With a UI from `session_start`, the
  * widget `workflows` below the editor shows a dim `workflows` header and the step of each followed run, and draws no
  * line when no run is followed.
@@ -424,10 +443,30 @@ class Watcher {
 		this.#tool = tool;
 	}
 
-	/** Records the run that a call started in the background, and follows it. */
-	started(runId: string, background: Background): void {
-		this.#pi.appendEntry("workflow-background", { runId, ...background });
+	/**
+	 * Records the run that a call started in the background, and follows it. For a run that is followed already, it
+	 * records nothing and starts no wait.
+	 */
+	started(runId: string, background: Omit<Background, "repository">): void {
+		if (this.#watched.has(runId)) return;
+		const { cwd, workflow } = background;
+		const entry: Static<typeof STARTED_ENTRY>["data"] = { runId, cwd };
+
+		if (workflow !== undefined) entry.workflow = workflow;
+		this.#pi.appendEntry("workflow-background", entry);
 		this.#watch(runId, background);
+	}
+
+	/** Sets the workflow and the repository that `described` gives on the run `runId` when it is followed, and draws. */
+	described(runId: string, described: Omit<Background, "cwd">): void {
+		const run = this.#watched.get(runId);
+
+		if (run === undefined) return;
+
+		if (described.workflow !== undefined) run.workflow = described.workflow;
+
+		if (described.repository !== undefined) run.repository = described.repository;
+		this.#draw();
 	}
 
 	/**
@@ -455,7 +494,7 @@ class Watcher {
 
 		for (const entry of ctx.sessionManager.getEntries()) {
 			if (Value.Check(STARTED_ENTRY, entry)) {
-				const { runId, cwd, workflow = "?", repository } = entry.data;
+				const { runId, cwd, workflow, repository } = entry.data;
 				pending.set(runId, { cwd, workflow, repository });
 			} else if (Value.Check(ENDED_ENTRY, entry)) pending.delete(entry.data.runId);
 		}
@@ -465,8 +504,9 @@ class Watcher {
 	}
 
 	/**
-	 * Takes the foreground call `call` of the tool that resumes the run `runId`. When the run is followed and the call
-	 * gives its outcome, the call ends the run here: it records the end entry, and the watcher posts nothing.
+	 * Takes the call `call` of the tool that resumes the run `runId`, or that started it in the background. When the run
+	 * is followed and the call gives its outcome, the call ends the run here: it records the end entry, and the watcher
+	 * posts nothing.
 	 */
 	foreground(runId: string, call: Promise<WorkflowOutcome>): void {
 		const run = this.#watched.get(runId);
@@ -488,7 +528,17 @@ class Watcher {
 
 	#watch(runId: string, background: Background): void {
 		if (this.#watched.has(runId)) return;
-		const run: Followed = { ...background, runId, steps: new this.#tool.Steps(), done: new AbortController() };
+		const { cwd, workflow = "?", repository } = background;
+
+		const run: Followed = {
+			runId,
+			cwd,
+			workflow,
+			repository,
+			steps: new this.#tool.Steps(),
+			done: new AbortController(),
+		};
+
 		this.#watched.set(runId, run);
 		this.#draw();
 		this.#post(run)

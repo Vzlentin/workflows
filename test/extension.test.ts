@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { copyFile, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { JsonValue } from "@earendil-works/chord/json";
@@ -41,6 +42,12 @@ const FAKE = `#!/bin/sh
 echo "$@" >> args.log
 case "$1 $3" in "resume --background") echo "run $2"; echo '{"runId":"'"$2"'","state":"running","follow":"started","workflow":"campaign","repository":"/repos/orda","posts":false}'; exit 0 ;; esac
 case "$1 $2" in "gated --background") echo "run 20261115T000000-cc000001"; echo '{"runId":"20261115T000000-cc000001","state":"running","follow":"started","workflow":"gated","repository":"/repos/harness","posts":false}'; exit 0 ;; esac
+case "$1 $2" in "cutbg --background"|"early --background")
+	[ "$1" = cutbg ] && echo "run 20261116T000000-dd000001"
+	trap 'exit 130' INT
+	echo "started" >&2
+	while :; do sleep 0.02; done ;;
+esac
 case " $* " in *" --background "*) echo "run rb"; echo '{"runId":"rb","state":"running","follow":"started","workflow":"ship","repository":"/repos/workflows","posts":false}'; exit 0 ;; esac
 case "$1" in
 ok)
@@ -747,7 +754,7 @@ describe("a background run of the workflow tool", () => {
 			},
 		]);
 		expect(pi.entries.map((entry) => [entry.customType, entry.data])).toEqual([
-			["workflow-background", { runId: "rb", cwd: root, workflow: "ship", repository: "/repos/workflows" }],
+			["workflow-background", { runId: "rb", cwd: root, workflow: "ship" }],
 		]);
 		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
 		expect(pi.messages).toEqual([
@@ -789,7 +796,7 @@ describe("a background run of the workflow tool", () => {
 		});
 		expect(await readFile(join(other, "args.log"), "utf8")).toBe("gated --background --json\n");
 		expect(pi.entries.map((entry) => [entry.customType, entry.data])).toEqual([
-			["workflow-background", { runId: id, cwd: root, workflow: "gated", repository: "/repos/harness" }],
+			["workflow-background", { runId: id, cwd: root, workflow: "gated" }],
 		]);
 		expect(lines()).toEqual([" workflows", " gated: harness cc000001 starting"]);
 
@@ -800,6 +807,46 @@ describe("a background run of the workflow tool", () => {
 		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: `run ${id} done, exit 0: 1\none` }]);
 		await vi.waitFor(() => expect(lines()).toEqual([]));
 		expect(await waits()).toEqual([`wait ${id} --json`]);
+	});
+
+	it("follows a background run from its run line, and posts its outcome when the call is cut after that line", async () => {
+		const id = "20261116T000000-dd000001";
+		const pi = fakePi();
+		const esc = new AbortController();
+
+		const update = (partial: { content: { type: string; text?: string }[] }) => {
+			if (partial.content[0]?.text === "started") esc.abort();
+		};
+
+		const call = { name: "cutbg", background: true };
+		const execution = pi.registered.execute("call-1", call, esc.signal, update, contextOf(root));
+		await expect(execution).rejects.toThrow(`run ${id}: started`);
+		expect(pi.entries.map((entry) => [entry.customType, entry.data])).toEqual([
+			["workflow-background", { runId: id, cwd: root, workflow: "cutbg" }],
+		]);
+		await vi.waitFor(async () => expect(await waits()).toEqual([`wait ${id} --json`]));
+
+		await writeFile(join(root, `go-${id}`), "");
+		await writeFile(join(root, `end-${id}`), "");
+		await vi.waitFor(() => expect(pi.messages).toHaveLength(1));
+		expect(pi.messages[0]?.message.content).toEqual([{ type: "text", text: `run ${id} done, exit 0: 1\none` }]);
+		await vi.waitFor(() => expect(pi.entries).toHaveLength(2));
+		expect(pi.entries[1]?.data).toEqual({ runId: id });
+	});
+
+	it("follows nothing when a background call is cut before its run line", async () => {
+		const pi = fakePi();
+		const esc = new AbortController();
+
+		const update = (partial: { content: { type: string; text?: string }[] }) => {
+			if (partial.content[0]?.text === "started") esc.abort();
+		};
+
+		const call = { name: "early", background: true };
+		await expect(pi.registered.execute("call-1", call, esc.signal, update, contextOf(root))).rejects.toThrow();
+		await sleep(100);
+		expect(pi.entries).toEqual([]);
+		expect(await waits()).toEqual([]);
 	});
 
 	it("posts a failed or aborted run with the run ID to resume", async () => {
