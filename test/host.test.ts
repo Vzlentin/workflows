@@ -1495,6 +1495,7 @@ return "done"`,
 
 		for (const call of [...plain.model.calls, ...layered.model.calls]) {
 			expect(call.sections.instructions).toContain("You are a session of a workflows run, not the user's main agent.");
+			expect(call.sections.instructions).not.toContain("memory");
 		}
 	});
 

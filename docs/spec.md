@@ -675,11 +675,10 @@ The research, plan, implement, review and judge sessions use the roles `research
 `summarizer`. A role takes its model and thinking level from `--agents` and the agents tables, else from the project
 agent: the Pi default model and thinking level. The package table gives `summarizer` the thinking level `low` and
 nothing else. See [Roles](#roles). Every session gets the same tools, and the same instructions: the session is not the
-user's main agent and does not write to the user's memory or note tools, because the run keeps its own memory. Like
-every workflow script, `ship` and `campaign` read the scripts, prompts and agents table of the package and of the
-project folder `.workflows/` of the current directory, also when `--repo` selects another repository. See [Workflow
-scripts](#workflow-scripts). `{ "planner": { "model": "openai/gpt-5" } }` in `.workflows/agents.json`, for example,
-gives the planner another model.
+user's main agent. Like every workflow script, `ship` and `campaign` read the scripts, prompts and agents table of the
+package and of the project folder `.workflows/` of the current directory, also when `--repo` selects another
+repository. See [Workflow scripts](#workflow-scripts). `{ "planner": { "model": "openai/gpt-5" } }` in
+`.workflows/agents.json`, for example, gives the planner another model.
 
 Sessions are children of harness's children library in the harness host of the run's project, and use the host's
 providers and credentials: Pi's, from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers that Pi
@@ -1189,10 +1188,9 @@ A call can give `provider`, `model` and `thinking`. Each field that the call giv
 fills the rest. A session without a provider or a model from the call or the role takes the model of the project
 agent of harness (Pi's default model), and without a thinking level it takes the project agent's level, cut to the
 nearest level that the model has. Every session gets the same tools as the ship sessions, and the same instructions in
-its system prompt: it is a session of a workflows run, not the user's main agent, and does not write to the user's
-memory or note tools. A model that the host's model registry does not have, or a `thinking`
-level that the model does not have, fails the `session` call with harness's error, such as `Unknown model:
-anthropic/nope`.
+its system prompt: it is a session of a workflows run, not the user's main agent. A model that the host's model
+registry does not have, or a `thinking` level that the model does not have, fails the `session` call with harness's
+error, such as `Unknown model: anthropic/nope`.
 
 ### Saved inputs and resume
 

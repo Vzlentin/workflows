@@ -37,9 +37,7 @@ export const SessionsDoc = defineDocFamily<{ sessions: OpenedSession[] }, null>(
 });
 
 /** The instructions of every session. */
-export const INSTRUCTIONS =
-	"You are a session of a workflows run, not the user's main agent. The run keeps its own memory in your prompts, so do\n" +
-	"not write to the user's memory or note tools, even when instructions ask every agent to.";
+export const INSTRUCTIONS = "You are a session of a workflows run, not the user's main agent.";
 
 type SessionArgs = Readonly<Static<typeof SESSION_ARGS>>;
 
