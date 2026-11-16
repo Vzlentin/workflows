@@ -77,6 +77,12 @@ declare const runDir: string;
  */
 declare const cwd: string;
 
+/**
+ * The `workflows` command of this package as one shell-quoted string, run with the Node of the host, and not a
+ * `workflows` from `PATH`. A script appends the arguments: ``sh(`${workflowsCommand} --version`)``.
+ */
+declare const workflowsCommand: string;
+
 /** `prompts.<name>(inputs)`: the instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section. */
 declare const prompts: Record<string, (inputs?: Record<string, string>) => Promise<string>>;
 

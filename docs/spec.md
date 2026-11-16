@@ -1027,15 +1027,16 @@ child run that ended without a result continues in a new task.
 ### The script API
 
 A script is the body of an async function: top-level `await` and `return` work. Each call below is a durable call,
-except `phase`, `log`, `args`, `cwd` and `prompts`. The calls are async: a call that runs something returns a promise,
-so a script writes `await` before it, as in `JSON.parse(await sh(cmd))`. `session(name)` returns its session at once,
-and `phase`, `log` and `title` need no `await`.
+except `phase`, `log`, `args`, `cwd`, `workflowsCommand` and `prompts`. The calls are async: a call that runs
+something returns a promise, so a script writes `await` before it, as in `JSON.parse(await sh(cmd))`. `session(name)`
+returns its session at once, and `phase`, `log` and `title` need no `await`.
 
 | Global | Meaning |
 |---|---|
 | `args` | The argument values of `meta.args`, and `start` with `worktree: true` |
 | `runId`, `runDir` | The run ID and the run directory. A script that `run()` starts gets its own values |
 | `cwd` | The directory where `sh` and `ok` run: the run's worktree, the repository of `--repo`, the caller's directory, or the directory of the command |
+| `workflowsCommand` | The `workflows` command of this package as one shell-quoted string, run with the Node of the host and not found on `PATH`, as in ``sh(`${workflowsCommand} --version`)`` |
 | `await agent(prompt, { as, provider, model, thinking, schema, settle })` | One turn in a new session of the role `as` (default `default`), with the model of [Roles](#roles). Returns the reply text, or the answer with `schema`. With `settle: true`, a failed turn returns `{ error }` with its message, and a resume returns the same `{ error }`. The prompt is the `key` of its session |
 | `session(name)`, `session({ as, provider, model, thinking, key })` | A new session of the role `name` or `as` (default `default`), with the model of [Roles](#roles), returned at once. `await <session>.ask(prompt, { schema, settle })` is one turn in it, with `schema` and `settle` as for `agent`. `key`, a string, tells apart the sessions of the same options |
 | `await sh(cmd, { settle })` | Runs `sh -c <cmd>` in the current directory of the start, with no stdin: a command that reads stdin reads end of file. Returns stdout without the last newline, and throws on a nonzero exit code. The error is `sh exited with <code>: <cmd>`, then a newline and the stderr when it is not empty. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>`, with the stdout and the stderr as the output. In the error, output of more than 4096 UTF-8 bytes is cut to a note `[… <n> bytes cut; workflows log <root-run-id> <call> shows the call]`, a newline and the longest end of the output that fits, from a line start when that end has one, else from a character, together at most 4096 bytes. The record of a failed call keeps its exit code, stdout and stderr, as [Saved inputs and resume](#saved-inputs-and-resume) says. With `settle: true`, a failure returns `{ error }` with that message, and a resume returns the same `{ error }` |

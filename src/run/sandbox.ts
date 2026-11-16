@@ -14,6 +14,7 @@ import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode"
 import { TodoState } from "@vzlentin/harness/todo";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
+import { CLI_COMMAND } from "../command.ts";
 import { JSON_VALUE } from "../tool.ts";
 import { type Bundle, META, render } from "../workflow/bundle.ts";
 import {
@@ -48,6 +49,7 @@ const args = ${JSON.stringify(script.args)};
 const runId = ${JSON.stringify(script.runId)};
 const runDir = ${JSON.stringify(script.runDir)};
 const cwd = ${JSON.stringify(cwd)};
+const workflowsCommand = ${JSON.stringify(CLI_COMMAND)};
 const __unavailable = (name) => function () {
 	throw new Error(name + " is not available in workflow scripts");
 };

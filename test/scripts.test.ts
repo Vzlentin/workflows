@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
@@ -19,6 +19,7 @@ import { AGENT_ROWS } from "../pi/index.ts";
 import { SHOWN, SHOWN_AGENTS } from "../src/cli/commands/show.ts";
 import type { Choose } from "../src/cli/main.ts";
 import { programStatus } from "../src/cli/terminal/redraw.ts";
+import { shellQuote } from "../src/command.ts";
 import { branchOf, renameBranch } from "../src/launch/worktree.ts";
 import { callRecords, reading, runRecords, runTasks } from "../src/records/store.ts";
 import { CALL_KIND, CALL_RECORD, CallDoc, KEPT_OUTPUT_BYTES, type SavedCall } from "../src/run/calls.ts";
@@ -33,6 +34,7 @@ import {
 	childTasks,
 	conversationOf,
 	detached,
+	fake,
 	git,
 	hostModel,
 	inputsOf,
@@ -248,6 +250,26 @@ describe("workflows/script.d.ts", () => {
 		const found = JSON.parse(run.stdout.at(-1) ?? "{}");
 		expect(Object.keys(found)).toEqual(names);
 		expect(Object.entries(found).filter(([, type]) => type === "undefined")).toEqual([]);
+	});
+
+	it("gives workflowsCommand, the workflows command of this package and not the one on PATH", async () => {
+		await fake(root, "workflows", "echo fake");
+		await writeFile(join(root, "x.js"), "return await sh(`${workflowsCommand} --version`)");
+		const { version } = JSON.parse(await readFile("package.json", "utf8"));
+
+		const run = await workflows(["x.js"], { cwd: root });
+
+		expect([run.code, run.stdout.at(-1)]).toEqual([0, version]);
+	});
+});
+
+describe("shellQuote", () => {
+	it("keeps each word whole through a real shell", () => {
+		const words = ["a b", "it's", "$HOME", "", "'\\'"];
+
+		const output = execFileSync("sh", ["-c", `printf '%s\\n' ${shellQuote(words)}`], { encoding: "utf8" });
+
+		expect(output.split("\n").slice(0, -1)).toEqual(words);
 	});
 });
 
