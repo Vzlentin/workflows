@@ -9,6 +9,11 @@ import { type Io, labelOf, UsageError, withUsage } from "../workflow/find.ts";
 import { ARG_VALUES, type ArgSpec, type Meta, PLACEMENT_OPTIONS, type PlacementOption } from "../workflow/meta.ts";
 import { parseRoles, type Roles } from "../workflow/roles.ts";
 
+/** The file that `argument` names when it ends with `.md`, resolved against `cwd`. */
+function itemFile(argument: string | undefined, cwd: string): string | undefined {
+	return argument?.endsWith(".md") === true ? resolve(cwd, argument) : undefined;
+}
+
 /**
  * The text that `noun` names, such as `work item`: a `.md` file, inline text, or piped stdin. Throws when it has no
  * non-empty line. It is undefined without an argument and without stdin, and also with blank stdin when it is
@@ -21,13 +26,13 @@ async function readItem(
 	optional: boolean,
 ): Promise<string | undefined> {
 	let text: string | undefined;
+	const path = itemFile(argument, io.cwd);
 
 	if (argument === undefined) {
 		text = await io.stdin();
 
 		if (text === undefined || (optional && text.trim() === "")) return undefined;
-	} else if (argument.endsWith(".md")) {
-		const path = resolve(io.cwd, argument);
+	} else if (path !== undefined) {
 		text = await readFile(path, "utf8").catch(() => {
 			throw new Error(`cannot read ${noun} ${path}`);
 		});
@@ -99,6 +104,7 @@ export function runArgs(name: string, meta: Meta, given: JsonObject): JsonObject
 /**
  * The checked `meta.args` values of `argv`; texts are read after every other value is checked. `repo`, `base` and
  * `branch` are the options that the placement of `meta` adds, and are undefined without them; `base` is `main` then.
+ * `item` is the absolute path of the `.md` file that the positional text names, and is undefined for any other text.
  */
 export async function parseValues(meta: Meta, argv: readonly string[], io: Io, usage: string) {
 	const entries = Object.entries(meta.args);
@@ -179,6 +185,8 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 
 	if (missing !== undefined) throw new UsageError(`missing ${labelOf(...missing)}`);
 
+	const item = positional?.[1].type === "text" ? itemFile(stringOption(values[positional[0]]), io.cwd) : undefined;
+
 	const placedOption = (option: PlacementOption) =>
 		placed.includes(option) ? stringOption(values[option]) : undefined;
 
@@ -187,6 +195,7 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 		prompts: stringOption(values.prompts),
 		agents,
 		serves,
+		item,
 		repo: placedOption("repo"),
 		base: placedOption("base") ?? "main",
 		branch: placedOption("branch"),

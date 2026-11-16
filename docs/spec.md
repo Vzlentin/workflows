@@ -1196,8 +1196,9 @@ error, such as `Unknown model: anthropic/nope`.
 
 Before the run starts, it saves the script, every `scripts/*.js` of the package and the project, the lib, the instructions
 of every prompt, the merged agents table, the run layer of `--agents` apart from it (`agents`, `{}` without the
-option), `serves` of `--serves` (none without the option), the args and the directory of the run: the current directory, or the repository of `--repo` with
-`repo: true`. Resume and `run()` use these saved
+option), `serves` of `--serves` (none without the option), `item`, the absolute path of the `.md` file that the
+positional text argument names (none for inline text, for stdin and in a child run), the args and the directory of the
+run: the current directory, or the repository of `--repo` with `repo: true`. Resume and `run()` use these saved
 inputs, so a later edit of a script, prompt or `agents.json`, in the package, the user folder or `.workflows/`,
 changes only new runs. The shared instructions of the sessions are not saved: a resume uses the text of the loaded
 code.
@@ -1526,15 +1527,17 @@ to start. A run whose task ended without a result is `aborted` (a second Ctrl+C 
 another version of workflows saved is `earlier-version` or `later-version`, also when its task ended: it cannot resume.
 For such a run, the command reads only its task record and reads its input only with the input schema of this version:
 its workflow is the `name` of its saved input, or `?`, its title is its workflow, and it has no `result`, `question`,
-`branch` or `serves`, no `repository` and no steps. With `--json`, the command prints one JSON array of
-`{ "runId", "workflow", "title", "state", "result"?, "question"?, "branch"?, "startedAt"?, "serves"?,
+`branch`, `serves` or `item`, no `repository` and no steps. With `--json`, the command prints one JSON array of
+`{ "runId", "workflow", "title", "state", "result"?, "question"?, "branch"?, "startedAt"?, "serves"?, "item"?,
 "swept"?, "repository", "steps" }`, with the schema `LISTED` of `src/cli/commands/list.ts`. The fields before `repository`
 are the run fields, `RUN_FIELDS` of `src/records/run.ts`, which `show --json` and `show --agents --json` give too. `result` is
 `{ "status"?, "code", "score"? }` as in [JSON output](#json-output), for a run that is `done` or `waiting`. `question` is the question of a run that is `waiting`. `branch` is
 the `branch` of the value of the result, the branch that the worktree ends on, else the branch of the run's worktree;
 `runBranch` of `src/run/result.ts` gives it, also for the catch-up. A run without a worktree and without a `branch` in
 its result has none. `startedAt` is the time when the first task of the run started, as an ISO string. `serves` is
-what the run serves (see [Serves](#serves)). `swept` is the word in the `swept` file of the run directory, `landed` or
+what the run serves (see [Serves](#serves)). `item` is the absolute path of the `.md` file that the positional text
+argument of the run named, as the run saved it (see [Saved inputs and resume](#saved-inputs-and-resume)); a run
+started with inline text or stdin has none. `swept` is the word in the `swept` file of the run directory, `landed` or
 `dropped`, which `sweep --yes` wrote when it removed the worktree of the run (see [Sweep](#sweep)). A run that no
 sweep removed has no `swept`.
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run

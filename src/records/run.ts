@@ -16,8 +16,9 @@ export const SWEPT = Type.Union([Type.Literal("landed"), Type.Literal("dropped")
  * The fields of a run with a task. `result` is the result of a run that is `done` or `waiting`, and `question` the
  * question of a waiting run. `branch` is
  * the branch of the run, from its result or its worktree, `startedAt` the time when its first task started, as an ISO
- * string, `serves` the todo or the parley that the run builds, when its start named one, and `swept` the word that
- * `sweep --yes` wrote when it removed the worktree of the run.
+ * string, `serves` the todo or the parley that the run builds, when its start named one, `item` the absolute path of
+ * the `.md` file that its positional text named, and `swept` the word that `sweep --yes` wrote when it removed the
+ * worktree of the run.
  */
 export const RUN_FIELDS = {
 	runId: Type.String(),
@@ -29,6 +30,7 @@ export const RUN_FIELDS = {
 	branch: Type.Optional(Type.String()),
 	startedAt: Type.Optional(Type.String()),
 	serves: Type.Optional(ServesInput),
+	item: Type.Optional(Type.String()),
 	swept: Type.Optional(SWEPT),
 };
 
@@ -53,6 +55,8 @@ export function taskFields(tasks: readonly RunTask[], task: RunTask): TaskFields
 	withStart(fields, tasks);
 
 	if (input.serves !== undefined) fields.serves = input.serves;
+
+	if (input.item !== undefined) fields.item = input.item;
 
 	return fields;
 }

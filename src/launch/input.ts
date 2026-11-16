@@ -98,6 +98,8 @@ type Args = {
 	readonly agents: Roles;
 	/** `--serves`: the todo of the list of the project or the parley that the run builds, which its child runs keep. */
 	readonly serves?: ServesInput;
+	/** The absolute path of the `.md` file that the positional text of a root run names; a child run has none. */
+	readonly item?: string;
 	/** The files that the run's sessions see in place of the disk, by path: see `Spec.overlay` of the children library. */
 	readonly overlay?: Overlay;
 	/**
@@ -191,7 +193,7 @@ export async function parse([word = "", ...argv]: readonly string[], io: Io): Pr
 	const found = await findScript(word, io);
 	const meta = await readMeta(found.source, found.name);
 	const values = await parseValues(meta, argv, io, usageOf(found.name, meta));
-	const { args, prompts, agents, serves, repo, base, branch } = values;
+	const { args, prompts, agents, serves, item, repo, base, branch } = values;
 	const bundle = prompts === undefined ? found.bundle : await loadBundle(io.cwd, resolve(io.cwd, prompts));
 	const failed = problem(found.source, found.name, bundle);
 
@@ -200,8 +202,9 @@ export async function parse([word = "", ...argv]: readonly string[], io: Io): Pr
 	const resolved = { ...bundle, agents: mergeRoles([agents, bundle.agents]), main: found.source };
 
 	const parsed = { name: found.name, args, meta, bundle: resolved, agents, repo, base, branch };
+	const served = serves === undefined ? parsed : { ...parsed, serves };
 
-	return serves === undefined ? parsed : { ...parsed, serves };
+	return item === undefined ? served : { ...served, item };
 }
 
 /**

@@ -16,6 +16,7 @@ import {
 	conversationOf,
 	detached,
 	gateGit,
+	inputsOf,
 	git,
 	LESSON,
 	LESSON_LINE,
@@ -167,6 +168,21 @@ describe("workflows ship", () => {
 		expect(git(repo, "branch", "--show-current")).toBe("main");
 		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
 		expect(git(repo, "status", "--porcelain")).toBe(" M README.md\nA  notes.txt\n?? item.md");
+
+		const item = join(repo, "item.md");
+		const shown = await workflows(["show", run.id ?? "", "--json"], { cwd: root });
+		const tree: unknown = JSON.parse(shown.stdout[0] ?? "");
+		expect(Value.Check(SHOWN, tree)).toBe(true);
+		expect(tree).toMatchObject({ runId: run.id, item });
+		const listed = await workflows(["list", "--json"], { cwd: root });
+		const rows: unknown = JSON.parse(listed.stdout[0] ?? "");
+		expect(Value.Check(Type.Array(LISTED), rows)).toBe(true);
+		expect(rows).toEqual([expect.objectContaining({ runId: run.id, item })]);
+		const inputs = await inputsOf(run.id);
+		expect(inputs.filter((input) => input.item !== undefined)).toEqual([
+			expect.objectContaining({ runId: run.id, item }),
+		]);
+		expect(inputs.length).toBeGreaterThan(1);
 
 		const calls = run.model.calls;
 		expect(calls.map((call) => call.kind)).toEqual([
@@ -1102,6 +1118,7 @@ describe("workflows show", () => {
 			result: { status: "shipped", code: 0 },
 			report: shown.stdout.slice(-2),
 		});
+		expect(tree).not.toHaveProperty("item");
 		const flat = (calls: readonly Stored[]): Stored[] => calls.flatMap((c) => [c, ...flat(c.child?.calls ?? [])]);
 		const calls = flat(tree.calls);
 		// Each call is in the log of one step.
