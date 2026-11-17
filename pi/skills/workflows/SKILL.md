@@ -125,7 +125,7 @@ The values of `result.status` for a `done` run. The fields that the table names,
 Do not guess findings. No result field holds the last review: its `ask` returns only SHIP or FIX. To read its
 findings:
 
-1. `workflows log <runId>` gives the steps. The review rounds are under the `run thermoloop` line.
+1. `workflows log <runId>` gives the steps. The review rounds are the lines with the path `[ship/thermoloop]`.
    `workflows log <runId> <step>` gives the calls of one step, with the call name at the end of each line.
 2. `workflows log <runId> <call>` of the last review `ask` gives its verdict and the line
    `conversation <id>: workflows attach <runId> --conversation <id>`.
@@ -152,8 +152,9 @@ commit).
   workflows, and cannot resume. `workflows list --json` also gives the `question` of a waiting run, its `branch`,
   its `startedAt`, what it `serves`, and the `item`, the `.md` file that the run was started with. `workflows show <runId>` gives the steps and the report of one run, and `workflows show <runId> --json` also gives its `agent`, the conversation and
   the project that `harness attach` opens, and `stepNames`, the name that `workflows log <runId> <step>` takes for
-  each line of `steps`. `workflows log <runId>` gives its steps with their times, call counts and sizes,
-  and the calls that failed or still run, `workflows log <runId> <step>` the calls of one step with their exit codes
+  each line of `steps`. `workflows log <runId>` gives a flat log: each line has its time and the path of its run, such as
+  `[ship/rpi]`, then the start or the end of a run, a step with its call count and size, or a call that failed or
+  still runs. `workflows log <runId> <step>` gives the calls of one step with their exit codes
   and sizes, `workflows log <runId> <call>` the full output of one call, and `--follow` follows the run. Read the calls
   and the output of a run with `log`. These commands only read; run them with bash.
 - The worktree of a local repository is `<parent>/.worktrees/<repository folder>/<runId>`, next to the repository.

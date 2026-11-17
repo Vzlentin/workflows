@@ -28,7 +28,7 @@ import { Value } from "typebox/value";
 import type { ScriptInput } from "../launch/input.ts";
 import { CALL_KIND, CALL_RECORD, childOf, type SavedCall } from "../run/calls.ts";
 import { callPrefix } from "../run/keys.ts";
-import { allPages, isOfRun, type RunStatus, type RunTask, rootRuns, runStatus } from "../run/past.ts";
+import { allPages, isOfRun, type RunTask, rootRuns, runStatus } from "../run/past.ts";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "../run/progress.ts";
 import { TASK } from "../run/version.ts";
 import { type Progress, progressOf } from "./steps.ts";
@@ -429,12 +429,12 @@ export async function callRecords({ store, database }: Opened, runId: string): P
 
 /**
  * What the store keeps of the root run `id`: its root tasks, oldest first, its progress events and their steps, its
- * call records and those of its child runs, the IDs of the tasks that run, the state of its root tasks and of the task
- * of each `run` record by task ID, and the list of todos of the run and of each child run in its call records.
+ * call records and those of its child runs, the IDs of the tasks that run, the task of each `run` record by task ID,
+ * and the list of todos of the run and of each child run in its call records.
  */
 export type RunRecords = {
 	readonly tasks: readonly RunTask[];
-	readonly states: ReadonlyMap<number, RunStatus>;
+	readonly children: ReadonlyMap<number, RunTask>;
 	readonly events: readonly ProgressEvent[];
 	readonly progress: Progress;
 	readonly records: Map<string, SavedCall>;
@@ -453,7 +453,7 @@ export async function runRecords(
 ): Promise<RunRecords> {
 	const empty = {
 		tasks: [],
-		states: new Map<number, RunStatus>(),
+		children: new Map<number, RunTask>(),
 		events: [],
 		progress: progressOf([]),
 		records: new Map<string, SavedCall>(),
@@ -467,25 +467,25 @@ export async function runRecords(
 		const progress = progressOf(events);
 		const records = withCalls(progress) ? await callRecords(opened, id) : new Map<string, SavedCall>();
 		const tasks = (await rootTasks(store, `wf:${id}#`)).get(id) ?? [];
-		const children = new Map<string, number>();
+		const childRuns = new Map<string, number>();
 
 		for (const record of records.values()) {
 			const child = childOf(record);
 
-			if (child !== undefined) children.set(child.runId, child.task);
+			if (child !== undefined) childRuns.set(child.runId, child.task);
 		}
 
-		const states = new Map(tasks.map((task): [number, RunStatus] => [task.id, runStatus(task)]));
+		const children = new Map<number, RunTask>();
 
-		for (const task of children.values()) {
+		for (const task of childRuns.values()) {
 			const read = await taskById(store, task);
 
-			if (read !== undefined) states.set(task, runStatus(read));
+			if (read !== undefined) children.set(task, read);
 		}
 
 		const root = tasks[0] === undefined ? [] : await todosOf(store, tasks[0]);
-		const todos = new Map([[id, root], ...(await childTodos(store, tasks[0], children))]);
+		const todos = new Map([[id, root], ...(await childTodos(store, tasks[0], childRuns))]);
 
-		return { tasks, states, events, progress, records, live: await liveTasks(store), todos };
+		return { tasks, children, events, progress, records, live: await liveTasks(store), todos };
 	});
 }

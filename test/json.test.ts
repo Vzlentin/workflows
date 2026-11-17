@@ -124,7 +124,8 @@ describe("the JSON of list and show", () => {
 			const logged = await workflows(["log", id, name], { cwd: root });
 			expect([logged.code, logged.stderr], name).toEqual([0, []]);
 			const text = untimed(shown.steps[i] ?? "").replace(/^ *[✓◉✗·] /, "");
-			expect(logged.stdout[0], name).toEqual(logLine(`${text}  \\d+s  1 call  0 B  ${name}`));
+			const path = name.includes("/") ? "caller/child" : "caller";
+			expect(logged.stdout[0], name).toEqual(logLine(`\\[${path}\\] ${text}  \\d+s  1 call  0 B  ${name}`));
 		}
 	});
 

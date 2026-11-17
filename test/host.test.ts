@@ -834,11 +834,9 @@ describe("runs in the harness host", () => {
 			const followed = await pending;
 			expect([followed.code, followed.stderr]).toEqual([0, []]);
 			expect(followed.stdout).toEqual([
-				`run ${id} gated running`,
-				expect.stringMatching(/^\d\d:\d\d:\d\d {2}- {2}1 call {2}0 B {2}s0$/),
-				expect.stringMatching(/^\d\d:\d\d:\d\d {4}◉ sh \.\/gate\.sh g {2}running {2}[0-9a-f]{16}\.1$/),
-				expect.stringMatching(/^\d\d:\d\d:\d\d {2}- {2}1 call {2}0 B {2}s0$/),
-				expect.stringMatching(/^\d\d:\d\d:\d\d {2}end done$/),
+				logLine("\\[gated\\] start"),
+				logLine("\\[gated\\] sh \\./gate\\.sh g  running  [0-9a-f]{16}\\.1"),
+				logLine("\\[gated\\] done  \\d+s"),
 			]);
 		} finally {
 			await host.close();
@@ -856,12 +854,12 @@ describe("runs in the harness host", () => {
 			const followed = await pending;
 			expect([followed.code, followed.stderr]).toEqual([0, []]);
 			expect(followed.stdout).toEqual([
-				`run ${id} phased running`,
-				logLine("wait  1 call  0 B  s1"),
-				logLine("  ◉ sh \\./gate\\.sh g  running  [0-9a-f]{16}\\.1"),
-				logLine("wait  \\d+s  1 call  0 B  s1"),
-				logLine("after  \\d+s  0 calls  0 B  s2"),
-				logLine("end done"),
+				logLine("\\[phased\\] start"),
+				logLine("\\[phased\\] wait  running  1 call  0 B  s1"),
+				logLine("\\[phased\\] sh \\./gate\\.sh g  running  [0-9a-f]{16}\\.1"),
+				logLine("\\[phased\\] wait  \\d+s  1 call  0 B  s1"),
+				logLine("\\[phased\\] after  \\d+s  0 calls  0 B  s2"),
+				logLine("\\[phased\\] done  \\d+s"),
 			]);
 		} finally {
 			await host.close();
@@ -877,11 +875,7 @@ describe("runs in the harness host", () => {
 		const logged = await workflows(["log", id], { cwd: root });
 		expect([logged.code, logged.stdout]).toEqual([
 			0,
-			[
-				`run ${id} gated earlier-version`,
-				expect.stringMatching(/^\d\d:\d\d:\d\d {2}- {2}1 call {2}0 B {2}s0$/),
-				expect.stringMatching(/^\d\d:\d\d:\d\d {4}✗ sh \.\/gate\.sh g {2}cut {2}[0-9a-f]{16}\.1$/),
-			],
+			[logLine("\\[gated\\] start  earlier-version"), logLine("\\[gated\\] sh \\./gate\\.sh g  cut  [0-9a-f]{16}\\.1")],
 		]);
 	});
 
@@ -898,11 +892,7 @@ describe("runs in the harness host", () => {
 		const logged = await workflows(["log", id], { cwd: root });
 		expect([logged.code, logged.stdout]).toEqual([
 			0,
-			[
-				`run ${id} gated running`,
-				expect.stringMatching(/^\d\d:\d\d:\d\d {2}- {2}1 call {2}0 B {2}s0$/),
-				expect.stringMatching(/^\d\d:\d\d:\d\d {4}◉ sh \.\/gate\.sh g {2}running {2}[0-9a-f]{16}\.1$/),
-			],
+			[logLine("\\[gated\\] start"), logLine("\\[gated\\] sh \\./gate\\.sh g  running  [0-9a-f]{16}\\.1")],
 		]);
 	});
 
@@ -1003,9 +993,9 @@ describe("runs in the harness host", () => {
 		const logged = await workflows(["log", id], { cwd: root });
 		expect([logged.code, logged.stdout[0], logged.stdout.at(-2), logged.stdout.at(-1)]).toEqual([
 			0,
-			`run ${id} x earlier-version`,
-			expect.stringMatching(/ {2}end orphaned$/),
-			`${" ".repeat(14)}| ${outcome.error}`,
+			logLine("\\[x\\] start"),
+			logLine("\\[x\\] orphaned  \\d+s"),
+			logLine(`\\[x\\] \\| ${outcome.error.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
 		]);
 	});
 
@@ -1032,7 +1022,7 @@ describe("runs in the harness host", () => {
 		const shown = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
 		expect([rows[0].state, rows[0].steps, shown.steps]).toEqual(["earlier-version", [], []]);
 		const logged = await workflows(["log", id], { cwd: root });
-		expect(logged.stdout.at(-2)).toMatch(/ {2}end orphaned$/);
+		expect(logged.stdout.at(-2)).toEqual(logLine("\\[phased\\] orphaned  \\d+s"));
 	});
 
 	it("lists the step that runs of a running run", async () => {
@@ -1071,7 +1061,10 @@ describe("runs in the harness host", () => {
 		const waited = await workflows(["wait", id, "--json"], { cwd: root });
 		expect([waited.code, waited.stdout.at(-1)]).toEqual([130, JSON.stringify({ runId: id, state: "aborted" })]);
 		const logged = await workflows(["log", id], { cwd: root });
-		expect([logged.stdout[0], logged.stdout.at(-1)]).toEqual([`run ${id} gated aborted`, logLine("end aborted")]);
+		expect([logged.stdout[0], logged.stdout.at(-1)]).toEqual([
+			logLine("\\[gated\\] start"),
+			logLine("\\[gated\\] aborted  \\d+s"),
+		]);
 	});
 
 	it("gives the outcome aborted and logs end aborted for a run that a second Ctrl+C aborts", async () => {
@@ -1085,7 +1078,10 @@ describe("runs in the harness host", () => {
 		expect([run.code, run.stdout.at(-1)]).toEqual([130, JSON.stringify({ runId: id, state: "aborted" })]);
 		expect(Value.Check(OUTCOME, JSON.parse(run.stdout.at(-1) ?? "null"))).toBe(true);
 		const logged = await workflows(["log", id], { cwd: root });
-		expect([logged.stdout[0], logged.stdout.at(-1)]).toEqual([`run ${id} gated aborted`, logLine("end aborted")]);
+		expect([logged.stdout[0], logged.stdout.at(-1)]).toEqual([
+			logLine("\\[gated\\] start"),
+			logLine("\\[gated\\] aborted  \\d+s"),
+		]);
 	});
 
 	it("lists and shows a script result failed as done with that result, and a thrown script as failed without one", async () => {

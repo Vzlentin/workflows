@@ -2,7 +2,7 @@ import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { TASK } from "../src/run/version.ts";
-import { sandbox, saveAs, saveRun, workflows } from "./support.ts";
+import { logLine, sandbox, saveAs, saveRun, workflows } from "./support.ts";
 
 let root: string;
 
@@ -100,11 +100,11 @@ describe("runs that another version saved", () => {
 		const shownJson = await workflows(["show", id, "--json"], { cwd: root });
 		expect(JSON.parse(shownJson.stdout[0] ?? "")).toMatchObject({ state: "earlier-version" });
 
-		// The log keeps the steps and the end of the old run; only its head line has the state of the version.
+		// The log keeps the steps and the end of the old run, with the state of its outcome.
 		const logged = await workflows(["log", id], { cwd: root });
-		expect(logged.stdout[0]).toBe(`run ${id} f earlier-version`);
-		expect(logged.stdout.at(-2)).toMatch(/end failed$/);
-		expect(logged.stdout.at(-1)?.trim()).toBe("| boom");
+		expect(logged.stdout[0]).toEqual(logLine("\\[f\\] start"));
+		expect(logged.stdout.at(-2)).toEqual(logLine("\\[f\\] failed  \\d+s"));
+		expect(logged.stdout.at(-1)).toEqual(logLine("\\[f\\] \\| boom"));
 	});
 
 	it("shows a run whose task has not ended with the state of its version", async () => {
@@ -125,6 +125,9 @@ describe("runs that another version saved", () => {
 			expect(row).toMatchObject({ workflow: "t", title: "t", state, steps: [] });
 			const waited = await workflows(["wait", id], { cwd: root });
 			expect(waited.code).toBe(4);
+			const logged = await workflows(["log", id], { cwd: root });
+			// The saved task has no start time, so the line has a blank time column.
+			expect([logged.code, logged.stdout]).toEqual([0, [`${" ".repeat(8)}  [t] start  ${state}`]]);
 		}
 
 		// An input without a name gives the workflow `?`.

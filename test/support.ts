@@ -908,7 +908,10 @@ export function logLine(pattern: string) {
 	return expect.stringMatching(new RegExp(`^\\d\\d:\\d\\d:\\d\\d  ${pattern}$`));
 }
 
-/** A call line of `workflows log` without its clock, and without its duration and the facts after it. */
+/**
+ * A call line of `workflows log` without its clock: the path of its run in brackets and its text, without its duration
+ * and the facts after it.
+ */
 export function loggedCall(line: string): string {
 	return line.slice(10).replace(/ {2}\d+(?:s|m\d\ds|h\d\dm)(?: {2}.*)?$/, "");
 }

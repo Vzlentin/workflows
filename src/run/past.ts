@@ -54,6 +54,14 @@ export function endedStatus(task: RunTask | TaskEnd): EndedStatus | undefined {
 	return outcome === undefined ? undefined : endedState(outcome);
 }
 
+/**
+ * The status of the run whose task is `task` as its records show it: the state of its outcome for a task of any version
+ * that ended, else `runStatus`.
+ */
+export function recordedStatus(task: RunTask | TaskEnd): RunStatus {
+	return endedStatus(task) ?? runStatus(task);
+}
+
 /** The state of a run whose task ended with `outcome`. */
 function endedState(outcome: TaskOutcome<JsonValue>): EndedStatus {
 	switch (outcome.status) {

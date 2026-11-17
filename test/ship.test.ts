@@ -35,6 +35,7 @@ import {
 	workflows,
 	worktreeAt,
 	logLine,
+	childTasks,
 	loggedCall,
 } from "./support.ts";
 
@@ -1013,41 +1014,36 @@ describe("workflows show", () => {
 		const logged = await workflows(["log", id], { cwd: root });
 		expect([logged.code, logged.stderr]).toEqual([0, []]);
 
-		const [rpiId, implementId, thermoloopId, judgeId] = logged.stdout.flatMap(
-			(text) => /✓ run \S+ (\S+)/.exec(text)?.[1] ?? [],
-		);
-
+		const children = (await childTasks(id)).map((child) => child.runId);
+		const [rpiId, implementId, thermoloopId, judgeId] = children;
+		expect(children).toHaveLength(4);
 		const size = "[\\d.]+ K?B";
 
-		const step = (indent: string, text: string, name: string) =>
-			logLine(`${indent}${text}  (?:\\d+s  )?\\d+ calls?  ${size}  ${name}`);
+		const step = (path: string, text: string, name: string) =>
+			logLine(`\\[${path}\\] ${text}  (?:\\d+s  )?\\d+ calls?  ${size}  ${name}`);
 
-		const ran = (indent: string, name: string, child = "") =>
-			logLine(`${indent}  ✓ run ${name} ${child}  \\d+s  ${size}  \\S+`);
-
-		const ended = (indent: string) => logLine(`${indent}end done`);
+		const started = (path: string) => logLine(`\\[${path}\\] start`);
+		const ended = (path: string, word: string) => logLine(`\\[${path}\\] ${word}  \\d+s`);
 
 		expect(logged.stdout).toEqual([
-			`run ${id} ship done, result shipped exit 0`,
-			step("", "-", "s0"),
-			ran("", "rpi", rpiId),
-			step("    ", "research", `${rpiId}/s1`),
-			step("    ", "plan", `${rpiId}/s2`),
-			step("    ", "implement", `${rpiId}/s3`),
-			ran("    ", "implement", implementId),
-			step("        ", "-", `${implementId}/s0`),
-			ended("        "),
-			ended("    "),
-			ran("", "thermoloop", thermoloopId),
-			step("    ", "round 1/3: review", `${thermoloopId}/s1`),
-			ended("    "),
-			ran("", "judge", judgeId),
-			step("    ", "judge", `${judgeId}/s1`),
-			ended("    "),
-			ended(""),
+			started("ship"),
+			started("ship/rpi"),
+			step("ship/rpi", "research", `${rpiId}/s1`),
+			step("ship/rpi", "plan", `${rpiId}/s2`),
+			step("ship/rpi", "implement", `${rpiId}/s3`),
+			started("ship/rpi/implement"),
+			ended("ship/rpi/implement", "implemented"),
+			ended("ship/rpi", "implemented"),
+			started("ship/thermoloop"),
+			step("ship/thermoloop", "round 1/3: review", `${thermoloopId}/s1`),
+			ended("ship/thermoloop", "approved"),
+			started("ship/judge"),
+			step("ship/judge", "judge", `${judgeId}/s1`),
+			ended("ship/judge", "judged"),
+			ended("ship", "shipped"),
 		]);
 
-		const call = (text: string) => expect.stringMatching(new RegExp(`^  ✓ ${text}$`));
+		const call = (text: string) => expect.stringMatching(new RegExp(`^${text}$`));
 		const asks = (p: string, n: number) => [call(`session ${p} conversation \\d+`), ...Array(n).fill(call(`ask ${p}`))];
 		// The `memo` calls of the run memory, and the read of its notes, cut at 80 characters.
 		const memo = call('sh sh -c m="\\$HOME/\\.optmem/memo".*');
@@ -1105,15 +1101,35 @@ describe("workflows show", () => {
 			[`${judgeId}/s1`, [call("sh git rev-parse HEAD"), ...asks("judge", 1)]],
 		]);
 
+		const paths = new Map([
+			["s0", "ship"],
+			[`${rpiId}/s1`, "ship/rpi"],
+			[`${rpiId}/s2`, "ship/rpi"],
+			[`${rpiId}/s3`, "ship/rpi"],
+			[`${implementId}/s0`, "ship/rpi/implement"],
+			[`${thermoloopId}/s1`, "ship/thermoloop"],
+			[`${judgeId}/s1`, "ship/judge"],
+		]);
+
+		// The steps with no phase, `s0`, have no line in the short log; `log <run> <step>` still takes them.
 		const names = logged.stdout.flatMap((text) => /  ((?:\S+\/)?s\d+)$/.exec(text)?.[1] ?? []);
-		expect(names.toSorted()).toEqual([...expected.keys()].toSorted());
+		expect(names.toSorted()).toEqual([...expected.keys()].filter((name) => !name.endsWith("s0")).toSorted());
 		let logs = 0;
 
-		for (const name of names) {
+		for (const [name, path] of paths) {
 			const steps = await workflows(["log", id, name], { cwd: root });
 			expect([steps.code, steps.stderr], name).toEqual([0, []]);
-			const lines = steps.stdout.slice(1).map(loggedCall);
-			expect(lines, name).toEqual(expected.get(name));
+			const head = logged.stdout.filter((text) => text.endsWith(`  ${name}`));
+			expect(steps.stdout.slice(0, head.length), name).toEqual(head);
+			const lines = steps.stdout.slice(head.length).map(loggedCall);
+			expect(
+				lines.every((line) => line.startsWith(`[${path}] `)),
+				name,
+			).toBe(true);
+			expect(
+				lines.map((line) => line.slice(path.length + 3)),
+				name,
+			).toEqual(expected.get(name));
 			logs += lines.length;
 		}
 

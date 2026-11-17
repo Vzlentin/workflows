@@ -23,7 +23,7 @@ import { shellQuote } from "../src/command.ts";
 import { branchOf, renameBranch } from "../src/launch/worktree.ts";
 import { callRecords, reading, runRecords, runTasks } from "../src/records/store.ts";
 import { CALL_KIND, CALL_RECORD, CallDoc, KEPT_OUTPUT_BYTES, type SavedCall } from "../src/run/calls.ts";
-import { allPages, rootRuns, runStatus } from "../src/run/past.ts";
+import { allPages, isOfRun, rootRuns, runStatus } from "../src/run/past.ts";
 import { RESULT_OBJECT } from "../src/run/result.ts";
 import { prelude } from "../src/run/sandbox.ts";
 import { TASK } from "../src/run/version.ts";
@@ -700,11 +700,12 @@ describe("workflows show", () => {
 		const logged = await workflows(["log", id, "s1"], { cwd: root });
 		expect([logged.code, logged.stderr]).toEqual([0, []]);
 		expect(logged.stdout).toEqual([
-			logLine("check  \\d+s  3 calls  \\d+ B  s1"),
-			logLine("  ✓ sh echo a  \\d+s  exit 0  2 B  [0-9a-f]{16}\\.1"),
-			logLine("  ✓ ok false  \\d+s  exit 1  0 B  [0-9a-f]{16}\\.1"),
-			logLine("  ✗ sh exit 3  \\d+s  exit 3  0 B  [0-9a-f]{16}\\.1"),
-			`${" ".repeat(14)}| sh exited with 3: exit 3`,
+			// The step failed, so its line has `failed` after its name, and the failed call has `failed` before its facts.
+			logLine("\\[x\\] check  failed  \\d+s  3 calls  \\d+ B  s1"),
+			logLine("\\[x\\] sh echo a  \\d+s  exit 0  2 B  [0-9a-f]{16}\\.1"),
+			logLine("\\[x\\] ok false  \\d+s  exit 1  0 B  [0-9a-f]{16}\\.1"),
+			logLine("\\[x\\] sh exit 3  failed  \\d+s  exit 3  0 B  [0-9a-f]{16}\\.1"),
+			logLine("\\[x\\] \\| sh exited with 3: exit 3"),
 		]);
 		const shownJson = await workflows(["show", id, "--json"], { cwd: root });
 		const { calls, steps: json, ...tree } = JSON.parse(shownJson.stdout[0] ?? "");
@@ -747,11 +748,11 @@ describe("workflows show", () => {
 		const b = await conversationOf(/Script: two/);
 		expect(logged.stdout).toEqual([
 			// The step has not ended, so its line has no duration.
-			logLine("talk  4 calls  \\d+ B  s1"),
-			logLine(`  ✓ session default conversation ${a}  \\d+s  \\d+ B  [0-9a-f]{16}\\.\\d`),
-			logLine("  ✓ ask default  \\d+s  \\d+ B  [0-9a-f]{16}\\.\\d"),
-			logLine(`  ✓ session default conversation ${b}  \\d+s  \\d+ B  [0-9a-f]{16}\\.\\d`),
-			logLine("  ◉ ask default  running  [0-9a-f]{16}\\.\\d"),
+			logLine("\\[x\\] talk  running  4 calls  \\d+ B  s1"),
+			logLine(`\\[x\\] session default conversation ${a}  \\d+s  \\d+ B  [0-9a-f]{16}\\.\\d`),
+			logLine("\\[x\\] ask default  \\d+s  \\d+ B  [0-9a-f]{16}\\.\\d"),
+			logLine(`\\[x\\] session default conversation ${b}  \\d+s  \\d+ B  [0-9a-f]{16}\\.\\d`),
+			logLine("\\[x\\] ask default  running  [0-9a-f]{16}\\.\\d"),
 		]);
 		const { calls } = JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "");
 		expect(calls[0].conversation).toBe(a);
@@ -765,9 +766,9 @@ describe("workflows show", () => {
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
 		const done = await workflows(["log", id, "s1"], { cwd: root });
 		expect(done.stdout.filter((text) => text.includes(`session default conversation ${b} `))).toEqual([
-			logLine(`  ✓ session default conversation ${b}  \\d+s  \\d+ B  [0-9a-f]{16}\\.\\d`),
+			logLine(`\\[x\\] session default conversation ${b}  \\d+s  \\d+ B  [0-9a-f]{16}\\.\\d`),
 		]);
-		expect(done.stdout.filter((text) => text.includes("◉"))).toEqual([]);
+		expect(done.stdout.filter((text) => text.includes("running"))).toEqual([]);
 	});
 
 	it("shows a failed call that a resume runs again as running, without its old end", async () => {
@@ -1032,7 +1033,11 @@ describe("workflows log", () => {
 			join(scripts, "parent.js"),
 			'phase("build")\nawait sh("echo 1")\nawait sh("echo 2")\nawait sh("echo 3")\nphase("spawn")\nreturn await run("child", {})',
 		);
-		await writeFile(join(scripts, "child.js"), 'phase("inner")\nawait ok("printf abc; exit 2")\nreturn "x"');
+		await writeFile(
+			join(scripts, "child.js"),
+			'phase("inner")\nawait ok("printf abc; exit 2")\nphase("deeper")\nawait run("grandchild", {})\nreturn "x"',
+		);
+		await writeFile(join(scripts, "grandchild.js"), 'phase("leaf")\nawait sh("echo leaf")\nreturn "y"');
 		const run = await workflows(["parent"], { cwd: repo });
 		expect(run.code).toBe(0);
 		const id = run.id ?? "";
@@ -1040,29 +1045,39 @@ describe("workflows log", () => {
 		const logged = await workflows(["log", id], { cwd: repo });
 		expect(rows()).toEqual(before);
 		expect([logged.code, logged.stderr]).toEqual([0, []]);
-		const child = /run child (\S+)/.exec(logged.stdout[3] ?? "")?.[1] ?? "";
+		const [child, grandchild] = [4, 7].map((n) => /  (\S+)\/s1$/.exec(logged.stdout[n] ?? "")?.[1] ?? "");
+		// Each line has the path of its run: the workflow of the root run, then of each child run down to it.
 		expect(logged.stdout).toEqual([
-			`run ${id} parent done, exit 0`,
-			logLine("build  \\d+s  3 calls  6 B  s1"),
-			logLine("spawn  \\d+s  1 call  \\d+ B  s2"),
-			logLine(`  ✓ run child ${child}  \\d+s  \\d+ B  [0-9a-f]{16}\\.1`),
-			logLine(`    inner  \\d+s  1 call  3 B  ${child}/s1`),
-			logLine("    end done"),
-			logLine("end done"),
+			logLine("\\[parent\\] start"),
+			logLine("\\[parent\\] build  \\d+s  3 calls  6 B  s1"),
+			logLine("\\[parent\\] spawn  \\d+s  1 call  \\d+ B  s2"),
+			logLine("\\[parent/child\\] start"),
+			logLine(`\\[parent/child\\] inner  \\d+s  1 call  3 B  ${child}/s1`),
+			logLine(`\\[parent/child\\] deeper  \\d+s  1 call  \\d+ B  ${child}/s2`),
+			logLine("\\[parent/child/grandchild\\] start"),
+			logLine(`\\[parent/child/grandchild\\] leaf  \\d+s  1 call  5 B  ${grandchild}/s1`),
+			logLine("\\[parent/child/grandchild\\] done  \\d+s"),
+			logLine("\\[parent/child\\] done  \\d+s"),
+			logLine("\\[parent\\] done  \\d+s"),
 		]);
 		const step = await workflows(["log", id, "s1"], { cwd: repo });
 		expect([step.code, step.stderr]).toEqual([0, []]);
 		expect(step.stdout).toEqual([
-			logLine("build  \\d+s  3 calls  6 B  s1"),
-			...["1", "2", "3"].map((n) => logLine(`  ✓ sh echo ${n}  \\d+s  exit 0  2 B  [0-9a-f]{16}\\.\\d`)),
+			logLine("\\[parent\\] build  \\d+s  3 calls  6 B  s1"),
+			...["1", "2", "3"].map((n) => logLine(`\\[parent\\] sh echo ${n}  \\d+s  exit 0  2 B  [0-9a-f]{16}\\.\\d`)),
 		]);
 		const name = step.stdout[2]?.split("  ").at(-1) ?? "";
 		const call = await workflows(["log", id, name], { cwd: repo });
 		expect(call.stdout.slice(0, 2)).toEqual([`call ${name}`, "sh echo 2"]);
 		const inner = await workflows(["log", id, `${child}/s1`], { cwd: repo });
 		expect(inner.stdout).toEqual([
-			logLine(`inner  \\d+s  1 call  3 B  ${child}/s1`),
-			logLine(`  ✓ ok printf abc; exit 2  \\d+s  exit 2  3 B  ${child}/[0-9a-f]{16}\\.1`),
+			logLine(`\\[parent/child\\] inner  \\d+s  1 call  3 B  ${child}/s1`),
+			logLine(`\\[parent/child\\] ok printf abc; exit 2  \\d+s  exit 2  3 B  ${child}/[0-9a-f]{16}\\.1`),
+		]);
+		const leaf = await workflows(["log", id, `${grandchild}/s1`], { cwd: repo });
+		expect(leaf.stdout).toEqual([
+			logLine(`\\[parent/child/grandchild\\] leaf  \\d+s  1 call  5 B  ${grandchild}/s1`),
+			logLine(`\\[parent/child/grandchild\\] sh echo leaf  \\d+s  exit 0  5 B  ${grandchild}/[0-9a-f]{16}\\.1`),
 		]);
 		const unknown = await workflows(["log", id, "s9"], { cwd: repo });
 		expect([unknown.code, unknown.stderr]).toEqual([
@@ -1071,19 +1086,40 @@ describe("workflows log", () => {
 		]);
 	});
 
+	it("logs the error of the run call of a failed child run under the end line of the child run", async () => {
+		await writeFile(join(root, "parent.js"), 'phase("go")\nawait run("child", {})');
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(root, ".workflows", "scripts", "child.js"), 'phase("c")\nthrow new Error("bad")');
+		const id = (await workflows(["parent.js"], { cwd: root })).id ?? "";
+		const logged = await workflows(["log", id], { cwd: root });
+		expect([logged.code, logged.stderr]).toEqual([0, []]);
+		const child = /  (\S+)\/s1$/.exec(logged.stdout[3] ?? "")?.[1] ?? "";
+		const error = `child run ${child} failed: bad`;
+		expect(logged.stdout).toEqual([
+			logLine("\\[parent\\] start"),
+			logLine("\\[parent\\] go  failed  \\d+s  1 call  \\d+ B  s1"),
+			logLine("\\[parent/child\\] start"),
+			logLine(`\\[parent/child\\] c  failed  \\d+s  0 calls  0 B  ${child}/s1`),
+			logLine("\\[parent/child\\] failed  \\d+s"),
+			logLine(`\\[parent/child\\] \\| ${error}`),
+			logLine("\\[parent\\] failed  \\d+s"),
+			logLine(`\\[parent\\] \\| ${error}`),
+		]);
+	});
+
 	it("logs a failed call with the last lines of its error, and not the calls that ended done", async () => {
 		await writeFile(join(root, "x.js"), 'phase("check")\nawait sh("true")\nawait sh("seq 1 200 >&2; exit 3")');
 		const id = (await workflows(["x.js"], { cwd: root })).id ?? "";
 		const logged = await workflows(["log", id], { cwd: root });
 		expect(logged.code).toBe(0);
-		expect(logged.stdout.slice(1)).toEqual([
-			expect.stringMatching(/^\d\d:\d\d:\d\d {2}check {2}\d+s {2}2 calls {2}\d+ B {2}s1$/),
-			expect.stringMatching(
-				/^\d\d:\d\d:\d\d {4}✗ sh seq 1 200 >&2; exit 3 {2}\d+s {2}exit 3 {2}692 B {2}[0-9a-f]{16}\.\d$/,
-			),
-			...["196", "197", "198", "199", "200"].map((n) => `${" ".repeat(14)}| ${n}`),
-			expect.stringMatching(/^\d\d:\d\d:\d\d {2}end failed$/),
-			...["196", "197", "198", "199", "200"].map((n) => `${" ".repeat(14)}| ${n}`),
+		const tail = ["196", "197", "198", "199", "200"].map((n) => logLine(`\\[x\\] \\| ${n}`));
+		expect(logged.stdout).toEqual([
+			logLine("\\[x\\] start"),
+			logLine("\\[x\\] check  failed  \\d+s  2 calls  \\d+ B  s1"),
+			logLine("\\[x\\] sh seq 1 200 >&2; exit 3  failed  \\d+s  exit 3  692 B  [0-9a-f]{16}\\.\\d"),
+			...tail,
+			logLine("\\[x\\] failed  \\d+s"),
+			...tail,
 		]);
 	});
 
@@ -1093,8 +1129,8 @@ describe("workflows log", () => {
 		const logged = await workflows(["log", id], { cwd: root });
 		expect([logged.code, logged.stdout.at(-2), logged.stdout.at(-1)]).toEqual([
 			0,
-			logLine("end failed"),
-			`${" ".repeat(14)}| no`,
+			logLine("\\[x\\] failed  \\d+s"),
+			logLine("\\[x\\] \\| no"),
 		]);
 	});
 
@@ -1172,9 +1208,10 @@ describe("workflows log", () => {
 		await writeFile(join(root, "go"), "");
 		expect((await workflows(["resume", id], { cwd: root })).code).toBe(0);
 		const logged = await workflows(["log", id], { cwd: root });
-		const ends = logged.stdout.filter((text) => /^\S+ {2}end /.test(text));
-		expect(ends).toEqual([expect.stringMatching(/^\d\d:\d\d:\d\d {2}end done$/)]);
+		const ends = logged.stdout.filter((text) => /^\S+ {2}\[x\] (?:done|failed) /.test(text));
+		expect(ends).toEqual([logLine("\\[x\\] done  \\d+s")]);
 		expect(logged.stdout.at(-1)).toBe(ends[0]);
+		expect(logged.stdout.filter((text) => text.endsWith("[x] start"))).toHaveLength(1);
 	});
 
 	it("logs the todo calls of a step, and prints one in full", async () => {
@@ -1186,10 +1223,10 @@ describe("workflows log", () => {
 		const step = await workflows(["log", id, "s1"], { cwd: root });
 		expect([step.code, step.stderr]).toEqual([0, []]);
 		expect(step.stdout).toEqual([
-			logLine("plan  \\d+s  3 calls  \\d+ B  s1"),
-			logLine("  ✓ todo add one  \\d+s  \\d+ B  [0-9a-f]{16}\\.1"),
-			logLine("  ✓ todo set 1 done  \\d+s  \\d+ B  [0-9a-f]{16}\\.1"),
-			logLine("  ✓ todo list  \\d+s  \\d+ B  [0-9a-f]{16}\\.1"),
+			logLine("\\[x\\] plan  \\d+s  3 calls  \\d+ B  s1"),
+			logLine("\\[x\\] todo add one  \\d+s  \\d+ B  [0-9a-f]{16}\\.1"),
+			logLine("\\[x\\] todo set 1 done  \\d+s  \\d+ B  [0-9a-f]{16}\\.1"),
+			logLine("\\[x\\] todo list  \\d+s  \\d+ B  [0-9a-f]{16}\\.1"),
 		]);
 		const name = step.stdout[2]?.split("  ").at(-1) ?? "";
 		const call = await workflows(["log", id, name], { cwd: root });
@@ -1200,8 +1237,8 @@ describe("workflows log", () => {
 	it("prints the whole output of one call, named as the short log names it", async () => {
 		await writeFile(join(root, "x.js"), 'await ok("seq 1 3000; seq 1 50 >&2")');
 		const id = (await workflows(["x.js"], { cwd: root })).id ?? "";
-		const step = (await workflows(["log", id], { cwd: root })).stdout[1]?.split("  ").at(-1) ?? "";
-		const name = (await workflows(["log", id, step], { cwd: root })).stdout[1]?.split("  ").at(-1) ?? "";
+		// The calls of a script with no phase are in step `s0`, which has no line of its own.
+		const name = (await workflows(["log", id, "s0"], { cwd: root })).stdout[0]?.split("  ").at(-1) ?? "";
 		const call = await workflows(["log", id, name], { cwd: root });
 		const seq = (n: number) => Array.from({ length: n }, (_, i) => String(i + 1));
 		expect([call.code, call.stderr]).toEqual([0, []]);
@@ -1270,7 +1307,7 @@ describe("store reads", () => {
 		}
 	}
 
-	it("give the root tasks, states, live tasks and todo lists of a full scan", async () => {
+	it("give the root tasks, child tasks, live tasks and todo lists of a full scan", async () => {
 		const id = await parentAndChild();
 		const current = await saveRun(root, "workflows.run", TASK.version, { name: "x" }, { started: true });
 		const earlier = await saveRun(root, "workflows.run", TASK.version - 1, { name: "x" }, { started: true });
@@ -1286,10 +1323,10 @@ describe("store reads", () => {
 		const read = await runRecords(storeOf(), id, () => true);
 		const [child] = await childTasks(id);
 		expect(read.tasks).toEqual(roots.get(id));
-		expect([...read.states]).toEqual(
-			scanned.flatMap((task) => (read.states.has(task.id) ? [[task.id, runStatus(task)]] : [])),
-		);
-		expect([...read.states.values()].toSorted()).toEqual(["done", "done", "failed"]);
+		// The `run` record keeps the last task of its child run.
+		const last = scanned.findLast((task) => isOfRun(task, child?.runId ?? ""));
+		expect([...read.children]).toEqual([[last?.id, last]]);
+		expect([...read.children.values()].map(runStatus)).toEqual(["done"]);
 		expect([...read.live]).toEqual(roots.get(current)?.map((task) => task.id));
 		expect(read.todos).toEqual(
 			new Map([

@@ -35,10 +35,10 @@ type Item = Step | { readonly log: string } | { readonly run: RunNode };
 export type StepView = Readonly<Pick<Step, "runId" | "text" | "firstStart">>;
 
 /**
- * A step of one run as `Progress.steps` gives it: its text, the time of its first start, and the start and end that
- * give its duration, without the time between a stop and the resume that continues it.
+ * A step of one run as `Progress.steps` gives it: its text, the time of its first start, its mark, and the start and
+ * end that give its duration, without the time between a stop and the resume that continues it.
  */
-export type RunStep = Readonly<Pick<Step, "text" | "firstStart" | "started" | "ended">>;
+export type RunStep = Readonly<Pick<Step, "text" | "firstStart" | "mark" | "started" | "ended">>;
 
 /**
  * A line of the tree, with the step that it belongs to, if any. The lines of one step share one `step` object. The line

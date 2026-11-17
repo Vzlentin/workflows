@@ -1837,66 +1837,71 @@ workflows log <run-id> --follow
 
 `workflows log` prints what a run did from the store of its project: its steps first, then the calls of one step, and
 the full output of one call. It reads only the root tasks, the progress and the call records of the run, in one read,
-so it also prints the steps, the calls and the end of a run that another version saved, which `show` leaves out. Its
-first line has the state that `list` gives, such as `earlier-version`, and the end line has the state of the outcome
-of its task.
+so it also prints the steps, the calls and the end of a run that another version saved, which `show` leaves out. The
+end line has the state of the outcome of its task.
 
-The short log:
+The short log is flat, with no indent. Each line is the time, two spaces, the path of its run in brackets, a space,
+then what happened:
 
 ```text
-run <run-id> <workflow> <state>
-HH:MM:SS  <phase text>  <duration>  <n> calls  <size>  s1
-HH:MM:SS  <phase text>  <duration>  <n> calls  <size>  s2
-HH:MM:SS    ✗ <kind> <label>  <duration>  <size>  <call>
-              | <last lines of the error>
-HH:MM:SS    ✓ run <workflow> <child run-id>  <duration>  <size>  <call>
-HH:MM:SS      <phase text of the child run>  <n> calls  <size>  <child run-id>/s1
-HH:MM:SS        ◉ <kind> <label>  running  <call>
-HH:MM:SS      end done
-HH:MM:SS  end failed
-              | <last lines of the error of the run>
+HH:MM:SS  [ship] start
+HH:MM:SS  [ship/rpi] start
+HH:MM:SS  [ship/rpi] research  10s  2 calls  2.4 KB  <child run-id>/s1
+HH:MM:SS  [ship/rpi] plan  failed  36s  18 calls  6.5 KB  <child run-id>/s2
+HH:MM:SS  [ship/rpi] sh <label>  failed  3s  exit 1  120 B  <child run-id>/<call>
+HH:MM:SS  [ship/rpi] | <last lines of the error>
+HH:MM:SS  [ship/rpi] failed  1m18s
+HH:MM:SS  [ship/rpi] | <last lines of the error of its run call>
+HH:MM:SS  [ship] failed  1m45s
+HH:MM:SS  [ship] | <last lines of the error of the run>
 ```
 
-The `| ` lines under the last end line are only under `end failed` or `end orphaned`.
-
-- The first line has the workflow and the state as `list` gives them, for a task of any version. A run with no task
-  has only the run ID in it.
+- The path is the workflow of the root run, then the workflow of each child run down to the run of the line, joined
+  with `/`. The workflow of the root run is the name in the saved input of its task, as `list` gives it, and `?` for a
+  run with no task. The workflow of a child run is the `name` of its `run` call.
+- Each run has one `start` line, at the start of its first task (a child run at the start of its `run` call), and one
+  end line when its last task has ended. A resume does not print a new `start` line. The end line is the status of the
+  result of the run (`shipped`, `blocked`, ...), else the state of its last task (`done`, `waiting`, `failed`,
+  `aborted` or `orphaned`), then two spaces and the duration of the run: the time from its start to its end, also the
+  time between a stop and a resume. Its time is that of the last end event of the run, when its last start or end
+  event is an end, else the end time of its task. A run with no start or end time has no duration. Each task of a run,
+  a resume too, starts it again, so a run that failed and then ended after a resume has one end line, its last one. A
+  child run takes the task of its `run` call. A run that has not ended has no end line. A run whose task has not
+  ended and that another version saved has the state of its task after `start`: `start  earlier-version` or `start
+  later-version`.
 - For each run, its steps are in the order they started. A step is a `phase` line of the run; a `phase` line that
   continues the step of the same text, after a resume, is no new step. A call is in the last step of its run whose
   text is the phase of the call and that started at or before the call, as in `show`. The calls that are in no step,
-  such as the calls of a script with no `phase`, are in one step with the text `-` and the name `s0`, at the time of
-  its first call; it shows only when it has calls. The time is the local time of the line; a line that an earlier
-  version saved has no time, its time column is blank, and it comes first. The `log` lines of a script are not in the
-  short log.
-- A step line has its text, cut at 80 characters, the duration of its step as `show` gives it (the time to the next
-  phase line or end of its run, without the time between a stop and the resume that continues the step), the count
-  of its own calls (`1 call` or `<n> calls`), the size of their output, and the name of the step. A step that has not
-  ended, and step `s0`, have no duration. The count and the size include the `run` calls of the step and not the calls
-  of its child runs, which have their own step lines.
-- Under each step, in start order, are its calls that did not end done (failed, cut, cancelled, running or waiting),
-  and its `run` calls. A call that ended done, other than `run`, has no line: `workflows log <run-id> <step>` gives it.
-- The lines of a child run are under its `run` call, indented by 4 more.
-- A call line has its mark (`◉` for `running`, `✓` for `done`, and `✗` for every other state), and the kind and the
-  label of the call tree of [Show](#show). A call that ended has its duration; a call that has not
-  ended has its state word (`running`, `waiting`, `cancelled` or `cut`) in place of it, so that its line stays the same
-  while it runs. A `sh` or `ok` call with a result, and a `sh` call whose record keeps its output, has `exit <code>`.
-  The size is the UTF-8 size of its output in `B`, `KB` or `MB`: the stdout and the stderr of such a
-  call, else its result (a string as it is, else its JSON) or its error. The last field is the name of
-  the call.
-- A failed call has the last 5 lines of its error under it, each as `| <line>`, cut at 120 characters.
-- The last line of a run is its end, `end <state>`, with the state of its last task (`done`, `waiting`, `failed`,
-  `aborted` or `orphaned`), only when that task has ended. A child run takes the state of its task in the record of its
-  `run` call. The time is that of the last end event of the run, when its last start or end event is an end, else
-  blank. Each task of a run, a resume too, starts it again, so a run that failed and then ended after a resume has one
-  end line, its last one. Once the run has ended, its steps that still ran take the end mark of [Show](#show).
+  such as the calls of a script with no `phase`, are in step `s0`, which has no line in the short log. The time is the
+  local time of the line; a line with no time, such as a line that an earlier version saved, has a blank time column,
+  and a step with no time comes first. The `log` lines of a script are not in the short log.
+- A step line has its text, cut at 80 characters, then `running` for a step that runs, `failed` for a step that
+  failed, or `aborted` for a step of an aborted run, then the duration of its step as `show` gives it (the time to the
+  next phase line or end of its run, without the time between a stop and the resume that continues the step), the
+  count of its own calls (`1 call` or `<n> calls`), the size of their output, and the name of the step. A step that
+  has not ended has no duration. The count and the size include the `run` calls of the step and not the calls of its
+  child runs, which have their own step lines. Once the run has ended, its steps that still ran take the end mark of
+  [Show](#show), and the word of that mark.
+- Under each step, in start order, are its calls that did not end done (failed, cut, cancelled, running or waiting).
+  A call that ended done has no line: `workflows log <run-id> <step>` gives it. A `run` call whose child run started
+  has no line: the lines of its child run are in its place, from its `start` line to its end line. A `run` call whose
+  child run did not start is a call as any other.
+- A call line has the kind and the label of the call tree of [Show](#show), then its state word (`failed`,
+  `running`, `waiting`, `cancelled` or `cut`) when it is not done, then its duration when it ended. A `sh` or `ok` call
+  with a result, and a `sh` call whose record keeps its output, has `exit <code>`. The size is the UTF-8 size of its
+  output in `B`, `KB` or `MB`: the stdout and the stderr of such a call, else its result (a string as it is, else its
+  JSON) or its error. The last field is the name of the call.
+- A failed call has the last 5 lines of its error under it, each as `| <line>` after the time of its end and its path,
+  cut at 120 characters.
 - A root run that ended `failed` or `orphaned` has the last 5 lines of the error of its last task under its end line,
-  each as `| <line>`, cut at 120 characters. The error is the one that `show` gives. A child run has none: the error
-  of its `run` call is under that call.
+  in the same way. The error is the one that `show` gives. A child run whose `run` call failed has the last 5 lines of
+  the error of that call under its end line.
 
 The name of a step is `s<n>`, where `n` counts the steps of the run from 1, for a step of the root run, and
 `<child run-id>/s<n>` for a step of a child run. `workflows log <run-id> <step>` prints the line of the step, then the
-line of each of its own calls in start order, done calls too, with the last lines of the error of a failed call, at no
-indent. The calls of its child runs are not in it: their steps have their own names.
+line of each of its own calls in start order, done calls too and `run` calls, with the last lines of the error of a
+failed call, in the shape of the short log. Step `s0` has no line of its own: it prints only its calls. The calls of its
+child runs are not in it: their steps have their own names.
 
 The name of a call is its key in the store: `<hash>.<n>` for a call of the root run, and `<child run-id>/<hash>.<n>` for
 a call of a child run. `workflows log <run-id> <call>` prints that call in full: `call <call>`, its kind with its
@@ -1910,9 +1915,9 @@ call that has not ended has `the call still runs; the store gets its output only
 
 With `--follow`, the command prints the short log, then reads the store again every second and prints each line that
 it has not printed yet, such as a call that failed or a new step, in log order. A step line prints again when its step
-ends (step `s0` when its run ends), with its duration, count and size. A call line prints again when the state of the
-call changes and the call still has a line; a call that ends done does not print again. Every other line prints once:
-the first line does not print again with a new status. It exits 0
+ends, with its duration, count and size. A call line prints again when the state of the call changes and the call still
+has a line; a call that ends done does not print again. The `start` line of a run prints once, also after a resume. An
+end line prints again when its run ends again in another state or at another time. It exits 0
 after a read that finds the run's task not `running`, also when the run has no task. Ctrl+C exits 130.
 
 `log` exits 0 for every run it can read. An unknown run ID prints the `no run` error of `resume`, and a run with no
@@ -2460,8 +2465,9 @@ The engine files in `src/`:
 - `records/run.ts`: the run fields that `list --json`, `show --json` and `show --agents --json` share, from the root
   tasks of a run.
 - `records/steps.ts`: the tree of steps of a run.
-- `records/log.ts`: the text of `workflows log`: the short log of a run, with its steps, the calls that did not end
-  done, its child runs and their ends, the calls of one step, and the full text of one call.
+- `records/log.ts`: the text of `workflows log`: the flat short log of a run, each line with its time and the path of
+  its run, with the start and end of each run, its steps and the calls that did not end done, the calls of one step,
+  and the full text of one call.
 - `records/store.ts`: the command's read-only reads of the project store: the tasks of the runs, harness's task
   keys, their progress, calls and lists of todos.
 - `cli/terminal/redraw.ts`: how the command draws the tree of steps of a run on stderr.

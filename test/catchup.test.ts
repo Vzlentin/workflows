@@ -17,6 +17,7 @@ import {
 	catchUps,
 	catchUpsAtLeast,
 	hostModel,
+	logLine,
 	piSettings,
 	sandbox,
 	startHost,
@@ -249,9 +250,9 @@ describe("the catch-up of workflows runs", () => {
 			const logged = await workflows(["log", id ?? ""], { cwd: root });
 			expect([logged.code, logged.stdout[0], logged.stdout.at(-2), logged.stdout.at(-1)]).toEqual([
 				0,
-				`run ${id} e ${state}`,
-				expect.stringMatching(new RegExp(` {2}end ${state}$`)),
-				`${" ".repeat(14)}| ${error}`,
+				logLine("\\[e\\] start"),
+				logLine(`\\[e\\] ${state}  \\d+s`),
+				logLine(`\\[e\\] \\| ${error}`),
 			]);
 		}
 	});

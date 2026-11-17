@@ -238,21 +238,27 @@ describe("workflows campaign", () => {
 		const researchers: (number | undefined)[] = [];
 
 		for (const [n, child] of children.entries()) {
-			const at = logged.stdout.findIndex((text) => loggedCall(text) === `  ✓ run ship ${child}`);
 			const item = n === 0 ? "Fix the README typo" : "Add a thanks line";
-			const head = logged.stdout[at - 1] ?? "";
-			expect(head, child).toEqual(logLine(`item ${n + 1}/2: ${item}  \\d+s  \\d+ calls  \\d+ B  s\\d+`));
+			const at = logged.stdout.findIndex((text) => text.includes(`] item ${n + 1}/2: ${item}  `));
+			const head = logged.stdout[at] ?? "";
+			expect(head, child).toEqual(logLine(`\\[campaign\\] item ${n + 1}/2: ${item}  \\d+s  \\d+ calls  \\d+ B  s\\d+`));
+			// The child ship run has no step of its own: the start of its rpi run follows its start.
+			expect(logged.stdout.slice(at + 1, at + 3), child).toEqual([
+				logLine("\\[campaign/ship\\] start"),
+				logLine("\\[campaign/ship/rpi\\] start"),
+			]);
 			const step = await workflows(["log", id, head.split("  ").at(-1) ?? ""], { cwd: root });
 			const calls = step.stdout.slice(1).map(loggedCall);
-			const doing = calls.indexOf(`  ✓ todo set ${n + 1} doing`);
-			expect([doing >= 0, doing < calls.indexOf(`  ✓ run ship ${child}`)], child).toEqual([true, true]);
-			const rpi = /^ {6}✓ run rpi (\S+)$/.exec(loggedCall(logged.stdout[at + 2] ?? ""))?.[1] ?? "";
+			const doing = calls.indexOf(`[campaign] todo set ${n + 1} doing`);
+			expect([doing >= 0, doing < calls.indexOf(`[campaign] run ship ${child}`)], child).toEqual([true, true]);
+			const rpi = /  (\S+)\/s1$/.exec(logged.stdout[at + 3] ?? "")?.[1] ?? "";
 			researchers.push(await conversationOf(new RegExp(`Research the codebase[\\s\\S]*${item}`)));
 			const research = await workflows(["log", id, `${rpi}/s1`], { cwd: root });
+			const path = "\\[campaign/ship/rpi\\]";
 			expect(research.stdout).toEqual([
-				logLine(`research  \\d+s  2 calls  \\d+ B  ${rpi}/s1`),
-				logLine(`  ✓ session researcher conversation ${researchers[n]}  \\d+s  \\d+ B  ${rpi}/[0-9a-f]{16}\\.1`),
-				logLine(`  ✓ ask researcher  \\d+s  \\d+ B  ${rpi}/[0-9a-f]{16}\\.1`),
+				logLine(`${path} research  \\d+s  2 calls  \\d+ B  ${rpi}/s1`),
+				logLine(`${path} session researcher conversation ${researchers[n]}  \\d+s  \\d+ B  ${rpi}/[0-9a-f]{16}\\.1`),
+				logLine(`${path} ask researcher  \\d+s  \\d+ B  ${rpi}/[0-9a-f]{16}\\.1`),
 			]);
 		}
 
