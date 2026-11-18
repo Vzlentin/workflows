@@ -33,8 +33,9 @@
 		"@earendil-works/pi-codemode": "1.5.2",
 		"@earendil-works/pi-coding-agent": "1.5.2",
 		"@earendil-works/pi-durable": "1.5.2",
+		"@earendil-works/pi-mcp": "1.5.2",
 		"@earendil-works/pi-tui": "1.5.2",
-		"@vzlentin/harness": "git+https://github.com/Vzlentin/harness.git#89f2691c39cc296fc388f4ca43aee73616714e64",
+		"@vzlentin/harness": "git+https://github.com/Vzlentin/harness.git#2e372ea67941b0edeafab6a6d9f75bf6a93aaac5",
 		"typebox": "1.3.27"
 	},
 	"devDependencies": {
