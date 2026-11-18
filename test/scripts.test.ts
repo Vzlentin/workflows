@@ -32,6 +32,7 @@ import { loadBundle, readFolder } from "../src/workflow/bundle.ts";
 import { readMeta } from "../src/workflow/meta.ts";
 import {
 	childTasks,
+	conversationDocument,
 	conversationOf,
 	detached,
 	fake,
@@ -54,6 +55,7 @@ import {
 	workflows,
 	worktreeAt,
 	logLine,
+	type Outcome,
 } from "./support.ts";
 
 let root: string;
@@ -97,6 +99,45 @@ async function stopped(argv: string[], stop: { readonly nth: number } | { readon
 /** The `calls` of `show <id> --json`. */
 async function shownCalls(id: string) {
 	return Value.Parse(SHOWN, JSON.parse((await workflows(["show", id, "--json"], { cwd: root })).stdout[0] ?? "")).calls;
+}
+
+/** The agent rows of `show <id> --agents --json`. */
+async function agentRows(id: string) {
+	const printed = (await workflows(["show", id, "--agents", "--json"], { cwd: root })).stdout[0] ?? "";
+
+	return Value.Parse(SHOWN_AGENTS, JSON.parse(printed)).agents.flatMap((row) => (row.kind === "agent" ? [row] : []));
+}
+
+/** The prompt, provider, model and thinking level of each model call of the command `outcome`. */
+function modelCalls(outcome: Outcome) {
+	return outcome.model.calls.map(({ prompt, provider, model, thinking }) => [prompt, provider, model, thinking]);
+}
+
+/** Writes `table` as the agents table of the user, and gives its path. */
+async function writeUserTable(table: JsonValue): Promise<string> {
+	const path = join(root, "config", "workflows", "agents.json");
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(path, JSON.stringify(table));
+
+	return path;
+}
+
+/** A script with two turns in one session, whose options are the source `options` of the argument of `session`. */
+const twoTurns = (options = '"worker"') =>
+	`const s = session(${options})\nconst one = await s.ask("Script: one")\nreturn one + ", " + await s.ask("Script: two")`;
+
+const PI_AGENT = Type.Object({
+	model: Type.Object({ provider: Type.String(), modelId: Type.String() }),
+	thinkingLevel: Type.String(),
+});
+
+/** The model and thinking level of the `pi.agent` document of the first conversation with a prompt that matches `prompt`. */
+async function agentModel(prompt: RegExp) {
+	const value = await conversationDocument("pi.agent", prompt);
+
+	if (!Value.Check(PI_AGENT, value)) throw new Error(`no agent with a model in the conversation of ${prompt}`);
+
+	return { model: value.model, thinkingLevel: value.thinkingLevel };
 }
 
 /** A task that saves `value` as the call `key` and fails, or, without `value`, returns the saved value of `key`. */
@@ -2669,7 +2710,7 @@ return [one.reply, two.reply].join(", ")`,
 		expect([run.code, run.stdout, run.stderr]).toEqual([0, [`run ${run.id}`, "caught"], []]);
 	});
 
-	it("uses the saved agents table of a run on resume and in its child runs", async () => {
+	it("reads the agents tables again on resume, for new sessions and child runs", async () => {
 		const folder = join(root, ".workflows");
 		await mkdir(join(folder, "scripts"), { recursive: true });
 		await writeFile(join(folder, "agents.json"), JSON.stringify({ "*": { thinking: "high" } }));
@@ -2686,9 +2727,151 @@ return [one.reply, two.reply].join(", ")`,
 		const resumed = await workflows(["resume", id, "--answer", "go"], { cwd: root });
 		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to two, Reply to child"]);
 		expect(resumed.model.calls.map(({ prompt, thinking }) => [prompt, thinking])).toEqual([
-			["Script: two", "high"],
-			["Script: child", "high"],
+			["Script: two", "low"],
+			["Script: child", "low"],
 		]);
+	});
+
+	it("moves a session to the model of its role in the tables of the resume", async () => {
+		await writeUserTable({ worker: { thinking: "high" } });
+		await writeFile(join(root, "x.js"), twoTurns());
+		const first = await workflows(["x.js"], { cwd: root, script: { failAt: { kind: "script", nth: 2 } } });
+		const id = first.id ?? "";
+		expect(first.code).toBe(1);
+		const [before] = await agentRows(id);
+		expect(before?.conversation).toEqual(expect.any(Number));
+
+		await writeUserTable({ worker: { model: "other/o-1" } });
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${id}`, "Reply to one, Reply to two"]]);
+		expect(modelCalls(resumed)).toEqual([["Script: two", "other", "o-1", "high"]]);
+		const after = await agentRows(id);
+		expect(after).toHaveLength(1);
+
+		expect(after[0]).toMatchObject({
+			conversation: before?.conversation,
+			asks: 2,
+			model: { provider: "other", model: "o-1", thinking: "high" },
+		});
+
+		expect(await agentModel(/Script: one/)).toEqual({
+			model: { provider: "other", modelId: "o-1" },
+			thinkingLevel: "high",
+		});
+	});
+
+	it("gives a restarted child run the tables of the resume of its caller", async () => {
+		await writeUserTable({ worker: { thinking: "high" } });
+		await writeFile(join(root, "parent.js"), 'return await run("child")');
+		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(root, ".workflows", "scripts", "child.js"), twoTurns());
+		const first = await workflows(["parent.js"], { cwd: root, script: { failAt: { kind: "script", nth: 2 } } });
+		const id = first.id ?? "";
+		expect(first.code).toBe(1);
+
+		await writeUserTable({ worker: { model: "other/o-1" } });
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect([resumed.code, resumed.stdout.at(-1)]).toEqual([0, "Reply to one, Reply to two"]);
+		expect(modelCalls(resumed)).toEqual([["Script: two", "other", "o-1", "high"]]);
+		expect(await childTasks(id)).toMatchObject([{ outcome: "failed" }, { outcome: "completed" }]);
+	});
+
+	it("keeps the model of a session whose role the tables of the resume do not change", async () => {
+		await writeUserTable({ worker: { thinking: "high" } });
+		await writeFile(join(root, "x.js"), twoTurns());
+		const first = await workflows(["x.js"], { cwd: root, script: { failAt: { kind: "script", nth: 2 } } });
+		const id = first.id ?? "";
+		const before = [await agentModel(/Script: one/), (await agentRows(id))[0]?.model];
+
+		expect([first.code, before]).toEqual([
+			1,
+			[
+				{ model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "high" },
+				{ provider: "anthropic", model: "claude-opus-5-5", thinking: "high" },
+			],
+		]);
+
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect(resumed.code).toBe(0);
+		expect(modelCalls(resumed)).toEqual([["Script: two", "anthropic", "claude-opus-5-5", "high"]]);
+		expect([await agentModel(/Script: one/), (await agentRows(id))[0]?.model]).toEqual(before);
+	});
+
+	it("reads at resume the project table of the start, not of the repository of --repo", async () => {
+		const repo = join(root, "repo");
+		await repository(repo);
+		const scripts = join(root, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await mkdir(join(repo, ".workflows"), { recursive: true });
+		await writeFile(join(root, ".workflows", "agents.json"), JSON.stringify({ worker: { thinking: "high" } }));
+		await writeFile(join(repo, ".workflows", "agents.json"), JSON.stringify({ worker: { thinking: "low" } }));
+		await writeFile(join(scripts, "w.js"), `export const meta = { repo: true }\n${twoTurns()}`);
+		const failing = { cwd: root, script: { failAt: { kind: "script", nth: 2 } } } as const;
+		const first = await workflows(["w", "--repo", "repo"], failing);
+		expect(first.code).toBe(1);
+
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+		expect(resumed.code).toBe(0);
+		expect(modelCalls(resumed)).toEqual([["Script: two", "anthropic", "claude-opus-5-5", "high"]]);
+	});
+
+	it("keeps the fields of a session call over the tables of the resume", async () => {
+		await writeFile(join(root, "x.js"), twoTurns('{ as: "worker", provider: "anthropic", model: "claude-haiku-5" }'));
+		const first = await workflows(["x.js"], { cwd: root, script: { failAt: { kind: "script", nth: 2 } } });
+		expect(first.code).toBe(1);
+
+		await writeUserTable({ worker: { model: "other/o-1", thinking: "low" } });
+		const resumed = await workflows(["resume", first.id ?? ""], { cwd: root });
+		expect(resumed.code).toBe(0);
+		expect(modelCalls(resumed)).toEqual([["Script: two", "anthropic", "claude-haiku-5", "low"]]);
+	});
+
+	it("refuses a bad table at resume before a task starts, and fails a turn on an unknown model", async () => {
+		const table = await writeUserTable({ worker: { thinking: "high" } });
+		await writeFile(join(root, "x.js"), twoTurns());
+		const first = await workflows(["x.js"], { cwd: root, script: { failAt: { kind: "script", nth: 2 } } });
+		const id = first.id ?? "";
+		expect(first.code).toBe(1);
+
+		await writeUserTable({ worker: { model: "nope" } });
+		const bad = await workflows(["resume", id], { cwd: root });
+		expect([bad.code, bad.stdout, bad.stderr]).toEqual([
+			1,
+			[],
+			[`workflows: ${table}: worker.model must be <provider>/<id>`],
+		]);
+		expect(await rootTasks(id)).toHaveLength(1);
+
+		await writeUserTable({ worker: { model: "anthropic/nope" } });
+		const unknown = await workflows(["resume", id], { cwd: root });
+		expect([unknown.code, unknown.stderr[0]]).toEqual([1, "failed x: Unknown model: anthropic/nope"]);
+
+		await writeUserTable({ worker: { thinking: "high" } });
+		const fixed = await workflows(["resume", id], { cwd: root });
+		expect([fixed.code, fixed.stdout.at(-1)]).toEqual([0, "Reply to one, Reply to two"]);
+	});
+
+	it("keeps the table of the saved run of from in a restarted child run", async () => {
+		const folder = join(root, ".workflows");
+		await mkdir(join(folder, "scripts"), { recursive: true });
+		await writeFile(join(folder, "agents.json"), JSON.stringify({ worker: { thinking: "high" } }));
+		await writeFile(join(folder, "scripts", "child.js"), twoTurns());
+		const saved = await workflows(["child"], { cwd: root });
+		expect(saved.code).toBe(0);
+
+		await writeFile(join(folder, "agents.json"), JSON.stringify({ worker: { thinking: "low" } }));
+		await writeFile(
+			join(folder, "scripts", "parent.js"),
+			`return await run("child", { from: ${JSON.stringify(saved.id)} })`,
+		);
+		const first = await workflows(["parent"], { cwd: root, script: { failAt: { kind: "script", nth: 2 } } });
+		const id = first.id ?? "";
+		expect([first.code, modelCalls(first)]).toEqual([1, [["Script: one", "anthropic", "claude-opus-5-5", "high"]]]);
+
+		await writeFile(join(folder, "agents.json"), JSON.stringify({ worker: { thinking: "minimal" } }));
+		const resumed = await workflows(["resume", id], { cwd: root });
+		expect(resumed.code).toBe(0);
+		expect(modelCalls(resumed)).toEqual([["Script: two", "anthropic", "claude-opus-5-5", "high"]]);
 	});
 
 	it("gives the run layer of --agents to its child runs, above the tables, also on resume", async () => {

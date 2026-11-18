@@ -1,18 +1,25 @@
 /**
  * The sessions of a run: children of harness's children library, owned by the run's task, which the `session` and
- * `ask` calls open and use, and which the end of the run ends.
+ * `ask` calls open, move to the model of their role before a turn, and use, and which the end of the run ends.
  */
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
-import { AgentDoc, type ConversationId, defineDocFamily, type JsonObject } from "@earendil-works/pi-durable";
-import type { Failure, Owner, Spec } from "@vzlentin/harness/children";
+import {
+	AgentDoc,
+	configure,
+	type ConversationId,
+	defineDocFamily,
+	type JsonObject,
+	type ModelRef,
+} from "@earendil-works/pi-durable";
+import { type Child, type Failure, type Owner, resolveModel, type Spec } from "@vzlentin/harness/children";
 import { PROJECT_EXTENSION } from "@vzlentin/harness/protocol";
 import type { Static } from "typebox";
 import type { ScriptInput } from "../launch/input.ts";
 import { ENTRY_NAME } from "../tool.ts";
 import type { Writable } from "../workflow/bundle.ts";
-import { roleOf } from "../workflow/roles.ts";
-import { CallDoc, type Calls, callOfKind, type SESSION_ARGS } from "./calls.ts";
+import { type Roles, roleOf } from "../workflow/roles.ts";
+import { CallDoc, type Calls, callOfKind, type SESSION_ARGS, type SESSION_MODEL } from "./calls.ts";
 import type { Host, Runtime } from "./version.ts";
 
 /**
@@ -39,6 +46,40 @@ export const INSTRUCTIONS = "You are a session of a workflows run, not the user'
 
 type SessionArgs = Readonly<Static<typeof SESSION_ARGS>>;
 
+/** The prefix of the key of a session in the children library: `wf:<key>`, with the key of its `session` call. */
+const SESSION_PREFIX = "wf:";
+
+/**
+ * The key of the `session` call that opened `child`. Throws when the key of `child` in the children library is not
+ * `wf:<key>`.
+ */
+function sessionCallKey(child: Child): string {
+	const { key } = child.lineage;
+
+	if (!key.startsWith(SESSION_PREFIX)) throw new Error(`session ${child.id} was not opened by a session call`);
+
+	return key.slice(SESSION_PREFIX.length);
+}
+
+/** The `model` of a `session` call record: the provider and model ID of `model`, and `thinking` when it is defined. */
+function recordedModel({ provider, modelId }: ModelRef, thinking: string | undefined): Static<typeof SESSION_MODEL> {
+	return thinking === undefined ? { provider, model: modelId } : { provider, model: modelId, thinking };
+}
+
+/**
+ * The model fields of the session of `args`: each field of `args` over the role of `args.profile` in `table`. A field
+ * that neither gives is undefined.
+ */
+function roleFields(table: Roles, args: SessionArgs) {
+	const role = roleOf(table, args.profile);
+
+	return {
+		provider: args.provider ?? role.model?.provider,
+		model: args.model ?? role.model?.modelId,
+		thinking: args.thinking ?? role.thinking,
+	};
+}
+
 /**
  * Where the sessions of the run sit in the children tree: under the driver of the current task, when it is the project
  * agent or a conversation of the children library, else in the tree `workflows:<root run ID>`.
@@ -57,18 +98,14 @@ async function treeOf(calls: Calls): Promise<{ parent: string } | { root: string
 
 /**
  * The session of the call `key`, opened in the children library under the key `wf:<key>` in `cwd`, with
- * `INSTRUCTIONS`. Each field of `args` overrides the role of `args.profile` in the agents table of the bundle, and the
- * role fills the rest; a field that neither gives comes from the project agent. The session does not get the
- * `workflow` tool, nor harness's store tools `thread`, `rule` and `parley`. The commit that opens it
- * saves its conversation and the model that the library set in the call record, and its conversation in the sessions
- * of the run. The same key again gives the same session.
+ * `INSTRUCTIONS`. Its model fields are those of `roleFields` with the agents table of the bundle; a field that neither
+ * gives comes from the project agent. The session does not get the `workflow` tool, nor harness's store tools
+ * `thread`, `rule` and `parley`. The commit that opens it saves its conversation and the model that the library set in
+ * the call record, and its conversation in the sessions of the run. The same key again gives the same session.
  */
 export async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionArgs): Promise<JsonValue> {
 	const { runtime, context, host, script } = calls;
-	const role = roleOf(script.bundle.agents, args.profile);
-	const provider = args.provider ?? role.model?.provider;
-	const model = args.model ?? role.model?.modelId;
-	const thinking = args.thinking ?? role.thinking;
+	const { provider, model, thinking } = roleFields(script.bundle.agents, args);
 
 	const spec: Writable<Spec> = { ...(await treeOf(calls)), cwd, instructions: INSTRUCTIONS };
 
@@ -83,7 +120,7 @@ export async function sessionOf(calls: Calls, key: string, cwd: string, args: Se
 	const child = await host.children.open(
 		host.place,
 		calls.owner,
-		`wf:${key}`,
+		`${SESSION_PREFIX}${key}`,
 		spec,
 		context,
 		async (tx, conversation) => {
@@ -98,14 +135,7 @@ export async function sessionOf(calls: Calls, key: string, cwd: string, args: Se
 			const call = callOfKind(await tx.doc(CallDoc, key, null), "session", key);
 			call.conversation = conversation;
 
-			if (agent.model !== undefined) {
-				const { provider, modelId } = agent.model;
-				const { thinkingLevel } = agent;
-				call.model =
-					thinkingLevel === undefined
-						? { provider, model: modelId }
-						: { provider, model: modelId, thinking: thinkingLevel };
-			}
+			if (agent.model !== undefined) call.model = recordedModel(agent.model, agent.thinkingLevel);
 
 			const opened = await tx.doc(SessionsDoc, script.root, null);
 			const record: OpenedSession = { run: script.runId, conversation, task: runtime.taskId };
@@ -119,8 +149,9 @@ export async function sessionOf(calls: Calls, key: string, cwd: string, args: Se
 }
 
 /**
- * One turn in the session `conversation`. The call's key is the request ID, so an interrupted ask continues its turn,
- * and the library sends a failed one again as `<key>#2`, `#3`. A turn without an answer that counts throws.
+ * One turn in the session `conversation`, after `moveToRole`. The call's key is the request ID, so an interrupted ask
+ * continues its turn, and the library sends a failed one again as `<key>#2`, `#3`. A turn without an answer that counts
+ * throws.
  */
 export async function askTurn(
 	calls: Calls,
@@ -133,6 +164,7 @@ export async function askTurn(
 	const child = await host.children.find(host.place, calls.owner, { id: String(conversation) }, context);
 
 	if (child === undefined) throw new Error(`Session ${conversation} is missing`);
+	await moveToRole(calls, child);
 	const input = { type: "input", content: prompt, requestId: key } as const;
 
 	if (schema !== null) {
@@ -146,6 +178,35 @@ export async function askTurn(
 	const answer = await child.ask(input, context);
 
 	return answer.status === "ok" ? answer.text : failed(key, answer);
+}
+
+/**
+ * Moves the session `child` to the model and thinking level of its role, as `resolveModel` of harness gives them: the
+ * fields of `roleFields` with the args of its `session` call, which `sessionCallKey` names, and the agents table of the
+ * current task, and the agent of the session for a field that neither gives. When the model or the thinking level
+ * differs, one commit configures the agent of the session and sets the `model` of the call record. Throws when the
+ * session has no `session` call record, and harness's error for an unknown model or a thinking level that the model
+ * does not have.
+ */
+async function moveToRole(calls: Calls, child: Child): Promise<void> {
+	const { runtime, context, host, script } = calls;
+	const key = sessionCallKey(child);
+	const record = await runtime.snapshot(CallDoc, key, context);
+
+	if (record === undefined) throw new Error(`the session call ${key} of session ${child.id} is missing`);
+	const { args } = callOfKind(record, "session", key);
+	const agent = await child.conversation.agent(context);
+	const { model, thinkingLevel } = resolveModel(host.place.models, agent, roleFields(script.bundle.agents, args));
+	const same = model.provider === agent.model?.provider && model.modelId === agent.model.modelId;
+
+	if (same && thinkingLevel === agent.thinkingLevel) return;
+	await runtime.commit(async (tx) => {
+		await configure(tx, child.id, { model, thinkingLevel });
+		const call = callOfKind(await tx.doc(CallDoc, key, null), "session", key);
+		call.model = recordedModel(model, thinkingLevel);
+
+		return undefined;
+	}, context);
 }
 
 /** Throws the error of the turn `key` whose answer does not count. */

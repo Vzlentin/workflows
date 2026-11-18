@@ -127,7 +127,7 @@ export const TODO_ARGS = Type.Union([
 /** The args of a `todo` call. */
 export type TodoArgs = Readonly<Static<typeof TODO_ARGS>>;
 
-/** The model that a session used: its provider and model ID, and its thinking level when it has one. */
+/** The model of a session: its provider and model ID, and its thinking level when it has one. */
 export const SESSION_MODEL = Type.Object(
 	{ provider: Type.String(), model: Type.String(), thinking: Type.Optional(Type.String()) },
 	{ additionalProperties: false },
@@ -213,7 +213,7 @@ export const SHELL_OUTPUT = Type.Object(
 
 /**
  * One script call: its kind with the args of that kind, the fields of every call, and the fields of its kind. The
- * `conversation` of a `session` call is its session, and `model` the model that it used. The `child` of a `run` call
+ * `conversation` of a `session` call is its session, and `model` the model of its session. The `child` of a `run` call
  * is its child run, so a stopped call reuses them, and `childRun` the run ID of its child run, saved before the child
  * run directory exists. The `ask` of an `input` call is the ID of its ask in the store of the host. The `output` of a
  * failed `sh` call is its exit code with the last `KEPT_OUTPUT_BYTES` bytes of its stdout and of its stderr.

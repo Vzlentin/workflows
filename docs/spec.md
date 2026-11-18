@@ -1063,11 +1063,11 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
     keys win. Keys compare as written, so a relative key and the same file as an absolute key are two keys.
   - A run without files in its overlay saves no `overlay` field, and its sessions open with no overlay.
 - `args.from` names a saved root run of the project store, of any workflow and any status. The child run gets the
-  prompts and agents table of that run's saved bundle in place of the caller's; the scripts and the lib stay the
-  caller's. `args.prompts` and `args.overlay` apply on top of them. A run ID that is not a root run of the store, such
-  as a child run ID, fails the call with `run <name>: no run <id>`, and a `from` that is not a string fails it with
-  `run <name>: from is not a run ID`. `from` is a reserved argument name. The caller's run layer of `--agents` stays
-  above the agents table of that run.
+  prompts and agents table of the saved bundle of the last task of that run in place of the caller's; the scripts and
+  the lib stay the caller's. `args.prompts` and `args.overlay` apply on top of them. A run ID that is not a root run
+  of the store, such as a child run ID, fails the call with `run <name>: no run <id>`, and a `from` that is not a
+  string fails it with `run <name>: from is not a run ID`. `from` is a reserved argument name. The caller's run layer
+  of `--agents` stays above the agents table of that run.
 - The child run gets the caller's saved scripts, prompts and agents table, or those of `args.from`, with the replacements
   of `args.prompts` and `args.overlay`, the caller's file overlay, and the caller's run layer of `--agents`. So every
   child run of a child run gets them too.
@@ -1076,7 +1076,8 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
 fails the call with `child run <id> failed: <error>`, where `<id>` is the deepest child run that failed, and the child's task ends as failed. A child run that was aborted or orphaned fails the call with `child run <id> aborted: <reason>` or `child run <id> orphaned: <reason>`. A caller that fails aborts
 its child runs that are still running. A resume of the caller continues the same child run, with the same run ID and
 run directory, also after a failed call, an abort or an interruption, and repeats no call that the child run saved. A
-child run that ended without a result continues in a new task.
+child run that ended without a result continues in a new task, with the agents table of the caller's current task. A
+child run of `args.from` keeps its saved table.
 
 ### The script API
 
@@ -1222,7 +1223,8 @@ entry, else the field of `"*"`, and the first table that gives the field wins. S
 entry of the role. A missing file is an empty table. A file that is not JSON, or an entry with another field or a bad
 value, fails the command before the run starts with `<file>: <problem>`, such as
 `<repo>/.workflows/agents.json: judge.model must be <provider>/<id>`. The command reads the tables when it starts a
-run, and the run saves the merged table, with the run layer above the tables.
+run, and the run saves the merged table, with the run layer above the tables. `resume` reads the tables again when it
+starts a new task of a run that ended: see [Saved inputs and resume](#saved-inputs-and-resume).
 
 The value of `--agents` is a list of parts split on `,`, such as `*=anthropic/claude-opus-5-5:high,judge=:low`. A part
 is `<name>=<value>`, split on its first `=`, and `*` is every role, as `"*"` of a table. The value splits on its last
@@ -1235,26 +1237,46 @@ level names are not checked here. A bad part is bad usage, exit 2, before the ru
 - `--agents '<part>' has a model that is not <provider>/<id>`.
 - `--agents '<part>' gives <name> again`: a name that an earlier part gave.
 
-`agents` is a reserved argument name. `resume` and `check` take no `--agents`: a resume uses the saved table.
+`agents` is a reserved argument name. `resume` and `check` take no `--agents`: a resume keeps the saved run layer.
 
 A call can give `provider`, `model` and `thinking`. Each field that the call gives overrides the role, and the role
 fills the rest. A session without a provider or a model from the call or the role takes the model of the project
 agent of harness (Pi's default model), and without a thinking level it takes the project agent's level, cut to the
 nearest level that the model has. Every session gets the same tools as the ship sessions, and the same instructions in
 its system prompt: it is a session of a workflows run, not the user's main agent. A model that the host's model
-registry does not have, or a `thinking` level that the model does not have, fails the `session` call with harness's
-error, such as `Unknown model: anthropic/nope`.
+registry does not have, or a `thinking` level that the model does not have, fails the `session` call, or the `ask`
+call of a session that moves to it after a resume, with harness's error, such as `Unknown model: anthropic/nope`.
 
 ### Saved inputs and resume
 
 Before the run starts, it saves the script, every `scripts/*.js` of the package and the project, the lib, the instructions
 of every prompt, the merged agents table, the run layer of `--agents` apart from it (`agents`, `{}` without the
 option), `serves` of `--serves` (none without the option), `item`, the absolute path of the `.md` file that the
-positional text argument names (none for inline text, for stdin and in a child run), the args and the directory of the
-run: the current directory, or the repository of `--repo` with `repo: true`. Resume and `run()` use these saved
-inputs, so a later edit of a script, prompt or `agents.json`, in the package, the user folder or `.workflows/`,
-changes only new runs. The shared instructions of the sessions are not saved: a resume uses the text of the loaded
-code.
+positional text argument names (none for inline text, for stdin and in a child run), the args, the project folder of the
+start (none in a child run) and the directory of the run: the current directory, or the repository of `--repo` with
+`repo: true`. Resume and `run()` use these saved
+inputs, so a later edit of a script or prompt, in the package or `.workflows/`, changes only new runs. The shared
+instructions of the sessions are not saved: a resume uses the text of the loaded code.
+
+A later edit of an `agents.json` changes new runs and the next resume. A resume that starts a new task of a run that
+ended, also of a waiting run with `--answer`, reads the tables again, merges them under the saved run layer, and saves
+the result as the agents table of the new task:
+
+- The project table is `agents.json` of the project folder of the start, which the run saves: the folder of the
+  directory where the start ran, also for a `repo: true` script started with `--repo`.
+- The user table comes from the environment of the resume command. The `workflow` tool runs `resume` as a command
+  too.
+- A bad table fails the resume before any task starts, with `workflows: <file>: <problem>` and exit 1. With `--answer`,
+  the ask keeps the answer, and the next resume continues the run.
+- A task that has not ended keeps its table, also when its host starts it again.
+- A child run that a resume of its caller starts again gets the agents table of the caller's new task. A child run of
+  `args.from` keeps its saved table.
+- Before each `ask` call that sends a turn, and not one that returns its saved result, the run resolves the role of the
+  session again: the fields of its `session` call first, then the agents table of the current task, then the model and
+  thinking level of the session for a field that neither gives. When the model or the thinking level is different,
+  the session moves to them before the turn, and its `session` call record saves the new model. So to leave a failing
+  model, edit a table and resume. A model that the host does not have, or a thinking level that the model does not
+  have, fails the `ask` call with harness's error, such as `Unknown model: anthropic/nope`.
 
 Resume runs the script again from the top. A call that succeeded before returns its saved result, and is not run
 again. A call is known by its name, its arguments and its position among identical calls. The calls of `parallel` and
@@ -1268,8 +1290,8 @@ call without `end` has not ended. The arguments of each kind are: `session` `{ "
 `{ "cmd", "check", "settle"? }`, `ok` `{ "cmd", "check" }`, `run` `{ "name", "args" }`, `input` `{ "question" }`, `pastRuns` `{ "workflow", "options" }`, and
 `todo` `{ "action": "add", "text" }`, `{ "action": "set", "id", "state", "text"? }` or `{ "action": "list" }`.
 `CALL_RECORD` of `src/run/calls.ts` is the schema of a record, one member for each kind. It also records the task that
-started it, for a `session` call its conversation and the model that the session used, `{ "provider", "model",
-"thinking"? }`, for a `sh` call that failed with a nonzero exit code, with `settle` or not, `output`, `{ "code", "stdout", "stderr" }`, with the
+started it, for a `session` call its conversation and the model of the session, `{ "provider", "model",
+"thinking"? }`, which a move of the session before a turn changes, for a `sh` call that failed with a nonzero exit code, with `settle` or not, `output`, `{ "code", "stdout", "stderr" }`, with the
 last 1 MiB (1048576 UTF-8 bytes) of each stream (a longer stream is cut to a note `[… <n> bytes cut]`, a newline and
 its end, together at most 1 MiB), which the call drops when it runs again, and for a `run` call the run ID of its child run before the child's run directory exists, so a rerun
 after a crash uses the same run ID and directory. `show`, `log` and `resume` read only the records that match the
@@ -1328,7 +1350,8 @@ sessions, as a failed run does.
 
 The answer of the ask is the answer of the call. `workflows resume <run-id> --answer <text>` answers the open ask of the
 run as the run itself: the answer `own`, with the words `[<text>]` and the label of the first line of `<text>` that is
-not blank, as plain text. Then it starts a new task of the run with the same input. The script runs again from the
+not blank, as plain text. Then it starts a new task of the run with the same input and the agents tables of the resume
+(see [Saved inputs and resume](#saved-inputs-and-resume)). The script runs again from the
 top, and the call reads its ask: an answered ask returns its words, one on each line, or its label when it has no
 words, and the call saves that as its result, so a later resume returns it and does not ask again. A dropped ask fails
 the call with `the user dropped ask <n> of input "<question>"`. A later `input` call writes its own ask and waits in
@@ -1366,8 +1389,8 @@ with the script that the run saved. The `project` file of the run directory name
 the host of that project from any directory.
 
 Resume continues the pending work in the host. For a script, see [Saved inputs and resume](#saved-inputs-and-resume).
-For `ship`, it uses the work item, repository, start commit, `workflows/scripts/ship.js`, prompts, agents table and round limit
-that the run saved before it started. `campaign` does the same with its goal and `workflows/scripts/campaign.js`: the split,
+For `ship`, it uses the work item, repository, start commit, `workflows/scripts/ship.js`, prompts and round limit
+that the run saved before it started, and the agents tables of the resume. `campaign` does the same with its goal and `workflows/scripts/campaign.js`: the split,
 the splits, the shipped items, the fix rounds, the questions and the rundown are not run again. It does not read the work item file again, select or clone the
 repository again, or create another branch. Answered turns are not sent to the model again. A turn that was in
 progress is sent again.
@@ -1412,8 +1435,9 @@ open `input` call in one read of the store, then the state of that ask from the 
 
 A run that fails with an error prints `failed <subject>: <error>` and `continue with: workflows resume <run-id>`, and
 exits 1. Examples are a failing Git hook, or a model error that remains after Pi's retries. The run's task ends as
-failed. Resume runs the script again in a new task of the same run, with the same input: a failed Git step runs again,
-a failed turn is sent again in the same session, saved calls return their results, and child runs continue. The error of a failed Git command of the engine, and of a
+failed. Resume runs the script again in a new task of the same run, with the same input and the agents tables of the
+resume: a failed Git step runs again, a failed turn is sent again in the same session, on the model of its role in the
+tables of the resume, saved calls return their results, and child runs continue. The error of a failed Git command of the engine, and of a
 failed `gh` call of `sweep` in its warning line, has the output of the command cut as the error of a failed `sh` call is, with no call in
 the note. A run whose task ended in another way, such as an aborted or orphaned task, or one that pi-durable faulted, resumes in the same way. An ask whose answer
 stopped for a reason other than its end, such as its length, fails its call, and a resume asks again. So does an ask
@@ -1767,7 +1791,7 @@ run <run-id> <workflow> <state> <title>
   blank. When other agents of the same run have the same first line, its text is the first line of its prompt that not
   all of them have, such as the region of one worker of a fleet. A session with no ask shows its label.
 - The mark is `◉` while one of its asks works, `✗` when it or one of its asks failed, and `✓` else. The model is the
-  model ID that the session used, as its `session` call recorded it; the line has no model when the record has none,
+  model ID of the session, as its `session` call recorded it; the line has no model when the record has none,
   such as a session that an earlier version opened. The duration runs from its start to now while
   it works, else to the end of its last ask.
 - A phase line comes before the first agent or child run under it. Other calls, such as `sh`, are not in the tree. The
@@ -1780,7 +1804,7 @@ schema `SHOWN_AGENTS` of `src/cli/commands/show.ts`, where the run fields and `a
 `{ "kind": "phase", "depth", "text" }`, `{ "kind": "run", "depth", "mark", "text" }` with the text `run <workflow>
 <child run-id>`, or `{ "kind": "agent", "depth", "mark", "text", "phase", "model"?, "asks", "conversation",
 "startedAt", "endedAt"?, "facts" }`, where `phase` is the phase line of the session, or `null` before the first phase
-line, `model` is `{ "provider", "model", "thinking"? }`, the model that the session used, `endedAt` is absent while
+line, `model` is `{ "provider", "model", "thinking"? }`, the model of the session, `endedAt` is absent while
 the agent works, and `facts` is the text after the agent text in its line, such as `claude-opus-5-5  1 ask  31s`.
 `depth` is the nesting of child runs.
 
@@ -2472,7 +2496,7 @@ The engine files in `src/`:
   keys, their progress, calls and lists of todos.
 - `cli/terminal/redraw.ts`: how the command draws the tree of steps of a run on stderr.
 - `launch/input.ts`: the generic entry point `workflows <wf>`: the checked arguments of a run, its run ID, its saved
-  input, its driver, and the input of a child run.
+  input, its driver, the input of a child run, and the input of a new task of a run that ended.
 - `launch/args.ts`: the `meta.args` values of the command line, and the texts that they name, and the args of a
   `run()` call, with one check of both against `meta.args`.
 - `launch/worktree.ts`: repository selection, the worktree of a run, made by Git, and the name of its branch.
@@ -2495,7 +2519,8 @@ The engine files in `src/`:
   requests, the value of its answer, and the answer of `resume --answer`.
 - `run/serves.ts`: the check of what a run serves, a todo of the list of the project or a parley, in the store of the
   host.
-- `run/sessions.ts`: the sessions on harness's children library, and the end of the sessions of a run.
+- `run/sessions.ts`: the sessions on harness's children library, their move to the model of their role before a turn,
+  and the end of the sessions of a run.
 - `run/child.ts`: the child runs that the `run` calls start.
 - `run/sandbox.ts`: the run of a script in the sandbox, with its globals and prompts.
 - `run/task.ts`: the task of every script run, its phase, its outcome, and the message of a background run.

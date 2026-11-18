@@ -1152,8 +1152,8 @@ export async function conversationOf(prompt: RegExp, project = "main"): Promise<
 	return found?.conversationId;
 }
 
-/** The `harness.overlay` state of the first conversation of the `main` store with a user message that matches `prompt`. */
-export async function overlayOf(prompt: RegExp): Promise<JsonValue | undefined> {
+/** The current value of the `kind` document of the first conversation of the `main` store with a user message that matches `prompt`. */
+export async function conversationDocument(kind: string, prompt: RegExp): Promise<JsonValue | undefined> {
 	const conversationId = await conversationOf(prompt);
 
 	if (conversationId === undefined) throw new Error(`no conversation with a prompt that matches ${prompt}`);
@@ -1161,13 +1161,16 @@ export async function overlayOf(prompt: RegExp): Promise<JsonValue | undefined> 
 
 	try {
 		const scope = { kind: "conversation" as const, conversationId };
-		const record = await storage.findDocument({ kind: "harness.overlay", scope }, "current", BACKGROUND_CONTEXT);
+		const record = await storage.findDocument({ kind, scope }, "current", BACKGROUND_CONTEXT);
 
 		return record && (await storage.document(record.id, "current", BACKGROUND_CONTEXT))?.value;
 	} finally {
 		await storage.close(BACKGROUND_CONTEXT);
 	}
 }
+
+/** The `harness.overlay` state of the first conversation of the `main` store with a user message that matches `prompt`. */
+export const overlayOf = (prompt: RegExp) => conversationDocument("harness.overlay", prompt);
 
 /** A run outcome that a background run posted as a message: its text, its data, and the conversation it went to. */
 export type PostedResult = { readonly text: string; readonly data: unknown; readonly conversation: number };

@@ -80,6 +80,8 @@ them for each role name (`researcher`, `planner`, `implementer`, `reviewer`, `ju
 `{ "judge": { "model": "<provider>/<id>", "thinking": "high" } }`. The repo table wins over the user table.
 For one run, `args.agents` wins over both tables: `"*=<provider>/<id>:high,judge=:low"` (`*` is every role; leave
 out the model or the thinking level to keep it from the tables).
+A resume reads the tables again and moves the sessions of the run to them, so to leave a failing model, edit a table
+and resume.
 
 ## Read the outcome
 

@@ -79,20 +79,17 @@ async function overrides(folder: string, templates: Record<string, string>): Pro
 
 /**
  * The `scripts/*.js` and `prompts/*.md` of the package and of `.workflows/` in the Git repository of `cwd`, or in `cwd`
- * outside a repository, read now, and the `lib/*.js` of the package. The agents table is the merge of the
- * `agents.json` of that `.workflows/`, of the user and of the package, in that order. Without `cwd`, only the package
- * files. Each `<name>.md` of the folder `prompts` replaces the template of that name.
+ * outside a repository, read now, and the `lib/*.js` of the package. The agents table is the one of `readAgents` for
+ * that `.workflows/`. Without `cwd`, only the package files. Each `<name>.md` of the folder `prompts` replaces the
+ * template of that name.
  */
 export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle> {
 	const project = cwd === undefined ? PACKAGE : await projectFolder(cwd);
 
-	const own = join(PACKAGE, "agents.json");
-	const tables = cwd === undefined ? [own] : [join(project, "agents.json"), userTablePath(), own];
-
-	const [scripts, merged, layers, lib, declarations] = await Promise.all([
+	const [scripts, merged, agents, lib, declarations] = await Promise.all([
 		loadScripts(project),
 		readMerged("prompts", ".md", readFolder(project, "prompts", ".md")),
-		Promise.all(tables.map(readRoles)),
+		readAgents(cwd === undefined ? undefined : project),
 		readFolder(PACKAGE, "lib", ".js"),
 		readFile(join(PACKAGE, "script.d.ts"), "utf8"),
 	]);
@@ -103,8 +100,19 @@ export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle
 		scripts,
 		lib: wrapLib(Object.values(lib).join("\n"), declarations),
 		prompts: Object.fromEntries(Object.entries(templates).map(([name, text]) => [name, instructions(text)])),
-		agents: mergeRoles(layers),
+		agents,
 	};
+}
+
+/**
+ * The merge of the `agents.json` tables of the project folder `project`, of the user and of the package, in that order,
+ * read now. Without `project`, only the table of the package.
+ */
+export async function readAgents(project: string | undefined): Promise<Roles> {
+	const own = join(PACKAGE, "agents.json");
+	const tables = project === undefined ? [own] : [join(project, "agents.json"), userTablePath(), own];
+
+	return mergeRoles(await Promise.all(tables.map(readRoles)));
 }
 
 /** A global that `workflows/script.d.ts` declares. */

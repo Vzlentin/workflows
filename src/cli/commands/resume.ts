@@ -1,7 +1,7 @@
 /** `workflows resume <run-id>` and `workflows wait <run-id>`: continue or follow a run. */
 import { isDeepStrictEqual, parseArgs } from "node:util";
 import type { Client } from "@vzlentin/harness/client";
-import { drivenInput, driverOf, postsTo } from "../../launch/input.ts";
+import { driverOf, postsTo, resumedInput } from "../../launch/input.ts";
 import { checkWorktree } from "../../launch/worktree.ts";
 import { callRecords, type Opened, reading } from "../../records/store.ts";
 import { answerAsk, type Asks, readAsk } from "../../run/asks.ts";
@@ -19,11 +19,12 @@ export const WAIT = "workflows wait <run-id> [--json]";
 
 /**
  * Continues the run of `args`. A finished run prints its result. A run whose last task ended without a result continues
- * in a new task with the same input, and shows the progress from its start. A run that waits for an answer gives the
- * answer of `--answer` to the ask of its open `input` call, and continues in a new task with the same input, which
- * reads the answer from the ask. A waiting run whose ask got its answer elsewhere, or was dropped, continues without
- * `--answer`. A run whose last task did not end is followed: with its host running, from the start of the task's
- * current execution, else from when the host starts.
+ * in a new task with the input of `resumedInput`: the saved input with the agents tables read now. It shows the
+ * progress from the start of that task. A run that waits for an answer gives the answer of `--answer` to the ask of its
+ * open `input` call, and continues in such a new task, which reads the answer from the ask. A waiting run whose ask got
+ * its answer elsewhere, or was dropped, continues without `--answer`. A run whose last task did not end keeps its input
+ * and is followed: with its host running, from the start of the task's current execution, else from when the host
+ * starts.
  * With `wait`, an ended run prints its outcome from the store, and Ctrl+C never stops the run.
  */
 export async function resume(
@@ -55,7 +56,7 @@ export async function resume(
 	}
 
 	// A waiting run whose ask is not open, after this command answered it or after an answer or a drop elsewhere, ended
-	// without a result, so it continues in a new task with the same input. A wait never reads the ask.
+	// without a result, so it continues in a new task. A wait never reads the ask.
 	const waiting = status === "waiting" && (wait || (await settleAsk(terminal, run, read.ask, answer)));
 
 	if (waiting && answer === undefined && !wait && !json && !background && terminal.readLine !== undefined) {
@@ -80,9 +81,11 @@ export async function resume(
 		: terminal;
 
 	// The new task has the driver of this command, and posts only with `--background`. A task that has not ended keeps
-	// its driver, so it posts to this command's conversation only when it drives the task.
+	// its driver, so it posts to this command's conversation only when it drives the task. The new task also gets the
+	// agents tables of this command's environment, and a bad table fails here, before any task starts. A task that has
+	// not ended keeps its table.
 	const driver = driverOf(process.env, run.project);
-	const sent = ended ? drivenInput(input, driver, background) : input;
+	const sent = ended ? await resumedInput(input, driver, background) : input;
 	followed.following(true);
 	let client: Client | undefined;
 	let from: number;

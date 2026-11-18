@@ -111,7 +111,9 @@ async function childRunId(runtime: Runtime, context: Context, key: string): Prom
 
 /**
  * A new child task with the input, so also the run ID and directory, of the ended child task `ended`, and the driver of
- * the caller's current task `script`. The commit that creates it also saves it in the record of the `run` call `key`.
+ * the caller's current task `script`. Without `from`, the arg of the `run` call, the child also gets the agents table
+ * of `script`; with it, the child keeps its saved table. The commit that creates it also saves it in the record of the
+ * `run` call `key`.
  */
 async function restartChild(
 	script: ScriptRun,
@@ -119,6 +121,7 @@ async function restartChild(
 	context: Context,
 	key: string,
 	ended: TaskId<JsonValue>,
+	from: JsonValue | undefined,
 ): Promise<Child> {
 	const record = await runtime.getTask(ended, context);
 
@@ -129,7 +132,8 @@ async function restartChild(
 		throw new Error(`the child task ${ended} is ${record.kind} version ${record.version}, not ${expected}`);
 	}
 
-	const input = withDriver(record.input, script.driver);
+	const driven = withDriver(record.input, script.driver);
+	const input = from === undefined ? { ...driven, bundle: { ...driven.bundle, agents: script.bundle.agents } } : driven;
 	await runtime.commit(async (tx) => {
 		const task = await tx.createTask(script.definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 		callOfKind(await tx.doc(CallDoc, key, null), "run", key).child = { task, runId: input.runId };
@@ -143,8 +147,8 @@ async function restartChild(
 /**
  * The result of the child run of the `run` call `key`, whose calls run in `cwd`: the `child` of its record, or a new
  * child task, run to its end. A saved child task that ended without completing gets a new child task with the same
- * input and run ID. Throws `child run <id> <state>: <cause>` when the child run ends without a result, where `state`
- * is `failed`, `aborted` or `orphaned`.
+ * input and run ID, and the caller's current agents table as `restartChild` says. Throws `child run <id> <state>:
+ * <cause>` when the child run ends without a result, where `state` is `failed`, `aborted` or `orphaned`.
  */
 export async function childResult(
 	calls: Calls,
@@ -159,7 +163,7 @@ export async function childResult(
 	const record = await runtime.getTask(started.task, context);
 	const before = record === undefined ? undefined : endedStatus(record);
 	const ended = before !== undefined && !hasResult(before);
-	const { task, runId } = ended ? await restartChild(script, runtime, context, key, started.task) : started;
+	const { task, runId } = ended ? await restartChild(script, runtime, context, key, started.task, args.from) : started;
 	const waited = await runtime.waitForTask(task, context);
 	const { outcome } = waited.state;
 	const status = runStatus(waited);

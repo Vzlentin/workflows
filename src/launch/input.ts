@@ -1,6 +1,6 @@
 /**
- * `workflows <wf>`: any workflow script as a command. The checked arguments of a run, its run ID, and the input that it
- * saves before it starts.
+ * `workflows <wf>`: any workflow script as a command. The checked arguments of a run, its run ID, the input that it
+ * saves before it starts, and the input of a new task of a run that ended.
  */
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -10,7 +10,7 @@ import type { Overlay } from "@vzlentin/harness/overlay";
 import { HARNESS_PROJECT, PI_SESSION_ID, type ServesInput } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { editBundle, loadBundle, type RunBundle } from "../workflow/bundle.ts";
+import { editBundle, loadBundle, projectFolder, readAgents, type RunBundle } from "../workflow/bundle.ts";
 import { findScript, type Io, problem, UsageError, usageOf } from "../workflow/find.ts";
 import { type Meta, OBJECT, readMeta } from "../workflow/meta.ts";
 import { mergeRoles, type Roles } from "../workflow/roles.ts";
@@ -96,6 +96,11 @@ type Args = {
 	readonly bundle: RunBundle;
 	/** The run layer of the roles, from `--agents`, which `bundle.agents` already has above the tables. */
 	readonly agents: Roles;
+	/**
+	 * The project folder of the start of a root run, whose `agents.json` is the project table of `bundle.agents`; a child
+	 * run has none.
+	 */
+	readonly tables?: string;
 	/** `--serves`: the todo of the list of the project or the parley that the run builds, which its child runs keep. */
 	readonly serves?: ServesInput;
 	/** The absolute path of the `.md` file that the positional text of a root run names; a child run has none. */
@@ -158,6 +163,22 @@ export function drivenInput(input: ScriptInput, driver: string | undefined, back
 	return background && driver !== undefined ? { ...driven, notify: true } : driven;
 }
 
+/**
+ * The input of a new task of the ended root run `input`, as `drivenInput` gives it, with the agents tables of
+ * `readAgents(input.tables)`, read now, under the run layer `input.agents`. The scripts and prompts stay the saved
+ * ones.
+ */
+export async function resumedInput(
+	input: ScriptInput,
+	driver: string | undefined,
+	background: boolean,
+): Promise<ScriptInput> {
+	if (input.tables === undefined) throw new Error(`run ${input.runId} is a child run: resume its root run`);
+	const agents = mergeRoles([input.agents, await readAgents(input.tables)]);
+
+	return drivenInput({ ...input, bundle: { ...input.bundle, agents } }, driver, background);
+}
+
 /** Whether the end of the task of `input` posts its outcome to the conversation `driver`. */
 export function posts(input: ScriptInput): input is ScriptInput & { readonly notify: true; readonly driver: string } {
 	return input.notify === true && input.driver !== undefined;
@@ -201,7 +222,8 @@ export async function parse([word = "", ...argv]: readonly string[], io: Io): Pr
 
 	const resolved = { ...bundle, agents: mergeRoles([agents, bundle.agents]), main: found.source };
 
-	const parsed = { name: found.name, args, meta, bundle: resolved, agents, repo, base, branch };
+	const tables = await projectFolder(io.cwd);
+	const parsed = { name: found.name, args, meta, bundle: resolved, agents, tables, repo, base, branch };
 	const served = serves === undefined ? parsed : { ...parsed, serves };
 
 	return item === undefined ? served : { ...served, item };
