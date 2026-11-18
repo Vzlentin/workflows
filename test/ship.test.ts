@@ -25,6 +25,7 @@ import {
 	piSettings,
 	progressOf,
 	repository,
+	running,
 	runsOf,
 	sandbox,
 	saveRun,
@@ -85,17 +86,6 @@ const NOTES = [
 
 /** The run memory of the first `n` notes of the fake model, as the start of a prompt. */
 const memory = (n: number) => `## memory\n${NOTES.slice(0, n).join("\n")}\n\n`;
-
-/** True while the process `pid` runs. */
-function running(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 describe("workflows ship", () => {
 	it("ships a work item file in two rounds and keeps the checkout", async () => {

@@ -112,6 +112,17 @@ export const worktreeAt = (repository: string, id: string | undefined) =>
 export const detached = (id: string | undefined) =>
 	`detached; run ${id} goes on. Follow it with: workflows resume ${id}. Stop it with: workflows stop ${id}`;
 
+/** True while the process `pid` runs. */
+export function running(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** The project store of `project` in the sandbox. */
 export const storeOf = (project = "main") => join(statePaths(project).dir, "durable.sqlite");
 

@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { connect } from "@vzlentin/harness/client";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { Choose } from "../src/cli/main.ts";
-import { conversationOf, runsOf, sandbox, workflows } from "./support.ts";
+import { conversationOf, running, runsOf, sandbox, workflows } from "./support.ts";
 
 let root: string;
 
@@ -27,12 +28,30 @@ async function ran(script: string): Promise<string> {
 	return run.id ?? "";
 }
 
+/** Stops the host that `harness attach` started as a separate process, and waits until it exits. */
+async function stopHost(): Promise<void> {
+	const client = await connect({ project: "main", start: false });
+	client?.close();
+	const pid = client?.pid;
+
+	if (pid === undefined || pid === process.pid) return;
+	process.kill(pid, "SIGTERM");
+
+	while (running(pid)) await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
 beforeEach(async () => {
 	root = await sandbox();
 	await fake("pi", `echo "$@" > "${root}/pi.log"\nexit 7\n`);
 });
 
-afterEach(() => rm(root, { recursive: true, force: true }));
+afterEach(async () => {
+	try {
+		await stopHost();
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
 
 describe("attach", () => {
 	it("opens the last session of a run, or the session of a conversation, in Pi", async () => {
