@@ -845,6 +845,33 @@ export default function ({ events }) {
 		expect(plan?.prompt).toMatch(/^Plan this change\. PROJECT\n\n## item\nFix the README typo\n\n## research\n/);
 	});
 
+	it("adds the text of a project prompts/<name>.after.md at the end of the prompt of that name", async () => {
+		const prompts = join(repo, ".workflows", "prompts");
+		await mkdir(prompts, { recursive: true });
+		await writeFile(join(prompts, "plan.after.md"), "\nAlso keep the house rules. AFTER\n");
+
+		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo, script: { edits: [FIXED] } });
+
+		expect(run.code).toBe(0);
+		const plan = run.model.find("plan")?.prompt ?? "";
+		expect(plan).toMatch(/\n\nAlso keep the house rules\. AFTER\n\n## item\nFix the README typo\n/);
+		expect(plan.indexOf("AFTER")).toBeGreaterThan(0);
+		expect(run.model.find("handoff")?.prompt).not.toMatch(/AFTER/);
+	});
+
+	it("fails before a run starts on a project prompts/<name>.after.md with no prompt of that name", async () => {
+		const prompts = join(repo, ".workflows", "prompts");
+		await mkdir(prompts, { recursive: true });
+		await writeFile(join(prompts, "nope.after.md"), "Text.\n");
+
+		const run = await workflows(["ship", "Fix the README typo"], { cwd: repo });
+
+		expect([run.code, run.stderr[0]]).toEqual([
+			1,
+			expect.stringContaining(`${prompts}/nope.after.md adds to no prompt`),
+		]);
+	});
+
 	it("runs ship.js from another script in a new worktree on its branch, and leaves the checkout of the caller unchanged", async () => {
 		const scripts = join(repo, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });

@@ -784,6 +784,13 @@ can hold `scripts/*.js`, `prompts/*.md` and `agents.json`. A project file adds t
 the package file of the same name in the same folder. Only the package has `lib/`. The `agents.json` tables do not
 replace each other: they merge by role name and field, as [Roles](#roles) says.
 
+A project file `prompts/<name>.after.md` does not replace a prompt: its text, without leading and trailing whitespace,
+goes at the end of the instructions of the prompt `<name>`, after an empty line and before the named inputs. It adds to
+the prompt that the run uses, the package's, the project's `prompts/<name>.md` or the one of `--prompts`. A
+`prompts/<name>.after.md` with no prompt `<name>` fails before the run starts with
+`<project>/prompts/<name>.after.md adds to no prompt`. The run saves the prompts with their added text, as it saves
+any prompt.
+
 `workflows` without arguments prints one line `<name>: <description>` for each script, or `<name>` for a script
 without `meta.description`.
 
