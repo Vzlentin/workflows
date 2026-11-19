@@ -1,7 +1,8 @@
 /**
- * The bundle of a run: the scripts and prompt templates of the package and the project, the merged agents tables, and
- * the script lib of the package. Each Pi prompt template in `prompts/` is frontmatter, the instructions, then a last
- * line `$@`, where interactive Pi puts its arguments. The engine sends the instructions followed by its named inputs.
+ * The bundle of a run: the scripts and prompt templates of the package and the project, the texts that the project adds
+ * after a prompt, the merged agents tables, and the script lib of the package. Each Pi prompt template in `prompts/` is
+ * frontmatter, the instructions, then a last line `$@`, where interactive Pi puts its arguments. The engine sends the
+ * instructions followed by its named inputs.
  */
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -23,7 +24,13 @@ export type Bundle = {
 	 * the lib files are not globals of a script.
 	 */
 	readonly lib: string;
+	/** The instructions of each prompt, without the text of its `<name>.after.md`. */
 	readonly prompts: Readonly<Record<string, string>>;
+	/**
+	 * The instructions of each file `prompts/<name>.after.md`, by prompt name, which `promptText` adds at the end of the
+	 * prompt `<name>`.
+	 */
+	readonly after: Readonly<Record<string, string>>;
 	/** The `agents.json` tables of the project, the user and the package, merged by `mergeRoles`. */
 	readonly agents: Roles;
 };
@@ -60,48 +67,99 @@ async function readMerged(
 	return { ...own, ...mine };
 }
 
-/** The `<name>.md` files of `folder`, each of which must replace a template of `templates`. */
-async function overrides(folder: string, templates: Record<string, string>): Promise<Record<string, string>> {
+/** The `*.md` files of the folder `folder` of `--prompts` by name; a missing folder throws. */
+async function promptsFolder(folder: string): Promise<Record<string, string>> {
 	const found = await stat(folder).then(
 		(entry) => entry.isDirectory(),
 		() => false,
 	);
 
 	if (!found) throw new Error(`no prompts folder ${folder}`);
-	const own = await readFolder(folder, ".", ".md");
 
-	for (const name of Object.keys(own)) {
-		if (templates[name] === undefined) throw new Error(`${folder}/${name}.md replaces no prompt of the package`);
+	return readFolder(folder, ".", ".md");
+}
+
+/** A file `<name>.after.md`: its path and its text. */
+type AfterFile = { readonly path: string; readonly text: string };
+
+/** A prompts folder: its templates by name, and its files `<name>.after.md` by prompt name. */
+type SplitFolder = { readonly templates: Record<string, string>; readonly after: Record<string, AfterFile> };
+
+/** The suffix of the name of a prompts file that adds text at the end of the prompt of its name. */
+const AFTER = ".after";
+
+/**
+ * The files `files` of the prompts folder `folder` split into the templates by name and the files
+ * `<name>.after.md` by prompt name, each with its path.
+ */
+function splitAfter(folder: string, files: Readonly<Record<string, string>>): SplitFolder {
+	const templates: Record<string, string> = {};
+	const after: Record<string, AfterFile> = {};
+
+	for (const [name, text] of Object.entries(files)) {
+		if (!name.endsWith(AFTER)) templates[name] = text;
+		else after[name.slice(0, -AFTER.length)] = { path: join(folder, `${name}.md`), text };
 	}
 
-	return own;
+	return { templates, after };
 }
 
 /**
  * The `scripts/*.js` and `prompts/*.md` of the package and of `.workflows/` in the Git repository of `cwd`, or in `cwd`
  * outside a repository, read now, and the `lib/*.js` of the package. The agents table is the one of `readAgents` for
  * that `.workflows/`. Without `cwd`, only the package files. Each `<name>.md` of the folder `prompts` replaces the
- * template of that name.
+ * template of that name. Each `<name>.after.md` of `.workflows/prompts/`, or of the folder `prompts`, which wins for
+ * the same name, gives the text that `promptText` adds to the prompt `<name>`, and fails when there is no prompt of that
+ * name.
  */
 export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle> {
 	const project = cwd === undefined ? PACKAGE : await projectFolder(cwd);
 
-	const [scripts, merged, agents, lib, declarations] = await Promise.all([
+	const [scripts, own, local, given, agents, lib, declarations] = await Promise.all([
 		loadScripts(project),
-		readMerged("prompts", ".md", readFolder(project, "prompts", ".md")),
+		readFolder(PACKAGE, "prompts", ".md"),
+		readFolder(project, "prompts", ".md"),
+		prompts === undefined ? {} : promptsFolder(prompts),
 		readAgents(cwd === undefined ? undefined : project),
 		readFolder(PACKAGE, "lib", ".js"),
 		readFile(join(PACKAGE, "script.d.ts"), "utf8"),
 	]);
 
-	const templates = prompts === undefined ? merged : { ...merged, ...(await overrides(prompts, merged)) };
+	const mine = splitAfter(join(project, "prompts"), local);
+	const overrides = splitAfter(prompts ?? "", given);
+	const merged = { ...own, ...mine.templates };
+
+	for (const name of Object.keys(overrides.templates)) {
+		if (merged[name] === undefined) throw new Error(`${prompts}/${name}.md replaces no prompt of the package`);
+	}
+
+	const templates = { ...merged, ...overrides.templates };
+	const after: Record<string, string> = {};
+
+	for (const [name, { path, text }] of Object.entries({ ...mine.after, ...overrides.after })) {
+		if (templates[name] === undefined) throw new Error(`${path} adds to no prompt`);
+		after[name] = instructions(text);
+	}
 
 	return {
 		scripts,
 		lib: wrapLib(Object.values(lib).join("\n"), declarations),
 		prompts: Object.fromEntries(Object.entries(templates).map(([name, text]) => [name, instructions(text)])),
+		after,
 		agents,
 	};
+}
+
+/**
+ * The prompt `name` of `bundle`: its instructions, then the text of its `<name>.after.md` after an empty line, or
+ * undefined when the bundle has no prompt `name`. Every prompt of a run comes from it, so a prompt that a `run()` call
+ * replaces keeps its added text.
+ */
+export function promptText(bundle: Pick<Bundle, "prompts" | "after">, name: string): string | undefined {
+	if (!Object.hasOwn(bundle.prompts, name)) return undefined;
+	const added = Object.hasOwn(bundle.after, name) ? bundle.after[name] : undefined;
+
+	return [bundle.prompts[name], added].filter((text) => text !== undefined && text !== "").join("\n\n");
 }
 
 /**
@@ -195,7 +253,8 @@ export type BundleEdits = {
 /**
  * The prompts and overlay files of the `run()` call of the script `name` with `bundle`. `prompts` replaces the texts
  * of prompts by name. `overlay` replaces or removes templates (`prompts/<name>.md`), and wins over `prompts` for the
- * same template; its other keys are files merged over `base`.
+ * same template; its other keys are files merged over `base`. The edits do not change `bundle.after`, so `promptText`
+ * adds the text of `<name>.after.md` to a replaced prompt too.
  */
 export function editBundle(
 	name: string,

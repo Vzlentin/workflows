@@ -83,8 +83,12 @@ declare const cwd: string;
  */
 declare const workflowsCommand: string;
 
-/** `prompts.<name>(inputs)`: the instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section. */
-declare const prompts: Record<string, (inputs?: Record<string, string>) => Promise<string>>;
+/**
+ * `prompts.<name>(inputs)`: the instructions of `prompts/<name>.md`, then the text of `prompts/<name>.after.md`, then
+ * each non-empty input as a `## <name>` section. `prompts.<name>.instructions` is the instructions alone, without the
+ * added text.
+ */
+declare const prompts: Record<string, ((inputs?: Record<string, string>) => Promise<string>) & { readonly instructions: string }>;
 
 /**
  * The model of a session. `as` is the role name, any name (default `default`). The run's `agents` arg (`--agents`),

@@ -49,7 +49,8 @@ async function bundleFrom(
 
 	if (saved === undefined) throw new Error(`run ${name}: no run ${from}`);
 
-	return { ...bundle, prompts: saved.prompts, agents: mergeRoles([agents, saved.agents]) };
+	// A run of an earlier version saved no `after`.
+	return { ...bundle, prompts: saved.prompts, after: saved.after ?? {}, agents: mergeRoles([agents, saved.agents]) };
 }
 
 /**

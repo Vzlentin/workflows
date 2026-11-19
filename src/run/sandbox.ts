@@ -16,7 +16,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { CLI_COMMAND } from "../command.ts";
 import { JSON_VALUE } from "../tool.ts";
-import { type Bundle, META, render } from "../workflow/bundle.ts";
+import { type Bundle, META, promptText, render } from "../workflow/bundle.ts";
 import {
 	type Calls,
 	callKey,
@@ -65,7 +65,10 @@ const globalThis = __replaced(Function("return globalThis")(), {
 	globalThis: { get: () => globalThis },
 });
 const prompts = Object.fromEntries(
-	${JSON.stringify(Object.keys(script.bundle.prompts))}.map((name) => [name, (inputs) => __prompt(name, inputs)]),
+	Object.entries(${JSON.stringify(script.bundle.prompts)}).map(([name, instructions]) => [
+		name,
+		Object.freeze(Object.assign((inputs) => __prompt(name, inputs), { instructions })),
+	]),
 );
 function session(options = "default") {
 	const { as = "default", provider, model, thinking, key } =
@@ -259,7 +262,7 @@ export async function runScript(
 			global("log", LINE_ARGS, ([line]) => progress.lines.push({ kind: "log", text: String(line), at: Date.now() })),
 			global("title", LINE_ARGS, ([text]) => progress.lines.push({ kind: "title", text: String(text) })),
 			global("__prompt", PROMPT_ARGS, ([name, inputs]) => {
-				const body = bundle.prompts[name];
+				const body = promptText(bundle, name);
 
 				if (body === undefined) throw new Error(`no prompt ${name}`);
 
