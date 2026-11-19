@@ -205,6 +205,7 @@ const SAVED = Type.Object({
 	args: Type.Object({ item: Type.Optional(Type.Unknown()) }),
 	bundle: Type.Object({
 		prompts: Type.Record(Type.String(), Type.String()),
+		after: Type.Optional(Type.Record(Type.String(), Type.String())),
 		agents: Type.Record(Type.String(), ROLE),
 	}),
 	worktree: Type.Optional(Type.Object({ repository: Type.String(), start: Type.String() })),

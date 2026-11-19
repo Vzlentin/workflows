@@ -65,7 +65,8 @@ defaults to 3. `--branch <name>` gives the name of the run's branch: see
 [Branch name](#branch-name).
 
 `--prompts <folder>`, relative to the current directory, gives prompts for this run: each `<name>.md` in the folder
-replaces the package prompt `prompts/<name>.md`, in the same template format. A missing folder, or a file with no
+replaces the package prompt `prompts/<name>.md`, in the same template format, and each `<name>.after.md` adds its
+text to the prompt `<name>`, as [Workflow scripts](#workflow-scripts) says. A missing folder, or a file with no
 package prompt of that name, fails before the run starts. The run saves the prompts that it used, as any run does.
 `campaign` and `optimize` take the same option; an `optimize` over past runs takes its baselines and the texts it
 edits from the saved runs instead. As a child run, it also takes `overlay`, and gives it to its child runs: see [Child runs](#child-runs).
@@ -620,7 +621,8 @@ with `failed optimize: <error>`, and exits 1, because the script checks them whe
 
 The texts that the run can edit are the baseline texts by path: `prompts/<name>.md` of the saved bundle of the first
 past run, or with `--items` the `prompts/<name>.md` templates of the run's bundle (so `--prompts <folder>` sets the
-templates), from `prompts`. `inv`, `dom`, `compose` and `select` are not among them. One turn of the `inv` prompt, in
+templates), from `prompts.<name>.instructions`. A baseline text does not hold the text of a `<name>.after.md`, which
+each ship run adds again. `inv`, `dom`, `compose` and `select` are not among them. One turn of the `inv` prompt, in
 a new session of the role `default`, gets the texts and the
 traces of the baselines as JSON: for each one its run ID, the work item, `status`, `rounds`, `findings`, `divergence`,
 `lessons`, and `notes`, the notes of its run memory from the `memory` field of its result. It answers
@@ -832,6 +834,16 @@ directory outside a repository. It has the shape of the script side of the packa
 can hold `scripts/*.js`, `prompts/*.md` and `agents.json`. A project file adds to the package files, and replaces
 the package file of the same name in the same folder. Only the package has `lib/`. The `agents.json` tables do not
 replace each other: they merge by role name and field, as [Roles](#roles) says.
+
+A project file `prompts/<name>.after.md` does not replace a prompt. Its instructions go at the end of the
+instructions of the prompt `<name>`, after an empty line and before the named inputs. Its instructions are its text
+without frontmatter and the last `$@`, as for a template, so a file with only text works too. The text adds to the
+prompt that the run uses: the package's, the project's `prompts/<name>.md`, the one of `--prompts`, or the one that
+`args.prompts` or `args.overlay` of a `run()` call gives (see [Child runs](#child-runs)). A `<name>.after.md` in a
+`--prompts` folder works in the same way, and wins over the project file of the same name. A `<name>.after.md` with no
+prompt `<name>` fails before the run starts with `<folder>/<name>.after.md adds to no prompt`. The name suffix `.after`
+is reserved: a file `<name>.after.md` is never the template of a prompt `<name>.after`. The run saves the added texts
+apart from the prompts, so its child runs and a run with `args.from` of it add the same texts.
 
 `workflows` without arguments prints one line `<name>: <description>` for each script, or `<name>` for a script
 without `meta.description`.
@@ -1106,7 +1118,8 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
   `run <name>: no branch <branch>`, and `checkout` fails the call for a script with `meta.worktree`. `checkout` is a
   reserved argument name.
 - `args.prompts` maps prompt names to template texts. Each text, without frontmatter and the last `$@`, replaces that
-  prompt in the child run only. A name with no prompt fails the call.
+  prompt in the child run only. A name with no prompt fails the call. The text of a `<name>.after.md` still goes at
+  the end of a replaced prompt.
 - `args.overlay` maps paths to texts or `null`. A value of another shape fails the call with
   `run <name>: overlay is not an object of path to text or null`. `overlay` is a reserved argument name.
   - A key `prompts/<prompt>.md` replaces that prompt, as `args.prompts` does, or removes it with `null`. A key for a
@@ -1120,8 +1133,9 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
     keys win. Keys compare as written, so a relative key and the same file as an absolute key are two keys.
   - A run without files in its overlay saves no `overlay` field, and its sessions open with no overlay.
 - `args.from` names a saved root run of the host store, of any workflow and any status. The child run gets the
-  prompts and agents table of the saved bundle of the last task of that run in place of the caller's; the scripts and
-  the lib stay the caller's. `args.prompts` and `args.overlay` apply on top of them. A run ID that is not a root run
+  prompts, the texts of `<name>.after.md` and the agents table of the saved bundle of the last task of that run in
+  place of the caller's; the scripts and the lib stay the caller's. A run of an earlier version saved no added texts
+  apart, and the child run then adds none. `args.prompts` and `args.overlay` apply on top of them. A run ID that is not a root run
   of the store, such as a child run ID, fails the call with `run <name>: no run <id>`, and a `from` that is not a
   string fails it with `run <name>: from is not a run ID`. `from` is a reserved argument name. The caller's run layer
   of `--agents` stays above the agents table of that run.
@@ -1160,7 +1174,7 @@ returns its session at once, and `phase`, `log` and `title` need no `await`.
 | `await todo.set(id, state, text)` | Sets the state of the todo `id` of the list of the run to `open`, `doing`, `done` or `dropped`, and its text when `text` is given, and returns the todo |
 | `await todo.list()` | The todos of the list of the run, in ID order |
 | `await input(question)` | Asks the user `question` as an ask of the host, and returns its answer: from `workflows resume <run-id> --answer <text>`, the `workflow` tool with `resume` and `answer`, or an answer of the ask elsewhere. Only a root run can ask. See [Input](#input) |
-| `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
+| `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then the text of `<name>.after.md`, then each non-empty input as a `## <name>` section. `prompts.<name>.instructions` is the instructions alone, without the added text |
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
 | `title(text)` | Name the run `text` in `list`, `show` and the end lines, in place of the subject of its first `text` argument; the last call wins. `changeOf` calls it with the subject of the intent |
 
@@ -1183,7 +1197,7 @@ does not have the fields below. Each run is an object:
 | `item` | The `item` arg of the run, or `null` |
 | `cwd` | The directory that the run ran in: the top level of the repository of `--repo`, else the caller's directory |
 | `repository`, `start` | The repository and the start commit of the run's worktree, or `null` |
-| `prompts` | The saved template texts, by prompt name |
+| `prompts` | The saved instructions, by prompt name, without the text of a `<name>.after.md` |
 | `labels` | The labels of the run, from `--serves` (see [Serves](#serves)): an array of strings, empty when its start named none or its input has another shape |
 | `key` | The `start` key of the first task of the run, `wf:<run-id>#1`, which holds its labels in the host |
 | `result` | The result of the run |
@@ -1327,7 +1341,7 @@ call of a session that moves to it after a resume, with harness's error, such as
 ### Saved inputs and resume
 
 Before the run starts, it saves the script, every `scripts/*.js` of the package and the project, the lib, the instructions
-of every prompt, the merged agents table, the run layer of `--agents` apart from it (`agents`, `{}` without the
+of every prompt, the instructions of every `<name>.after.md` apart from them, the merged agents table, the run layer of `--agents` apart from it (`agents`, `{}` without the
 option), `labels` of `--serves` (`[]` without the option), `item`, the absolute path of the work item file that
 the positional argument names (none for inline text, for stdin and in a child run), the args, the project folder of the
 start (none in a child run) and the directory of the run: the current directory, or the repository of `--repo` with

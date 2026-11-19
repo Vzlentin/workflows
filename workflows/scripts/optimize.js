@@ -198,7 +198,8 @@ if (args.items === undefined) {
 
 	source = { prompts: {} }
 
-	for (const name of Object.keys(prompts)) source.prompts[name] = await prompts[name]()
+	// The instructions without the text of `<name>.after.md`, which each ship run adds again.
+	for (const name of Object.keys(prompts)) source.prompts[name] = prompts[name].instructions
 }
 
 for (const [name, text] of Object.entries(source.prompts)) texts[`prompts/${name}.md`] = text
