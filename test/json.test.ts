@@ -32,12 +32,20 @@ async function workflowsDir(scripts: Readonly<Record<string, string>>, agents: A
 	for (const [name, source] of Object.entries(scripts)) await writeFile(join(folder, "scripts", `${name}.js`), source);
 }
 
-/** Sends the `todo` request `sent` on the list of the project agent to a host of the sandbox, and gives the reply. */
-async function projectTodo(sent: { action: "add"; text: string } | { action: "set"; id: number; state: "done" }) {
+/** Sends the `item` request `sent` to a host of the sandbox, and gives the reply. */
+async function item(
+	sent:
+		| { action: "add"; title: string }
+		| { action: "set"; id: number; state: "done" }
+		| { action: "read"; id: number },
+) {
 	const host = await startHost();
 
 	try {
-		return await request({ type: "todo", caller: "test", handle: "agent", ...sent }, { start: false });
+		return await request(
+			sent.action === "read" ? { type: "item", ...sent } : { type: "item", caller: "test", ...sent },
+			{ start: false },
+		);
 	} finally {
 		await host.close();
 	}
@@ -65,6 +73,7 @@ describe("the JSON of list and show", () => {
 					'await ok("false")',
 					'await pastRuns("all")',
 					'await todo.add("first")',
+					'await harness({ type: "tree" })',
 					'await run("child", {})',
 					'return await input("Q?")',
 				].join("\n"),
@@ -80,7 +89,7 @@ describe("the JSON of list and show", () => {
 		expect(listed).toEqual([expect.objectContaining({ runId: id, state: "waiting", question: "Q?" })]);
 
 		const shown = await printed(SHOWN, ["show", id, "--json"]);
-		const kinds: CallKind[] = ["session", "ask", "sh", "ok", "pastRuns", "todo", "run", "input"];
+		const kinds: CallKind[] = ["session", "ask", "sh", "ok", "pastRuns", "todo", "harness", "run", "input"];
 		expect(shown.calls.map((call) => call.kind)).toEqual(kinds);
 		expect(shown.calls[0]).toMatchObject({ model: { provider: "other", model: "o-1" } });
 		const conversation = await conversationOf(/Script: one/);
@@ -134,32 +143,59 @@ describe("the JSON of list and show", () => {
 		// @ts-expect-error A table of labels without a kind fails the type check.
 		const labels: Labels = others;
 		expect(todo).toBeTypeOf("function");
-		expect(Object.keys(labels).sort()).toEqual(["ask", "input", "ok", "pastRuns", "run", "session", "sh"]);
-		expect(Object.keys(LABELS).sort()).toEqual(["ask", "input", "ok", "pastRuns", "run", "session", "sh", "todo"]);
+		expect(Object.keys(labels).sort()).toEqual(["ask", "harness", "input", "ok", "pastRuns", "run", "session", "sh"]);
+		expect(Object.keys(LABELS).sort()).toEqual([
+			"ask",
+			"harness",
+			"input",
+			"ok",
+			"pastRuns",
+			"run",
+			"session",
+			"sh",
+			"todo",
+		]);
 	});
 });
 
 describe("serves", () => {
-	it("saves the todo that a run serves, gives it in the JSON, and keeps it in the child runs", async () => {
+	it("saves the item that a run serves, gives it in the JSON, and keeps it in the child runs", async () => {
 		await workflowsDir({ parent: 'return await run("child", {})', child: 'return "c"' });
-		expect(await projectTodo({ action: "add", text: "Build it" })).toMatchObject({ id: 1 });
+		expect(await item({ action: "add", title: "Build it" })).toMatchObject({ id: 1 });
 
 		const served = await workflows(["parent", "--serves", "1"], { cwd: root });
 		expect(served.code).toBe(0);
 		const inputs = await inputsOf(served.id);
-		expect(inputs.map((input) => input.serves)).toEqual([{ todo: 1 }, { todo: 1 }]);
+		expect(inputs.map((input) => input.serves)).toEqual([{ item: 1 }, { item: 1 }]);
 		const shown = await printed(SHOWN, ["show", served.id ?? "", "--json"]);
-		expect(shown.serves).toEqual({ todo: 1 });
+		expect(shown.serves).toEqual({ item: 1 });
 
 		const plain = await workflows(["parent"], { cwd: root });
 		expect(plain.code).toBe(0);
 		// Every run of this list has a task, so each row is a run with the run fields.
 		const listed = await printed(Type.Array(ROW), ["list", "--json"]);
-		expect(listed.find((row) => row.runId === served.id)?.serves).toEqual({ todo: 1 });
+		expect(listed.find((row) => row.runId === served.id)?.serves).toEqual({ item: 1 });
 		expect(listed.find((row) => row.runId === plain.id)).not.toHaveProperty("serves");
 	});
 
-	it("fails a run that serves an unknown todo or parley, or a todo that is done", async () => {
+	it("links the run to its item once, also after a resume", async () => {
+		await workflowsDir({ asks: 'return await input("Go?")' });
+		await item({ action: "add", title: "Build it" });
+
+		const waiting = await workflows(["asks", "--serves", "1"], { cwd: root });
+		expect(waiting.code).toBe(3);
+		const id = waiting.id ?? "";
+		const resumed = await workflows(["resume", id, "--answer", "yes"], { cwd: root });
+		expect(resumed.code).toBe(0);
+
+		const read = await item({ action: "read", id: 1 });
+		expect(read).toMatchObject({
+			state: "open",
+			edges: [{ from: `run:${id}`, kind: "serves", to: "item:1", by: `workflows:${id}` }],
+		});
+	});
+
+	it("fails a run that serves an unknown item or parley, or an item that is done", async () => {
 		await workflowsDir({ plain: 'return "x"' });
 
 		const failed = async (serves: string) => {
@@ -168,13 +204,13 @@ describe("serves", () => {
 			return [run.code, run.stderr.join("\n")];
 		};
 
-		expect(await failed("99")).toEqual([1, expect.stringContaining("Unknown todo: 99")]);
+		expect(await failed("99")).toEqual([1, expect.stringContaining("Unknown item: 99")]);
 		expect(await failed("no-such")).toEqual([1, expect.stringContaining("Unknown parley: no-such")]);
-		await projectTodo({ action: "add", text: "Built" });
-		await projectTodo({ action: "set", id: 1, state: "done" });
-		expect(await failed("1")).toEqual([1, expect.stringContaining("Todo 1 is done: a run cannot serve it")]);
+		await item({ action: "add", title: "Built" });
+		await item({ action: "set", id: 1, state: "done" });
+		expect(await failed("1")).toEqual([1, expect.stringContaining("Item 1 is done: a run cannot serve it")]);
 		const bad = await workflows(["plain", "--serves", "Not_A_Slug"], { cwd: root });
-		expect([bad.code, bad.stderr[0]]).toEqual([2, "workflows: --serves Not_A_Slug is not a todo ID or a parley slug"]);
+		expect([bad.code, bad.stderr[0]]).toEqual([2, "workflows: --serves Not_A_Slug is not an item ID or a parley slug"]);
 	});
 
 	it("accepts and refuses what a harness spawn accepts and refuses", async () => {
@@ -215,7 +251,7 @@ describe("serves", () => {
 		for (const { flag } of SERVED) ran.push((await workflows(["plain", "--serves", flag], { cwd: root })).code === 0);
 
 		expect(ran).toEqual(spawned);
-		// An open parley, a contract and an open todo are accepted; a closed parley and a done or dropped todo are not.
+		// An open parley, a contract and an open item are accepted; a closed parley and a done or dropped item are not.
 		expect(ran).toEqual([true, true, false, true, false, false]);
 	});
 });
@@ -225,9 +261,9 @@ const SERVED: readonly { readonly flag: string; readonly input: ServesInput }[] 
 	{ flag: "served-open", input: { parley: "served-open" } },
 	{ flag: "served-contract", input: { parley: "served-contract" } },
 	{ flag: "served-closed", input: { parley: "served-closed" } },
-	{ flag: "1", input: { todo: 1 } },
-	{ flag: "2", input: { todo: 2 } },
-	{ flag: "3", input: { todo: 3 } },
+	{ flag: "1", input: { item: 1 } },
+	{ flag: "2", input: { item: 2 } },
+	{ flag: "3", input: { item: 3 } },
 ];
 
 /** Sends `sent` to the running host of the sandbox. */
@@ -237,7 +273,7 @@ async function send(sent: Request): Promise<void> {
 
 /**
  * Makes the things of `SERVED` in the running host of the sandbox: an open parley, a contract and a closed parley, and
- * an open, a done and a dropped todo of the list of the project.
+ * an open, a done and a dropped item.
  */
 async function servedThings(): Promise<void> {
 	for (const [slug, end] of [
@@ -265,10 +301,8 @@ async function servedThings(): Promise<void> {
 		if (end === "done") await send({ type: "parley", action: "end", caller: "test", slug, status: end });
 	}
 
-	for (const text of ["Open", "Done", "Dropped"]) {
-		await send({ type: "todo", caller: "test", handle: "agent", action: "add", text });
-	}
+	for (const title of ["Open", "Done", "Dropped"]) await send({ type: "item", action: "add", caller: "test", title });
 
-	await send({ type: "todo", caller: "test", handle: "agent", action: "set", id: 2, state: "done" });
-	await send({ type: "todo", caller: "test", handle: "agent", action: "set", id: 3, state: "dropped" });
+	await send({ type: "item", action: "set", caller: "test", id: 2, state: "done" });
+	await send({ type: "item", action: "set", caller: "test", id: 3, state: "dropped" });
 }

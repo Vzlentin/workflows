@@ -3011,17 +3011,17 @@ return [one.reply, two.reply].join(", ")`,
 		]);
 		const plain = await workflows(["plain", "--help"], { cwd: root });
 		expect(plain.stdout).toEqual([
-			"usage: workflows plain [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] [--background] [--json]",
+			"usage: workflows plain [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <item-id | parley-slug>] [--background] [--json]",
 		]);
 
 		const ship = await workflows(["ship", "--help"], { cwd: root });
 		expect([ship.code, ship.stdout[0]]).toEqual([
 			0,
-			"usage: workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] [<item.md> | <text>] [--background] [--json]",
+			"usage: workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <item-id | parley-slug>] [<item.md> | <text>] [--background] [--json]",
 		]);
 		const own = await workflows(["count.js", "--help"], { cwd: root });
 		expect(own.stdout).toEqual([
-			"usage: workflows count [--depth <n>] [--all] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] <path> [--background] [--json]",
+			"usage: workflows count [--depth <n>] [--all] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <item-id | parley-slug>] <path> [--background] [--json]",
 			"Count words.",
 		]);
 
@@ -3056,7 +3056,7 @@ return [one.reply, two.reply].join(", ")`,
 		);
 
 		const usage =
-			"usage: workflows x [--depth <n>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] <path> [--background] [--json]";
+			"usage: workflows x [--depth <n>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <item-id | parley-slug>] <path> [--background] [--json]";
 
 		const cases: [string[], string][] = [
 			[["x.js", "--depth", "two", "src"], "workflows: --depth must be a positive integer"],

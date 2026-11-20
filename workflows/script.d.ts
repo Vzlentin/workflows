@@ -184,6 +184,8 @@ type PastRun = {
 	readonly start: string | null;
 	/** The saved template texts, by prompt name. */
 	readonly prompts: { readonly [name: string]: string };
+	/** What the run serves, the item or the parley that its start named, or null. */
+	readonly serves: { readonly item: number } | { readonly parley: string } | null;
 	/** The result of the run. */
 	readonly result: ScriptResult;
 };
@@ -209,6 +211,60 @@ declare const todo: {
 	/** The todos of the list, in ID order. */
 	list(): Promise<Todo[]>;
 };
+
+/** A reference of an edge end: `item:<id>`, `run:<runId>`, `agent:<conversation>`, `parley:<slug>` or `commit:<sha>`. */
+type Ref = string;
+
+/** A link between two things, one of them an item, with the time and the caller of its write. */
+type Edge = {
+	readonly from: Ref;
+	readonly kind: "serves" | "shapes" | "landed";
+	readonly to: Ref;
+	readonly at: number;
+	readonly by: string;
+};
+
+/** A work item of the project, as the host gives it, with its edges in the order of their writes. */
+type Item = {
+	readonly id: number;
+	readonly title: string;
+	readonly text?: string;
+	readonly state: "open" | "done" | "dropped";
+	readonly edges: readonly Edge[];
+	readonly stage: "inbox" | "shaping" | "ready" | "building" | "done" | "dropped";
+	readonly needsYou: boolean;
+	readonly at: number;
+	readonly by: string;
+};
+
+/** A node of the tree of the project: an agent with its state and what it serves, or a run. */
+type TreeNode = {
+	readonly id: string;
+	readonly parent?: string;
+	readonly name: string;
+} & (
+	| {
+			readonly kind: "agent";
+			readonly state: "busy" | "idle" | "error" | "ended";
+			readonly serves?:
+				| { readonly kind: "spawner" }
+				| { readonly kind: "parley"; readonly slug: string }
+				| { readonly kind: "contract"; readonly slug: string }
+				| { readonly kind: "item"; readonly id: number }
+				| { readonly kind: "project" };
+	  }
+	| { readonly kind: "run"; readonly state: "pending" | "running" | "completed" | "failed" | "aborted" }
+);
+
+/**
+ * Sends one request to the harness host of the run's project, and returns its reply: the item of `read` and `set`, the
+ * edge of `link`, or the nodes of `tree`. The run is the caller of a `link` and a `set`. The call saves its reply, so a
+ * resume does not send it again. An error of the host throws.
+ */
+declare function harness(request: { type: "item"; action: "read"; id: number }): Promise<Item>;
+declare function harness(request: { type: "item"; action: "set"; id: number; state: Item["state"] }): Promise<Item>;
+declare function harness(request: { type: "item"; action: "link"; from: Ref; kind: Edge["kind"]; to: Ref }): Promise<Edge>;
+declare function harness(request: { type: "tree" }): Promise<{ readonly nodes: readonly TreeNode[] }>;
 
 /**
  * Runs the functions at once and returns their results. A resume can start their calls in another order: give each

@@ -6,6 +6,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { Cursor, Page, TaskOutcome, TaskRecord } from "@earendil-works/pi-durable";
+import { ServesInput } from "@vzlentin/harness/protocol";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Mark } from "../records/steps.ts";
@@ -193,6 +194,7 @@ const SAVED = Type.Object({
 		agents: Type.Record(Type.String(), ROLE),
 	}),
 	worktree: Type.Optional(Type.Object({ repository: Type.String(), start: Type.String() })),
+	serves: Type.Optional(Type.Unknown()),
 });
 
 type Saved = Static<typeof SAVED>;
@@ -299,7 +301,7 @@ export function pastRuns(
 
 	for (const [id, { task, input }] of savedRuns(roots)) {
 		if (input.name !== workflow || endedStatus(task) !== "done") continue;
-		const { args, worktree, bundle } = input;
+		const { args, worktree, bundle, serves } = input;
 
 		completed.set(id, {
 			runId: id,
@@ -307,6 +309,8 @@ export function pastRuns(
 			repository: worktree?.repository ?? null,
 			start: worktree?.start ?? null,
 			prompts: bundle.prompts,
+			// A run of an older version can serve a todo, which is no item or parley.
+			serves: Value.Check(ServesInput, serves) ? serves : null,
 			result: taskOutcome(task)?.result ?? null,
 		});
 	}

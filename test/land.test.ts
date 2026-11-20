@@ -1,8 +1,11 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { request } from "@vzlentin/harness/client";
+import { type Request, StagedItem } from "@vzlentin/harness/protocol";
+import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { fake, gateGit, git, repository, sandbox, workflows, worktreeAt } from "./support.ts";
+import { fake, gateGit, git, hostModel, repository, sandbox, startHost, workflows, worktreeAt } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -58,9 +61,25 @@ esac
 
 afterEach(() => rm(root, { recursive: true, force: true }));
 
-/** A completed ship run with a commit on its branch: its ID, its branch, and the full and short head. */
-async function shipped(): Promise<{ id: string; branch: string; head: string; short: string }> {
-	const run = await workflows(["ship", "--json"], { cwd: repo });
+/** Sends the `item` request `sent`, an `add` or a `read`, to a new host of the sandbox, and gives the item. */
+async function toHost(
+	sent: Extract<Request, { type: "item"; action: "add" }> | Extract<Request, { type: "item"; action: "read" }>,
+): Promise<StagedItem> {
+	const host = await startHost();
+
+	try {
+		return Value.Parse(StagedItem, await request(sent, { start: false }));
+	} finally {
+		await host.close();
+	}
+}
+
+/**
+ * A completed ship run with a commit on its branch, which serves `serves` when given: its ID, its branch, and the full
+ * and short head.
+ */
+async function shipped(serves?: string): Promise<{ id: string; branch: string; head: string; short: string }> {
+	const run = await workflows(["ship", ...(serves === undefined ? [] : ["--serves", serves]), "--json"], { cwd: repo });
 	expect(run.code).toBe(0);
 	const { branch } = JSON.parse(run.stdout[1] ?? "{}").value;
 	const head = git(repo, "rev-parse", branch);
@@ -218,6 +237,67 @@ describe("workflows land", () => {
 			],
 		]);
 		expectLanded(run);
+	});
+
+	it("links the item of the run to the head and sets it to done", async () => {
+		await toHost({ type: "item", action: "add", caller: "test", title: "Build it" });
+		const run = await shipped("1");
+
+		const landed = await land(run.id);
+		expect([landed.code, landed.result.report]).toEqual([
+			0,
+			[`landed ${SUBJECT} ${run.short}, CI passed on the branch and on main`, "item 1 done"],
+		]);
+		expectLanded(run);
+		const item = await toHost({ type: "item", action: "read", id: 1 });
+		expect(item).toMatchObject({
+			state: "done",
+			edges: [
+				{ from: `run:${run.id}`, kind: "serves", to: "item:1" },
+				{ from: "item:1", kind: "landed", to: `commit:${run.head}` },
+			],
+		});
+	});
+
+	it("leaves open an item that a live agent serves, with the landed edge", async () => {
+		await toHost({ type: "item", action: "add", caller: "test", title: "Build it" });
+		const run = await shipped("1");
+		const host = await startHost("main", hostModel().models);
+		let landed;
+
+		try {
+			const spawn: Request = {
+				type: "spawn",
+				requestId: "serves-item",
+				caller: "test",
+				notify: false,
+				provider: "anthropic",
+				model: "claude-haiku-5",
+				callerThinking: "medium",
+				cwd: repo,
+				prompt: "Build it",
+				serves: { item: 1 },
+			};
+
+			await request(spawn, { start: false });
+			const done = await workflows(["land", run.id, "--wait", "1", "--json"], { cwd: repo, host });
+			landed = { code: done.code, result: JSON.parse(done.stdout[1] ?? "{}").value };
+		} finally {
+			await host.close();
+		}
+
+		expect(landed.code).toBe(0);
+		expect(landed.result.report).toEqual([
+			`landed ${SUBJECT} ${run.short}, CI passed on the branch and on main`,
+			expect.stringMatching(/^item 1 stays open: .+ serves it$/),
+		]);
+		const item = await toHost({ type: "item", action: "read", id: 1 });
+		expect(item).toMatchObject({
+			state: "open",
+			edges: expect.arrayContaining([
+				{ from: "item:1", kind: "landed", to: `commit:${run.head}`, at: expect.any(Number), by: expect.any(String) },
+			]),
+		});
 	});
 
 	it("finishes on resume a landing that stopped after the push of main", async () => {

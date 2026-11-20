@@ -1,19 +1,17 @@
 /**
- * What a run serves: the todo of the list of the project or the parley that its start named, which the host of its
- * project keeps. A root task checks it when it starts, through the requests of harness to that host.
+ * What a run serves: the item or the parley that its start named, which the host of its project keeps. A root task
+ * checks it when it starts, and links the run to the item, through the requests of harness to that host.
  */
 import { request } from "@vzlentin/harness/client";
-import { isFinished, type ServesInput, Todo } from "@vzlentin/harness/protocol";
+import { type ServesInput, StagedItem } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { askerOf } from "./asks.ts";
 
-const TODOS = Type.Object({ todos: Type.Array(Todo) });
-
 const PARLEY = Type.Object({ parley: Type.Object({ slug: Type.String(), status: Type.String() }) });
 
 /** `reply`, the reply of the host of `project`, which is undefined when no host runs. */
-function hostReply<T>(project: string, reply: T | undefined): T {
+export function hostReply<T>(project: string, reply: T | undefined): T {
 	if (reply === undefined) throw new Error(`no harness host runs for ${project}`);
 
 	return reply;
@@ -26,8 +24,8 @@ function badReply(name: string): Error {
 
 /**
  * Checks that the run `runId` of `project` can serve `serves`, as harness checks what an agent serves: a parley that is
- * open or a contract, or a todo of the list of the project that is not done or dropped. It throws for any other, and
- * for a parley or a todo that the host does not know.
+ * open or a contract, or an open item. It throws for any other, and for a parley or an item that the host does not
+ * know. For an item, it then writes the edge `run:<runId> serves item:<id>`, which the host writes only once.
  */
 export async function checkServes(
 	project: string,
@@ -50,13 +48,20 @@ export async function checkServes(
 		return;
 	}
 
-	const sent = { type: "todo", action: "list", caller: askerOf(runId), handle: "agent" } as const;
-	const reply = hostReply(project, await request(sent, options));
+	const item = hostReply(project, await request({ type: "item", action: "read", id: serves.item }, options));
 
-	if (!Value.Check(TODOS, reply)) throw badReply("todo list");
-	const todo = reply.todos.find(({ id }) => id === serves.todo);
+	if (!Value.Check(StagedItem, item)) throw badReply("item read");
 
-	if (todo === undefined) throw new Error(`Unknown todo: ${serves.todo}`);
+	if (item.state !== "open") throw new Error(`Item ${item.id} is ${item.state}: a run cannot serve it`);
 
-	if (isFinished(todo.state)) throw new Error(`Todo ${todo.id} is ${todo.state}: a run cannot serve it`);
+	const link = {
+		type: "item",
+		action: "link",
+		caller: askerOf(runId),
+		from: `run:${runId}`,
+		kind: "serves",
+		to: `item:${item.id}`,
+	} as const;
+
+	hostReply(project, await request(link, options));
 }

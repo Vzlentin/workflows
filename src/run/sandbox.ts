@@ -21,6 +21,8 @@ import {
 	type Calls,
 	callKey,
 	digest,
+	HARNESS_ARGS,
+	harnessCall,
 	inputCall,
 	JSON_OBJECT,
 	memoized,
@@ -93,6 +95,7 @@ const input = (question) => {
 	return answer;
 };
 const pastRuns = (workflow, options) => __pastRuns(workflow, options ?? {});
+const harness = (request) => __harness(request);
 const todo = Object.freeze({
 	add: (text) => __todoAdd(text),
 	set: (id, state, text) => __todoSet(id, state, text ?? null),
@@ -251,6 +254,7 @@ export async function runScript(
 				"todo",
 			),
 			global("__todoList", Type.Tuple([]), () => todoCall(calls, { action: "list" }), "todo"),
+			global("__harness", Type.Tuple([HARNESS_ARGS]), ([args]) => harnessCall(calls, args), "harness"),
 			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
 			global("log", LINE_ARGS, ([line]) => progress.lines.push({ kind: "log", text: String(line), at: Date.now() })),
 			global("title", LINE_ARGS, ([text]) => progress.lines.push({ kind: "title", text: String(text) })),

@@ -49,17 +49,17 @@ as a `.md` path that does not exist or an issue that `gh` cannot find, stop and 
 Each arg becomes a flag of `workflows <name>`. Give only the args that the user asks for:
 
 ```js
-{ name: "ship", serves?: "<todo ID | parley slug>", args: { item: "<absolute path of the work item>", rounds?: 3, base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
-{ name: "campaign", serves?: "<todo ID | parley slug>", args: { goal: "<absolute path of the goal>", rounds?: 3, base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
-{ name: "rpi", serves?: "<todo ID | parley slug>", args: { item: "<absolute path of the work item>", base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
-{ name: "thermoloop", serves?: "<todo ID | parley slug>", args: { change?: "<change>", item?: "<work item>", base?: "main", rounds?: 3, repo?: "<absolute path of a local repository>" } }
-{ name: "judge", serves?: "<todo ID | parley slug>", args: { change?: "<change>", item?: "<work item>", base?: "main", repo?: "<absolute path of a local repository>" } }
+{ name: "ship", serves?: "<item ID | parley slug>", args: { item: "<absolute path of the work item>", rounds?: 3, base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
+{ name: "campaign", serves?: "<item ID | parley slug>", args: { goal: "<absolute path of the goal>", rounds?: 3, base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
+{ name: "rpi", serves?: "<item ID | parley slug>", args: { item: "<absolute path of the work item>", base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
+{ name: "thermoloop", serves?: "<item ID | parley slug>", args: { change?: "<change>", item?: "<work item>", base?: "main", rounds?: 3, repo?: "<absolute path of a local repository>" } }
+{ name: "judge", serves?: "<item ID | parley slug>", args: { change?: "<change>", item?: "<work item>", base?: "main", repo?: "<absolute path of a local repository>" } }
 { name: "land", args: { run: "<run ID>", wait?: 1800 } }
 ```
 
-- `serves`: what the run builds: the ID of a todo of the list of the project, or the slug of an open parley or a
-  contract. When the user names a todo or a parley for the work, give it; else leave it out. A todo that is done or
-  dropped, or a parley that ended, fails the run.
+- `serves`: what the run builds: the ID of an item, or the slug of an open parley or a contract. When the user names
+  an item or a parley for the work, give it; else leave it out. An item that is done or dropped, or a parley that
+  ended, fails the run. `land` sets the item of a landed run to done.
 - `repo`: without it, the run uses the Git repository of the current directory. A local path uses that repository.
   Write the path in full, with no `~`: the tool does not expand it. For ship, campaign and rpi only, any other value,
   such as `owner/name`, is cloned with `gh` into the run directory. For thermoloop and judge, `repo` is the top

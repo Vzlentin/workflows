@@ -77,7 +77,7 @@ const plainEntry = (workflow: string, outline: readonly OutlineStep[]) => ({
 	placement: "here",
 	exit: {},
 	outline,
-	usage: `workflows ${workflow} [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] [--background] [--json]`,
+	usage: `workflows ${workflow} [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <item-id | parley-slug>] [--background] [--json]`,
 });
 
 describe("meta.outline", () => {
@@ -171,7 +171,7 @@ return args.word`,
 		expect([help.code, help.stdout]).toEqual([
 			0,
 			[
-				"usage: workflows mine [--word <value>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] [--background] [--json]",
+				"usage: workflows mine [--word <value>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <item-id | parley-slug>] [--background] [--json]",
 				"Mine.",
 			],
 		]);
@@ -220,7 +220,7 @@ describe("workflows outline", () => {
 				exit: { shipped: 0, rejected: 1, blocked: 1, stopped: 1 },
 				outline: OUTLINES.ship,
 				usage:
-					"workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] [<item.md> | <text>] [--background] [--json]",
+					"workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <item-id | parley-slug>] [<item.md> | <text>] [--background] [--json]",
 			},
 		]);
 		expect(entries.every((entry) => Value.Check(CATALOG_ENTRY, entry))).toBe(true);
@@ -280,7 +280,7 @@ return 1`,
 				exit: { found: 0, missing: 5 },
 				outline: [agent("reader", "read")],
 				usage:
-					"workflows mine [--all] [--repo <repository>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <todo-id | parley-slug>] <path> [--background] [--json]",
+					"workflows mine [--all] [--repo <repository>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <item-id | parley-slug>] <path> [--background] [--json]",
 			},
 		]);
 

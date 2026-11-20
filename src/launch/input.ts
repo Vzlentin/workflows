@@ -101,7 +101,7 @@ type Args = {
 	 * run has none.
 	 */
 	readonly tables?: string;
-	/** `--serves`: the todo of the list of the project or the parley that the run builds, which its child runs keep. */
+	/** `--serves`: the item or the parley that the run builds, which its child runs keep. */
 	readonly serves?: ServesInput;
 	/** The absolute path of the `.md` file that the positional text of a root run names; a child run has none. */
 	readonly item?: string;

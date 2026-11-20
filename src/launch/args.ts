@@ -214,15 +214,15 @@ function agentsOption(text: string | undefined, usage: string): Roles {
 }
 
 /**
- * What the `--serves` text names: a todo of the list of the project for a text of only digits, else a parley by slug;
+ * What the `--serves` text names: an item by ID for a text of only digits, else a parley by slug;
  * undefined without it. A text that is neither throws `UsageError`.
  */
 function servesOption(text: string | undefined, usage: string): ServesInput | undefined {
 	if (text === undefined) return undefined;
 
-	if (/^\d+$/.test(text)) return { todo: Number(text) };
+	if (/^\d+$/.test(text)) return { item: Number(text) };
 
-	if (!SLUG.test(text)) throw new UsageError(`--serves ${text} is not a todo ID or a parley slug`, usage);
+	if (!SLUG.test(text)) throw new UsageError(`--serves ${text} is not an item ID or a parley slug`, usage);
 
 	return { parley: text };
 }

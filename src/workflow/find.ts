@@ -119,7 +119,7 @@ export function usageOf(name: string, meta: Meta): string {
 	words.push(
 		"[--prompts <folder>]",
 		"[--agents <name>=<provider/id>:<thinking>,...]",
-		"[--serves <todo-id | parley-slug>]",
+		"[--serves <item-id | parley-slug>]",
 	);
 
 	for (const [arg, spec] of entries) {

@@ -2,13 +2,14 @@
 // model call: 1. find the repository, the branch and the worktree of the run, through `pastRuns` and `git worktree
 // list`; 2. check that the main checkout is clean and on `main`, that `main` equals `origin/main` after a fetch, and that
 // the branch is a fast-forward of `main`; 3. push the branch; 4. wait for its CI; 5. push the head to `main` on `origin`,
-// then fast-forward `main` in the main checkout; 6. delete the branch on `origin`; 7. wait for the CI of `main`; 8. sweep
-// the run with `workflows sweep <run-id> --yes`; 9. check the repository. A failed step from 1 to 6 refuses, with the
-// step and the reason in one line, and changes nothing after it: a refusal before step 5 leaves `main` untouched on both
-// sides. A red `main` gives `landed-red`, and nothing is reverted. Each CI wait is one shell command that reads
-// `gh run list` every 15 s, bounded by `--wait` seconds (default 1800). It never squashes, never merges through a pull
-// request and never force-pushes. Every Git step is safe to repeat: a resume runs a step again when its result was not
-// saved, and finds it done.
+// then fast-forward `main` in the main checkout; 6. delete the branch on `origin`; 7. for a run that serves an item,
+// link the item to the head with a `landed` edge, and set the item to `done` when no live agent serves it; 8. wait for
+// the CI of `main`; 9. sweep the run with `workflows sweep <run-id> --yes`; 10. check the repository. A failed step from
+// 1 to 6 refuses, with the step and the reason in one line, and changes nothing after it: a refusal before step 5 leaves
+// `main` untouched on both sides. A failed step 7 is a `check failed` line. A red `main` gives `landed-red`, and nothing
+// is reverted. Each CI wait is one shell command that reads `gh run list` every 15 s, bounded by `--wait` seconds
+// (default 1800). It never squashes, never merges through a pull request and never force-pushes. Every Git step is safe
+// to repeat: a resume runs a step again when its result was not saved, and finds it done.
 export const meta = {
 	description: "Land the branch of a run on main: push it, wait for its CI, fast-forward main, push main, and sweep the run.",
 	args: {
@@ -46,13 +47,13 @@ async function pastRun() {
 	return undefined
 }
 
-// Step 1, first part: the run to land, `{ workflow, repository, branch }`. Throws the reason of a refusal when the run
-// has not ended, is not a run of `LANDED`, has no worktree of its own or has no branch.
+// Step 1, first part: the run to land, `{ workflow, repository, branch, serves }`. Throws the reason of a refusal when
+// the run has not ended, is not a run of `LANDED`, has no worktree of its own or has no branch.
 async function runOf() {
 	const past = await pastRun()
 
 	if (past === undefined) throw new Error(`run ${id} has not ended or is not a run of ship or campaign`)
-	const { workflow, repository, result } = past
+	const { workflow, repository, result, serves } = past
 	// The engine keeps `branch` and `status` of a result only as strings, and a result that is not an object has neither.
 	const status = result?.status ?? "with no status"
 
@@ -60,7 +61,7 @@ async function runOf() {
 
 	if (result?.branch === undefined) throw new Error(`the ${workflow} run ${id} ended ${status} and has no branch`)
 
-	return { workflow, repository, branch: result.branch }
+	return { workflow, repository, branch: result.branch, serves }
 }
 
 // Step 1, second part: the run `run` with its checkouts and its head, `{ ...run, main, worktree, head, short, subject }`,
@@ -189,6 +190,32 @@ async function onOrigin(checkout, ref) {
 	return listed.error === undefined ? listed.split(/\s/)[0] : undefined
 }
 
+// Step 7: links the item `item` to the commit `head` with a `landed` edge, and sets it to `done` when no live agent
+// serves it. Returns the line of the report. Never sets an item to `open`.
+async function closeItem(item, head) {
+	await harness({ type: "item", action: "link", from: `item:${item}`, kind: "landed", to: `commit:${head}` })
+	const { edges } = await harness({ type: "item", action: "read", id: item })
+
+	// Only the tree tells whether an agent lives, and only an agent that serves the item has a `serves` edge from `agent:`.
+	if (edges.some((edge) => edge.kind === "serves" && edge.from.startsWith("agent:"))) {
+		const { nodes } = await harness({ type: "tree" })
+
+		const live = nodes.find(
+			(node) =>
+				node.kind === "agent" &&
+				node.serves?.kind === "item" &&
+				node.serves.id === item &&
+				node.state !== "ended",
+		)
+
+		if (live !== undefined) return `item ${item} stays open: ${live.name} serves it`
+	}
+
+	await harness({ type: "item", action: "set", id: item, state: "done" })
+
+	return `item ${item} done`
+}
+
 let run
 let found
 
@@ -206,9 +233,21 @@ try {
 	}
 }
 
-const { repository, branch, main, worktree, head, short, subject } = found
+const { repository, branch, main, worktree, head, short, subject, serves } = found
+const notes = []
+const failures = []
 
-begin(7, "CI of main")
+if (serves?.item !== undefined) {
+	begin(7, `item ${serves.item}`)
+
+	try {
+		notes.push(await closeItem(serves.item, head))
+	} catch (error) {
+		failures.push(`check failed: item ${serves.item}: ${oneLine(error.message)}`)
+	}
+}
+
+begin(8, "CI of main")
 
 let landed
 
@@ -226,9 +265,7 @@ try {
 	}
 }
 
-const failures = []
-
-begin(8, "sweep")
+begin(9, "sweep")
 
 try {
 	// Skipped when the worktree and the local branch are gone, as after a sweep whose result was not saved.
@@ -246,7 +283,7 @@ try {
 	failures.push(`check failed: sweep ${id}: ${oneLine(error.message)}`)
 }
 
-begin(9, "check")
+begin(10, "check")
 
 const bare = await sh(["git", "-C", main.path, "config", "--get", "--bool", "core.bare"], { settle: true })
 
@@ -264,4 +301,4 @@ if (local || tracked) failures.push(`check failed: the branch ${branch} stays in
 
 if ((await onOrigin(main.path, `refs/heads/${branch}`)) !== "") failures.push(`check failed: the branch ${branch} stays on origin`)
 
-return { status: landed.status, head: short, branch, report: [landed.line, ...failures] }
+return { status: landed.status, head: short, branch, report: [landed.line, ...notes, ...failures] }

@@ -693,10 +693,18 @@ steps in order, with `git -C` in the repository of the run:
    comes first, so that a rejected push leaves `main` untouched on both sides. When `main` is already the head, both
    do nothing.
 6. Delete the branch on `origin` when `git ls-remote` still lists it, and its remote-tracking branch.
-7. Wait for the CI of `main` at the head.
-8. Run `workflows sweep <run-id> --yes` of this package (`workflowsCommand`) in the directory of the land run (see [Sweep](#sweep)), unless the
+7. For a run whose `serves` is an item, `{ "item": <n> }`: link the item to the head with the edge
+   `item:<n> landed commit:<full head>`, then read the item. When the item has a `serves` edge from an `agent:` end,
+   read the tree of the project: an `agent` node that serves `{ "kind": "item", "id": <n> }` and whose state is not
+   `ended` is a live agent. With no live agent, set the item to `done`; with one, the item stays `open`. These are
+   `harness` calls of the land run. The step never sets an item to `open`. It adds the report line `item <n> done` or
+   `item <n> stays open: <node name> serves it`. A failure, such as the refusal of the host while a run that serves
+   the item is live, adds `check failed: item <n>: <message>`, and the status does not change. A run that serves no
+   item, or a parley, skips the step.
+8. Wait for the CI of `main` at the head.
+9. Run `workflows sweep <run-id> --yes` of this package (`workflowsCommand`) in the directory of the land run (see [Sweep](#sweep)), unless the
    worktree and the local branch are already gone.
-9. Check the repository: `core.bare` is not true, `main` equals `main` on `origin`, and the branch is gone locally, as
+10. Check the repository: `core.bare` is not true, `main` equals `main` on `origin`, and the branch is gone locally, as
    a remote-tracking branch and on `origin`.
 
 A CI wait is one shell command in the main checkout. Every 15 seconds it runs
@@ -888,7 +896,7 @@ export const meta = {
   `workflows outline --json` gives it with the rest of the checked `meta`: see [Outline](#outline).
 
 Every script also takes `--prompts <folder>`, as `ship` does, `--agents <name>=<provider>/<id>:<thinking>,...`, the
-run layer of the roles (see [Roles](#roles)), `--serves <todo-id | parley-slug>`, what the run builds (see
+run layer of the roles (see [Roles](#roles)), `--serves <item-id | parley-slug>`, what the run builds (see
 [Serves](#serves)), `--background`, `--json` and `--help`. These flag names, and the options that a placement adds,
 are reserved argument names: `meta.args.<name>` with one of them fails with `meta.args.<name> is a reserved name`.
 `workflows <wf> --help` prints
@@ -1098,6 +1106,7 @@ returns its session at once, and `phase`, `log` and `title` need no `await`.
 | `await ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
 | `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow` in the project store. See [Past runs](#past-runs) |
+| `await harness(request)` | Sends one request to the harness host of the run's project and returns its reply. See [Harness requests](#harness-requests) |
 | `await todo.add(text)` | Adds a todo with the state `open` and the next ID to the list of the run, and returns it, `{ id, text, state }`. See [Todos](#todos) |
 | `await todo.set(id, state, text)` | Sets the state of the todo `id` of the list of the run to `open`, `doing`, `done` or `dropped`, and its text when `text` is given, and returns the todo |
 | `await todo.list()` | The todos of the list of the run, in ID order |
@@ -1108,7 +1117,7 @@ returns its session at once, and `phase`, `log` and `title` need no `await`.
 
 A call with an argument of the wrong type, such as a prompt that is not a string, a `sh` command that is not a string
 or an array of strings, or a `prompts.<name>` input that is not a string, fails with
-`<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run`, `pastRuns`, `todo`, `input` or `prompt`, and
+`<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run`, `pastRuns`, `todo`, `harness`, `input` or `prompt`, and
 `<path>` points to the deepest wrong value in the arguments, such as `/0/1` for `sh(["git", 1])`.
 
 #### Past runs
@@ -1125,12 +1134,28 @@ does not have the fields below. Each run is an object:
 | `item` | The `item` arg of the run, or `null` |
 | `repository`, `start` | The repository and the start commit of the run's worktree, or `null` |
 | `prompts` | The saved template texts, by prompt name |
+| `serves` | What the run serves, `{ "item": <id> }` or `{ "parley": "<slug>" }`, or `null` when its start named nothing or its input has another shape |
 | `result` | The result of the run |
 
 `runs`, an array of run IDs, gives those runs in that order: an ID that is not a completed root run of `workflow` fails
 the call with `no completed <workflow> run <id>`. Without `runs`, `limit`, an integer of 0 or more, gives at most that
 many runs; without `limit`, it gives all of them. Another option fails with `pastRuns got bad arguments`. The call
 saves its result, so a resume returns the same list and does not read the store again.
+
+#### Harness requests
+
+`harness(request)` sends one request to the harness host of the run's project, with no start of a host, and returns
+the reply of the host. The request is one of:
+
+- `{ type: "item", action: "read", id }`: the item `id` with its edges.
+- `{ type: "item", action: "link", from, kind, to }`: writes the edge, and returns it.
+- `{ type: "item", action: "set", id, state }`: sets the state of the item `id`, and returns the item.
+- `{ type: "tree" }`: the nodes of the tree of the project, `{ nodes }`.
+
+The call adds `caller: workflows:<run-id>` to a `link` and a `set`. Another request fails with
+`harness got bad arguments: <path> <problem>`. An error of the host fails the call with its message, and no host
+fails it with `no harness host runs for <project>`. The call is of the kind `harness`, with the request as its args,
+and saves the reply, so a resume returns it and does not send the request again.
 
 #### Todos
 
@@ -1288,7 +1313,8 @@ records its kind, the arguments of its kind, its phase and its start time when i
 call without `end` has not ended. The arguments of each kind are: `session` `{ "profile", "provider"?, "model"?,
 "thinking"?, "key"? }` (`key` is the first 16 hex characters of the sha256 of the key that the script gives, the prompt of an `agent` call), `ask` `{ "conversation", "prompt", "schema", "settle"? }` (`schema` is `null` without one), `sh`
 `{ "cmd", "check", "settle"? }`, `ok` `{ "cmd", "check" }`, `run` `{ "name", "args" }`, `input` `{ "question" }`, `pastRuns` `{ "workflow", "options" }`, and
-`todo` `{ "action": "add", "text" }`, `{ "action": "set", "id", "state", "text"? }` or `{ "action": "list" }`.
+`todo` `{ "action": "add", "text" }`, `{ "action": "set", "id", "state", "text"? }` or `{ "action": "list" }`, and
+`harness` the request, as in [Harness requests](#harness-requests).
 `CALL_RECORD` of `src/run/calls.ts` is the schema of a record, one member for each kind. It also records the task that
 started it, for a `session` call its conversation and the model of the session, `{ "provider", "model",
 "thinking"? }`, which a move of the session before a turn changes, for a `sh` call that failed with a nonzero exit code, with `settle` or not, `output`, `{ "code", "stdout", "stderr" }`, with the
@@ -1314,18 +1340,21 @@ a call that a stop or a host stop cut records nothing more.
 
 ### Serves
 
-`--serves <value>` names what a run builds, apart from the text of the run: a value of digits only is the ID of a todo
-of the list of the project, and any other value is the slug of a parley. A value that is neither, such as `Bad_Slug`,
-is bad usage: `--serves <value> is not a todo ID or a parley slug`. The run saves it in its input as `serves`,
-`{ "todo": <id> }` or `{ "parley": "<slug>" }`, the `ServesInput` of harness, and its child runs keep it. `list --json`
+`--serves <value>` names what a run builds, apart from the text of the run: a value of digits only is the ID of an
+item, and any other value is the slug of a parley. A value that is neither, such as `Bad_Slug`, is bad usage:
+`--serves <value> is not an item ID or a parley slug`. The run saves it in its input as `serves`, `{ "item": <id> }`
+or `{ "parley": "<slug>" }`, the `ServesInput` of harness, and its child runs keep it. `list --json`
 and `show --json` give it as `serves`; a run that names nothing has no `serves`.
 
-Each task of a root run, the first one and each resume, checks it when it starts, through the `todo list` and
-`parley read` requests of harness to the host of its project, with the rule of harness for what an agent serves. A
-todo that is not in the list fails the run with `Unknown todo: <id>`, and a todo that is done or dropped with `Todo
-<id> is <state>: a run cannot serve it`. A parley that the host does not know fails it with `Unknown parley: <slug>`,
-and a parley that is not open and not a contract with `Parley <slug> is <status>: a run cannot serve it`. So a resume
-after the end of the todo or the parley fails. `serves` is a reserved argument name.
+Each task of a root run, the first one and each resume, checks it when it starts, through the `item read` and
+`parley read` requests of harness to the host of its project, with the rule of harness for what an agent serves. An
+item that the host does not know fails the run with `Unknown item: <id>`, and an item that is done or dropped with
+`Item <id> is <state>: a run cannot serve it`. A parley that the host does not know fails it with `Unknown parley:
+<slug>`, and a parley that is not open and not a contract with `Parley <slug> is <status>: a run cannot serve it`. So
+a resume after the end of the item or the parley fails. After the check of an item, the task sends `item link` with
+the caller `workflows:<run-id>` and the edge `run:<run-id> serves item:<id>`. The host writes the edge once, so each
+resume sends it again with no change. A child run does not check or link. `land` sets the item to `done` (see
+[Land](#land)). `serves` is a reserved argument name.
 
 ### Input
 
@@ -1728,7 +1757,7 @@ run <run-id> <workflow> <state> <title>
 
 - The calls are in the order they started. Each call is under the phase line that was current when it started, and is
   indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `sh`, `ok`,
-  `run`, `input`, `pastRuns` or `todo`. An `agent` call is a `session` call and an `ask` call.
+  `run`, `input`, `pastRuns`, `todo` or `harness`. An `agent` call is a `session` call and an `ask` call.
 - Each call has a state. It is `done` or `failed` once it ended. A call that did not end is `cancelled` when the end of
   its script cancelled it, `waiting` when it is the open `input` call of a waiting run, `running` while the task that
   started it has not ended (it runs now, or the host stopped), and `cut` once that task ended. A call that an earlier
@@ -1740,7 +1769,8 @@ run <run-id> <workflow> <state> <title>
   the session, and the role name only for a `session` that did not open. For `ask`, it is the role name of its session. For
   `sh` and `ok`, it is the command on one line, cut at 80 characters. For `run`, it is the workflow name and the child
   run ID. For `input`, it is the question on one line, cut at 80 characters. For `pastRuns`, it is the workflow. For `todo`, it is `add <text>`,
-  `set <id> <state>` or `list`, on one line, cut at 80 characters. The phase lines and calls of the child run
+  `set <id> <state>` or `list`, on one line, cut at 80 characters. For `harness`, it is `tree`, `item read <id>`,
+  `item set <id> <state>`, or `item link <from> <kind> <to>` on one line, cut at 80 characters. The phase lines and calls of the child run
   are indented by 2 more under the `run` line.
 - The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, also for a working session, it is
   the time since the call started.
@@ -2248,7 +2278,7 @@ The tool takes one of `name`, `script`, `resume` or `save`, plus `args` with `na
   command starts. `answer` works with `background`.
 - `save: { runId, name, force? }` runs `workflows save <run-id> <name>`, with `--force` when `force` is true. See
   [Save](#save).
-- `serves`, optional with `name` and `script`, names what the run builds: a todo ID or a parley slug adds
+- `serves`, optional with `name` and `script`, names what the run builds: an item ID or a parley slug adds
   `--serves=<value>` before `--json` (see [Serves](#serves)). Without it, the run serves nothing and its JSON has no
   `serves`. With `resume` or `save`, it is the error `serves works only with name or script`, and no command starts.
 - `background: true`, with `name`, `script` or `resume`, adds `--background` before `--json`. With `save`, it is the
@@ -2517,8 +2547,8 @@ The engine files in `src/`:
   names, `s<n>` and `<run ID>/s<n>`.
 - `run/asks.ts`: the asks of the `input` calls in the store of the host: the asker and the title of an ask, its
   requests, the value of its answer, and the answer of `resume --answer`.
-- `run/serves.ts`: the check of what a run serves, a todo of the list of the project or a parley, in the store of the
-  host.
+- `run/serves.ts`: the check of what a run serves, an item or a parley, in the store of the host, and the `serves`
+  edge from the run to its item.
 - `run/sessions.ts`: the sessions on harness's children library, their move to the model of their role before a turn,
   and the end of the sessions of a run.
 - `run/child.ts`: the child runs that the `run` calls start.

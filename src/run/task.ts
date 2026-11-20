@@ -180,7 +180,8 @@ async function runPhase(
 			return undefined;
 		}, context);
 
-		// Each task of a root run checks what it serves, so a resume after the end of the todo or the parley fails.
+		// Each task of a root run checks what it serves and links the run to its item, so a resume after the end of the
+		// item or the parley fails.
 		if (task.owner === undefined && input.serves !== undefined) {
 			await checkServes(await readProject(input.runDir), runId, input.serves, context.abortSignal);
 		}

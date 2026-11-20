@@ -16,7 +16,7 @@ export const SWEPT = Type.Union([Type.Literal("landed"), Type.Literal("dropped")
  * The fields of a run with a task. `result` is the result of a run that is `done` or `waiting`, and `question` the
  * question of a waiting run. `branch` is
  * the branch of the run, from its result or its worktree, `startedAt` the time when its first task started, as an ISO
- * string, `serves` the todo or the parley that the run builds, when its start named one, `item` the absolute path of
+ * string, `serves` the item or the parley that the run builds, when its start named one, `item` the absolute path of
  * the `.md` file that its positional text named, and `swept` the word that `sweep --yes` wrote when it removed the
  * worktree of the run.
  */
