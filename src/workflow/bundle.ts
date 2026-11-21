@@ -77,29 +77,65 @@ async function overrides(folder: string, templates: Record<string, string>): Pro
 	return own;
 }
 
+/** The suffix of a project file that adds text at the end of the prompt of its name. */
+const AFTER = ".after";
+
+/** The project prompts `local` split into the templates that replace a prompt and the texts added after one. */
+async function splitAfter(
+	local: Promise<Record<string, string>>,
+): Promise<{ replaced: Record<string, string>; after: Record<string, string> }> {
+	const replaced: Record<string, string> = {};
+	const after: Record<string, string> = {};
+
+	for (const [name, text] of Object.entries(await local)) {
+		if (name.endsWith(AFTER)) after[name.slice(0, -AFTER.length)] = text;
+		else replaced[name] = text;
+	}
+
+	return { replaced, after };
+}
+
 /**
  * The `scripts/*.js` and `prompts/*.md` of the package and of `.workflows/` in the Git repository of `cwd`, or in `cwd`
  * outside a repository, read now, and the `lib/*.js` of the package. The agents table is the one of `readAgents` for
  * that `.workflows/`. Without `cwd`, only the package files. Each `<name>.md` of the folder `prompts` replaces the
- * template of that name.
+ * template of that name. Each `prompts/<name>.after.md` of `.workflows/` adds its text at the end of the instructions of
+ * the prompt `<name>`, after any replacement, and fails when there is no prompt of that name.
  */
 export async function loadBundle(cwd?: string, prompts?: string): Promise<Bundle> {
 	const project = cwd === undefined ? PACKAGE : await projectFolder(cwd);
+	const local = splitAfter(readFolder(project, "prompts", ".md"));
 
-	const [scripts, merged, agents, lib, declarations] = await Promise.all([
+	const [scripts, merged, agents, lib, declarations, { after }] = await Promise.all([
 		loadScripts(project),
-		readMerged("prompts", ".md", readFolder(project, "prompts", ".md")),
+		readMerged(
+			"prompts",
+			".md",
+			local.then(({ replaced }) => replaced),
+		),
 		readAgents(cwd === undefined ? undefined : project),
 		readFolder(PACKAGE, "lib", ".js"),
 		readFile(join(PACKAGE, "script.d.ts"), "utf8"),
+		local,
 	]);
 
 	const templates = prompts === undefined ? merged : { ...merged, ...(await overrides(prompts, merged)) };
 
+	for (const name of Object.keys(after)) {
+		if (templates[name] === undefined) {
+			throw new Error(`${join(project, "prompts", `${name}${AFTER}.md`)} adds to no prompt`);
+		}
+	}
+
 	return {
 		scripts,
 		lib: wrapLib(Object.values(lib).join("\n"), declarations),
-		prompts: Object.fromEntries(Object.entries(templates).map(([name, text]) => [name, instructions(text)])),
+		prompts: Object.fromEntries(
+			Object.entries(templates).map(([name, text]) => [
+				name,
+				[instructions(text), after[name]?.trim()].filter(Boolean).join("\n\n"),
+			]),
+		),
 		agents,
 	};
 }
