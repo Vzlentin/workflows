@@ -87,6 +87,24 @@ async function shipped(serves?: string): Promise<{ id: string; branch: string; h
 	return { id: run.id ?? "", branch, head, short: git(repo, "rev-parse", "--short", head) };
 }
 
+/**
+ * A thermoloop run with `argv` and `options` from the main checkout on `fix/x`, after a commit `fix: the thing` there:
+ * its ID, its exit code, and the full and short head.
+ */
+async function reviewed(
+	argv: string[],
+	options: Omit<Parameters<typeof workflows>[1], "cwd"> = {},
+): Promise<{ id: string; code: number; head: string; short: string }> {
+	git(repo, "checkout", "-qb", "fix/x");
+	await writeFile(join(repo, "fix.txt"), "fix\n");
+	git(repo, "add", "fix.txt");
+	git(repo, "commit", "-q", "-m", "fix: the thing");
+	const head = git(repo, "rev-parse", "HEAD");
+	const run = await workflows(["thermoloop", ...argv], { ...options, cwd: repo });
+
+	return { id: run.id ?? "", code: run.code, head, short: git(repo, "rev-parse", "--short", head) };
+}
+
 /** `workflows land <id>` with a CI wait of 1 s, and its exit code and result. */
 async function land(id: string) {
 	const run = await workflows(["land", id, "--wait", "1", "--json"], { cwd: repo });
@@ -220,8 +238,55 @@ describe("workflows land", () => {
 
 		const unknown = await land("nope");
 		expect(unknown.result.report).toEqual([
-			"refused at step 1: run nope has not ended or is not a run of ship or campaign",
+			"refused at step 1: run nope has not ended or is not a run of ship, campaign or thermoloop",
 		]);
+	});
+
+	it("lands an approved thermoloop run from the main checkout on its branch, and deletes the branch", async () => {
+		const { id, code, head, short } = await reviewed(["--json"]);
+		expect(code).toBe(0);
+
+		const landed = await land(id);
+		expect(landed).toEqual({
+			code: 0,
+			result: {
+				status: "landed",
+				head: short,
+				branch: "fix/x",
+				report: [`landed fix: the thing ${short}, CI passed on the branch and on main`],
+			},
+		});
+		expectLanded({ id, branch: "fix/x", head });
+		expect(git(repo, "branch", "--show-current")).toBe("main");
+	});
+
+	it("refuses a thermoloop run that is not approved, and leaves main untouched", async () => {
+		const stopped = await reviewed(["--rounds", "1"], { script: { verdicts: ["FIX"] } });
+		expect(stopped.code).toBe(1);
+		const before = mains();
+
+		const refused = await land(stopped.id);
+		expect([refused.code, refused.result.report]).toEqual([
+			1,
+			[`refused at step 1: the thermoloop run ${stopped.id} ended stopped, not approved`],
+		]);
+		expect(mains()).toEqual(before);
+	});
+
+	it("refuses a thermoloop run on main, and leaves main untouched", async () => {
+		await writeFile(join(repo, "fix.txt"), "fix\n");
+		git(repo, "add", "fix.txt");
+		git(repo, "commit", "-q", "-m", "fix: the thing");
+		const run = await workflows(["thermoloop", "--base", "HEAD~1", "--json"], { cwd: repo });
+		expect(run.code).toBe(0);
+		const before = mains();
+
+		const refused = await land(run.id ?? "");
+		expect([refused.code, refused.result.report]).toEqual([
+			1,
+			[`refused at step 1: the thermoloop run ${run.id} is on main`],
+		]);
+		expect(mains()).toEqual(before);
 	});
 
 	it("gives landed-red for a red main, names the failed run and reverts nothing", async () => {

@@ -1,17 +1,19 @@
-// `workflows land <run-id>` lands the branch of a completed root run of ship or campaign on `main`, with no
-// model call: 1. find the repository, the branch and the worktree of the run, through `pastRuns` and `git worktree
-// list`; 2. check that the main checkout is clean and on `main`, that `main` equals `origin/main` after a fetch, and that
-// the branch is a fast-forward of `main`; 3. push the branch; 4. wait for its CI; 5. push the head to `main` on `origin`,
-// then fast-forward `main` in the main checkout; 6. delete the branch on `origin`; 7. for a run that serves an item,
-// link the item to the head with a `landed` edge, and set the item to `done` when no live agent serves it; 8. wait for
-// the CI of `main`; 9. sweep the run with `workflows sweep <run-id> --yes`; 10. check the repository. A failed step from
-// 1 to 6 refuses, with the step and the reason in one line, and changes nothing after it: a refusal before step 5 leaves
-// `main` untouched on both sides. A failed step 7 is a `check failed` line. A red `main` gives `landed-red`, and nothing
-// is reverted. Each CI wait is one shell command that reads `gh run list` every 15 s, bounded by `--wait` seconds
-// (default 1800). It never squashes, never merges through a pull request and never force-pushes. Every Git step is safe
-// to repeat: a resume runs a step again when its result was not saved, and finds it done.
+// `workflows land <run-id>` lands the branch of a completed root run of ship or campaign, or of an approved root run of
+// thermoloop, on `main`, with no model call: 1. find the repository, the branch and the worktree of the run, through
+// `pastRuns` and `git worktree list`; 2. switch the main checkout to `main` when it is on the branch, and check that it
+// is clean and on `main`, that `main` equals `origin/main` after a fetch, and that the branch is a fast-forward of
+// `main`; 3. push the branch; 4. wait for its CI; 5. push the head to `main` on `origin`, then fast-forward `main` in the
+// main checkout; 6. delete the branch on `origin`; 7. for a run that serves an item, link the item to the head with a
+// `landed` edge, and set the item to `done` when no live agent serves it; 8. wait for the CI of `main`; 9. sweep the
+// run with `workflows sweep <run-id> --yes`, or for a run with no worktree of its own, delete its local branch; 10.
+// check the repository. A thermoloop run with no worktree of its own lands in the repository that it ran in. A failed
+// step from 1 to 6 refuses, with the step and the reason in one line, and changes nothing after it: a refusal before
+// step 5 leaves `main` untouched on both sides. A failed step 7 is a `check failed` line. A red `main` gives
+// `landed-red`, and nothing is reverted. Each CI wait is one shell command that reads `gh run list` every 15 s, bounded
+// by `--wait` seconds (default 1800). It never squashes, never merges through a pull request and never force-pushes.
+// Every Git step is safe to repeat: a resume runs a step again when its result was not saved, and finds it done.
 export const meta = {
-	description: "Land the branch of a run on main: push it, wait for its CI, fast-forward main, push main, and sweep the run.",
+	description: "Land the branch of a run on main: push it, wait for its CI, fast-forward main, push main, and sweep the run or delete its branch.",
 	args: {
 		run: { type: "string", positional: true, label: "run ID", required: true },
 		wait: { type: "number", default: 1800 },
@@ -21,7 +23,7 @@ export const meta = {
 
 const id = String(args.run)
 const bound = Number(args.wait)
-const LANDED = ["ship", "campaign"]
+const LANDED = ["ship", "campaign", "thermoloop"]
 
 // The conclusions of a CI run that pass.
 const PASSED = new Set(["success", "skipped", "neutral"])
@@ -47,37 +49,52 @@ async function pastRun() {
 	return undefined
 }
 
-// Step 1, first part: the run to land, `{ workflow, repository, branch, serves }`. Throws the reason of a refusal when
-// the run has not ended, is not a run of `LANDED`, has no worktree of its own or has no branch.
+// Step 1, first part: the run to land, `{ workflow, repository, own, branch, serves }`, where `own` says that the run
+// has a worktree of its own. Throws the reason of a refusal when the run has not ended, is not a run of `LANDED`, is a
+// thermoloop run that is not approved, is a ship or campaign run with no worktree of its own, or has no branch.
 async function runOf() {
 	const past = await pastRun()
 
-	if (past === undefined) throw new Error(`run ${id} has not ended or is not a run of ship or campaign`)
-	const { workflow, repository, result, serves } = past
+	if (past === undefined) throw new Error(`run ${id} has not ended or is not a run of ship, campaign or thermoloop`)
+	const { workflow, cwd, result, serves } = past
 	// The engine keeps `branch` and `status` of a result only as strings, and a result that is not an object has neither.
 	const status = result?.status ?? "with no status"
 
-	if (repository === null) throw new Error(`the ${workflow} run ${id} has no worktree of its own`)
+	if (workflow === "thermoloop" && status !== "approved") {
+		throw new Error(`the thermoloop run ${id} ended ${status}, not approved`)
+	}
 
-	if (result?.branch === undefined) throw new Error(`the ${workflow} run ${id} ended ${status} and has no branch`)
+	const own = past.repository !== null
 
-	return { workflow, repository, branch: result.branch, serves }
+	if (!own && workflow !== "thermoloop") throw new Error(`the ${workflow} run ${id} has no worktree of its own`)
+	const repository = past.repository ?? cwd
+
+	// A thermoloop on a detached HEAD has the branch "".
+	if (result?.branch === undefined || result.branch === "") {
+		throw new Error(`the ${workflow} run ${id} ended ${status} and has no branch`)
+	}
+
+	// Step 6 deletes the branch on `origin`.
+	if (result.branch === "main") throw new Error(`the ${workflow} run ${id} is on main`)
+
+	return { workflow, repository, own, branch: result.branch, serves }
 }
 
 // Step 1, second part: the run `run` with its checkouts and its head, `{ ...run, main, worktree, head, short, subject }`,
-// with `main` and `worktree` the entries of `worktrees`. Throws the reason of a refusal when the worktree of the branch
-// is missing, gone or dirty.
+// with `main` and `worktree` the entries of `worktrees`, and `worktree` undefined when the run has no worktree of its
+// own and no worktree has its branch. Throws the reason of a refusal when the worktree of the branch is missing, gone or
+// dirty.
 async function locate(run) {
-	const { repository, branch } = run
+	const { repository, own, branch } = run
 	const entries = await worktrees(repository)
 	const main = entries[0]
 	const worktree = entries.find((entry) => entry.branch === `refs/heads/${branch}`)
 
-	if (worktree === undefined) throw new Error(`no worktree of ${repository} is on ${branch}`)
+	if (worktree === undefined && own) throw new Error(`no worktree of ${repository} is on ${branch}`)
 
-	if (worktree.prunable) throw new Error(`the worktree ${worktree.path} of ${branch} is gone`)
+	if (worktree?.prunable) throw new Error(`the worktree ${worktree.path} of ${branch} is gone`)
 
-	if ((await sh(["git", "-C", worktree.path, "status", "--porcelain"])) !== "") {
+	if (worktree !== undefined && (await sh(["git", "-C", worktree.path, "status", "--porcelain"])) !== "") {
 		throw new Error(`the worktree ${worktree.path} has uncommitted changes`)
 	}
 
@@ -126,14 +143,19 @@ printf '%s\\n' "$runs"`,
 	return undefined
 }
 
-// Steps 2 to 6: checks `main`, pushes the branch, waits for its CI, lands the head on `main` and deletes the branch on
-// `origin`. Throws the reason of a refusal.
+// Steps 2 to 6: switches the main checkout from the branch to `main`, checks `main`, pushes the branch, waits for its
+// CI, lands the head on `main` and deletes the branch on `origin`. Throws the reason of a refusal.
 async function land({ branch, main, head, short }) {
 	begin(2, "check main")
 
 	if (main.bare) throw new Error(`the main checkout ${main.path} is bare`)
 
-	if (main.branch !== "refs/heads/main") throw new Error(`the main checkout ${main.path} is not on main`)
+	// Step 1 found the main checkout clean when it is on the branch.
+	if (main.branch === `refs/heads/${branch}`) {
+		await sh(["git", "-C", main.path, "switch", "-q", "main"])
+	} else if (main.branch !== "refs/heads/main") {
+		throw new Error(`the main checkout ${main.path} is not on main`)
+	}
 
 	if ((await sh(["git", "-C", main.path, "status", "--porcelain"])) !== "") {
 		throw new Error(`the main checkout ${main.path} has uncommitted changes`)
@@ -233,7 +255,7 @@ try {
 	}
 }
 
-const { repository, branch, main, worktree, head, short, subject, serves } = found
+const { repository, own, branch, main, worktree, head, short, subject, serves } = found
 const notes = []
 const failures = []
 
@@ -268,17 +290,29 @@ try {
 begin(9, "sweep")
 
 try {
-	// Skipped when the worktree and the local branch are gone, as after a sweep whose result was not saved.
-	await sh([
-		"sh",
-		"-c",
-		`[ -e "$1" ] || git -C "$2" show-ref --verify --quiet "refs/heads/$3" || exit 0; exec ${workflowsCommand} sweep "$4" --yes`,
-		"sweep",
-		worktree.path,
-		repository,
-		branch,
-		id,
-	])
+	if (own) {
+		// Skipped when the worktree and the local branch are gone, as after a sweep whose result was not saved.
+		await sh([
+			"sh",
+			"-c",
+			`[ -e "$1" ] || git -C "$2" show-ref --verify --quiet "refs/heads/$3" || exit 0; exec ${workflowsCommand} sweep "$4" --yes`,
+			"sweep",
+			worktree.path,
+			repository,
+			branch,
+			id,
+		])
+	} else {
+		// Skipped when the local branch is gone, as after a delete whose result was not saved.
+		await sh([
+			"sh",
+			"-c",
+			'git -C "$1" show-ref --verify --quiet "refs/heads/$2" || exit 0; exec git -C "$1" branch -q -d "$2"',
+			"delete",
+			main.path,
+			branch,
+		])
+	}
 } catch (error) {
 	failures.push(`check failed: sweep ${id}: ${oneLine(error.message)}`)
 }

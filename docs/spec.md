@@ -337,7 +337,8 @@ next round fixes all of them.
 On SHIP, the command prints `approved <subject> in <n> rounds, <commit>` and exits 0. A run that is not approved
 after `--rounds` rounds prints `stopped <subject> after <n> rounds` and exits 1. The memory works as in `ship`, in the store
 that `ship` gives, or in its own store without a caller. The result has `status` (`approved`, `blocked` or `stopped`),
-`rounds`, `handoff`, the handoff that the last round used, when blocked or stopped, `memory`, and `reply` when blocked. Without a caller, the run
+`branch`, the output of `git branch --show-current` in the checkout of the review (empty on a detached HEAD), `rounds`,
+`handoff`, the handoff that the last round used, when blocked or stopped, `memory`, and `reply` when blocked. Without a caller, the run
 ends with the harvest of `ship` at each end: approved, stopped or blocked. Its result then has `lessons`, and the report
 has a line for each lesson. A run that runs again in a worktree gives the lessons of that child run.
 
@@ -675,15 +676,21 @@ workflows land <run-id> --wait 600
 ```
 
 `workflows land <run-id>` lands the branch of a run on `main` with no model call. The run is a completed root run of
-`ship` or `campaign` of the project store, with a worktree of its own and a `branch` in its result. It runs these
-steps in order, with `git -C` in the repository of the run:
+`ship` or `campaign` of the project store, with a worktree of its own and a `branch` in its result, or an `approved`
+root run of `thermoloop`. It runs these steps in order, with `git -C` in the repository of the run:
 
-1. Find the run: the run `<run-id>` in `pastRuns` of `ship`, then of `campaign`. The repository is `repository`, and
-   the branch is `result.branch`. `git worktree list --porcelain` of the repository gives the main checkout, its first
-   entry, and the worktree on the branch. It refuses a run that is not one of these completed root runs, a run with no
-   `repository` or no `result.branch` (such as a `ship` or `campaign` that stopped), a branch that no worktree has or
-   whose worktree is gone, and a worktree with changes that are not committed, also untracked files.
-2. Check `main`: it refuses a main checkout that is bare, is not on `main`, or has changes that are not committed. It
+1. Find the run: the run `<run-id>` in `pastRuns` of `ship`, then of `campaign`, then of `thermoloop`. The repository
+   is `repository`, or for a `thermoloop` run with no worktree of its own, `cwd`. The branch is `result.branch`. `git
+   worktree list --porcelain` of the repository gives the main checkout, its first entry, and the worktree on the
+   branch. It refuses a run that is not one of these completed root runs (`run <run-id> has not ended or is not a run
+   of ship, campaign or thermoloop`), a `thermoloop` run whose status is not `approved` (`the thermoloop run <run-id>
+   ended <status>, not approved`), a `ship` or `campaign` run with no `repository`, a run with no `result.branch` or an
+   empty one (such as a `ship` or `campaign` that stopped, or a `thermoloop` on a detached HEAD), and a run on `main`.
+   It refuses a run with a worktree of its own whose branch no worktree has. It refuses a worktree on the branch that
+   is gone, or that has changes that are not committed, also untracked files. For a run with no worktree of its own, a
+   branch that no worktree has is valid.
+2. Check `main`: when the main checkout is on the branch, `git switch -q main` first; step 1 found it clean. Then it
+   refuses a main checkout that is bare, is not on `main`, or has changes that are not committed. It
    runs `git fetch -q origin`, and refuses when `main` differs from `origin/main`, except when `origin/main` is already
    the head of the branch and `main` is an ancestor of it, as after a step 5 that stopped between its push and its
    merge. It refuses a branch that is not a fast-forward of `main`.
@@ -702,8 +709,10 @@ steps in order, with `git -C` in the repository of the run:
    the item is live, adds `check failed: item <n>: <message>`, and the status does not change. A run that serves no
    item, or a parley, skips the step.
 8. Wait for the CI of `main` at the head.
-9. Run `workflows sweep <run-id> --yes` of this package (`workflowsCommand`) in the directory of the land run (see [Sweep](#sweep)), unless the
-   worktree and the local branch are already gone.
+9. For a run with a worktree of its own, run `workflows sweep <run-id> --yes` of this package (`workflowsCommand`) in
+   the directory of the land run (see [Sweep](#sweep)), unless the worktree and the local branch are already gone. For
+   a run with no worktree of its own, run `git branch -q -d <branch>` in the main checkout, unless the local branch is
+   already gone. A branch that another worktree has checked out stays, and step 10 reports it.
 10. Check the repository: `core.bare` is not true, `main` equals `main` on `origin`, and the branch is gone locally, as
    a remote-tracking branch and on `origin`.
 
@@ -721,7 +730,7 @@ and the one report line `refused at step <n>: <reason>`. A refusal does nothing 
 before step 5 leaves `main` untouched on both sides. When step 7 passes, the status is `landed` and the first line
 is `landed <subject of the head> <short>, CI passed on the branch and on main`. Otherwise the status is `landed-red`,
 the first line is `landed-red <subject of the head> <short>, CI passed on the branch; <reason>`, with the reason of
-the CI wait or `the CI of main is unknown: <error>` when `gh` fails, and `land` reverts nothing. A failed sweep and each failed check of step 9 add a line
+the CI wait or `the CI of main is unknown: <error>` when `gh` fails, and `land` reverts nothing. A failed step 9 and each failed check of step 10 add a line
 `check failed: <what>`, and do not change the status. `landed` exits 0; `landed-red` and `refused` exit 1.
 
 `land` never squashes, never merges through a pull request and never force-pushes: the commits of the branch reach
@@ -930,6 +939,7 @@ as each item of a campaign, names no branch. The name is `subject` as a branch n
 `/`, then the lowercase words of the description joined with `-`, at most 48 characters cut at a word end. A subject
 without a type gives the words alone. `feat(pi): Show the runs` gives `feat/show-the-runs`, and `Fix the README typo`
 gives `fix-the-readme-typo`. A subject without a letter or digit keeps `<wf>/<run-id>`.
+A script can also set `branch` in its result: `thermoloop` sets the branch of the checkout that it reviewed.
 
 `prepareWorktree` of `src/launch/worktree.ts` is the one place that builds the default branch `<wf>/<run-id>`, and
 it marks that worktree with `renames: true` in the saved input. Only such a worktree renames its branch: a worktree on
@@ -1132,6 +1142,7 @@ does not have the fields below. Each run is an object:
 |---|---|
 | `runId` | The run ID |
 | `item` | The `item` arg of the run, or `null` |
+| `cwd` | The directory that the run ran in: the top level of the repository of `--repo`, else the caller's directory |
 | `repository`, `start` | The repository and the start commit of the run's worktree, or `null` |
 | `prompts` | The saved template texts, by prompt name |
 | `serves` | What the run serves, `{ "item": <id> }` or `{ "parley": "<slug>" }`, or `null` when its start named nothing or its input has another shape |

@@ -107,6 +107,7 @@ describe("workflows thermoloop", () => {
 			status: "approved",
 			rounds: 2,
 			memory: ["#0 reviewer r1: Handoff 1: one word changes.", "#1 implementer r2: Implement 1: README.md had wrold."],
+			branch: "feature",
 		});
 		expect(progressOf(run.stderr)).toEqual([
 			"✓ round 1/3: review",
@@ -415,7 +416,8 @@ echo '{"title":"Fix the typo of the README","body":"It says wrold."}'
 		});
 
 		expect(run.code).toBe(0);
-		const { report } = JSON.parse(run.stdout[1] ?? "");
+		const { value, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(value.branch).toBe("feature");
 		const path = String(report.at(-1)).slice("worktree ".length);
 		expect(report).toEqual([
 			`approved fix the typo in 2 rounds, ${git(repo, "rev-parse", "--short", "feature")}`,

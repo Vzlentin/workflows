@@ -1078,6 +1078,7 @@ describe("workflows show", () => {
 					call("sh git rev-parse --short HEAD"),
 				],
 			],
+			[`${thermoloopId}/s0`, [call("sh git branch --show-current")]],
 			// The command is cut at 80 characters.
 			[
 				`${thermoloopId}/s1`,
@@ -1097,6 +1098,7 @@ describe("workflows show", () => {
 			[`${rpiId}/s2`, "ship/rpi"],
 			[`${rpiId}/s3`, "ship/rpi"],
 			[`${implementId}/s0`, "ship/rpi/implement"],
+			[`${thermoloopId}/s0`, "ship/thermoloop"],
 			[`${thermoloopId}/s1`, "ship/thermoloop"],
 			[`${judgeId}/s1`, "ship/judge"],
 		]);

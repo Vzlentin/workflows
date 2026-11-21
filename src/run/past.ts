@@ -188,6 +188,7 @@ export function taskOf(tasks: readonly RunTask[]): RunTask | undefined {
 const SAVED = Type.Object({
 	runId: Type.String(),
 	name: Type.String(),
+	cwd: Type.String(),
 	args: Type.Object({ item: Type.Optional(Type.Unknown()) }),
 	bundle: Type.Object({
 		prompts: Type.Record(Type.String(), Type.String()),
@@ -301,11 +302,12 @@ export function pastRuns(
 
 	for (const [id, { task, input }] of savedRuns(roots)) {
 		if (input.name !== workflow || endedStatus(task) !== "done") continue;
-		const { args, worktree, bundle, serves } = input;
+		const { args, cwd, worktree, bundle, serves } = input;
 
 		completed.set(id, {
 			runId: id,
 			item: Value.Check(Type.String(), args.item) ? args.item : null,
+			cwd,
 			repository: worktree?.repository ?? null,
 			start: worktree?.start ?? null,
 			prompts: bundle.prompts,

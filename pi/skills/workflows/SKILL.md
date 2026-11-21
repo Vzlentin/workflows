@@ -26,7 +26,7 @@ and judge. A run costs minutes and model calls.
 | one change implemented in one commit, with no review loop | `rpi` | `item` |
 | a review of a change that exists, with fixes in rounds | `thermoloop` | `change`, optional `item` |
 | a score of a change that exists, with no edit | `judge` | `change`, optional `item` |
-| the branch of an ended run on `main`, after its CI passed | `land` | `run` |
+| the branch of an ended ship or campaign run, or of an approved thermoloop run, on `main`, after its CI passed | `land` | `run` |
 
 This skill does not cover `optimize`, `implement` or workflow scripts.
 
@@ -116,11 +116,11 @@ The values of `result.status` for a `done` run. The fields that the table names,
 | campaign | `stopped` | The user stopped the campaign at an item. Give the rundown when the result has one. |
 | campaign | `waiting` | An item failed, or is still at judge 0, and the campaign asks how to continue. See below. |
 | rpi | `implemented` | The commit `value.head` and the branch. |
-| thermoloop | `approved` | The reviewer answered SHIP. Give `value.rounds` and the report line. |
+| thermoloop | `approved` | The reviewer answered SHIP. Give `value.rounds`, `value.branch` and the report line. `land` can land it. |
 | thermoloop | `stopped` | The rounds ended without SHIP. Give `value.handoff`, and the last review (see below). |
 | judge | `judged` | `result.score`, from 0 to 1, and `value.findings`. |
 | judge | `rejected` | The score is 0. Give `value.findings`. |
-| land | `landed` | The CI passed on the branch and on `main`. `main` is at `value.head` locally and on `origin`, and the run is swept. Give the first report line, and each `check failed:` line. |
+| land | `landed` | The CI passed on the branch and on `main`. `main` is at `value.head` locally and on `origin`, and the run is swept, or for a thermoloop run its local branch is deleted. Give the first report line, and each `check failed:` line. |
 | land | `landed-red` | The branch is on `main`, but the CI of `main` failed or gave no result. Nothing is reverted. Give the first report line, which names the failed run. |
 | land | `refused` | The report line `refused at step <n>: <reason>`. Before step 5, `main` is untouched. Give that line. |
 
@@ -163,7 +163,7 @@ commit).
   The branch is `<workflow>/<runId>` until a shipped run renames it from its commit subject.
 - The run directory is `${XDG_STATE_HOME:-$HOME/.local/state}/workflows/runs/<runId>`. It holds the patches of each
   review, `round-<n>.patch` and `round-<n>-fix.patch`, and for a campaign `item-<n>/`.
-- `land` sweeps the run that it lands. After a run's branch is merged or fast-forwarded onto `origin/main` in another
+- `land` sweeps the run that it lands, or deletes the local branch of a thermoloop run. After a run's branch is merged or fast-forwarded onto `origin/main` in another
   way, run `workflows sweep --yes` (or
   `workflows sweep <runId>... --yes` for a branch that went into another pull request or that you drop) to remove its
   worktree and its local branch. The sweep writes `landed` or `dropped` to the `swept` file of the run directory, and

@@ -36,6 +36,8 @@ const change = await changeOf(args, { wip: true })
 
 if (change.checkout !== undefined) return await inCheckout("thermoloop", change, { rounds })
 
+const branch = await sh(["git", "branch", "--show-current"])
+
 const { start, intent: item } = change
 
 const subject = subjectOf(item)
@@ -80,13 +82,13 @@ for (let round = 1; ; round++) {
 
 		const report = [`approved ${subject} in ${round} rounds, ${head}`]
 
-		return notes.finish(item, { status: "approved", rounds: round, memory: await noteLines(notes), report })
+		return notes.finish(item, { status: "approved", branch, rounds: round, memory: await noteLines(notes), report })
 	}
 
 	if (round === rounds) {
 		const report = [`stopped ${subject} after ${round} rounds`]
 
-		return notes.finish(item, { status: "stopped", rounds: round, handoff: plan, memory: await noteLines(notes), report })
+		return notes.finish(item, { status: "stopped", branch, rounds: round, handoff: plan, memory: await noteLines(notes), report })
 	}
 
 	plan = await reviewer.noted(round, `${await prompts.handoff()}\n\n${EVERY_FINDING}`, NOTES)
@@ -100,6 +102,6 @@ for (let round = 1; ; round++) {
 	if (fixed.status !== "implemented") {
 		const report = [`${fixed.status} ${subject} after ${next} rounds`, reply]
 
-		return notes.finish(item, { status: fixed.status, rounds: next, reply, handoff: plan, memory: await noteLines(notes), report })
+		return notes.finish(item, { status: fixed.status, branch, rounds: next, reply, handoff: plan, memory: await noteLines(notes), report })
 	}
 }

@@ -157,7 +157,10 @@ type Result = {
 	score?: number;
 	/** The engine writes it: the run ID of a child run, in the result of `run()`. */
 	runId?: string;
-	/** The engine writes it: the branch that the worktree of the run ends on. */
+	/**
+	 * The branch of the run. A script can set it. The engine writes it for a run with a worktree of its own and a
+	 * `subject`: the branch that the worktree ends on.
+	 */
 	branch?: string;
 	/** The engine writes it: the question of an open `input()` call. */
 	question?: string;
@@ -179,6 +182,8 @@ type PastRun = {
 	readonly runId: string;
 	/** The `item` arg of the run, or null. */
 	readonly item: string | null;
+	/** The directory that the run ran in: the top level of the repository of `--repo`, else the caller's directory. */
+	readonly cwd: string;
 	/** The repository and the start commit of the run's worktree, or null. */
 	readonly repository: string | null;
 	readonly start: string | null;
