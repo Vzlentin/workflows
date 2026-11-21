@@ -8,8 +8,8 @@ The behaviour of the `workflows` command, the workflow scripts, runs and the `wo
 `workflows rpi` researches, plans and implements one work item in one commit, `workflows thermoloop` reviews a change
 (the current branch, a PR, a ref or a range) and fixes it in rounds, and `workflows judge` judges it.
 `workflows optimize ship` proposes edits to the ship prompts, skills and `AGENTS.md` from past ship runs,
-and keeps them when a blind judge prefers the diffs they give. `workflows land <run-id>` lands the branch of a run on
-`main` when its CI passes. The run is
+and keeps them when a blind judge prefers the diffs they give. `workflows land <change>` lands a branch, the head branch
+of a PR or the branch of a run on `main` when its CI passes. The run is
 headless and resumable. It runs in the [harness](https://github.com/Vzlentin/harness) host of its project, whose
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) store keeps the sessions, model calls, tool
 calls and the progress of the run. See [Runs in the harness host](#runs-in-the-harness-host).
@@ -679,26 +679,26 @@ turns and the `memo` calls of the run memory return their saved results, and the
 ## Land
 
 ```sh
-workflows land <run-id>
-workflows land <run-id> --wait 600
+workflows land <change>
+workflows land <change> --wait 600
 ```
 
-`workflows land <run-id>` lands the branch of a run on `main` with no model call. The run is a completed root run of
-`ship` that is `shipped` or `rejected`, or of `campaign` that is `done` or `rejected`, of the project store, with a
-worktree of its own and a `change` in its result, or an `approved` root run of `thermoloop`. It runs these steps in order, with `git -C` in the repository of the run:
+`workflows land <change>` lands a change on `main` with no model call. The change is a PR number, a local branch, or
+the ID of a completed root run of any workflow in the project store. Neither the workflow nor the status of the run
+matters. It runs these steps in order, with `git -C` in the repository of the change:
 
-1. Find the run: the run `<run-id>` in `pastRuns` of `ship`, then of `campaign`, then of `thermoloop`. The repository
-   is `repository`, or for a `thermoloop` run with no worktree of its own, `cwd`. The branch is `result.change.branch`. `git
-   worktree list --porcelain` of the repository gives the main checkout, its first entry, and the worktree on the
-   branch. It refuses a run that is not one of these completed root runs (`run <run-id> has not ended or is not a run
-   of ship, campaign or thermoloop`), a run whose status does not land (`the <workflow> run <run-id> ended <status>,
-   not <statuses>`, such as `the ship run <run-id> ended stopped, not shipped or rejected` or `the thermoloop run
-   <run-id> ended stopped, not approved`), a `ship` or `campaign` run with no `repository`, a run with no
-   `result.change` or an empty branch in it (`the <workflow> run <run-id> ended <status> and has no branch`, such as a
-   `thermoloop` on a detached HEAD, or a run that an earlier version saved), and a run on `main`.
-   It refuses a run with a worktree of its own whose branch no worktree has. It refuses a worktree on the branch that
-   is gone, or that has changes that are not committed, also untracked files. For a run with no worktree of its own, a
-   branch that no worktree has is valid.
+1. Find the change, in this order. A number is a PR: `gh pr view <n> --json number,headRefName,isCrossRepository`
+   gives the branch `prBranch(pr)`, `pr/<n>` for a PR from another repository, else its head branch. `land` does not
+   fetch the PR, so its branch must already be local. Else a local branch of the main checkout of the current
+   directory is that branch. For both, the repository is that main checkout, the first entry of `git worktree list`.
+   Else the change is a run ID: `pastRuns(null, { runs: [<change>] })` gives the run, and `result.change` its
+   repository and branch. It refuses a value that is none of these (`<change> is no PR number, no branch of
+   <repository> and no completed run`), and a run with no `result.change` or an empty branch in it (`the run <run-id>
+   has no change`, such as a run on a detached HEAD, or a run that an earlier version saved). It refuses the branch
+   `main` (`the branch is main`) and a branch that the repository does not have (`the branch <branch> is not in
+   <repository>`). `git worktree list --porcelain` of the repository gives the main checkout, its first entry, and the
+   worktree on the branch, if any. It refuses a worktree on the branch that is gone, or that has changes that are not
+   committed, also untracked files.
 2. Check `main`: when the main checkout is on the branch, `git switch -q main` first; step 1 found it clean. Then it
    refuses a main checkout that is bare, is not on `main`, or has changes that are not committed. It
    runs `git fetch -q origin`, and refuses when `main` differs from `origin/main`, except when `origin/main` is already
@@ -716,13 +716,12 @@ worktree of its own and a `change` in its result, or an `approved` root run of `
    `ended` is a live agent. With no live agent, set the item to `done`; with one, the item stays `open`. These are
    `harness` calls of the land run. The step never sets an item to `open`. It adds the report line `item <n> done` or
    `item <n> stays open: <node name> serves it`. A failure, such as the refusal of the host while a run that serves
-   the item is live, adds `check failed: item <n>: <message>`, and the status does not change. A run that serves no
-   item, or a parley, skips the step.
+   the item is live, adds `check failed: item <n>: <message>`, and the status does not change. A branch, a PR, and a
+   run that serves no item or a parley, skip the step.
 8. Wait for the CI of `main` at the head.
-9. For a run with a worktree of its own, run `workflows sweep <run-id> --yes` of this package (`workflowsCommand`) in
-   the directory of the land run (see [Sweep](#sweep)), unless the worktree and the local branch are already gone. For
-   a run with no worktree of its own, run `git branch -q -d <branch>` in the main checkout, unless the local branch is
-   already gone. A branch that another worktree has checked out stays, and step 10 reports it.
+9. Run `workflows sweep <branch> --yes` of this package (`workflowsCommand`) in the repository (see
+   [Sweep](#sweep)), unless the local branch is already gone. It removes the worktree that has the branch and the
+   local branch, and marks each run of the branch `landed`.
 10. Check the repository: `core.bare` is not true, `main` equals `main` on `origin`, and the branch is gone locally, as
    a remote-tracking branch and on `origin`.
 
@@ -734,17 +733,17 @@ passes when each run ends with `success`, `skipped` or `neutral`. Otherwise its 
 of <branch> at <short> did not finish in <wait> s: <workflow> <url>, ...`, where `<short>` is the short head. No CI is
 not a green CI.
 
-The result is `{ "status", "head", "change", "report" }`, with `head` the short head and `change` the `change` of the
-result of the run. `change` is there once step 1 read the run, and `head` once step 1 found it. A failed step from 1 to 6, or a failed Git or `gh` command in it, gives the status `refused`
+The result is `{ "status", "head", "change", "report" }`, with `head` the short head and `change`
+`{ repository, branch }`. `change` is there once step 1 resolved it, and `head` once step 1 found it. A failed step from 1 to 6, or a failed Git or `gh` command in it, gives the status `refused`
 and the one report line `refused at step <n>: <reason>`. A refusal does nothing after the failed step, so a refusal
 before step 5 leaves `main` untouched on both sides. When step 7 passes, the status is `landed` and the first line
 is `landed <subject of the head> <short>, CI passed on the branch and on main`. Otherwise the status is `landed-red`,
 the first line is `landed-red <subject of the head> <short>, CI passed on the branch; <reason>`, with the reason of
 the CI wait or `the CI of main is unknown: <error>` when `gh` fails, and `land` reverts nothing. A failed step 9 and each failed check of step 10 add a line
-`check failed: <what>`, and do not change the status. `landed` exits 0; `landed-red` and `refused` exit 1.
+`check failed: <what>`, such as `check failed: sweep <branch>: <error>`, and do not change the status. `landed` exits 0; `landed-red` and `refused` exit 1.
 
 `land` never squashes, never merges through a pull request and never force-pushes: the commits of the branch reach
-`main` as they are. It lands one run, and starts no review and no judge. Each step is safe to repeat, so `workflows
+`main` as they are. It lands one change, and starts no review and no judge. Each step is safe to repeat, so `workflows
 resume <run-id>` of a land run that stopped at any step ends in the same state.
 
 ## Sessions
@@ -1132,7 +1131,7 @@ returns its session at once, and `phase`, `log` and `title` need no `await`.
 | `await sh(cmd, { settle })` | Runs `sh -c <cmd>` in the current directory of the start, with no stdin: a command that reads stdin reads end of file. Returns stdout without the last newline, and throws on a nonzero exit code. The error is `sh exited with <code>: <cmd>`, then a newline and the stderr when it is not empty. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>`, with the stdout and the stderr as the output. In the error, output of more than 4096 UTF-8 bytes is cut to a note `[… <n> bytes cut; workflows log <root-run-id> <call> shows the call]`, a newline and the longest end of the output that fits, from a line start when that end has one, else from a character, together at most 4096 bytes. The record of a failed call keeps its exit code, stdout and stderr, as [Saved inputs and resume](#saved-inputs-and-resume) says. With `settle: true`, a failure returns `{ error }` with that message, and a resume returns the same `{ error }` |
 | `await ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
-| `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow` in the project store. See [Past runs](#past-runs) |
+| `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow`, or of every workflow for `null`, in the project store. See [Past runs](#past-runs) |
 | `await harness(request)` | Sends one request to the harness host of the run's project and returns its reply. See [Harness requests](#harness-requests) |
 | `await todo.add(text)` | Adds a todo with the state `open` and the next ID to the list of the run, and returns it, `{ id, text, state }`. See [Todos](#todos) |
 | `await todo.set(id, state, text)` | Sets the state of the todo `id` of the list of the run to `open`, `doing`, `done` or `dropped`, and its text when `text` is given, and returns the todo |
@@ -1149,9 +1148,9 @@ or an array of strings, or a `prompts.<name>` input that is not a string, fails 
 
 #### Past runs
 
-`pastRuns(workflow, { runs, limit })` returns the root runs of the script `workflow` in the project store whose last
-task completed with a result that does not wait for an answer, newest first by run ID. Child runs, waiting runs and
-runs in progress are not in the list. It reads the tasks of
+`pastRuns(workflow, { runs, limit })` returns the root runs of the script `workflow`, or of every script when
+`workflow` is `null`, in the project store whose last task completed with a result that does not wait for an answer,
+newest first by run ID. Child runs, waiting runs and runs in progress are not in the list. It reads the tasks of
 `workflows.run` through the host, at the current task version and at earlier ones, and skips a task whose saved input
 does not have the fields below. Each run is an object:
 
@@ -1166,7 +1165,7 @@ does not have the fields below. Each run is an object:
 | `result` | The result of the run |
 
 `runs`, an array of run IDs, gives those runs in that order: an ID that is not a completed root run of `workflow` fails
-the call with `no completed <workflow> run <id>`. Without `runs`, `limit`, an integer of 0 or more, gives at most that
+the call with `no completed <workflow> run <id>`, or with `no completed run <id>` when `workflow` is `null`. Without `runs`, `limit`, an integer of 0 or more, gives at most that
 many runs; without `limit`, it gives all of them. Another option fails with `pastRuns got bad arguments`. The call
 saves its result, so a resume returns the same list and does not read the store again.
 
@@ -1228,6 +1227,9 @@ the run started with. A script's own declaration of the same name takes their pl
 | `await commitChange(item, start, findings)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base`, `head` and `findings`, the lines of `findings` (default `[]`) joined with newlines, squashes the change into one commit with it, and returns `{ head, subject, warnings }`, `head` the short head, `subject` the commit subject, and `warnings` the lines that it logged for a script's report. When the turn fails or gives an empty subject, the message is the subject of `item`. The turn has `settle: true`: a failed turn logs `commit message failed on <subject of item>: <error>, so the message is the subject of the item`, and `warnings` is that line; else `warnings` is `[]` |
 | `await judgeCommit(item, start, committed)` | Runs the child run `judge` with `item` and `start`, and returns `head` and `subject` of `committed`, the result of `commitChange`, with the judge fields `status`, `score`, `answers`, `findings` and `divergence`. A failed judge fails the caller |
 | `await writePatch(path, from)` | Writes `git diff --binary` from `from` to `HEAD` to the file `path`, and returns `path` |
+| `await prOf(ref, fields, { settle })` | The pull request of `ref` with the JSON `fields`, from `gh pr view`. It fails when `gh` fails, or with `settle` returns `{ error }`, as `sh` does |
+| `prBranch(pr)` | The local branch of the pull request `pr`: `pr/<number>` when `isCrossRepository` is true, else `headRefName`. `thermoloop`, `judge` and `land` use this name |
+| `await isBranch(name, dir)` | True when `name` is a local branch of the repository of `dir`, default the current directory |
 | `await checkoutChange()` | `{ repository, branch }` of the current checkout: the main checkout of its repository, the first entry of `git worktree list`, and its branch. Undefined on a detached HEAD |
 | `await changeOf(args, { wip })` | `{ start, intent, checkout, dirty }` of the change of a script's `args`. With `args.start`, it is `args.start` and `args.item`, not dirty, with no Git step. Else it is the change that `args.change` points at from `args.base`, with the rules of [Thermoloop](#thermoloop), and it calls `title` with the subject of the intent: `start` is the start commit, `intent` is `args.item` or the pull request or the commit messages, `checkout` is the branch of a change that ends on a branch other than the current one, and `dirty` says that the current checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip`, and a change whose branch another worktree has with changes that are not committed fails |
 | `await inCheckout(name, change, args)` | Runs the script `name` again as a child run with `args` and the `item` and `start` of the change: with `repo`, the worktree that has the branch of the change checked out, else with `checkout`, that branch, in a worktree of its own. Returns its result with the last report line `worktree <path>`, the worktree that has the branch |
@@ -1382,8 +1384,8 @@ item that the host does not know fails the run with `Unknown item: <id>`, and an
 <slug>`, and a parley that is not open and not a contract with `Parley <slug> is <status>: a run cannot serve it`. So
 a resume after the end of the item or the parley fails. After the check of an item, the task sends `item link` with
 the caller `workflows:<run-id>` and the edge `run:<run-id> serves item:<id>`. The host writes the edge once, so each
-resume sends it again with no change. A child run does not check or link. `land` sets the item to `done` (see
-[Land](#land)). `serves` is a reserved argument name.
+resume sends it again with no change. A child run does not check or link. `land` of a run ID sets the item of the
+run to `done` (see [Land](#land)). `serves` is a reserved argument name.
 
 ### Input
 
@@ -1834,7 +1836,7 @@ run <run-id> <workflow> <state> <title>
 - The label is `<role> conversation <id>` for a `session` that opened, with the role name and the conversation ID of
   the session, and the role name only for a `session` that did not open. For `ask`, it is the role name of its session. For
   `sh` and `ok`, it is the command on one line, cut at 80 characters. For `run`, it is the workflow name and the child
-  run ID. For `input`, it is the question on one line, cut at 80 characters. For `pastRuns`, it is the workflow. For `todo`, it is `add <text>`,
+  run ID. For `input`, it is the question on one line, cut at 80 characters. For `pastRuns`, it is the workflow, or `any` for `null`. For `todo`, it is `add <text>`,
   `set <id> <state>` or `list`, on one line, cut at 80 characters. For `harness`, it is `tree`, `item read <id>`,
   `item set <id> <state>`, or `item link <from> <kind> <to>` on one line, cut at 80 characters. The phase lines and calls of the child run
   are indented by 2 more under the `run` line.

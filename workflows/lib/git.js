@@ -91,9 +91,21 @@ async function prOf(ref, fields, options) {
 	return output.error === undefined ? JSON.parse(output) : output;
 }
 
-/** True when `name` is a local branch. */
-function isBranch(name) {
-	return ok(["git", "show-ref", "--verify", "--quiet", `refs/heads/${name}`]);
+/** The local branch of the PR `pr`: `pr/<number>` for a PR from another repository, else its head branch. */
+function prBranch(pr) {
+	return pr.isCrossRepository ? `pr/${pr.number}` : pr.headRefName;
+}
+
+/** True when `name` is a local branch of the repository of `dir`, default the directory of `sh`. */
+function isBranch(name, dir) {
+	return ok([
+		"git",
+		...(dir === undefined ? [] : ["-C", dir]),
+		"show-ref",
+		"--verify",
+		"--quiet",
+		`refs/heads/${name}`,
+	]);
 }
 
 /** True when the commit `a` is an ancestor of the commit `b`, or is `b`. */
@@ -137,7 +149,7 @@ async function targetOf(target, base, here) {
 
 	if (/^\d+$/.test(target)) {
 		const pr = await prOf(target, "number,title,body,headRefName,baseRefName,isCrossRepository");
-		const end = pr.isCrossRepository ? `pr/${pr.number}` : pr.headRefName;
+		const end = prBranch(pr);
 
 		await pullBranch(pr.number, end);
 		const from = pr.baseRefName;

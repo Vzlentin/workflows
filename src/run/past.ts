@@ -294,19 +294,19 @@ function savedRuns(roots: ReadonlyMap<string, readonly RunTask[]>): Map<string, 
 }
 
 /**
- * The completed root runs of `workflow` in `roots` (the root tasks by run ID, as `rootRuns` gives them), newest first:
- * all of them, the first `limit`, or the runs `runs` in that order. Throws `no completed <workflow> run <id>` for an ID
- * of `runs` that is not one of them.
+ * The completed root runs of `workflow`, or of every workflow for null, in `roots` (the root tasks by run ID, as
+ * `rootRuns` gives them), newest first: all of them, the first `limit`, or the runs `runs` in that order. Throws
+ * `no completed <workflow> run <id>`, or `no completed run <id>` for null, for an ID of `runs` that is not one of them.
  */
 export function pastRuns(
 	roots: ReadonlyMap<string, readonly RunTask[]>,
-	workflow: string,
+	workflow: string | null,
 	options: PastOptions,
 ): JsonValue {
 	const completed = new Map<string, JsonValue>();
 
 	for (const [id, { task, input }] of savedRuns(roots)) {
-		if (input.name !== workflow || endedStatus(task) !== "done") continue;
+		if ((workflow !== null && input.name !== workflow) || endedStatus(task) !== "done") continue;
 		const { args, cwd, worktree, bundle, serves } = input;
 
 		completed.set(id, {
@@ -326,7 +326,7 @@ export function pastRuns(
 		return options.runs.map((id) => {
 			const run = completed.get(id);
 
-			if (run === undefined) throw new Error(`no completed ${workflow} run ${id}`);
+			if (run === undefined) throw new Error(`no completed ${workflow === null ? "" : `${workflow} `}run ${id}`);
 
 			return run;
 		});

@@ -49,6 +49,10 @@ return { status: "shipped", subject: "${SUBJECT}" }`,
 		root,
 		"gh",
 		`echo "$@" >> "${root}/gh.log"
+if [ "$*" = "pr view 7 --json number,headRefName,isCrossRepository" ]; then
+	echo '{"number":7,"headRefName":"feature","isCrossRepository":false}'
+	exit
+fi
 [ "$1 $2" = "run list" ] || exit 1
 case "$*" in
 *"--branch main "*) cat "${root}/ci-main.json" ;;
@@ -107,9 +111,9 @@ async function reviewed(
 	return { id: run.id ?? "", code: run.code, head, short: git(repo, "rev-parse", "--short", head) };
 }
 
-/** `workflows land <id>` with a CI wait of 1 s, and its exit code and result. */
-async function land(id: string) {
-	const run = await workflows(["land", id, "--wait", "1", "--json"], { cwd: repo });
+/** `workflows land <change>` with a CI wait of 1 s, and its exit code and result. */
+async function land(change: string) {
+	const run = await workflows(["land", change, "--wait", "1", "--json"], { cwd: repo });
 
 	return { code: run.code, result: JSON.parse(run.stdout[1] ?? "{}").value };
 }
@@ -147,6 +151,54 @@ describe("workflows land", () => {
 		const log = await ghLog();
 		expect(log).toContain(`run list --commit ${run.head} --branch ${run.branch} `);
 		expect(log).toContain(`run list --commit ${run.head} --branch main `);
+		const listed = JSON.parse((await workflows(["list", "--json"], { cwd: repo })).stdout[0] ?? "");
+		expect(listed.find((row: { runId: string }) => row.runId === run.id)?.swept).toBe("landed");
+	});
+
+	it("lands a branch made by hand in a linked worktree, and removes the worktree", async () => {
+		const path = join(root, "feature-tree");
+		git(repo, "worktree", "add", "-q", "-b", "feature", path);
+		await writeFile(join(path, "feature.txt"), "feature\n");
+		git(path, "add", "feature.txt");
+		git(path, "commit", "-q", "-m", SUBJECT);
+		const head = git(path, "rev-parse", "HEAD");
+		const short = git(path, "rev-parse", "--short", "HEAD");
+
+		const landed = await land("feature");
+		expect(landed).toEqual({
+			code: 0,
+			result: {
+				status: "landed",
+				head: short,
+				change: { repository: await realpath(repo), branch: "feature" },
+				report: [`landed ${SUBJECT} ${short}, CI passed on the branch and on main`],
+			},
+		});
+		expect(mains()).toEqual([head, head]);
+		expect(git(repo, "branch", "--list", "feature")).toBe("");
+		expect(git(origin, "branch", "--list", "feature")).toBe("");
+		expect(git(repo, "branch", "-r", "--list", "origin/feature")).toBe("");
+		expect(existsSync(path)).toBe(false);
+	});
+
+	it("lands the head branch of a PR number", async () => {
+		git(repo, "branch", "feature");
+		git(repo, "checkout", "-q", "feature");
+		await writeFile(join(repo, "feature.txt"), "feature\n");
+		git(repo, "add", "feature.txt");
+		git(repo, "commit", "-q", "-m", SUBJECT);
+		git(repo, "checkout", "-q", "main");
+		const head = git(repo, "rev-parse", "feature");
+		const short = git(repo, "rev-parse", "--short", "feature");
+
+		const landed = await land("7");
+		expect([landed.code, landed.result.change, landed.result.report]).toEqual([
+			0,
+			{ repository: await realpath(repo), branch: "feature" },
+			[`landed ${SUBJECT} ${short}, CI passed on the branch and on main`],
+		]);
+		expect(mains()).toEqual([head, head]);
+		expect(git(repo, "branch", "--list", "feature")).toBe("");
 	});
 
 	it("refuses a red branch, and leaves main untouched on both sides", async () => {
@@ -225,23 +277,33 @@ describe("workflows land", () => {
 		expect(mains()).toEqual(before);
 	});
 
-	it("refuses at step 1 a stopped run, and a run that is not a completed run", async () => {
+	it("lands a stopped campaign run, and refuses a change that is not there", async () => {
 		const stopped = await workflows(["campaign"], { cwd: repo });
 		expect(stopped.code).toBe(0);
+		const branch = `campaign/${stopped.id}`;
 
-		const refused = await land(stopped.id ?? "");
-		expect([refused.code, refused.result]).toEqual([
-			1,
-			{
-				status: "refused",
-				change: { repository: await realpath(repo), branch: `campaign/${stopped.id}` },
-				report: [`refused at step 1: the campaign run ${stopped.id} ended stopped, not done or rejected`],
-			},
+		const worktree = git(repo, "worktree", "list", "--porcelain")
+			.split("\n")
+			.filter((line) => line.startsWith("worktree "))
+			.at(-1)
+			?.slice("worktree ".length);
+
+		await writeFile(join(worktree ?? "", "campaign.txt"), "campaign\n");
+		git(worktree ?? "", "add", "campaign.txt");
+		git(worktree ?? "", "commit", "-q", "-m", SUBJECT);
+		const head = git(repo, "rev-parse", branch);
+
+		const landed = await land(stopped.id ?? "");
+		expect([landed.code, landed.result.status, landed.result.change]).toEqual([
+			0,
+			"landed",
+			{ repository: await realpath(repo), branch },
 		]);
+		expectLanded({ id: stopped.id ?? "", branch, head });
 
 		const unknown = await land("nope");
 		expect(unknown.result.report).toEqual([
-			"refused at step 1: run nope has not ended or is not a run of ship, campaign or thermoloop",
+			`refused at step 1: nope is no PR number, no branch of ${await realpath(repo)} and no completed run`,
 		]);
 	});
 
@@ -263,19 +325,6 @@ describe("workflows land", () => {
 		expect(git(repo, "branch", "--show-current")).toBe("main");
 	});
 
-	it("refuses a thermoloop run that is not approved, and leaves main untouched", async () => {
-		const stopped = await reviewed(["--rounds", "1"], { script: { verdicts: ["FIX"] } });
-		expect(stopped.code).toBe(1);
-		const before = mains();
-
-		const refused = await land(stopped.id);
-		expect([refused.code, refused.result.report]).toEqual([
-			1,
-			[`refused at step 1: the thermoloop run ${stopped.id} ended stopped, not approved`],
-		]);
-		expect(mains()).toEqual(before);
-	});
-
 	it("refuses a thermoloop run on main, and leaves main untouched", async () => {
 		await writeFile(join(repo, "fix.txt"), "fix\n");
 		git(repo, "add", "fix.txt");
@@ -285,10 +334,7 @@ describe("workflows land", () => {
 		const before = mains();
 
 		const refused = await land(run.id ?? "");
-		expect([refused.code, refused.result.report]).toEqual([
-			1,
-			[`refused at step 1: the thermoloop run ${run.id} is on main`],
-		]);
+		expect([refused.code, refused.result.report]).toEqual([1, ["refused at step 1: the branch is main"]]);
 		expect(mains()).toEqual(before);
 	});
 

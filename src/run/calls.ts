@@ -105,9 +105,9 @@ export const RUN_ARGS = Type.Object({ name: Type.String(), args: JSON_OBJECT }, 
 /** The args of an `input` call: its question. */
 export const INPUT_ARGS = Type.Object({ question: Type.String() }, { additionalProperties: false });
 
-/** The args of a `pastRuns` call: the workflow and the options. */
+/** The args of a `pastRuns` call: the workflow, or null for every workflow, and the options. */
 export const PAST_RUNS_ARGS = Type.Object(
-	{ workflow: Type.String(), options: PAST_OPTIONS },
+	{ workflow: Type.Union([Type.String(), Type.Null()]), options: PAST_OPTIONS },
 	{ additionalProperties: false },
 );
 
@@ -669,10 +669,10 @@ async function askOf(calls: Calls, question: string, saved: number | undefined):
 }
 
 /**
- * The `pastRuns` call of `workflow` with `options`. A resume replays the saved list, so runs that end later do not
- * change it.
+ * The `pastRuns` call of `workflow`, or of every workflow for null, with `options`. A resume replays the saved list, so
+ * runs that end later do not change it.
  */
-export function pastRunsCall(calls: Calls, workflow: string, options: PastOptions): Promise<JsonValue> {
+export function pastRunsCall(calls: Calls, workflow: string | null, options: PastOptions): Promise<JsonValue> {
 	const args = { workflow, options };
 
 	return memoized(calls, callKey(calls, "pastRuns", args), { kind: "pastRuns", args }, async () =>

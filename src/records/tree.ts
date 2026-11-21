@@ -496,8 +496,9 @@ export type Labels = {
 /**
  * The label of each kind of call: the role name and conversation of a session, the role name of the session for an
  * ask, the command on one line for `sh` and `ok`, the workflow and child run ID for `run`, the question on one line
- * for `input`, the workflow for `pastRuns`, the action with its text, or its ID and state, on one line for `todo`, and
- * the request for `harness`: `tree`, or the item action with its ID and state or the ends and kind of its edge.
+ * for `input`, the workflow for `pastRuns` (`any` for every workflow), the action with its text, or its ID and state,
+ * on one line for `todo`, and the request for `harness`: `tree`, or the item action with its ID and state or the ends
+ * and kind of its edge.
  * A kind without a label fails the type check.
  */
 export const LABELS: Labels = {
@@ -514,7 +515,7 @@ export const LABELS: Labels = {
 	ok: ({ args }) => labelLine(commandOf(args)),
 	run: ({ args, child }) => (child === undefined ? args.name : `${args.name} ${child.runId}`),
 	input: ({ args }) => labelLine(args.question),
-	pastRuns: ({ args }) => args.workflow,
+	pastRuns: ({ args }) => args.workflow ?? "any",
 	todo: ({ args }) => {
 		if (args.action === "add") return labelLine(`add ${args.text}`);
 

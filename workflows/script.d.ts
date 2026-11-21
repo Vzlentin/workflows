@@ -200,10 +200,11 @@ type PastRun = {
 };
 
 /**
- * The completed root runs of the workflow `workflow` in the project store, newest first: up to `limit`, or the runs
- * `runs` in that order. A run of `runs` that is not a completed root run of `workflow` throws.
+ * The completed root runs of the workflow `workflow`, or of every workflow for null, in the project store, newest
+ * first: up to `limit`, or the runs `runs` in that order. A run of `runs` that is not a completed root run of
+ * `workflow` throws.
  */
-declare function pastRuns(workflow: string, options?: { runs?: readonly string[]; limit?: number }): Promise<PastRun[]>;
+declare function pastRuns(workflow: string | null, options?: { runs?: readonly string[]; limit?: number }): Promise<PastRun[]>;
 
 /** A todo of the list of the run: a line of intent with a state. Its ID is its place in the list: 1, 2, 3 and so on. */
 type Todo = { readonly id: number; readonly text: string; readonly state: "open" | "doing" | "done" | "dropped" };
@@ -414,6 +415,18 @@ declare function writePatch(path: string, from: string): Promise<string>;
  * bare. `prunable` says that the directory of the worktree is gone.
  */
 declare function worktrees(dir?: string): Promise<{ path: string; branch: string | undefined; bare: boolean; prunable: boolean }[]>;
+
+/**
+ * The PR of `ref` with the JSON `fields`, from `gh pr view` in the directory of `sh`. Throws when `gh` fails, or with
+ * `options.settle` returns `{ error }`, as `sh` does.
+ */
+declare function prOf(ref: string, fields: string, options?: { settle?: boolean }): Promise<any>;
+
+/** The local branch of the PR `pr`: `pr/<number>` for a PR from another repository, else its head branch. */
+declare function prBranch(pr: { number: number; headRefName: string; isCrossRepository: boolean }): string;
+
+/** True when `name` is a local branch of the repository of `dir`, default the directory of `sh`. */
+declare function isBranch(name: string, dir?: string): Promise<boolean>;
 
 /**
  * The change of the current checkout: the main checkout of its repository, and its branch. Undefined on a detached

@@ -1020,6 +1020,23 @@ describe("pastRuns", () => {
 		expect(answered.code).toBe(0);
 		expect(await past()).toEqual([asked.id]);
 	});
+
+	it("gives a run of any workflow for null", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(join(scripts, "other.js"), 'return "done"\n');
+		await writeFile(
+			join(scripts, "past.js"),
+			'export const meta = { args: { id: { type: "string", positional: true } } }\nreturn (await pastRuns(null, { runs: [args.id] })).map((run) => run.runId)\n',
+		);
+
+		const other = await workflows(["other"], { cwd: repo });
+		expect(other.code).toBe(0);
+		const found = await workflows(["past", other.id ?? ""], { cwd: repo });
+		expect([found.code, JSON.parse(found.stdout.at(-1) ?? "")]).toEqual([0, [other.id]]);
+		const unknown = await workflows(["past", "nope"], { cwd: repo });
+		expect([unknown.code, unknown.stderr[0]]).toEqual([1, "failed past: no completed run nope"]);
+	});
 });
 
 describe("workflows show", () => {

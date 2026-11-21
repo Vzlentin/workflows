@@ -26,7 +26,7 @@ and judge. A run costs minutes and model calls.
 | one change implemented in one commit, with no review loop | `rpi` | `item` |
 | a review of a change that exists, with fixes in rounds | `thermoloop` | `change`, optional `item` |
 | a score of a change that exists, with no edit | `judge` | `change`, optional `item` |
-| the branch of an ended ship or campaign run, or of an approved thermoloop run, on `main`, after its CI passed | `land` | `run` |
+| a change (a branch, a PR number or the ID of an ended run) on `main`, after its CI passed | `land` | `change` |
 
 This skill does not cover `optimize`, `implement` or workflow scripts.
 
@@ -54,12 +54,12 @@ Each arg becomes a flag of `workflows <name>`. Give only the args that the user 
 { name: "rpi", serves?: "<item ID | parley slug>", args: { item: "<absolute path of the work item>", base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
 { name: "thermoloop", serves?: "<item ID | parley slug>", args: { change?: "<change>", item?: "<work item>", base?: "main", rounds?: 3, repo?: "<absolute path of a local repository>" } }
 { name: "judge", serves?: "<item ID | parley slug>", args: { change?: "<change>", item?: "<work item>", base?: "main", repo?: "<absolute path of a local repository>" } }
-{ name: "land", args: { run: "<run ID>", wait?: 1800 } }
+{ name: "land", args: { change: "<branch, PR number or run ID>", wait?: 1800 } }
 ```
 
 - `serves`: what the run builds: the ID of an item, or the slug of an open parley or a contract. When the user names
   an item or a parley for the work, give it; else leave it out. An item that is done or dropped, or a parley that
-  ended, fails the run. `land` sets the item of a landed run to done.
+  ended, fails the run. `land` of a run ID sets the item of the run to done.
 - `repo`: without it, the run uses the Git repository of the current directory. A local path uses that repository.
   Write the path in full, with no `~`: the tool does not expand it. For ship, campaign and rpi only, any other value,
   such as `owner/name`, is cloned with `gh` into the run directory. For thermoloop and judge, `repo` is the top
@@ -118,11 +118,11 @@ branch of the change. `result.code` is the exit code of the run, from the `meta.
 | campaign | `stopped` | The user stopped the campaign at an item. Give the rundown when the result has one. |
 | campaign | `waiting` | An item failed, or is still at judge 0, and the campaign asks how to continue. See below. |
 | rpi | `implemented` | The commit `value.head` and the branch. |
-| thermoloop | `approved` | The reviewer answered SHIP. Give `value.rounds`, `value.change.branch` and the report line. `land` can land it. |
+| thermoloop | `approved` | The reviewer answered SHIP. Give `value.rounds`, `value.change.branch` and the report line. `land` can land `value.change.branch`. |
 | thermoloop | `stopped` | The rounds ended without SHIP. Give `value.handoff`, and the last review (see below). |
 | judge | `judged` | `result.score`, from 0 to 1, and `value.findings`. |
 | judge | `rejected` | The score is 0. Give `value.findings`. |
-| land | `landed` | The CI passed on the branch and on `main`. `main` is at `value.head` locally and on `origin`, and the run is swept, or for a thermoloop run its local branch is deleted. Give the first report line, and each `check failed:` line. |
+| land | `landed` | The CI passed on the branch and on `main`. `main` is at `value.head` locally and on `origin`, and the branch is swept: its worktree and its local branch are gone. Give the first report line, and each `check failed:` line. |
 | land | `landed-red` | The branch is on `main`, but the CI of `main` failed or gave no result. Nothing is reverted. Give the first report line, which names the failed run. |
 | land | `refused` | The report line `refused at step <n>: <reason>`. Before step 5, `main` is untouched. Give that line. |
 
@@ -165,7 +165,7 @@ commit).
   The branch is `<workflow>/<runId>` until a shipped run renames it from its commit subject.
 - The run directory is `${XDG_STATE_HOME:-$HOME/.local/state}/workflows/runs/<runId>`. It holds the patches of each
   review, `round-<n>.patch` and `round-<n>-fix.patch`, and for a campaign `item-<n>/`.
-- `land` sweeps the run that it lands, or deletes the local branch of a thermoloop run. After a run's branch is merged or fast-forwarded onto `origin/main` in another
+- `land` sweeps the branch that it lands. After a run's branch is merged or fast-forwarded onto `origin/main` in another
   way, run `workflows sweep --yes` (or
   `workflows sweep <branch>|<runId>... --yes` for a branch that went into another pull request or that you drop) to
   remove the worktree that has the branch and the local branch. A run ID gives the branch of the run, also of a
@@ -176,6 +176,6 @@ commit).
 
 With `/skill:workflows <workflow> <input>`, Pi adds the text after the command at the end of this skill. The first
 word is the workflow, and the rest is its input: the work item for ship and rpi, the goal for campaign, the change for
-thermoloop and judge, and the run ID for land. Flags such as `--rounds 2` or `--base develop` become the args of the same name. The user asked
+thermoloop and judge, and the branch, PR number or run ID for land. Flags such as `--rounds 2` or `--base develop` become the args of the same name. The user asked
 for the run, so start it. When the first word is not one of the six workflows, the whole text is the work item of
 `ship`.
