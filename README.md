@@ -117,7 +117,7 @@ pi install ./pi
 ```
 
 Build again after each change in `src/`. The checkout's `pi/` does not bring pi-agents: for the `subagent` tool,
-install `pi/` of a harness checkout too, such as `pi install ~/Dev/perso/harness/pi` (see the README of harness).
+install `pi/` of a harness checkout too, such as `pi install ~/Dev/stack/harness/pi` (see the README of harness).
 
 The tests use a fake model provider, a fake `gh`, a fake `workflows` command for the Pi plugin, and temporary Git
 repositories. They do not call a real model or open Pi.
