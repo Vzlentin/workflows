@@ -23,7 +23,6 @@ export const meta = {
 
 const id = String(args.run)
 const bound = Number(args.wait)
-const LANDED = ["ship", "campaign", "thermoloop"]
 
 // The conclusions of a CI run that pass.
 const PASSED = new Set(["success", "skipped", "neutral"])
@@ -38,9 +37,12 @@ function begin(n, name) {
 	phase(name)
 }
 
-// The past run `id` of the first workflow of `LANDED` that has it as a completed root run, or undefined.
+// The statuses of a run of each workflow that land, in the order that `pastRun` looks for the run.
+const LANDS = { ship: ["shipped", "rejected"], campaign: ["done", "rejected"], thermoloop: ["approved"] }
+
+// The past run `id` of the first workflow of `LANDS` that has it as a completed root run, or undefined.
 async function pastRun() {
-	for (const workflow of LANDED) {
+	for (const workflow of Object.keys(LANDS)) {
 		const past = (await pastRuns(workflow)).find((run) => run.runId === id)
 
 		if (past !== undefined) return { workflow, ...past }
@@ -49,35 +51,32 @@ async function pastRun() {
 	return undefined
 }
 
-// Step 1, first part: the run to land, `{ workflow, repository, own, branch, serves }`, where `own` says that the run
-// has a worktree of its own. Throws the reason of a refusal when the run has not ended, is not a run of `LANDED`, is a
-// thermoloop run that is not approved, is a ship or campaign run with no worktree of its own, or has no branch.
-async function runOf() {
-	const past = await pastRun()
-
+// Step 1, first part: the run to land from its past run `past`, `{ workflow, repository, own, branch, serves }`, where
+// `own` says that the run has a worktree of its own and `branch` is the branch of its `change`. Throws the reason of a
+// refusal when the run has not ended, is not a run of `LANDS`, ended with a status that `LANDS` does not give, is a
+// ship or campaign run with no worktree of its own, or has no branch.
+function runOf(past) {
 	if (past === undefined) throw new Error(`run ${id} has not ended or is not a run of ship, campaign or thermoloop`)
 	const { workflow, cwd, result, serves } = past
-	// The engine keeps `branch` and `status` of a result only as strings, and a result that is not an object has neither.
+	// The engine keeps `status` of a result only as a string and `change` only as an object of strings, and a result
+	// that is not an object has neither.
 	const status = result?.status ?? "with no status"
+	const lands = LANDS[workflow]
 
-	if (workflow === "thermoloop" && status !== "approved") {
-		throw new Error(`the thermoloop run ${id} ended ${status}, not approved`)
-	}
-
+	if (!lands.includes(status)) throw new Error(`the ${workflow} run ${id} ended ${status}, not ${lands.join(" or ")}`)
 	const own = past.repository !== null
 
 	if (!own && workflow !== "thermoloop") throw new Error(`the ${workflow} run ${id} has no worktree of its own`)
 	const repository = past.repository ?? cwd
+	const change = result?.change
 
-	// A thermoloop on a detached HEAD has the branch "".
-	if (result?.branch === undefined || result.branch === "") {
-		throw new Error(`the ${workflow} run ${id} ended ${status} and has no branch`)
-	}
+	// A run on a detached HEAD, or saved by an older version, has no `change`.
+	if (change === undefined || change.branch === "") throw new Error(`the ${workflow} run ${id} ended ${status} and has no branch`)
 
 	// Step 6 deletes the branch on `origin`.
-	if (result.branch === "main") throw new Error(`the ${workflow} run ${id} is on main`)
+	if (change.branch === "main") throw new Error(`the ${workflow} run ${id} is on main`)
 
-	return { workflow, repository, own, branch: result.branch, serves }
+	return { workflow, repository, own, branch: change.branch, serves }
 }
 
 // Step 1, second part: the run `run` with its checkouts and its head, `{ ...run, main, worktree, head, short, subject }`,
@@ -238,19 +237,20 @@ async function closeItem(item, head) {
 	return `item ${item} done`
 }
 
-let run
+let change
 let found
 
 try {
 	begin(1, "find the run")
-	run = await runOf()
-	found = await locate(run)
+	const past = await pastRun()
+	change = past?.result?.change
+	found = await locate(runOf(past))
 	await land(found)
 } catch (error) {
 	return {
 		status: "refused",
 		head: found?.short,
-		branch: run?.branch,
+		change,
 		report: [`refused at step ${step}: ${oneLine(error.message)}`],
 	}
 }
@@ -335,4 +335,4 @@ if (local || tracked) failures.push(`check failed: the branch ${branch} stays in
 
 if ((await onOrigin(main.path, `refs/heads/${branch}`)) !== "") failures.push(`check failed: the branch ${branch} stays on origin`)
 
-return { status: landed.status, head: short, branch, report: [landed.line, ...notes, ...failures] }
+return { status: landed.status, head: short, change, report: [landed.line, ...notes, ...failures] }

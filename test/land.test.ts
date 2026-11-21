@@ -35,7 +35,7 @@ beforeEach(async () => {
 await sh("echo feature > feature.txt && git add feature.txt && git commit -q -m '${SUBJECT}'")
 return { status: "shipped", subject: "${SUBJECT}" }`,
 	);
-	// A campaign run that stops with no subject, so it gets no branch.
+	// A campaign run that stops with no subject, so it keeps the branch of its worktree.
 	await writeFile(
 		join(scripts, "campaign.js"),
 		'export const meta = { worktree: true, exit: { stopped: 0 } }\nreturn { status: "stopped" }',
@@ -81,7 +81,9 @@ async function toHost(
 async function shipped(serves?: string): Promise<{ id: string; branch: string; head: string; short: string }> {
 	const run = await workflows(["ship", ...(serves === undefined ? [] : ["--serves", serves]), "--json"], { cwd: repo });
 	expect(run.code).toBe(0);
-	const { branch } = JSON.parse(run.stdout[1] ?? "{}").value;
+	const { change } = JSON.parse(run.stdout[1] ?? "{}").value;
+	expect(change.repository).toBe(await realpath(repo));
+	const { branch } = change;
 	const head = git(repo, "rev-parse", branch);
 
 	return { id: run.id ?? "", branch, head, short: git(repo, "rev-parse", "--short", head) };
@@ -136,7 +138,7 @@ describe("workflows land", () => {
 			result: {
 				status: "landed",
 				head: run.short,
-				branch: run.branch,
+				change: { repository: await realpath(repo), branch: run.branch },
 				report: [`landed ${SUBJECT} ${run.short}, CI passed on the branch and on main`],
 			},
 		});
@@ -223,7 +225,7 @@ describe("workflows land", () => {
 		expect(mains()).toEqual(before);
 	});
 
-	it("refuses at step 1 a run with no branch, and a run that is not a completed run", async () => {
+	it("refuses at step 1 a stopped run, and a run that is not a completed run", async () => {
 		const stopped = await workflows(["campaign"], { cwd: repo });
 		expect(stopped.code).toBe(0);
 
@@ -232,7 +234,8 @@ describe("workflows land", () => {
 			1,
 			{
 				status: "refused",
-				report: [`refused at step 1: the campaign run ${stopped.id} ended stopped and has no branch`],
+				change: { repository: await realpath(repo), branch: `campaign/${stopped.id}` },
+				report: [`refused at step 1: the campaign run ${stopped.id} ended stopped, not done or rejected`],
 			},
 		]);
 
@@ -252,7 +255,7 @@ describe("workflows land", () => {
 			result: {
 				status: "landed",
 				head: short,
-				branch: "fix/x",
+				change: { repository: await realpath(repo), branch: "fix/x" },
 				report: [`landed fix: the thing ${short}, CI passed on the branch and on main`],
 			},
 		});

@@ -53,7 +53,7 @@ log(`judge ${score.toFixed(2)}`)
 
 const report = [`judge ${score.toFixed(2)}: ${subject}`, ...findings.map((finding) => `  ${finding}`), ...notes]
 
-return { status: score === 0 ? "rejected" : "judged", score, answers, findings, divergence: oneLine(verdict.divergence), report }
+return { status: score === 0 ? "rejected" : "judged", change: await checkoutChange(), score, answers, findings, divergence: oneLine(verdict.divergence), report }
 
 // Zero when question 1 or 2 fails, else the passing fraction of questions 3 to 8.
 function scoreOf(answers) {

@@ -172,8 +172,8 @@ the line `commit message failed on ...` when the message turn failed, then the l
 branch and the worktree.
 
 The result of the run, which `--json` prints, has `status` and `rounds`; `head`, `subject`, the subject of the
-squashed commit, and `branch`, the branch that the worktree ends on, when `shipped` or `rejected`; `worktree`, the path of the
-directory that the run ran in, for every status; `score`, `answers`, the eight answers in question order, and `findings`, the finding
+squashed commit, when `shipped` or `rejected`; `change`, the main checkout and the branch that the worktree ends on, for
+every status, as [Branch name](#branch-name) gives it; `score`, `answers`, the eight answers in question order, and `findings`, the finding
 lines of the judge, when the judge answered; `divergence`, the divergence line of
 the judge with its whitespace runs made one space, when the judge answered; `reply` when blocked; `handoff`, the
 handoff that the last round used, when blocked or stopped; `memory`, the
@@ -205,7 +205,8 @@ implemented or blocked. Its result then has `lessons`, and the report has a line
 
 The result has `status` (`implemented` or `blocked`), `memory`, the notes of the store as `#<k> <note>` lines, and
 `reply`, from the implement result. When implemented, it has `head` and `plan`, the planner's handoff; when blocked,
-`rounds`, which is 1, and `handoff`, the planner's handoff, as a blocked thermoloop has.
+`rounds`, which is 1, and `handoff`, the planner's handoff, as a blocked thermoloop has. A run with a worktree of its
+own has `change`, as [Branch name](#branch-name) gives it.
 
 ## Implement
 
@@ -337,7 +338,8 @@ next round fixes all of them.
 On SHIP, the command prints `approved <subject> in <n> rounds, <commit>` and exits 0. A run that is not approved
 after `--rounds` rounds prints `stopped <subject> after <n> rounds` and exits 1. The memory works as in `ship`, in the store
 that `ship` gives, or in its own store without a caller. The result has `status` (`approved`, `blocked` or `stopped`),
-`branch`, the output of `git branch --show-current` in the checkout of the review (empty on a detached HEAD), `rounds`,
+`change`, the main checkout of the repository and the output of `git branch --show-current` in the checkout of the
+review (no `change` on a detached HEAD), `rounds`,
 `handoff`, the handoff that the last round used, when blocked or stopped, `memory`, and `reply` when blocked. Without a caller, the run
 ends with the harvest of `ship` at each end: approved, stopped or blocked. Its result then has `lessons`, and the report
 has a line for each lesson. A run that runs again in a worktree gives the lessons of that child run.
@@ -361,7 +363,8 @@ The judge session reads the commit messages and the diff of the change, and answ
 FAIL answers, one line for each finding (a failed question can have several), and the divergence. If question 1
 (complete) or 2 (correct) fails, the score is 0. Otherwise the score is the fraction of questions 3 to 8 that pass. The
 step logs `judge <score>`. The command prints `judge <score>: <subject>`, then one line `  <finding>` for each finding,
-and exits 0. The result is `{ "status": "judged", "score", "answers", "findings", "divergence" }`, with `divergence`
+and exits 0. The result is `{ "status": "judged", "change", "score", "answers", "findings", "divergence" }`, with
+`change` as in [Thermoloop](#thermoloop), and `divergence`
 the one line of the judge on how the change differs from its intent, or `none`, with its whitespace runs made one space.
 A score of 0 gives the status `rejected` in place of `judged`, and exits 1.
 
@@ -444,7 +447,7 @@ terminal and in Pi they move under the item step when it comes.
   at the start of the campaign. When `HEAD` is detached or on another branch, and `HEAD` contains the last shipped commit, or the start commit when no item shipped, the run moves the campaign
   branch to `HEAD` and checks it out with `git checkout -B <branch>`. Otherwise the run fails with `the campaign
   worktree is not on <branch> (HEAD <commit>), and HEAD does not contain the last shipped commit: check out the
-  campaign branch and resume`. So the result always has a `branch`.
+  campaign branch and resume`. So `change` of the result always has the campaign branch.
 - When every item shipped, the step `all <n> item(s)` runs the child run `judge` on the change of the whole campaign,
   from the start commit to the last item, against the goal: the judge of an item sees only its item, and not how the
   items fit together. The command prints
@@ -536,13 +539,13 @@ failed and was reset: its notes describe code that is gone` to the run memory. T
 
 `<subject>` is the first non-empty line of the goal without leading `#`. `<n>` in the `done` line counts the shipped
 items. The number of the item step counts every item that ran. The result is
-`{ "status": "done", "subject", "head", "score", "findings", "branch", "items": [{ "item", "result" }], "lessons" }`,
+`{ "status": "done", "subject", "head", "score", "findings", "change", "items": [{ "item", "result" }], "lessons" }`,
 where `score` and `findings` are those of the campaign judge, as in a ship result, with the status `rejected` when the
-campaign judge gave 0, or `{ "status": "stopped", "items", "rundown", "lessons" }`,
+campaign judge gave 0, or `{ "status": "stopped", "items", "rundown", "lessons", "change" }`,
 with no `rundown` when the user stopped at the question about an item still at 0. An item that the user kept has `"kept": true` and `findings`. The `result` of
 each shipped item, and of the failed item in a stopped result, is its `ship` result, with its `divergence` and its child run ID as
-`runId`, and after a fix round that shipped, that the user kept or at which the user stopped, the `head`, `subject` and judge fields of the last fix round. `head` is the commit of the last item, and `branch` is the
-branch that the worktree ends on.
+`runId`, and after a fix round that shipped, that the user kept or at which the user stopped, the `head`, `subject` and judge fields of the last fix round. `head` is the commit of the last item, and `change` has the main
+checkout and the branch that the worktree ends on, as [Branch name](#branch-name) gives it.
 
 ## Optimize
 
@@ -627,8 +630,8 @@ still exits 0.
 Each item of a valid candidate then ships with the overlay:
 `run("ship", { item, repo, base: start, overlay, from: runId })`, where `runId` is the past run, also when its
 baseline ran again; an `--items` item has no `from`. So the overlay is the only difference with the baseline. The diff of each ship child run that optimize starts is
-`git diff <start> HEAD` in its worktree. Then its worktree and its branch are removed: the `worktree` of its result,
-and the `branch` of its result, or else the branch that the worktree is on, read with `git branch --show-current`. A
+`git diff <start> <branch>` in the repository of its `change`, with `<branch>` the branch of its `change`. Then its
+worktree and its branch are removed: the worktree that `git worktree list` of that repository gives on the branch. A
 removal that runs again finds nothing to remove: the worktree removal runs only `git worktree prune` when the folder
 is gone, which removes only the registrations whose folder is gone, and the branch removal does nothing when the
 branch is gone. When
@@ -676,16 +679,18 @@ workflows land <run-id> --wait 600
 ```
 
 `workflows land <run-id>` lands the branch of a run on `main` with no model call. The run is a completed root run of
-`ship` or `campaign` of the project store, with a worktree of its own and a `branch` in its result, or an `approved`
-root run of `thermoloop`. It runs these steps in order, with `git -C` in the repository of the run:
+`ship` that is `shipped` or `rejected`, or of `campaign` that is `done` or `rejected`, of the project store, with a
+worktree of its own and a `change` in its result, or an `approved` root run of `thermoloop`. It runs these steps in order, with `git -C` in the repository of the run:
 
 1. Find the run: the run `<run-id>` in `pastRuns` of `ship`, then of `campaign`, then of `thermoloop`. The repository
-   is `repository`, or for a `thermoloop` run with no worktree of its own, `cwd`. The branch is `result.branch`. `git
+   is `repository`, or for a `thermoloop` run with no worktree of its own, `cwd`. The branch is `result.change.branch`. `git
    worktree list --porcelain` of the repository gives the main checkout, its first entry, and the worktree on the
    branch. It refuses a run that is not one of these completed root runs (`run <run-id> has not ended or is not a run
-   of ship, campaign or thermoloop`), a `thermoloop` run whose status is not `approved` (`the thermoloop run <run-id>
-   ended <status>, not approved`), a `ship` or `campaign` run with no `repository`, a run with no `result.branch` or an
-   empty one (such as a `ship` or `campaign` that stopped, or a `thermoloop` on a detached HEAD), and a run on `main`.
+   of ship, campaign or thermoloop`), a run whose status does not land (`the <workflow> run <run-id> ended <status>,
+   not <statuses>`, such as `the ship run <run-id> ended stopped, not shipped or rejected` or `the thermoloop run
+   <run-id> ended stopped, not approved`), a `ship` or `campaign` run with no `repository`, a run with no
+   `result.change` or an empty branch in it (`the <workflow> run <run-id> ended <status> and has no branch`, such as a
+   `thermoloop` on a detached HEAD, or a run that an earlier version saved), and a run on `main`.
    It refuses a run with a worktree of its own whose branch no worktree has. It refuses a worktree on the branch that
    is gone, or that has changes that are not committed, also untracked files. For a run with no worktree of its own, a
    branch that no worktree has is valid.
@@ -724,8 +729,8 @@ passes when each run ends with `success`, `skipped` or `neutral`. Otherwise its 
 of <branch> at <short> did not finish in <wait> s: <workflow> <url>, ...`, where `<short>` is the short head. No CI is
 not a green CI.
 
-The result is `{ "status", "head", "branch", "report" }`, with `head` the short head. `head` and `branch` are there
-once step 1 found them. A failed step from 1 to 6, or a failed Git or `gh` command in it, gives the status `refused`
+The result is `{ "status", "head", "change", "report" }`, with `head` the short head and `change` the `change` of the
+result of the run. `change` is there once step 1 read the run, and `head` once step 1 found it. A failed step from 1 to 6, or a failed Git or `gh` command in it, gives the status `refused`
 and the one report line `refused at step <n>: <reason>`. A refusal does nothing after the failed step, so a refusal
 before step 5 leaves `main` untouched on both sides. When step 7 passes, the status is `landed` and the first line
 is `landed <subject of the head> <short>, CI passed on the branch and on main`. Otherwise the status is `landed-red`,
@@ -939,19 +944,25 @@ as each item of a campaign, names no branch. The name is `subject` as a branch n
 `/`, then the lowercase words of the description joined with `-`, at most 48 characters cut at a word end. A subject
 without a type gives the words alone. `feat(pi): Show the runs` gives `feat/show-the-runs`, and `Fix the README typo`
 gives `fix-the-readme-typo`. A subject without a letter or digit keeps `<wf>/<run-id>`.
-A script can also set `branch` in its result: `thermoloop` sets the branch of the checkout that it reviewed.
+A script can also set `change` in its result: `thermoloop` and `judge` set the change of the checkout that they ran
+in. A run with a worktree of its own gets `change` from the engine, which replaces the `change` of the script.
 
 `prepareWorktree` of `src/launch/worktree.ts` is the one place that builds the default branch `<wf>/<run-id>`, and
 it marks that worktree with `renames: true` in the saved input. Only such a worktree renames its branch: a worktree on
-a `--branch` branch, or on the branch of `checkout`, keeps its branch, also on a detached HEAD, and its result gets
+a `--branch` branch, or on the branch of `checkout`, keeps its branch, also on a detached HEAD, and its report gets
 `branch <branch>`. The run renames `<wf>/<run-id>` to the name, and adds `-2`, `-3` and so on when the name exists. It
 renames only when the worktree is on `<wf>/<run-id>`, so a repeat after the rename keeps the branch it renamed to. The
-result gets `branch`, the branch that the worktree ends on, and the report gets the
-last line `branch <branch>`. A name that Git refuses, such as `docs/typo` when a branch `docs` exists, keeps
+report gets the last line `branch <branch>`. A name that Git refuses, such as `docs/typo` when a branch `docs` exists, keeps
 `<wf>/<run-id>`, and the last line is `branch <name> is in conflict with an existing branch; kept <wf>/<run-id>`.
 A branch `<name>` that another process creates while the run renames keeps `<wf>/<run-id>`, with the last line `branch
 <name> was created during the rename; kept <wf>/<run-id>`. A worktree on a detached HEAD keeps `<wf>/<run-id>` in
-`branch`, with the last line `the worktree is on a detached HEAD; kept <wf>/<run-id>`.
+`change`, with the last line `the worktree is on a detached HEAD; kept <wf>/<run-id>`.
+
+Every result object of a run with a worktree of its own gets `change: { repository, branch }`, except a result that
+waits for an answer. `repository` is the main checkout of the repository, the first entry of `git worktree list`,
+also when the run started in a linked worktree. `branch` is the branch that the worktree ends on: after the rename
+above for a result with a `subject`, else the branch of the worktree. A result without a `subject` gets no report line.
+A child run without a worktree of its own gets no `change` from the engine: its caller owns the change.
 
 `--branch <name>` puts the worktree on the new branch `<name>` in place of `<wf>/<run-id>`, from the start of the run.
 A value that is not a valid branch name fails before the run starts with `--branch <name> is not a valid branch name`,
@@ -965,8 +976,9 @@ command reads them from the store file about every 0.5 s. A read that fails prin
 of run <run-id>: <error>` on stderr once for each series of failed reads, also with `--json`; the next good read prints
 the lines that it missed. See [Progress](#progress). When the script returns a result with `report`, a list of lines,
 the command prints those lines on stdout. Otherwise it prints the return value: a string as it is, and any other value
-as JSON. The exit code comes from `meta.exit`. A result object can have other fields, but `status`, `subject`, `runId`,
-`branch` and `question` must be strings, `report` an array of strings and `score` a number: a result with a bad field
+as JSON. The exit code comes from `meta.exit`. A result object can have other fields, but `status`, `subject`, `runId`
+and `question` must be strings, `report` an array of strings, `score` a number and `change` an object of the strings
+`repository` and `branch`: a result with a bad field
 fails the run with `the script result has a bad field: <path> <problem>`, such as `/report/1 must be string`. A run that
 waits for an answer to `input(question)` prints the question and exits 3. When stdin and stderr are terminals, and
 without `--json` or `--background`, the command asks the question in place of the exit: it reads one line on the
@@ -1211,6 +1223,7 @@ the run started with. A script's own declaration of the same name takes their pl
 | `await commitChange(item, start, findings)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base`, `head` and `findings`, the lines of `findings` (default `[]`) joined with newlines, squashes the change into one commit with it, and returns `{ head, subject, warnings }`, `head` the short head, `subject` the commit subject, and `warnings` the lines that it logged for a script's report. When the turn fails or gives an empty subject, the message is the subject of `item`. The turn has `settle: true`: a failed turn logs `commit message failed on <subject of item>: <error>, so the message is the subject of the item`, and `warnings` is that line; else `warnings` is `[]` |
 | `await judgeCommit(item, start, committed)` | Runs the child run `judge` with `item` and `start`, and returns `head` and `subject` of `committed`, the result of `commitChange`, with the judge fields `status`, `score`, `answers`, `findings` and `divergence`. A failed judge fails the caller |
 | `await writePatch(path, from)` | Writes `git diff --binary` from `from` to `HEAD` to the file `path`, and returns `path` |
+| `await checkoutChange()` | `{ repository, branch }` of the current checkout: the main checkout of its repository, the first entry of `git worktree list`, and its branch. Undefined on a detached HEAD |
 | `await changeOf(args, { wip })` | `{ start, intent, checkout, dirty }` of the change of a script's `args`. With `args.start`, it is `args.start` and `args.item`, not dirty, with no Git step. Else it is the change that `args.change` points at from `args.base`, with the rules of [Thermoloop](#thermoloop), and it calls `title` with the subject of the intent: `start` is the start commit, `intent` is `args.item` or the pull request or the commit messages, `checkout` is the branch of a change that must run in a worktree of its own, and `dirty` says that the checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip` |
 | `await inCheckout(name, change, args)` | Runs the script `name` again as a child run with `args`, the `item` and `start` of the change, and `checkout`, the branch of the change, and returns its result with the last report line `worktree <path>`, the worktree that has the branch |
 
@@ -1599,7 +1612,9 @@ line of JSON in place of the report lines, for every outcome. Its `state` is the
   `result.status` is the `status` of the script's result, when it has one, `result.code` the exit code of the
   command, from `meta.exit`, and `result.score` the `score` of the script's result, when it has one: the score of the
   last judge of a ship, a campaign or a judge run. `value` is the whole result of the script, for example
-  `{"status":"shipped","rounds":1,"head":"1a2b3c4",...}` for ship; the [Ship](#ship) section lists its fields.
+  `{"status":"shipped","rounds":1,"head":"1a2b3c4",...}` for ship; the [Ship](#ship) section lists its fields. The
+  value of each workflow of the package has `change: { repository, branch }` as [Branch name](#branch-name) gives
+  it.
   `report` is the list of report lines that the command prints without `--json`, such as
   `["shipped Fix the README typo in 1 rounds, judge 1.00, 1a2b3c4", "branch fix/readme-typo"]`.
 - `{ "runId", "state": "waiting", "question", "result": { "status"?, "code", "score"? }, "value", "report" }`: the run waits for
@@ -1649,8 +1664,8 @@ its workflow is the `name` of its saved input, or `?`, its title is its workflow
 "swept"?, "repository", "steps" }`, with the schema `LISTED` of `src/cli/commands/list.ts`. The fields before `repository`
 are the run fields, `RUN_FIELDS` of `src/records/run.ts`, which `show --json` and `show --agents --json` give too. `result` is
 `{ "status"?, "code", "score"? }` as in [JSON output](#json-output), for a run that is `done` or `waiting`. `question` is the question of a run that is `waiting`. `branch` is
-the `branch` of the value of the result, the branch that the worktree ends on, else the branch of the run's worktree;
-`runBranch` of `src/run/result.ts` gives it, also for the catch-up. A run without a worktree and without a `branch` in
+the `change.branch` of the value of the result, the branch that the change is on, else the branch of the run's worktree;
+`runBranch` of `src/run/result.ts` gives it, also for the catch-up. A run without a worktree and without a `change` in
 its result has none. `startedAt` is the time when the first task of the run started, as an ISO string. `serves` is
 what the run serves (see [Serves](#serves)). `item` is the absolute path of the `.md` file that the positional text
 argument of the run named, as the run saved it (see [Saved inputs and resume](#saved-inputs-and-resume)); a run
@@ -2145,7 +2160,7 @@ directory, starts the host when none runs, asks it to start the run's task, and 
   not a workflows run input, and a task in `pending` whose record is gone. A block with no line is left out. The state
   is the state of the run from `runStatus`, with its result as [List](#list) gives it, such as `done, result shipped
   exit 0`, `failed` or `orphaned`. The branch is
-  the result's, else the branch of the run's worktree. The sessions come from `workflows.sessions` of the root run; a
+  `change.branch` of the result, else the branch of the run's worktree. The sessions come from `workflows.sessions` of the root run; a
   session without a label shows its lineage key, and without one only `#<conversation>`. The data of the lines is
   `{ runs, lost? }`, with the schema `CATCH_UP` of `src/run/catchup.ts`: `runs` has `{ task, runId, workflow, state,
   result?, subject?, branch?, head?, divergence?, lessons?, sessions }` for each run, where `result` is
@@ -2540,7 +2555,8 @@ The engine files in `src/`:
   input, its driver, the input of a child run, and the input of a new task of a run that ended.
 - `launch/args.ts`: the `meta.args` values of the command line, and the texts that they name, and the args of a
   `run()` call, with one check of both against `meta.args`.
-- `launch/worktree.ts`: repository selection, the worktree of a run, made by Git, and the name of its branch.
+- `launch/worktree.ts`: repository selection, the worktree of a run, made by Git, the name of its branch, and the main
+  checkout of its repository.
 - `run/result.ts`: the title of a run, the status, report lines and exit code of its result, and its branch.
 - `workflow/meta.ts`: read and check the `meta` of a workflow script.
 - `workflow/find.ts`: find a script, list the scripts, help and usage, usage errors, and the terminal input and output.

@@ -231,6 +231,8 @@ export const DESCRIPTION =
 	"`change`, `item`, `base`, `rounds` (thermoloop only), and `repo`, the path of a local repository to run in. " +
 	"For `land`, which lands the branch of a completed ship or campaign run, or of an approved thermoloop run, on " +
 	"`main` when its CI passes, then sweeps the run or deletes its branch: `run` (the run ID), and optional `wait` (the bound of each CI wait, in seconds). " +
+	"The result value of each of these workflows has `change: { repository, branch }`, the main checkout and the " +
+	"branch of its change. " +
 	"Each `run()` call of a " +
 	"script starts a child run, which a resume of its caller continues. A run goes on in the harness host of the " +
 	"project: Esc detaches from it, and `resume` follows it again. A failed or aborted run stays resumable. With " +

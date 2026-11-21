@@ -83,31 +83,34 @@ if (args.items !== undefined && args.runs !== undefined) throw new Error("give -
 const kept = []
 
 // Ships `item` as a child run with the extra args, and takes the diff of its commits before it removes its worktree
-// and its branch: the branch of its result, else the branch that its worktree is on.
+// and its branch: the branch of the `change` of its result, and the worktree that is on that branch.
 async function ship(item, extra) {
 	const result = await run("ship", { item: item.text, repo: item.repo, base: item.start, ...extra })
-	const diff = await sh(["git", "-C", result.worktree, "diff", item.start, "HEAD"])
-	const branch = result.branch ?? (await sh(["git", "-C", result.worktree, "branch", "--show-current"]))
+	const { repository, branch } = result.change
+	// Undefined when no worktree has the branch, as after a removal whose result was not saved, and then there is nothing
+	// to remove.
+	const path = (await worktrees(repository)).find((entry) => entry.branch === `refs/heads/${branch}`)?.path
+	const diff = await sh(["git", "-C", repository, "diff", item.start, `refs/heads/${branch}`])
 
 	const shipped = { runId: result.runId, result, diff }
 
-	try {
-		// Only prunes the stale registrations when the folder is gone, as after a removal whose result was not saved.
-		await sh([
-			"sh",
-			"-c",
-			'[ -e "$2" ] || { git -C "$1" worktree prune; exit 0; }; exec git -C "$1" worktree remove --force "$2"',
-			"remove",
-			item.repo,
-			result.worktree,
-		])
-	} catch (error) {
-		kept.push(`kept ${result.worktree}${branch === "" ? "" : ` on ${branch}`}: ${oneLine(error.message)}`)
+	if (path !== undefined) {
+		try {
+			// Only prunes the stale registrations when the folder is gone, as after a removal whose result was not saved.
+			await sh([
+				"sh",
+				"-c",
+				'[ -e "$2" ] || { git -C "$1" worktree prune; exit 0; }; exec git -C "$1" worktree remove --force "$2"',
+				"remove",
+				item.repo,
+				path,
+			])
+		} catch (error) {
+			kept.push(`kept ${path} on ${branch}: ${oneLine(error.message)}`)
 
-		return shipped
+			return shipped
+		}
 	}
-
-	if (branch === "") return shipped
 
 	try {
 		// Skipped when the branch is gone, as after a delete whose result was not saved.

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -148,7 +148,8 @@ describe("workflows ship", () => {
 		expect(result).not.toHaveProperty("extra");
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "rev-parse", "HEAD^")).toBe(start);
-		expect(result.branch).toBe(BRANCH);
+		expect(result.change).toEqual({ repository: await realpath(repo), branch: BRANCH });
+		expect(result).not.toHaveProperty("branch");
 		expect(git(worktree, "branch", "--show-current")).toBe(BRANCH);
 		expect(git(repo, "branch", "--list", `ship/${run.id}`)).toBe("");
 		expect(git(worktree, "log", "-1", "--format=%B")).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
@@ -380,8 +381,9 @@ export default function ({ events }) {
 			reply: "I found nothing to change.",
 			handoff: "Handoff 1: replace wrold with world in README.md.",
 			memory: NOTES.slice(0, 2),
-			worktree: worktreeOf(run.id),
 		};
+
+		const change = { repository: await realpath(repo), branch: `ship/${run.id}` };
 
 		expect(resumed.code).toBe(1);
 		expect(existsSync(join(runs(), run.id ?? "", "worktree"))).toBe(false);
@@ -392,7 +394,7 @@ export default function ({ events }) {
 				runId: run.id,
 				state: "done",
 				result: { status: "blocked", code: 1 },
-				value: { ...result, report, lessons: [] },
+				value: { ...result, report, lessons: [], change },
 				report,
 			}),
 		]);
@@ -707,7 +709,7 @@ export default function ({ events }) {
 
 		expect(run.code).toBe(0);
 		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
-		expect(result.branch).toBe("docs/typo");
+		expect(result.change.branch).toBe("docs/typo");
 		expect(report).toEqual([expect.stringMatching(SHIPPED), "branch docs/typo"]);
 		expect(git(worktreeOf(run.id), "branch", "--show-current")).toBe("docs/typo");
 		expect(git(repo, "branch", "--format=%(refname:short)")).toBe("docs/typo\nmain");
@@ -741,7 +743,7 @@ export default function ({ events }) {
 
 		expect(run.code).toBe(0);
 		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
-		expect(result.branch).toBe(`ship/${run.id}`);
+		expect(result.change.branch).toBe(`ship/${run.id}`);
 		expect(report).toEqual([
 			expect.stringMatching(SHIPPED),
 			`branch ${BRANCH} is in conflict with an existing branch; kept ship/${run.id}`,
@@ -757,7 +759,8 @@ export default function ({ events }) {
 
 		expect(run.code).toBe(0);
 		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
-		expect(result).toMatchObject({ status: "shipped", subject: "Fix the README typo", branch: "fix-the-readme-typo" });
+		expect(result).toMatchObject({ status: "shipped", subject: "Fix the README typo" });
+		expect(result.change.branch).toBe("fix-the-readme-typo");
 		expect(result.divergence).toBe("none");
 		expect(result.score).toBeCloseTo(5 / 6);
 		expect(report).toEqual([expect.stringMatching(SHIPPED), "branch fix-the-readme-typo"]);
@@ -859,7 +862,8 @@ export default function ({ events }) {
 
 		expect(run.code).toBe(0);
 		const { value: result } = JSON.parse(run.stdout[1] ?? "");
-		expect(result).toMatchObject({ status: "shipped", rounds: 1, runId: expect.any(String), branch: "docs/child" });
+		expect(result).toMatchObject({ status: "shipped", rounds: 1, runId: expect.any(String) });
+		expect(result.change).toEqual({ repository: await realpath(repo), branch: "docs/child" });
 		expect(git(worktreeOf(result.runId), "branch", "--show-current")).toBe("docs/child");
 		expect(git(worktreeOf(result.runId), "rev-parse", "HEAD~1")).toBe(start);
 		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
@@ -1078,7 +1082,7 @@ describe("workflows show", () => {
 					call("sh git rev-parse --short HEAD"),
 				],
 			],
-			[`${thermoloopId}/s0`, [call("sh git branch --show-current")]],
+			[`${thermoloopId}/s0`, [call("sh git branch --show-current"), call("sh git worktree list --porcelain")]],
 			// The command is cut at 80 characters.
 			[
 				`${thermoloopId}/s1`,
@@ -1089,7 +1093,15 @@ describe("workflows show", () => {
 					notes,
 				],
 			],
-			[`${judgeId}/s1`, [call("sh git rev-parse HEAD"), ...asks("judge", 1)]],
+			[
+				`${judgeId}/s1`,
+				[
+					call("sh git rev-parse HEAD"),
+					...asks("judge", 1),
+					call("sh git branch --show-current"),
+					call("sh git worktree list --porcelain"),
+				],
+			],
 		]);
 
 		const paths = new Map([

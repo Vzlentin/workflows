@@ -1,4 +1,4 @@
-import { rm, writeFile } from "node:fs/promises";
+import { realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
@@ -45,6 +45,7 @@ describe("workflows rpi", () => {
 		expect(report).toEqual([`implemented ${ITEM}, ${head}`, LESSON_LINE]);
 		expect(git(worktree, "branch", "--show-current")).toBe(`rpi/${run.id}`);
 		expect(result).toMatchObject({ status: "implemented", head, reply: "I fixed the typo in README.md." });
+		expect(result.change).toEqual({ repository: await realpath(repo), branch: `rpi/${run.id}` });
 		expect(result.memory).toEqual([
 			"#0 planner: Handoff 1: one word changes.",
 			"#1 implementer r1: Implement 1: README.md had wrold.",

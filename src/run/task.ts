@@ -9,7 +9,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { type ConversationHandle, type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { SWEEP_MARKER, posts, readProject, type ScriptInput } from "../launch/input.ts";
-import { branchOf, ensureWorktree, type Renamed, renameBranch } from "../launch/worktree.ts";
+import { branchOf, ensureWorktree, mainCheckout, type Renamed, renameBranch } from "../launch/worktree.ts";
 import { outcomeText, waits } from "../tool.ts";
 import { firstTask, outcomeFrom, scanTasks, type TaskEnd } from "./past.ts";
 import { addProgress, type ProgressEvent } from "./progress.ts";
@@ -109,15 +109,19 @@ async function closeSessions(
 }
 
 /**
- * `result` of a run with a worktree of its own, with the branch that the worktree ends on. A result with a `subject`
- * gets `branch` and the report line `branch <name>`. A worktree that `renames` its branch renames it to the name of
- * `subject`; another worktree, such as one of `--branch`, keeps its branch. Safe to repeat: a repeat finds the
- * worktree on the new branch.
+ * `result` of a run with a worktree of its own, with its `change`: the main checkout of the repository and the branch
+ * that the worktree ends on. A script's own `change` is replaced. A result with a `subject` also gets the report line
+ * `branch <name>`, and a worktree that `renames` its branch renames it to the name of `subject`; another worktree,
+ * such as one of `--branch`, keeps its branch. A waiting result and a result that is not an object stay unchanged.
+ * Safe to repeat: a repeat finds the worktree on the new branch.
  */
 async function named(input: ScriptInput, result: JsonValue, signal: AbortSignal): Promise<JsonValue> {
 	const { worktree } = input;
 
-	if (worktree === undefined || !Value.Check(RESULT_OBJECT, result) || result.subject === undefined) return result;
+	if (worktree === undefined || !Value.Check(RESULT_OBJECT, result) || waits(result)) return result;
+	const repository = await mainCheckout(worktree.repository);
+
+	if (result.subject === undefined) return { ...result, change: { repository, branch: worktree.branch } };
 	const wanted = branchOf(result.subject);
 	const from = worktree.branch;
 
@@ -128,7 +132,7 @@ async function named(input: ScriptInput, result: JsonValue, signal: AbortSignal)
 
 	const { branch, line } = branchLine(renamed, from);
 
-	return { ...result, branch, report: [...(result.report ?? []), line] };
+	return { ...result, change: { repository, branch }, report: [...(result.report ?? []), line] };
 }
 
 /** The branch that a run ends on, and its report line. */

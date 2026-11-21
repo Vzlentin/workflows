@@ -61,6 +61,16 @@ async function worktrees(dir) {
 	return entries;
 }
 
+/**
+ * The change of the current checkout: `{ repository, branch }`, with the main checkout of its repository and its
+ * branch. Undefined on a detached HEAD, whose branch is unknown.
+ */
+async function checkoutChange() {
+	const branch = await sh(["git", "branch", "--show-current"]);
+
+	return branch === "" ? undefined : { repository: (await worktrees())[0].path, branch };
+}
+
 /** The path of the worktree that has `branch` checked out, or undefined when no worktree has it. */
 async function checkedOutAt(branch) {
 	return (await worktrees()).find((entry) => entry.branch === `refs/heads/${branch}`)?.path;

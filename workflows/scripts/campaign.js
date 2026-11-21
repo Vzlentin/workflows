@@ -3,8 +3,8 @@
 // on the judge's findings, and a new judge. A failed judge fails the campaign. An item still at 0 is one squashed
 // commit, and the user answers keep, one more fix round on their words, reset or stop. A failed or reset item gets a
 // rundown and a question, and the answer goes back to the split. When every item shipped, judge.js judges the change of
-// the whole campaign against the goal, which no item's judge sees. The engine names the branch from `subject` of the
-// result.
+// the whole campaign against the goal, which no item's judge sees. The engine renames the branch from `subject` of the
+// result, and sets its `change`.
 // Each item is a todo of the run: `open` after its split, `doing` from its item step, `done` when it ships, and
 // `dropped` at its reset, at a stop at it, or when a new split replaces it.
 // Every Git step is safe to repeat: a resume runs a step again when its result was not saved.

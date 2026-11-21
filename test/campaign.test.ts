@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -160,7 +160,10 @@ describe("workflows campaign", () => {
 			FINDING,
 			"branch docs/readme",
 		]);
-		expect(result).toMatchObject({ subject: "docs: readme", branch: "docs/readme" });
+		expect(result).toMatchObject({
+			subject: "docs: readme",
+			change: { repository: await realpath(repo), branch: "docs/readme" },
+		});
 		expect([result.score, result.findings]).toEqual([5 / 6, PASSING_JUDGE.findings]);
 		expect(runResult).toEqual({ status: "done", code: 0, score: 5 / 6 });
 		expect(result.items[0].result).toMatchObject({
@@ -482,7 +485,7 @@ describe("workflows campaign", () => {
 		expect(existsSync(join(root, "detached"))).toBe(true);
 		expect(run.code).toBe(0);
 		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
-		expect(result.branch).toBe("docs/readme");
+		expect(result.change.branch).toBe("docs/readme");
 		expect(report.at(-1)).toBe("branch docs/readme");
 		const worktree = worktreeOf(run.id);
 		expect(git(worktree, "branch", "--show-current")).toBe("docs/readme");
@@ -827,7 +830,11 @@ describe("workflows campaign", () => {
 		expect(stopped.stdout.slice(1)).toEqual([`stopped Fix the README at item 1: ${worktreeOf(run.id)}`, LESSON_LINE]);
 		const json = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
 		const { value: result } = JSON.parse(json.stdout[1] ?? "");
-		expect(result).toMatchObject({ status: "stopped", lessons: [LESSONED] });
+		expect(result).toMatchObject({
+			status: "stopped",
+			lessons: [LESSONED],
+			change: { repository: await realpath(repo), branch: `campaign/${run.id}` },
+		});
 		expect(result).not.toHaveProperty("rundown");
 		expect(git(worktreeOf(run.id), "rev-parse", "HEAD")).not.toBe(start);
 		// The fix round squashed the item again: the stopped item has the commit of the fix round.
@@ -963,7 +970,7 @@ describe("workflows campaign", () => {
 
 		expect(run.code).toBe(0);
 		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
-		expect(result.branch).toBe("docs/readme-2");
+		expect(result.change.branch).toBe("docs/readme-2");
 		expect(report).toEqual([expect.any(String), itemLine(COMMIT.subject), FINDING, "branch docs/readme-2"]);
 		expect(git(worktreeOf(run.id), "branch", "--show-current")).toBe("docs/readme-2");
 		expect(git(repo, "rev-parse", "docs/readme")).toBe(start);

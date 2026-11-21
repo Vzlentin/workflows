@@ -32,7 +32,7 @@ function textArg(input: ShownInput): string | undefined {
 
 /**
  * A result object of a script: the fields that the engine reads, each optional, and other fields of the script. The
- * engine writes `runId`, `branch` and `question`.
+ * engine writes `runId`, `change` and `question`.
  */
 export const RESULT_OBJECT = Type.Object(
 	{
@@ -41,7 +41,7 @@ export const RESULT_OBJECT = Type.Object(
 		subject: Type.Optional(Type.String()),
 		score: Type.Optional(Type.Number()),
 		runId: Type.Optional(Type.String()),
-		branch: Type.Optional(Type.String()),
+		change: Type.Optional(Type.Object({ repository: Type.String(), branch: Type.String() })),
 		question: Type.Optional(Type.String()),
 	},
 	{ additionalProperties: JSON_VALUE },
@@ -115,12 +115,12 @@ export function runResult({ status, code, score }: Report): RunResult {
 }
 
 /**
- * The branch of a run: the `branch` of the value `value` of its result, the branch that its worktree ends on, else the
- * branch of its worktree `worktree`. Undefined for a run without either.
+ * The branch of a run: the `change.branch` of the value `value` of its result, the branch that its change is on, else
+ * the branch of its worktree `worktree`. Undefined for a run without either.
  */
 export function runBranch(
 	value: JsonValue | undefined,
 	worktree: { readonly branch: string } | undefined,
 ): string | undefined {
-	return (Value.Check(RESULT_OBJECT, value) ? value.branch : undefined) ?? worktree?.branch;
+	return (Value.Check(RESULT_OBJECT, value) ? value.change?.branch : undefined) ?? worktree?.branch;
 }

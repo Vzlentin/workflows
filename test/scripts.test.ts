@@ -2185,6 +2185,7 @@ return { runId, runDir, cwd, branch, start: args.start, plan: await prompts.plan
 			branch: `child/${child.runId}`,
 			start: git(repo, "rev-parse", "HEAD"),
 			plan: "Child plan.",
+			change: { repository: await realpath(repo), branch: `child/${child.runId}` },
 		});
 		expect(plan).toMatch(/^Plan this change\./);
 		expect(existsSync(join(worktreeAt(repo, child.runId), "README.md"))).toBe(true);
@@ -2493,7 +2494,14 @@ return args`,
 		expect(run.code).toBe(0);
 		const child = JSON.parse(run.stdout[1] ?? "");
 		const path = worktreeAt(repo, child.runId);
-		expect(child).toEqual({ cwd: path, args: { start }, branch: "feature", head: start, runId: child.runId });
+		expect(child).toEqual({
+			cwd: path,
+			args: { start },
+			branch: "feature",
+			head: start,
+			change: { repository: await realpath(repo), branch: "feature" },
+			runId: child.runId,
+		});
 		expect(git(repo, "branch", "--show-current")).toBe("main");
 
 		await writeFile(join(scripts, "parent.js"), 'return await run("child", { checkout: "feature" })');

@@ -18,6 +18,7 @@ import {
 	type Script,
 	sandbox,
 	forgetResults,
+	worktreeAt,
 	workflows,
 } from "./support.ts";
 
@@ -239,7 +240,7 @@ describe("workflows optimize", () => {
 	it("runs a baseline again when its head is gone or it did not ship", async () => {
 		const gone = await ship("Fix the README typo");
 		expect(gone.code).toBe(0);
-		git(repo, "worktree", "remove", "--force", gone.result.worktree);
+		git(repo, "worktree", "remove", "--force", worktreeAt(repo, gone.runId));
 
 		const branch = git(repo, "branch", "--format=%(refname:short)")
 			.split("\n")
@@ -279,14 +280,13 @@ describe("workflows optimize", () => {
 		);
 		const scripts = join(root, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
-		// A ship that does not ship, on a branch of its own name; the branch ref of the first ship and the worktree of the
+		// A ship that does not ship, on the branch of its worktree; the branch ref of the first ship and the worktree of the
 		// second ship are locked.
 		await writeFile(
 			join(scripts, "ship.js"),
 			`export const meta = { args: { item: { type: "text", positional: true, required: true } }, worktree: true, exit: { blocked: 1 } }
-await sh(["git", "branch", "-m", \`own/\${runId}\`])
-await sh(["sh", "-c", 'if [ -e "$1" ]; then git worktree lock "$2"; else touch "$1" "$(git rev-parse --git-common-dir)/refs/heads/$3.lock"; fi', "lock", "${join(root, "shipped")}", cwd, \`own/\${runId}\`])
-return { status: "blocked", worktree: cwd, report: [] }`,
+await sh(["sh", "-c", 'if [ -e "$1" ]; then git worktree lock "$2"; else touch "$1" "$(git rev-parse --git-common-dir)/refs/heads/$3.lock"; fi', "lock", "${join(root, "shipped")}", cwd, \`ship/\${runId}\`])
+return { status: "blocked", report: [] }`,
 		);
 
 		const run = await workflows(["optimize", "--workflow", "ship", "--items", "items"], {
@@ -299,12 +299,12 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 		expect(worktrees).toHaveLength(2);
 		const path = (worktrees[1] ?? "").split("\n")[0]?.slice("worktree ".length) ?? "";
 		const branch = git(path, "branch", "--show-current");
-		expect(branch).toMatch(/^own\//);
+		expect(branch).toMatch(/^ship\//);
 		const kept = run.stdout.find((line) => line.startsWith(`kept ${path} `));
 		expect(kept).toMatch(new RegExp(`^kept \\S+ on ${branch}: sh -c failed: fatal: cannot remove a locked`));
 		// The worktree of the first ship is gone, and only its branch stays.
 		const line = run.stdout.find((text) => text.startsWith("kept branch ")) ?? "";
-		const first = /^kept branch (own\/\S+): sh -c failed: /.exec(line)?.[1];
+		const first = /^kept branch (ship\/\S+): sh -c failed: /.exec(line)?.[1];
 		expect(first).toBeDefined();
 		expect(first).not.toBe(branch);
 		const branches = git(repo, "branch", "--format=%(refname:short)").split("\n").toSorted();
@@ -324,8 +324,7 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 		await writeFile(
 			join(scripts, "ship.js"),
 			`export const meta = { args: { item: { type: "text", positional: true, required: true } }, worktree: true, exit: { blocked: 1 } }
-await sh(["git", "branch", "-m", \`own/\${runId}\`])
-return { status: "blocked", worktree: cwd, report: [] }`,
+return { status: "blocked", report: [] }`,
 		);
 
 		const first = await workflows(["optimize", "--workflow", "ship", "--items", "items"], {
@@ -362,9 +361,8 @@ return { status: "blocked", worktree: cwd, report: [] }`,
 		await writeFile(
 			join(scripts, "ship.js"),
 			`export const meta = { args: { item: { type: "text", positional: true, required: true } }, worktree: true, exit: { blocked: 1 } }
-await sh(["git", "branch", "-m", \`own/\${runId}\`])
-await sh(["sh", "-c", 'echo "$1 $2" >> "$3"', "log", cwd, \`own/\${runId}\`, "${ships}"])
-return { status: "blocked", worktree: cwd, report: [] }`,
+await sh(["sh", "-c", 'echo "$1 $2" >> "$3"', "log", cwd, \`ship/\${runId}\`, "${ships}"])
+return { status: "blocked", report: [] }`,
 		);
 
 		const first = await workflows(["optimize", "--workflow", "ship", "--items", "items"], {

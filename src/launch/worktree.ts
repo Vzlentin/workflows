@@ -1,4 +1,7 @@
-/** The repository and worktree of a run: repository selection, the run's worktree and the name of its branch. */
+/**
+ * The repository and worktree of a run: repository selection, the run's worktree, the name of its branch, and the main
+ * checkout of its repository.
+ */
 import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { git, gitSucceeds, run } from "../git.ts";
@@ -196,6 +199,15 @@ async function checkedOutAt(repository: string, branch: string): Promise<string 
 	}
 
 	return undefined;
+}
+
+/** The main checkout of the repository of `path`: the first worktree that `git worktree list` gives. */
+export async function mainCheckout(path: string): Promise<string> {
+	const first = (await git(path, "worktree", "list", "--porcelain")).split("\n")[0] ?? "";
+
+	if (!first.startsWith("worktree ")) throw new Error(`git worktree list at ${path} gives no worktree`);
+
+	return first.slice("worktree ".length);
 }
 
 /** The realpath of the Git common directory of the repository or worktree at `path`. */

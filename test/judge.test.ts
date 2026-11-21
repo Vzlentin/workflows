@@ -28,6 +28,7 @@ describe("workflows judge", () => {
 		const { value: result, report } = JSON.parse(run.stdout[1] ?? "");
 		expect(report).toEqual([`judge 0.83: ${ITEM}`, `  ${PASSING_JUDGE.findings[0]}`]);
 		expect(result).toMatchObject({ status: "judged", score: 5 / 6, ...PASSING_JUDGE, divergence: "none" });
+		expect(result.change).toEqual({ repository: await realpath(repo), branch: "feature" });
 		expect(result).not.toHaveProperty("commit");
 		expect(progressOf(run.stderr)).toEqual(["✓ judge", "  judge 0.83"]);
 		expect(run.model.calls.map((call) => call.kind)).toEqual(["judge"]);
@@ -57,6 +58,31 @@ describe("workflows judge", () => {
 		expect(run.model.find("judge")?.prompt).toMatch(new RegExp(`## base\\n${start}\\n\\n## head\\n${head}$`));
 		expect(git(repo, "rev-parse", "HEAD")).toBe(head);
 		expect(git(repo, "status", "--porcelain")).toBe(" M README.md");
+	});
+
+	it("gives the main checkout as the repository of the change of a linked worktree", async () => {
+		git(repo, "checkout", "-q", "main");
+		const linked = join(root, "linked");
+		git(repo, "worktree", "add", "-q", linked, "feature");
+
+		const run = await workflows(["judge", "--json"], { cwd: linked, script: { judge: PASSING_JUDGE } });
+
+		expect(run.code).toBe(0);
+		const { value: result } = JSON.parse(run.stdout[1] ?? "");
+		expect(result.change).toEqual({ repository: await realpath(repo), branch: "feature" });
+
+		// The engine gives the change of a child run in a worktree of its own from the linked worktree.
+		git(linked, "checkout", "-qb", "other", "main");
+
+		const child = await workflows(["judge", "--json", "main..feature"], {
+			cwd: linked,
+			script: { judge: PASSING_JUDGE },
+		});
+
+		expect(child.code).toBe(0);
+		const { value, report } = JSON.parse(child.stdout[1] ?? "");
+		expect(String(report.at(-1))).toMatch(/^worktree /);
+		expect(value.change).toEqual({ repository: await realpath(repo), branch: "feature" });
 	});
 
 	it("judges the change of the repository of --repo from another directory", async () => {

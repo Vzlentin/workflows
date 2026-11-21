@@ -158,14 +158,18 @@ type Result = {
 	/** The engine writes it: the run ID of a child run, in the result of `run()`. */
 	runId?: string;
 	/**
-	 * The branch of the run. A script can set it. The engine writes it for a run with a worktree of its own and a
-	 * `subject`: the branch that the worktree ends on.
+	 * The change of the run: the main checkout of its repository and the branch that the change is on. A script can
+	 * set it. For a run with a worktree of its own, the engine writes it, except in a waiting result: the branch that
+	 * the worktree ends on.
 	 */
-	branch?: string;
+	change?: Change;
 	/** The engine writes it: the question of an open `input()` call. */
 	question?: string;
 	[key: string]: Json | undefined;
 };
+
+/** A change: the main checkout of its repository and its branch. */
+type Change = { repository: string; branch: string };
 
 /** What a script returns, and what `run()` gives: a result object, or a JSON value that is not an object. */
 type ScriptResult = Result | null | boolean | number | string | Json[];
@@ -410,6 +414,12 @@ declare function writePatch(path: string, from: string): Promise<string>;
  * bare. `prunable` says that the directory of the worktree is gone.
  */
 declare function worktrees(dir?: string): Promise<{ path: string; branch: string | undefined; bare: boolean; prunable: boolean }[]>;
+
+/**
+ * The change of the current checkout: the main checkout of its repository, and its branch. Undefined on a detached
+ * HEAD, whose branch is unknown.
+ */
+declare function checkoutChange(): Promise<Change | undefined>;
 
 /**
  * The change of a script's `args`. With `args.start`, a caller gives the change: `start`, and `args.item` as the
