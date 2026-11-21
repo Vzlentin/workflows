@@ -205,8 +205,8 @@ implemented or blocked. Its result then has `lessons`, and the report has a line
 
 The result has `status` (`implemented` or `blocked`), `memory`, the notes of the store as `#<k> <note>` lines, and
 `reply`, from the implement result. When implemented, it has `head` and `plan`, the planner's handoff; when blocked,
-`rounds`, which is 1, and `handoff`, the planner's handoff, as a blocked thermoloop has. A run with a worktree of its
-own has `change`, as [Branch name](#branch-name) gives it.
+`rounds`, which is 1, and `handoff`, the planner's handoff, as a blocked thermoloop has. It has `change`: the change
+of its checkout, or, for a run with a worktree of its own, as [Branch name](#branch-name) gives it.
 
 ## Implement
 

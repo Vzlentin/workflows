@@ -1110,7 +1110,15 @@ describe("workflows show", () => {
 			],
 			[`${rpiId}/s1`, asks("researcher", 1)],
 			[`${rpiId}/s2`, [...remembering("planner", 2), memo]],
-			[`${rpiId}/s3`, [call("run implement \\S+"), notes]],
+			[
+				`${rpiId}/s3`,
+				[
+					call("run implement \\S+"),
+					notes,
+					call("sh git branch --show-current"),
+					call("sh git worktree list --porcelain"),
+				],
+			],
 			[
 				`${implementId}/s0`,
 				[

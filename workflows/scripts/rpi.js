@@ -51,9 +51,9 @@ const lines = await noteLines(notes)
 if (status !== "implemented") {
 	const report = [`${status} ${subject}`, reply]
 
-	return notes.finish(item, { status, rounds: 1, reply, handoff: plan, memory: lines, report })
+	return notes.finish(item, { status, change: await checkoutChange(), rounds: 1, reply, handoff: plan, memory: lines, report })
 }
 
 const report = [`implemented ${subject}, ${head}`]
 
-return notes.finish(item, { status: "implemented", head, plan, reply, memory: lines, report })
+return notes.finish(item, { status: "implemented", change: await checkoutChange(), head, plan, reply, memory: lines, report })

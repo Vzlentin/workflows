@@ -1,4 +1,4 @@
-import { realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
@@ -62,5 +62,25 @@ describe("workflows rpi", () => {
 		expect(JSON.parse(outcome)).not.toHaveProperty("report");
 		expect(git(worktree, "log", "--format=%s", `${start}..HEAD`)).toBe(ITEM);
 		expect(git(repo, "branch", "--show-current")).toBe("feature");
+	});
+	it("gives the change of its caller's checkout to a caller that runs it in place", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "caller.js"),
+			[
+				"export const meta = { exit: { implemented: 0 } }",
+				'const start = await sh(["git", "rev-parse", "HEAD"])',
+				`return await run("rpi", { item: ${JSON.stringify(ITEM)}, start })`,
+			].join("\n"),
+		);
+		git(repo, "add", ".workflows");
+		git(repo, "commit", "-qm", "caller");
+		const run = await workflows(["caller", "--json"], { cwd: repo, script: { edits: [THANKED] } });
+
+		expect(run.code).toBe(0);
+		const { value } = JSON.parse(run.stdout[1] ?? "");
+		expect(value.status).toBe("implemented");
+		expect(value.change).toEqual({ repository: await realpath(repo), branch: "feature" });
 	});
 });
