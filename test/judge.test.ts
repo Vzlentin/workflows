@@ -71,6 +71,14 @@ describe("workflows judge", () => {
 		const { value: result } = JSON.parse(run.stdout[1] ?? "");
 		expect(result.change).toEqual({ repository: await realpath(repo), branch: "feature" });
 
+		// A bare branch that the linked worktree has checked out runs there.
+		const there = await workflows(["judge", "--json", "feature"], { cwd: repo, script: { judge: PASSING_JUDGE } });
+
+		expect(there.code).toBe(0);
+		const named = JSON.parse(there.stdout[1] ?? "");
+		expect(named.report.at(-1)).toBe(`worktree ${await realpath(linked)}`);
+		expect(named.value.change).toEqual({ repository: await realpath(repo), branch: "feature" });
+
 		// The engine gives the change of a child run in a worktree of its own from the linked worktree.
 		git(linked, "checkout", "-qb", "other", "main");
 

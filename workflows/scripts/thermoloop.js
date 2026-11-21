@@ -1,13 +1,13 @@
 // The thermoloop: the review loop of a change. `workflows thermoloop [<change>]` reviews the change that `changeOf`
 // finds: the current branch from its merge base with `--base`, a PR number, a ref or a range. It commits the changes
 // of the checkout first as `wip`, takes the intent from `--item`, the PR or the commit messages, and fixes the change
-// in rounds until the reviewer answers SHIP. A change on a branch that no worktree has runs again as a child run in a
-// worktree on that branch. A caller gives `start`, the commit that its change starts from, with `item`, and may give
-// `plan` and `reply`, the handoff and the report of the implement before, `memory`, the `ref` of a run memory to go on
-// with, and `patches`, the folder of the round patches. Without `memory`, the run ends with the lessons of its own
-// memory. `ship.js` runs it after `rpi.js`. `--repo <path>` runs it in the checkout of that local repository, as from
-// its directory, and commits there. Every Git step is safe to repeat: a resume runs a step again when its result was
-// not saved.
+// in rounds until the reviewer answers SHIP. A change on another branch runs again as a child run in the worktree
+// that has that branch, else in a worktree of its own on it; a dirty worktree of that branch fails the run. A caller
+// gives `start`, the commit that its change starts from, with `item`, and may give `plan` and `reply`, the handoff and
+// the report of the implement before, `memory`, the `ref` of a run memory to go on with, and `patches`, the folder of
+// the round patches. Without `memory`, the run ends with the lessons of its own memory. `ship.js` runs it after
+// `rpi.js`. `--repo <path>` runs it in the checkout of that local repository, as from its directory, and commits there.
+// Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
 export const meta = {
 	description: "Review a change (the current branch, a PR, a ref or a range), and fix it in rounds until the reviewer answers SHIP.",
 	args: {

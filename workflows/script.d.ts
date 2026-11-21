@@ -427,11 +427,13 @@ declare function checkoutChange(): Promise<Change | undefined>;
  * the run gets the subject of its intent as its title. `args.change` is nothing (the current branch from its merge base
  * with `args.base`, default `main`), a PR number (from the merge base with its base branch, fetched as
  * `pull/<n>/head`, with its branch moved to that head when the branch is missing or behind), a range `A..B` or `A...B` (from the merge base of `A` and `B` to `B`),
- * or a ref (from its merge base with `HEAD` to `HEAD`). `start` is a commit, and `intent` is `args.item`, else
- * `# <title>` and the body of the PR, else the commit messages of the change. `checkout` is the branch of a change on
- * a branch that no worktree has. `dirty` says that the checkout has changes that are not committed; with `wip`, a
- * change that ends here commits them first as `wip`. Throws `no change from <base>` on an empty change, and when the
- * branch of the change is checked out in another worktree or the change does not end on a branch.
+ * a local branch that another worktree has checked out, other than the current one and `args.base` (from its merge
+ * base with `args.base` to the branch), or a ref (from its merge base with `HEAD` to `HEAD`). `start` is a commit, and
+ * `intent` is `args.item`, else `# <title>` and the body of the PR, else the commit messages of the change. `checkout`
+ * is the branch of a change that ends on a branch other than the current one. `dirty` says that the current checkout
+ * has changes that are not committed; with `wip`, a change that ends here commits them first as `wip`. Throws
+ * `no change from <base>` on an empty change, when the change does not end on a branch, and, with `wip`, when
+ * another worktree has the branch with changes that are not committed.
  */
 declare function changeOf(
 	args: { [key: string]: Json | undefined },
@@ -440,7 +442,8 @@ declare function changeOf(
 
 /**
  * Runs the script `name` again as a child run on the branch `change.checkout`, with `args` and the `item` and `start` of
- * the change, and returns its result with the last report line `worktree <path>`.
+ * the change: in the worktree that has the branch checked out, else in a worktree of its own on it. Returns its result
+ * with the last report line `worktree <path>`.
  */
 declare function inCheckout(
 	name: string,

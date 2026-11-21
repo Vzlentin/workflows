@@ -291,6 +291,8 @@ answers SHIP. It commits its fixes on the branch of the change and does not push
   the merge base of the branch with `baseRefName`, or with `origin/<baseRefName>` when there is no local branch of
   that name; `--base` is not used.
 - A range `A..B` or `A...B`: from the merge base of `A` and `B` to `B`.
+- A local branch that another worktree has checked out, other than the current branch and `--base`, such as
+  `change.branch` of a `ship` result: from the merge base of `--base` and the branch to the branch.
 - Any other value is a ref: from the merge base of the ref and `HEAD` to `HEAD`, such as `HEAD~1` for the last commit.
 
 The work item, which says what the change should do, is the option `--item`, as a `.md` file, inline text, or stdin
@@ -300,11 +302,14 @@ When there is no pull request or `gh` fails, the intent is the commit messages o
 
 The run works in the current checkout when the change ends on its `HEAD` or on its current branch. There, it first
 commits the changes that are not committed, untracked files included, as one commit `wip`. When the change ends on
-a branch that no worktree has checked out, such as a pull request that is not checked out here, the run starts itself
-again as a child run with `checkout` in a worktree on that branch, next to the repository, as `meta.worktree` places
-it: see [Child runs](#child-runs). Its report gets the last line `worktree <path>`, and the current checkout stays as
-it is. The run worktree stays after the run. A branch that another worktree has checked out fails with `<branch> is
-checked out at <path>; run there`, and a change that does not end on a branch, such as `main..<commit>`, fails with
+another branch, the run starts itself again as a child run on that branch. When another worktree has the branch
+checked out, the child run gets `repo` with the path of that worktree and works there, as `--repo` does. When no
+worktree has it, such as a pull request that is not checked out here, the child run gets `checkout` and works in a
+worktree on that branch, next to the repository, as `meta.worktree` places it: see [Child runs](#child-runs). Its
+report gets the last line `worktree <path>`, its `change` is the main checkout and the branch of that worktree, and
+the current checkout stays as it is. The run worktree stays after the run. The thermoloop fails with `the worktree
+<path> of <branch> has uncommitted changes` when the other worktree that has the branch has changes that are not
+committed, and a change that does not end on a branch, such as `main..<commit>`, fails with
 `the change ends on <end>, which is not a branch`. A change with no change from its start fails with `no change from
 <from>`, where `<from>` is `--base`, the base branch of the pull request, or `A` of the range or the ref, before any
 session.
@@ -1224,8 +1229,8 @@ the run started with. A script's own declaration of the same name takes their pl
 | `await judgeCommit(item, start, committed)` | Runs the child run `judge` with `item` and `start`, and returns `head` and `subject` of `committed`, the result of `commitChange`, with the judge fields `status`, `score`, `answers`, `findings` and `divergence`. A failed judge fails the caller |
 | `await writePatch(path, from)` | Writes `git diff --binary` from `from` to `HEAD` to the file `path`, and returns `path` |
 | `await checkoutChange()` | `{ repository, branch }` of the current checkout: the main checkout of its repository, the first entry of `git worktree list`, and its branch. Undefined on a detached HEAD |
-| `await changeOf(args, { wip })` | `{ start, intent, checkout, dirty }` of the change of a script's `args`. With `args.start`, it is `args.start` and `args.item`, not dirty, with no Git step. Else it is the change that `args.change` points at from `args.base`, with the rules of [Thermoloop](#thermoloop), and it calls `title` with the subject of the intent: `start` is the start commit, `intent` is `args.item` or the pull request or the commit messages, `checkout` is the branch of a change that must run in a worktree of its own, and `dirty` says that the checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip` |
-| `await inCheckout(name, change, args)` | Runs the script `name` again as a child run with `args`, the `item` and `start` of the change, and `checkout`, the branch of the change, and returns its result with the last report line `worktree <path>`, the worktree that has the branch |
+| `await changeOf(args, { wip })` | `{ start, intent, checkout, dirty }` of the change of a script's `args`. With `args.start`, it is `args.start` and `args.item`, not dirty, with no Git step. Else it is the change that `args.change` points at from `args.base`, with the rules of [Thermoloop](#thermoloop), and it calls `title` with the subject of the intent: `start` is the start commit, `intent` is `args.item` or the pull request or the commit messages, `checkout` is the branch of a change that ends on a branch other than the current one, and `dirty` says that the current checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip`, and a change whose branch another worktree has with changes that are not committed fails |
+| `await inCheckout(name, change, args)` | Runs the script `name` again as a child run with `args` and the `item` and `start` of the change: with `repo`, the worktree that has the branch of the change checked out, else with `checkout`, that branch, in a worktree of its own. Returns its result with the last report line `worktree <path>`, the worktree that has the branch |
 
 `workflows/script.d.ts` declares these globals for editors. A project gets the same completion when it copies
 `script.d.ts` and `jsconfig.json` into `.workflows/`, and copies them again after an upgrade of the package.

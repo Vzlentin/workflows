@@ -66,8 +66,9 @@ Each arg becomes a flag of `workflows <name>`. Give only the args that the user 
   level of a local repository, and the run works in its checkout.
 - `base` defaults to `main`. `rounds` defaults to 3: it is the maximum number of review rounds.
 - `change`, for thermoloop and judge: nothing for the current branch against `base`, a number for that pull request,
-  `A..B` for a range, or a ref such as `HEAD~1`. Without `item`, the intent is the pull request, or else the commit
-  messages of the change.
+  `A..B` for a range, a branch name such as `change.branch` of a result, or a ref such as `HEAD~1`. A branch that
+  another worktree has checked out runs in that worktree. Without `item`, the intent is the pull request, or else the
+  commit messages of the change.
 - thermoloop commits its fixes on the branch of the change. When the user asks for a review only, use judge.
 - `background: true` starts the run and returns at once with `state: "running"` and `follow: "started"`. With
   `posts: true`, the outcome comes later as a message in this conversation, which drives the run. Use it for a campaign, or when the user wants to go on with other work. Without it,

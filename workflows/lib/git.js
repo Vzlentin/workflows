@@ -126,9 +126,11 @@ async function pullBranch(number, end) {
 /**
  * Where `target` points, as `changeOf` reads it: `{ from, end, start, intent }`. `from` names the start in messages,
  * `end` is the ref that the change ends on, `start` the commit that it starts from, and `intent` the PR of a PR number.
- * Fetches the head of a PR, and moves its branch there with `pullBranch`.
+ * Fetches the head of a PR, and moves its branch there with `pullBranch`. A plain value that is a local branch, other
+ * than `here` and `base`, and that another worktree has checked out reads as that branch: from its merge base with
+ * `base` to the branch.
  */
-async function targetOf(target, base) {
+async function targetOf(target, base, here) {
 	const mergeBase = (a, b) => sh(["git", "merge-base", a, b]);
 
 	if (target === undefined || target === "") return { from: base, end: "HEAD", start: await mergeBase(base, "HEAD") };
@@ -145,6 +147,10 @@ async function targetOf(target, base) {
 	}
 
 	const range = /^(.*?)\.\.\.?(.*)$/.exec(target);
+	const other = range === null && target !== here && target !== base;
+
+	if (other && (await isBranch(target)) && (await checkedOutAt(target)) !== undefined)
+		return { from: base, end: target, start: await mergeBase(base, target) };
 	const from = range === null ? target : range[1] || "HEAD";
 	const end = range === null ? "HEAD" : range[2] || "HEAD";
 
@@ -156,26 +162,28 @@ async function targetOf(target, base) {
  * change: `start`, and `args.item` as the intent, with no Git step. Else the change is the one that `args.change`
  * points at, from the current directory, and the run gets the subject of its intent as its title. `args.change` is
  * nothing (the current branch from its merge base with `args.base`, default `main`), a PR number, a range `A..B` or
- * `A...B` (from the merge base of `A` and `B` to `B`), or a ref (from its merge base with `HEAD` to `HEAD`). The
- * intent is `args.item`, else the PR, else the commit messages of the change. `checkout` is the branch of a change
- * that ends on a branch that no worktree has, for a run in a worktree of its own. `dirty` says that the checkout has
- * changes that are not committed; with `wip`, a change that ends here commits them first as `wip`. Throws when the
- * change is empty, when its branch is checked out in another worktree, and when it ends on a commit that is not a
- * branch.
+ * `A...B` (from the merge base of `A` and `B` to `B`), a branch that another worktree has checked out (from its merge
+ * base with `args.base`), or a ref (from its merge base with `HEAD` to `HEAD`). The intent is `args.item`, else the
+ * PR, else the commit messages of the change. `checkout` is the branch of a change that ends on a branch other than
+ * the current one, for a run in the worktree that has it, else in a worktree of its own. `dirty` says that the current
+ * checkout has changes that are not committed; with `wip`, a change that ends here commits them first as `wip`. Throws
+ * when the change is empty, when it ends on a commit that is not a branch, and, with `wip`, when the other worktree
+ * that has its branch has changes that are not committed.
  */
 async function changeOf(args, { wip = false } = {}) {
 	if (args.start !== undefined) return { start: args.start, intent: args.item, dirty: false };
-	const { from, end, start, intent } = await targetOf(args.change, args.base ?? "main");
 	const here = await sh(["git", "branch", "--show-current"]);
+	const { from, end, start, intent } = await targetOf(args.change, args.base ?? "main", here);
 	const branch = end === "HEAD" ? here : (await isBranch(end)) ? end : undefined;
 
 	if (branch === undefined) throw new Error(`the change ends on ${end}, which is not a branch`);
 	const local = branch === here;
 
-	if (!local) {
+	if (!local && wip) {
 		const path = await checkedOutAt(branch);
 
-		if (path !== undefined) throw new Error(`${branch} is checked out at ${path}; run there`);
+		if (path !== undefined && (await sh(["git", "-C", path, "status", "--porcelain"])) !== "")
+			throw new Error(`the worktree ${path} of ${branch} has uncommitted changes`);
 	}
 
 	const dirty = local && (await sh(["git", "status", "--porcelain"])) !== "";
@@ -204,11 +212,14 @@ async function intentOf(branch, range) {
 }
 
 /**
- * Runs the script `name` again as a child run on the branch of `change`, with `args`, and returns its result with the
- * last report line `worktree <path>`.
+ * Runs the script `name` again as a child run on the branch of `change`, with `args`: in the worktree that has the
+ * branch checked out, else in a worktree of its own on it. Returns its result with the last report line
+ * `worktree <path>`.
  */
 async function inCheckout(name, change, args) {
-	const result = await run(name, { ...args, item: change.intent, start: change.start, checkout: change.checkout });
+	const path = await checkedOutAt(change.checkout);
+	const place = path === undefined ? { checkout: change.checkout } : { repo: path };
+	const result = await run(name, { ...args, item: change.intent, start: change.start, ...place });
 
-	return { ...result, report: [...result.report, `worktree ${await checkedOutAt(change.checkout)}`] };
+	return { ...result, report: [...result.report, `worktree ${path ?? (await checkedOutAt(change.checkout))}`] };
 }

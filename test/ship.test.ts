@@ -870,6 +870,32 @@ export default function ({ events }) {
 		expect(git(repo, "status", "--porcelain")).toBe("");
 	});
 
+	it("chains a thermoloop on the branch of a shipped change, in the worktree of the ship run", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "caller.js"),
+			[
+				"export const meta = { exit: { approved: 0 } }",
+				'const shipped = await run("ship", { item: "Fix the README typo", repo: "." })',
+				'const reviewed = await run("thermoloop", { change: shipped.change.branch })',
+				"return { ...reviewed, shipped: shipped.change, shipRunId: shipped.runId }",
+			].join("\n"),
+		);
+		git(repo, "add", ".workflows");
+		git(repo, "commit", "-qm", "caller");
+		start = git(repo, "rev-parse", "HEAD");
+		const run = await workflows(["caller", "--json"], { cwd: repo, script: { edits: [FIXED] } });
+
+		expect(run.code).toBe(0);
+		const { value, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(value.status).toBe("approved");
+		expect(value.change).toEqual(value.shipped);
+		expect(report.at(-1)).toBe(`worktree ${worktreeOf(value.shipRunId)}`);
+		expect(git(repo, "rev-parse", "HEAD")).toBe(start);
+		expect(git(repo, "status", "--porcelain")).toBe("");
+	});
+
 	it("rejects bad input before a run starts", async () => {
 		const cases: [string[], string, number, string?][] = [
 			[["ship", "  \n"], "workflows: the work item is empty", 1],

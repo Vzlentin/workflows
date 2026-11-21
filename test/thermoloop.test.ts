@@ -432,9 +432,15 @@ echo '{"title":"Fix the typo of the README","body":"It says wrold."}'
 		expect(await readFile(join(repo, "README.md"), "utf8")).toBe("# Demo\n\nHello wrold\n");
 
 		// A branch that another worktree has checked out runs there.
-		const again = await workflows(["thermoloop", "main..feature"], { cwd: repo });
-		expect(again.code).toBe(1);
-		expect(again.stderr).toContain(`failed thermoloop: feature is checked out at ${path}; run there`);
+		const again = await workflows(["thermoloop", "--json", "main..feature"], { cwd: repo });
+		expect(again.code).toBe(0);
+		expect(JSON.parse(again.stdout[1] ?? "").report.at(-1)).toBe(`worktree ${path}`);
+
+		// A worktree of the branch with changes that are not committed stops the run.
+		await writeFile(join(path, "notes.md"), "draft\n");
+		const dirty = await workflows(["thermoloop", "main..feature"], { cwd: repo });
+		expect(dirty.code).toBe(1);
+		expect(dirty.stderr).toContain(`failed thermoloop: the worktree ${path} of feature has uncommitted changes`);
 	});
 
 	it("fetches a pull request that is not here, and fixes it in a worktree of its own", async () => {

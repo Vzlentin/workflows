@@ -229,6 +229,8 @@ export const DESCRIPTION =
 	"(`ship`), and optional `runs`, `limit`, `items` and `always-on-max` (the most characters of `AGENTS.md`). For " +
 	"`thermoloop`, which reviews a change and fixes it in rounds, and `judge`, which scores a change: optional " +
 	"`change`, `item`, `base`, `rounds` (thermoloop only), and `repo`, the path of a local repository to run in. " +
+	"`change` may be a branch name, such as `change.branch` of a result: a branch that another worktree has " +
+	"checked out runs in that worktree. " +
 	"For `land`, which lands the branch of a completed ship or campaign run, or of an approved thermoloop run, on " +
 	"`main` when its CI passes, then sweeps the run or deletes its branch: `run` (the run ID), and optional `wait` (the bound of each CI wait, in seconds). " +
 	"The result value of each of these workflows has `change: { repository, branch }`, the main checkout and the " +
