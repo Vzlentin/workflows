@@ -223,7 +223,7 @@ export const DESCRIPTION =
 	"`<name>=<provider>/<id>:<thinking>,...` (`*` for every role), the models of its roles above the agents.json " +
 	"tables. For " +
 	"`ship`: `item` (the work item), and optional `repo`, `base`, `rounds` and `prompts`. For `campaign`, which " +
-	"splits a goal into work items and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
+	"splits a goal into parts and ships each one as a commit on one branch: `goal`, and optional `repo`, " +
 	"`base`, `rounds` and `prompts`. For `optimize`, which proposes edits to the ship prompts, skills " +
 	"and `AGENTS.md` from past ship runs and keeps them when a blind judge prefers their diffs: `workflow` " +
 	"(`ship`), and optional `runs`, `limit`, `items` and `always-on-max` (the most characters of `AGENTS.md`). For " +

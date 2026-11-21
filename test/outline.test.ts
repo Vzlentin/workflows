@@ -36,7 +36,7 @@ const OUTLINES = {
 		loop("review, in rounds", [agent("reviewer", "review"), run("implement", "fix")]),
 		run("judge", "judge"),
 	],
-	campaign: [agent("planner", "split"), loop("each item: ship", [run("ship", "ship")]), run("judge", "judge")],
+	campaign: [agent("planner", "split"), loop("each part: ship", [run("ship", "ship")]), run("judge", "judge")],
 	thermoloop: [loop("review ─ fix, in rounds", [agent("reviewer", "review"), run("implement", "fix")])],
 	rpi: [agent("researcher", "research"), agent("planner", "plan"), run("implement", "implement")],
 	implement: [agent("implementer", "implement")],
@@ -54,7 +54,7 @@ const OUTLINES = {
 
 /** The lines of `workflows outline` for the package scripts. */
 const PACKAGE_LINES = [
-	"campaign    split ─ each item: ship ─ judge",
+	"campaign    split ─ each part: ship ─ judge",
 	"fix         fix ─ judge",
 	"implement   implement",
 	"judge       judge",

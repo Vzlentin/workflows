@@ -3006,7 +3006,7 @@ return [one.reply, two.reply].join(", ")`,
 		const listed = await workflows([], { cwd: root });
 		expect(listed.code).toBe(0);
 		expect(listed.stdout).toEqual([
-			"campaign: Split a goal into work items and ship each one as a commit on one branch.",
+			"campaign: Split a goal into parts and ship each one as a commit on one branch.",
 			"fix: Fix a work item on the judge's findings in one implement turn, squash it into one commit, and judge it again.",
 			"implement: Implement a plan in the current directory, and commit the change.",
 			"judge: Judge a change (the current branch, a PR, a ref or a range) against its intent with the fixed rubric.",

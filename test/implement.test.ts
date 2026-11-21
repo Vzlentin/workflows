@@ -89,10 +89,10 @@ return result`,
 		const { value: result } = JSON.parse(run.stdout[1] ?? "");
 		expect(result).toMatchObject({
 			status: "implemented",
-			memory: ["#0 item 2 planner: one word changes.", "#1 item 2 implementer r2: Implement 1: README.md had wrold."],
+			memory: ["#0 part 2 planner: one word changes.", "#1 part 2 implementer r2: Implement 1: README.md had wrold."],
 		});
 		expect(progressOf(run.stderr)).toEqual(["✓ fix", "  +1 -1 in 1 file"]);
-		expect(run.model.find("implement")?.prompt).toMatch(/^## memory\n#0 item 2 planner: one word changes\.\n\n/);
+		expect(run.model.find("implement")?.prompt).toMatch(/^## memory\n#0 part 2 planner: one word changes\.\n\n/);
 		expect(git(repo, "log", "--format=%s", "HEAD^..HEAD")).toBe("round 2");
 		expect(git(repo, "log", "--format=%s", "-1", "HEAD^")).toBe("add the parent script");
 	});

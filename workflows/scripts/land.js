@@ -4,9 +4,9 @@
 // and `git worktree list`; 2. switch the main checkout to `main` when it is on the branch, and check that it is clean
 // and on `main`, that `main` equals `origin/main` after a fetch, and that the branch is a fast-forward of `main`; 3.
 // push the branch; 4. wait for its CI; 5. push the head to `main` on `origin`, then fast-forward `main` in the main
-// checkout; 6. delete the branch on `origin`; 7. for a run that serves an item, link the item to the head with a
-// `landed` edge, and set the item to `done` when no live agent serves it; 8. wait for the CI of `main`; 9. sweep the
-// branch with `workflows sweep <branch> --yes` in the repository; 10. check the repository. A failed step from 1 to 6
+// checkout; 6. delete the branch on `origin`; 7. for a run that serves an item, `closeItem` links the item to the head
+// with a `landed` edge, and sets the item to `done` when no live agent serves it; 8. wait for the CI of `main`; 9. sweep
+// the branch with `workflows sweep <branch> --yes` in the repository; 10. check the repository. A failed step from 1 to 6
 // refuses, with the step and the reason in one line, and changes nothing after it: a refusal before step 5 leaves
 // `main` untouched on both sides. A failed step 7 is a `check failed` line. A red `main` gives `landed-red`, and
 // nothing is reverted. Each CI wait is one shell command that reads `gh run list` every 15 s, bounded by `--wait`
@@ -196,32 +196,6 @@ async function onOrigin(checkout, ref) {
 	const listed = await sh(["git", "-C", checkout, "ls-remote", "origin", ref], { settle: true })
 
 	return listed.error === undefined ? listed.split(/\s/)[0] : undefined
-}
-
-// Step 7: links the item `item` to the commit `head` with a `landed` edge, and sets it to `done` when no live agent
-// serves it. Returns the line of the report. Never sets an item to `open`.
-async function closeItem(item, head) {
-	await harness({ type: "item", action: "link", from: `item:${item}`, kind: "landed", to: `commit:${head}` })
-	const { edges } = await harness({ type: "item", action: "read", id: item })
-
-	// Only the tree tells whether an agent lives, and only an agent that serves the item has a `serves` edge from `agent:`.
-	if (edges.some((edge) => edge.kind === "serves" && edge.from.startsWith("agent:"))) {
-		const { nodes } = await harness({ type: "tree" })
-
-		const live = nodes.find(
-			(node) =>
-				node.kind === "agent" &&
-				node.serves?.kind === "item" &&
-				node.serves.id === item &&
-				node.state !== "ended",
-		)
-
-		if (live !== undefined) return `item ${item} stays open: ${live.name} serves it`
-	}
-
-	await harness({ type: "item", action: "set", id: item, state: "done" })
-
-	return `item ${item} done`
 }
 
 let change

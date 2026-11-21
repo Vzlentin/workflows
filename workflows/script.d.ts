@@ -277,6 +277,13 @@ declare function harness(request: { type: "item"; action: "link"; from: Ref; kin
 declare function harness(request: { type: "tree" }): Promise<{ readonly nodes: readonly TreeNode[] }>;
 
 /**
+ * Links the item `item` to the commit `head` with a `landed` edge, and sets it to `done` when no live agent serves it,
+ * through `harness` calls. Returns the line of the report: `item <n> done`, or `item <n> stays open: <name> serves
+ * it`. Never sets an item to `open`. `workflows sweep` closes the item of a merged run with the same rule.
+ */
+declare function closeItem(item: number, head: string): Promise<string>;
+
+/**
  * Runs the functions at once and returns their results. A resume can start their calls in another order: give each
  * `session` of a function a different `key`.
  */
@@ -324,7 +331,7 @@ type RememberingSession = {
 	noted(round: number | undefined, prompt: string | Promise<string>, rule: string): Promise<string>;
 };
 
-/** Where a run memory is, and the campaign item of its notes. A child run that gets it goes on with the same memory. */
+/** Where a run memory is, and the campaign part of its notes. A child run that gets it goes on with the same memory. */
 type MemoryRef = {
 	readonly path?: string;
 	/** The store is the plain file `<path>/notes.txt`, as `memo` was missing when the store opened. */

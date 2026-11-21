@@ -14,9 +14,8 @@ import {
 	type Tx,
 } from "@earendil-works/pi-durable";
 import type { Owner } from "@vzlentin/harness/children";
-import { request } from "@vzlentin/harness/client";
 import type { Overlay } from "@vzlentin/harness/overlay";
-import { type Ask, EdgeInput, ItemState, type ServesInput } from "@vzlentin/harness/protocol";
+import type { Ask, ServesInput } from "@vzlentin/harness/protocol";
 import { addTodo, readTodos, setTodo, type TodoOwner, TodoState } from "@vzlentin/harness/todo";
 import { type Static, type TLiteral, type TObject, type TProperties, type TUnion, Type } from "typebox";
 import { failure, type Result, run } from "../git.ts";
@@ -24,11 +23,11 @@ import { readProject } from "../launch/input.ts";
 import { cutTail, JSON_VALUE, OUTPUT_BYTES } from "../tool.ts";
 import type { RunBundle } from "../workflow/bundle.ts";
 import type { Roles } from "../workflow/roles.ts";
-import { answerOf, askerOf, asksOf, newAsk, openAsk, plainText, readAsk } from "./asks.ts";
+import { answerOf, asksOf, newAsk, openAsk, plainText, readAsk } from "./asks.ts";
 import { keyIn } from "./keys.ts";
 import { firstTask, PAST_OPTIONS, type PastOptions, pastRuns, scanRuns, scanTasks } from "./past.ts";
 import { addProgress, checkpointWhen, type PhaseLines, takeLines } from "./progress.ts";
-import { hostReply } from "./serves.ts";
+import { HARNESS_ARGS, type HarnessArgs, runRequest } from "./serves.ts";
 import type { Host, Runtime, ScriptTask } from "./version.ts";
 
 /** A started child run: its task and its run ID. */
@@ -128,29 +127,6 @@ export const TODO_ARGS = Type.Union([
 
 /** The args of a `todo` call. */
 export type TodoArgs = Readonly<Static<typeof TODO_ARGS>>;
-
-/**
- * The args of a `harness` call: one request to the host of the run's project, `item read`, `item link`, `item set` with
- * a state, or `tree`. The call adds the caller of a `link` and a `set`.
- */
-export const HARNESS_ARGS = Type.Union([
-	Type.Object(
-		{ type: Type.Literal("item"), action: Type.Literal("read"), id: Type.Integer({ minimum: 1 }) },
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{ type: Type.Literal("item"), action: Type.Literal("link"), ...EdgeInput.properties },
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{ type: Type.Literal("item"), action: Type.Literal("set"), id: Type.Integer({ minimum: 1 }), state: ItemState },
-		{ additionalProperties: false },
-	),
-	Type.Object({ type: Type.Literal("tree") }, { additionalProperties: false }),
-]);
-
-/** The args of a `harness` call. */
-export type HarnessArgs = Readonly<Static<typeof HARNESS_ARGS>>;
 
 /** The model of a session: its provider and model ID, and its thinking level when it has one. */
 export const SESSION_MODEL = Type.Object(
@@ -725,11 +701,7 @@ export async function todoCall(calls: Calls, args: TodoArgs): Promise<JsonValue>
 export function harnessCall(calls: Calls, args: HarnessArgs): Promise<JsonValue> {
 	return memoized(calls, callKey(calls, "harness", args), { kind: "harness", args }, async () => {
 		const project = await readProject(calls.script.runDir);
-		const options = { project, start: false, signal: calls.context.abortSignal };
 
-		const sent =
-			args.type === "tree" || args.action === "read" ? args : { ...args, caller: askerOf(calls.script.runId) };
-
-		return hostReply(project, await request(sent, options));
+		return runRequest(project, calls.script.runId, args, calls.context.abortSignal);
 	});
 }

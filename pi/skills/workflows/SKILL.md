@@ -113,10 +113,10 @@ branch of the change. `result.code` is the exit code of the run, from the `meta.
 | ship | `rejected` | The judge scored the squashed commit 0. The commit and the branch stay. Give the branch and `value.findings`. |
 | ship | `stopped` | The review rounds ended without SHIP. Give the worktree (the path at the end of the first report line), the round patches in the run directory, and `value.handoff`, the handoff that the last round followed. |
 | ship, rpi, thermoloop | `blocked` | A round changed nothing. Give the worktree (for ship, the path at the end of the first report line) and `value.reply`, the implementer's reason. |
-| campaign | `done` | The branch, one line for each item with its commit and score, and the score and findings of the campaign judge (`result.score` and `value.findings`). |
+| campaign | `done` | The branch, one line for each part with its commit and score, and the score and findings of the campaign judge (`result.score` and `value.findings`). |
 | campaign | `rejected` | The campaign judge gave 0. The commits and the branch stay. Give the same lines as for `done`. |
-| campaign | `stopped` | The user stopped the campaign at an item. Give the rundown when the result has one. |
-| campaign | `waiting` | An item failed, or is still at judge 0, and the campaign asks how to continue. See below. |
+| campaign | `stopped` | The user stopped the campaign at a part. Give the rundown when the result has one. |
+| campaign | `waiting` | A part failed, or is still at judge 0, and the campaign asks how to continue. See below. |
 | rpi | `implemented` | The commit `value.head` and the branch. |
 | thermoloop | `approved` | The reviewer answered SHIP. Give `value.rounds`, `value.change.branch` and the report line. `land` can land `value.change.branch`. |
 | thermoloop | `stopped` | The rounds ended without SHIP. Give `value.handoff`, and the last review (see below). |
@@ -142,8 +142,8 @@ the harvest. `log` only reads.
 
 A run that waits for an answer has the state `waiting`, with its `question`. Show the question to the
 user. A text longer than 2000 bytes is cut, and its cut line names `workflows log <runId>`, which shows the run and its calls, and `workflows log <runId> <call>`, which prints the whole question of the `input` call. When he answers, call `{ resume: "<runId>", answer: "<his answer>" }`. For a campaign, `stop`
-ends it. For a campaign item still at judge 0, the answers are `keep` (ship it as it is), `fix: <words>` (one more fix
-round on his words), `reset` (reset the item and get a rundown), and `stop` (end the campaign, keep the
+ends it. For a campaign part still at judge 0, the answers are `keep` (ship it as it is), `fix: <words>` (one more fix
+round on his words), `reset` (reset the part and get a rundown), and `stop` (end the campaign, keep the
 commit).
 
 ## Follow a run

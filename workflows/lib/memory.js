@@ -190,14 +190,14 @@ function plainStore(path) {
 
 /**
  * The run memory of `ref`, the `.ref` of the memory of a caller. Without `ref.path`, opens the store
- * `<runDir>/memory`. `ref.item` is the number of the campaign item that the notes come from.
+ * `<runDir>/memory`. `ref.item` is the number of the campaign part that the notes come from.
  */
 async function memory(ref = {}) {
 	const opened = ref.path === undefined;
 	const { path, plain } = opened ? await openStore() : ref;
 	const { item } = ref;
 	const store = plain ? plainStore(path) : optmemStore(path);
-	const prefix = item === undefined ? "" : `item ${item} `;
+	const prefix = item === undefined ? "" : `part ${item} `;
 
 	const note = async (author, round, texts) => {
 		for (const text of texts) {

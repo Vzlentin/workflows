@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { request } from "@vzlentin/harness/client";
+import type { Request } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -11,7 +13,19 @@ import { SWEPT_RUNS } from "../src/cli/commands/sweep.ts";
 import { ROW } from "../src/cli/saved.ts";
 import { newRunId } from "../src/launch/input.ts";
 import { TASK } from "../src/run/version.ts";
-import { git, repository, runsOf, sandbox, saveAs, storeOf, workflows, worktreeAt } from "./support.ts";
+import {
+	git,
+	hostModel,
+	repository,
+	runsOf,
+	sandbox,
+	saveAs,
+	startHost,
+	storeOf,
+	toHost,
+	workflows,
+	worktreeAt,
+} from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -699,5 +713,127 @@ echo "[{\\"headRefOid\\":\\"$(git rev-parse HEAD)\\"}]"
 		expect(refused.stderr.join("\n")).toContain(line);
 		expect(existsSync(hook)).toBe(false);
 		expect(existsSync(join(repo, "x"))).toBe(false);
+	});
+});
+
+describe("workflows sweep and the item of a run", () => {
+	/** An ended run of `w` on the branch `branch` that serves the new item 1, with its ID, worktree and branch tip. */
+	async function servingRun(branch = "feat/x"): Promise<{ id: string; worktree: string; head: string }> {
+		await toHost({ type: "item", action: "add", caller: "test", title: "Build it" });
+		const run = await workflows(["w", "--branch", branch, "--serves", "1"], { cwd: repo });
+		expect(run.code).toBe(0);
+		const id = run.id ?? "";
+
+		return { id, worktree: worktreeAt(repo, id), head: git(repo, "rev-parse", branch) };
+	}
+
+	/** `workflows sweep <argv>` in `repo`, with a host of the sandbox that runs during the command. */
+	async function sweepWithHost(argv: readonly string[]) {
+		const host = await startHost();
+
+		try {
+			return await workflows(["sweep", ...argv], { cwd: repo, host });
+		} finally {
+			await host.close();
+		}
+	}
+
+	it("links the item of a merged run to the branch tip and sets it to done", async () => {
+		const { id, worktree, head } = await servingRun();
+
+		const swept = await sweepWithHost(["--yes"]);
+		expect([swept.code, swept.stdout, swept.stderr]).toEqual([0, [`${id} landed feat/x ${worktree} item 1 done`], []]);
+		expect(hasBranch("feat/x")).toBe(false);
+		const item = await toHost({ type: "item", action: "read", id: 1 });
+		expect(item).toMatchObject({
+			state: "done",
+			edges: [
+				{ from: `run:${id}`, kind: "serves", to: "item:1" },
+				{ from: "item:1", kind: "landed", to: `commit:${head}`, by: `workflows:${id}` },
+			],
+		});
+	});
+
+	it("gives the closed item in the JSON entry of the run", async () => {
+		const { id, worktree } = await servingRun();
+
+		const swept = await sweepWithHost(["--yes", "--json"]);
+		expect(swept.code).toBe(0);
+		const entries: unknown = JSON.parse(swept.stdout[0] ?? "");
+		expect(entries).toEqual([
+			{ runId: id, swept: "landed", branch: "feat/x", worktree, item: { id: 1, state: "done" } },
+		]);
+		expect(Value.Check(SWEPT_RUNS, entries)).toBe(true);
+	});
+
+	it("leaves open an item that a live agent serves, with the landed edge", async () => {
+		const { id, worktree, head } = await servingRun();
+		const host = await startHost("main", hostModel().models);
+		let swept;
+
+		try {
+			const spawn: Request = {
+				type: "spawn",
+				requestId: "serves-item",
+				caller: "test",
+				notify: false,
+				provider: "anthropic",
+				model: "claude-haiku-5",
+				callerThinking: "medium",
+				cwd: repo,
+				prompt: "Build it",
+				serves: { item: 1 },
+			};
+
+			await request(spawn, { start: false });
+			swept = await workflows(["sweep", "--yes"], { cwd: repo, host });
+		} finally {
+			await host.close();
+		}
+
+		expect(swept.code).toBe(0);
+		expect(swept.stdout).toEqual([
+			expect.stringMatching(new RegExp(`^${id} landed feat/x ${worktree} item 1 stays open: .+ serves it$`)),
+		]);
+		const item = await toHost({ type: "item", action: "read", id: 1 });
+		expect(item).toMatchObject({
+			state: "open",
+			edges: expect.arrayContaining([
+				{ from: "item:1", kind: "landed", to: `commit:${head}`, at: expect.any(Number), by: `workflows:${id}` },
+			]),
+		});
+	});
+
+	it("leaves the item of a dropped branch as it is", async () => {
+		const { id, worktree } = await servingRun("feat/z");
+
+		const swept = await sweepWithHost(["feat/z", "--yes"]);
+		expect([swept.code, swept.stdout, swept.stderr]).toEqual([0, [`${id} dropped feat/z ${worktree}`], []]);
+		expect(hasBranch("feat/z")).toBe(false);
+		const item = await toHost({ type: "item", action: "read", id: 1 });
+		expect(item).toMatchObject({ state: "open", edges: [{ from: `run:${id}`, kind: "serves", to: "item:1" }] });
+	});
+
+	it("leaves the item as it is without --yes", async () => {
+		const { id, worktree } = await servingRun();
+
+		const listed = await sweepWithHost([]);
+		expect([listed.code, listed.stdout, listed.stderr]).toEqual([0, [`${id} landed feat/x ${worktree}`], []]);
+		const item = await toHost({ type: "item", action: "read", id: 1 });
+		expect(item).toMatchObject({ state: "open", edges: [{ from: `run:${id}`, kind: "serves", to: "item:1" }] });
+	});
+
+	it("sweeps the branch and prints a line when no host runs", async () => {
+		const { id, worktree } = await servingRun();
+
+		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout, swept.stderr]).toEqual([
+			0,
+			[`${id} landed feat/x ${worktree}`],
+			[`workflows: cannot close item 1 of ${id}: no harness host runs for main`],
+		]);
+		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([false, false]);
+		const item = await toHost({ type: "item", action: "read", id: 1 });
+		expect(item.state).toBe("open");
 	});
 });

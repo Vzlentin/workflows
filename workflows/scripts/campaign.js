@@ -1,15 +1,15 @@
-// The split and the items of `workflows campaign`, in its worktree. Each item ships through ship.js as one commit on
-// top of the item before it. An item that ships with a judge score of 0 gets one fix round, fix.js: an implement turn
-// on the judge's findings, and a new judge. A failed judge fails the campaign. An item still at 0 is one squashed
-// commit, and the user answers keep, one more fix round on their words, reset or stop. A failed or reset item gets a
-// rundown and a question, and the answer goes back to the split. When every item shipped, judge.js judges the change of
-// the whole campaign against the goal, which no item's judge sees. The engine renames the branch from `subject` of the
-// result, and sets its `change`.
-// Each item is a todo of the run: `open` after its split, `doing` from its item step, `done` when it ships, and
-// `dropped` at its reset, at a stop at it, or when a new split replaces it.
+// The split and the parts of `workflows campaign`, in its worktree. The split schema and the results call a part an
+// `item`. Each part ships through ship.js as one commit on top of the part before it. A part that ships with a judge
+// score of 0 gets one fix round, fix.js: an implement turn on the judge's findings, and a new judge. A failed judge
+// fails the campaign. A part still at 0 is one squashed commit, and the user answers keep, one more fix round on their
+// words, reset or stop. A failed or reset part gets a rundown and a question, and the answer goes back to the split.
+// When every part shipped, judge.js judges the change of the whole campaign against the goal, which no part's judge
+// sees. The engine renames the branch from `subject` of the result, and sets its `change`.
+// Each part is a todo of the run, not an item of the board: `open` after its split, `doing` from its part step, `done`
+// when it ships, and `dropped` at its reset, at a stop at it, or when a new split replaces it.
 // Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
 export const meta = {
-	description: "Split a goal into work items and ship each one as a commit on one branch.",
+	description: "Split a goal into parts and ship each one as a commit on one branch.",
 	args: {
 		goal: { type: "text", positional: true, label: "goal", required: true },
 		rounds: { type: "number", default: 3 },
@@ -18,7 +18,7 @@ export const meta = {
 	exit: { done: 0, rejected: 1, stopped: 1 },
 	outline: [
 		{ kind: "agent", role: "planner", label: "split" },
-		{ kind: "loop", label: "each item: ship", steps: [{ kind: "run", workflow: "ship", label: "ship" }] },
+		{ kind: "loop", label: "each part: ship", steps: [{ kind: "run", workflow: "ship", label: "ship" }] },
 		{ kind: "run", workflow: "judge", label: "judge" },
 	],
 }
@@ -55,9 +55,9 @@ const RUNDOWN = {
 }
 
 const answer =
-	"\n\nAnswer with respond: the subject, and the work items, each one as the full text of one work item, in order."
+	"\n\nAnswer with respond: the subject, and the parts as `items`, each one as the full text of one part, in order."
 
-const count = (n) => `${n} item${n === 1 ? "" : "s"}`
+const count = (n) => `${n} part${n === 1 ? "" : "s"}`
 
 const done = []
 
@@ -133,10 +133,10 @@ function stillZero(n, status, shipped, findings) {
 	const listed = findings.length === 0 ? [] : [["Findings:", ...findings.map((finding) => `- ${finding}`)].join("\n")]
 
 	return [
-		`Item ${n} ${status}: ${shipped.head} ${shipped.subject}`,
+		`Part ${n} ${status}: ${shipped.head} ${shipped.subject}`,
 		...listed,
-		"How should the campaign continue? Answer keep to ship the item as it is, fix: <words> for one more fix round on " +
-			"your words, or reset to reset the item and get a rundown. Answer stop to end the campaign and keep the " +
+		"How should the campaign continue? Answer keep to ship the part as it is, fix: <words> for one more fix round on " +
+			"your words, or reset to reset the part and get a rundown. Answer stop to end the campaign and keep the " +
 			"commit.",
 	].join("\n\n")
 }
@@ -200,7 +200,7 @@ async function settle(n, item, start, result) {
 				start,
 				findings: pending,
 				round,
-				message: `fix: judge findings of item ${n}`,
+				message: `fix: judge findings of part ${n}`,
 				memory: { ...notes.ref, item: n },
 			})
 
@@ -238,7 +238,7 @@ async function settle(n, item, start, result) {
 				pending = [answered.words]
 				break
 			default:
-				throw new Error(`unknown answer about item ${n}: ${answered.answer}`)
+				throw new Error(`unknown answer about part ${n}: ${answered.answer}`)
 		}
 	}
 }
@@ -247,7 +247,7 @@ async function settle(n, item, start, result) {
 // when the item was reset.
 function stoppedAt(n, item, result, rundown) {
 	const items = [...done, { item, result }]
-	const line = `stopped ${name} at item ${n}: ${cwd}`
+	const line = `stopped ${name} at part ${n}: ${cwd}`
 
 	if (rundown === undefined) return { status: "stopped", items, report: [line] }
 
@@ -262,7 +262,7 @@ let stopped
 
 for (let n = 1; queue.length > 0; n++) {
 	const [{ item, id }, ...rest] = queue
-	phase(`item ${n}/${n + rest.length}: ${subjectOf(item)}`)
+	phase(`part ${n}/${n + rest.length}: ${subjectOf(item)}`)
 	await todo.set(id, "doing")
 	await ensureBranch()
 	const patches = `${runDir}/item-${n}`
@@ -294,7 +294,7 @@ for (let n = 1; queue.length > 0; n++) {
 	const patch = (await ok(["test", "-s", file])) ? file : ""
 	await sh(["git", "reset", "--hard", start])
 	await todo.set(id, "dropped")
-	await notes.note("campaign", undefined, [`item ${n} failed and was reset: its notes describe code that is gone`])
+	await notes.note("campaign", undefined, [`part ${n} failed and was reset: its notes describe code that is gone`])
 
 	const proposed = await agent(
 		await prompts.rundown({
@@ -318,8 +318,8 @@ for (let n = 1; queue.length > 0; n++) {
 		rundown,
 		...(failure.summary === undefined ? [] : [failure.summary]),
 		["Suggestions:", ...suggestions.map((suggestion) => `- ${suggestion}`)].join("\n"),
-		["Proposed items:", ...proposed.items.map((next, i) => `${i + 1}. ${next}`)].join("\n\n"),
-		...(patch ? [`Patch of the failed item: ${patch}`] : []),
+		["Proposed parts:", ...proposed.items.map((next, i) => `${i + 1}. ${next}`)].join("\n\n"),
+		...(patch ? [`Patch of the failed part: ${patch}`] : []),
 	].join("\n\n")
 
 	const reply = (await input(`${summary}\n\nHow should the campaign continue? Answer stop to end it.`)).trim()

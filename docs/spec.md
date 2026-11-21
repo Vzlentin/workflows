@@ -4,7 +4,7 @@ The behaviour of the `workflows` command, the workflow scripts, runs and the `wo
 [README](../README.md) has the install.
 
 `workflows ship` ships one work item onto a new branch through [Pi](https://github.com/earendil-works/pi) sessions.
-`workflows campaign` splits a goal into work items and ships them one after another onto one branch.
+`workflows campaign` splits a goal into parts and ships them one after another onto one branch.
 `workflows rpi` researches, plans and implements one work item in one commit, `workflows thermoloop` reviews a change
 (the current branch, a PR, a ref or a range) and fixes it in rounds, and `workflows judge` judges it.
 `workflows optimize ship` proposes edits to the ship prompts, skills and `AGENTS.md` from past ship runs,
@@ -104,7 +104,7 @@ implementer's reply, and exits 1. A run whose thermoloop stopped after `--rounds
 The run keeps a memory of notes in an [OptMem](https://github.com/VictorTaelin/OptMem) store, `memory/` in the run
 directory, through the user's `$HOME/.optmem/memo` with `MEMORY_DIR` set to the store. `ship` opens the store with
 `memo init` and `memo config PART_CHARS=100000`, so that `memo wake` gives all its lines in one part, and gives its
-`ref` (its path, whether it is plain, and the campaign item) to `rpi` and `thermoloop`; a child run that gets a `ref`
+`ref` (its path, whether it is plain, and the campaign part) to `rpi` and `thermoloop`; a child run that gets a `ref`
 opens nothing. Without `memo` when the store opens, the store is the plain file `memory/notes.txt`, with one `#<k>
 <note>` line for each note and no summaries. In both stores, each note has the key `<run-id>/<note>.<n>`, the stored
 note line and the count `<n>` of that same line among the notes that this execution added, from 1, as one line of
@@ -123,8 +123,8 @@ list of notes, each one line of at most 280 bytes: the planner gives its decisio
 implementer gives what it tried and what it observed, and the reviewer gives what its review checked and found sound,
 and the lessons that later work needs, but not its findings, which its handoff gives. The reviewer has no handoff on
 SHIP or on FIX in the last round, so it gives no notes then. Each note becomes one `memo note` of the line
-`[item <n> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, where the author is `planner`, `implementer`
-or `reviewer`, the item is the campaign item, and the planner has no round. Empty notes are left out, and a line above
+`[part <n> ]<author>[ r<round>]: <note>`, with its whitespace collapsed, where the author is `planner`, `implementer`
+or `reviewer`, the part is the campaign part, and the planner has no round. Empty notes are left out, and a line above
 280 UTF-8 bytes loses words from its end. When `memo` asks to compress notes, a `summarizer` session answers with one
 line, cut in the same way, which goes to `memo nap`.
 
@@ -133,7 +133,7 @@ The first prompt of each planner, implement and review session starts with a `##
 the session have no section. The judge's prompt has no memory. The saved results of the `memo` calls replay at
 resume, so a resume gives the same prompts.
 
-A ship run that opened its own run memory, and not a campaign item, which gets the memory of its campaign, ends with
+A ship run that opened its own run memory, and not a campaign part, which gets the memory of its campaign, ends with
 the harvest of `.finish(item, result)`, at each end: shipped, blocked or stopped. When the memory has notes, one `summarizer` session gets the
 `harvest` prompt with the work item, the outcome (the result without its `report` and `memory` keys, also in its items, as JSON), the run ID and
 the notes, and answers through `respond` with `lessons`: 0 to 3 objects of `cue`, when the lesson applies, `lesson`,
@@ -178,7 +178,7 @@ lines of the judge, when the judge answered; `divergence`, the divergence line o
 the judge with its whitespace runs made one space, when the judge answered; `reply` when blocked; `handoff`, the
 handoff that the last round used, when blocked or stopped; `memory`, the
 notes of the run memory in order as `#<k> <note>` lines, or `[]` when there are none, for every status; and `lessons`,
-the lessons of the harvest, for every status of a ship run that is not a campaign item.
+the lessons of the harvest, for every status of a ship run that is not a campaign part.
 
 Blocked and stopped runs keep their branch, worktree and round commits. Delete them when you no longer need them.
 
@@ -385,53 +385,54 @@ workflows campaign --repo calibre --base develop --rounds 2 "Make the docs compl
 ```
 
 The goal comes from one argument or from stdin, as the work item of `ship` does, and `--repo`, `--base`, `--rounds`
-and `--prompts` work as for `ship`. `--rounds` applies to each work item. Errors name the goal, such as `the goal is empty`.
-When the judge of an item fails, the item's ship fails, so the campaign fails, and a resume judges the item again.
+and `--prompts` work as for `ship`. `--rounds` applies to each part. Errors name the goal, such as `the goal is empty`.
+When the judge of a part fails, the part's ship fails, so the campaign fails, and a resume judges the part again.
 
-In the step `split`, a planner session splits the goal into work items with the `split` prompt, and answers through
-`respond` with a `subject`, a Conventional Commit subject for the whole goal, and the work items. The step logs the
-number of items, such as `2 items`. Then each
-work item ships in turn, in one worktree on the branch `campaign/<run-id>`, or `--branch`: the research, the plan, the rounds, the
-review, the squash and the judge of `workflows/scripts/ship.js`, from the commit that the item before it made. So each shipped
-item is one commit, with the commit message that its own commit turn wrote, as in `ship`. No `ship/<run-id>` branch is made,
-and nothing is merged or pushed. Each item is a ship child run, with its own
+In the step `split`, a planner session splits the goal into parts with the `split` prompt, and answers through
+`respond` with a `subject`, a Conventional Commit subject for the whole goal, and the parts as `items`. A part is a
+todo of the run, not an item of the board of the project; the split schema and the result call it `item`. The step logs
+the number of parts, such as `2 parts`. Then each
+part ships in turn, in one worktree on the branch `campaign/<run-id>`, or `--branch`: the research, the plan, the rounds, the
+review, the squash and the judge of `workflows/scripts/ship.js`, from the commit that the part before it made. So each shipped
+part is one commit, with the commit message that its own commit turn wrote, as in `ship`. No `ship/<run-id>` branch is made,
+and nothing is merged or pushed. Each part is a ship child run, with its own
 run ID and run directory, in the store of the campaign run: see `run` in [the script API](#the-script-api).
 
 After the split, the campaign opens one run memory, the store `memory/` in its run directory, as `ship` does, and
-gives its path and the item number to each ship. So the notes of an item are `item <n> <author>...` lines, and the
-sessions of the next items see them.
+gives its path and the part number to each ship. So the notes of a part are `part <n> <author>...` lines, and the
+sessions of the next parts see them.
 
-The items of the split do not change while they ship. Only a failed item changes them: see below.
+The parts of the split do not change while they ship. Only a failed part changes them: see below.
 
-The list of todos of the campaign run, as in [Todos](#todos), has one todo for each item, in the order of its split.
-The text of the todo is the subject of the item, as the item step shows it:
+The list of todos of the campaign run, as in [Todos](#todos), has one todo for each part, in the order of its split.
+The text of the todo is the subject of the part, as the part step shows it:
 
-- After each split, the run adds the todos of its items, with the state `open`.
-- At its item step, the todo of the item becomes `doing`. It stays `doing` during the fix rounds of the item, and while
-  the run waits for an answer about the item.
-- When the item ships, also after a fix round or on the answer `keep`, its todo becomes `done`.
-- When the run resets the item, its todo becomes `dropped` at the reset, before the rundown question. When the user
-  stops the campaign at the item, its todo is `dropped`, and the todos of the items after it stay `open`.
-- When an answer to the rundown question makes a new split, the todos of the remaining items of the old split become
-  `dropped` before the step `split`, and the new split adds one todo for each of its items.
+- After each split, the run adds the todos of its parts, with the state `open`.
+- At its part step, the todo of the part becomes `doing`. It stays `doing` during the fix rounds of the part, and while
+  the run waits for an answer about the part.
+- When the part ships, also after a fix round or on the answer `keep`, its todo becomes `done`.
+- When the run resets the part, its todo becomes `dropped` at the reset, before the rundown question. When the user
+  stops the campaign at the part, its todo is `dropped`, and the todos of the parts after it stay `open`.
+- When an answer to the rundown question makes a new split, the todos of the remaining parts of the old split become
+  `dropped` before the step `split`, and the new split adds one todo for each of its parts.
 
-The step `all <n> item(s)` adds no todo. Each ship child run keeps its own list, and makes no todo call, so its list
+The step `all <n> part(s)` adds no todo. Each ship child run keeps its own list, and makes no todo call, so its list
 is empty. `workflows show <run-id> --json` gives the list of the run as `todos`.
 
 The campaign ends with the harvest of `ship`, with the goal as the work item, at each end: done or stopped. It makes no
-harvest while it waits for an answer. Its result then has `lessons`, and its items make no harvest and have no
+harvest while it waits for an answer. Its result then has `lessons`, and its parts make no harvest and have no
 `lessons`.
 
-The command prints `run <run-id>`, the step `split`, then the step `item <n>/<total>: <subject>` on stderr before the
-steps of each item, and the step `all <n> item(s)`, with the step `judge` of the campaign judge under it, when every
-item shipped.
-`<total>` is the number of items known when the item starts: the items that ran before it, this item, and the items of
-the split after it. The steps and log lines of the item's ship run are under the item step, indented by 2:
+The command prints `run <run-id>`, the step `split`, then the step `part <n>/<total>: <subject>` on stderr before the
+steps of each part, and the step `all <n> part(s)`, with the step `judge` of the campaign judge under it, when every
+part shipped.
+`<total>` is the number of parts known when the part starts: the parts that ran before it, this part, and the parts of
+the split after it. The steps and log lines of the part's ship run are under the part step, indented by 2:
 
 ```text
 ✓ split  12s
-  2 items
-✓ item 1/2: Fix the README typo  4m03s
+  2 parts
+✓ part 1/2: Fix the README typo  4m03s
   ✓ research  31s
   ✓ plan  48s
   ✓ implement  1m50s
@@ -441,42 +442,42 @@ the split after it. The steps and log lines of the item's ship run are under the
   commit a1b2c3d fix: correct the README typo
   ✓ judge  19s
     judge 0.83
-◉ item 2/2: Add a thanks line
+◉ part 2/2: Add a thanks line
   ✓ research  28s
   ◉ plan
 ```
 
-See [Progress](#progress). At resume, the first steps of the item it continues can come before the item step. On a
-terminal and in Pi they move under the item step when it comes.
+See [Progress](#progress). At resume, the first steps of the part it continues can come before the part step. On a
+terminal and in Pi they move under the part step when it comes.
 
-- At the start of each item and before the run ends, the run checks that the worktree is on the branch that it had
-  at the start of the campaign. When `HEAD` is detached or on another branch, and `HEAD` contains the last shipped commit, or the start commit when no item shipped, the run moves the campaign
+- At the start of each part and before the run ends, the run checks that the worktree is on the branch that it had
+  at the start of the campaign. When `HEAD` is detached or on another branch, and `HEAD` contains the last shipped commit, or the start commit when no part shipped, the run moves the campaign
   branch to `HEAD` and checks it out with `git checkout -B <branch>`. Otherwise the run fails with `the campaign
   worktree is not on <branch> (HEAD <commit>), and HEAD does not contain the last shipped commit: check out the
   campaign branch and resume`. So `change` of the result always has the campaign branch.
-- When every item shipped, the step `all <n> item(s)` runs the child run `judge` on the change of the whole campaign,
-  from the start commit to the last item, against the goal: the judge of an item sees only its item, and not how the
-  items fit together. The command prints
-  `<status> <subject> in <n> item(s), judge <score>, <commit>` with the commit of the last item, then one line
-  `  <commit> <commit subject>, judge <score>` for each shipped item, in order, with
-  `, divergence <divergence>` at the end when the item's divergence is there, not empty and not `none`, then one line
+- When every part shipped, the step `all <n> part(s)` runs the child run `judge` on the change of the whole campaign,
+  from the start commit to the last part, against the goal: the judge of a part sees only its part, and not how the
+  parts fit together. The command prints
+  `<status> <subject> in <n> part(s), judge <score>, <commit>` with the commit of the last part, then one line
+  `  <commit> <commit subject>, judge <score>` for each shipped part, in order, with
+  `, divergence <divergence>` at the end when the part's divergence is there, not empty and not `none`, then one line
   `  finding <finding>` for each finding of the campaign judge, then the lesson lines, then the line `branch <name>` of
   [Branch name](#branch-name), with the `subject` of the last split. The campaign judge gives the status: `done` and
   exit 0 when its score is above 0, and `rejected` and exit 1 when it is 0. The commits and the branch stay in each
   case. A campaign judge that fails fails the run, and a resume judges the campaign again.
 
-- An item whose ship is `shipped` ships. An item whose ship is `rejected` (a judge score of 0) and whose judge gave
+- A part whose ship is `shipped` ships. A part whose ship is `rejected` (a judge score of 0) and whose judge gave
   findings gets one fix round: the child run
-  [`fix`](#fix) with the work item, `start` at the commit that the item started from, the judge's findings, `round` at
-  the rounds of the item plus 1, the message `fix: judge findings of item <n>` and the run memory of the item. `fix`
-  squashes the change of the item again into one commit with a new commit message, and logs
-  `commit <commit> <commit subject>`. When `fix` is `judged`, with a score above 0, the item ships: its result is the
+  [`fix`](#fix) with the part, `start` at the commit that the part started from, the judge's findings, `round` at
+  the rounds of the part plus 1, the message `fix: judge findings of part <n>` and the run memory of the part. `fix`
+  squashes the change of the part again into one commit with a new commit message, and logs
+  `commit <commit> <commit subject>`. When `fix` is `judged`, with a score above 0, the part ships: its result is the
   ship result with the status `shipped` and the judge fields of the ship result replaced by the `head`, `subject`,
   `score`, `answers`, `findings` and `divergence` of `fix`. The step `fix` comes
-  under the item step, and its log line and its `judge` step under it:
+  under the part step, and its log line and its `judge` step under it:
 
   ```text
-  ✓ item 1/2: Fix the README typo  6m12s
+  ✓ part 1/2: Fix the README typo  6m12s
     ...
     commit a1b2c3d fix: correct the README typo
     ✓ judge  19s
@@ -491,66 +492,66 @@ terminal and in Pi they move under the item step when it comes.
   Otherwise the fix round ends with an outcome: `the fix round failed: <error>` when `fix` is `failed`, `the fix
   round left no change` when it is `blocked`, `still 0
   after one fix round` when it is `rejected`, a score of 0 again, and `the fix round ended with the unknown status <status>` for any
-  other status. After a score of 0 again, the run asks as below; after any other outcome the item fails
-  as below. A judge that fails in the fix round fails `fix`, so the campaign fails, and a resume judges the item again.
-- When an item's ship is `rejected` with no findings, or its fix round ends
-  with a score of 0 again, the item is one squashed commit, and the run asks the question of
+  other status. After a score of 0 again, the run asks as below; after any other outcome the part fails
+  as below. A judge that fails in the fix round fails `fix`, so the campaign fails, and a resume judges the part again.
+- When a part's ship is `rejected` with no findings, or its fix round ends
+  with a score of 0 again, the part is one squashed commit, and the run asks the question of
   [Input](#input), with no reset, no patch and no rundown:
 
   ```text
-  Item <n> <status>: <commit> <commit subject>
+  Part <n> <status>: <commit> <commit subject>
 
   Findings:
   - <finding>
 
-  How should the campaign continue? Answer keep to ship the item as it is, fix: <words> for one more fix round on your words, or reset to reset the item and get a rundown. Answer stop to end the campaign and keep the commit.
+  How should the campaign continue? Answer keep to ship the part as it is, fix: <words> for one more fix round on your words, or reset to reset the part and get a rundown. Answer stop to end the campaign and keep the commit.
   ```
 
   `<status>` is the status of the `rundown` input below. The findings are those of the last judge that gave some, and
   the block is left out when there are none. The command prints the question and exits 3 with the status `waiting`.
   The run trims the answer, and matches `keep`, `reset`, `stop` and the prefix `fix:` in any case:
-  - `keep` ships the item as it is: its entry in `items` gets `"kept": true` and `findings`, the findings of the
-    question, and its item line in the `done` report is followed by one line `    finding <finding>` for each of them.
+  - `keep` ships the part as it is: its entry in `items` gets `"kept": true` and `findings`, the findings of the
+    question, and its part line in the `done` report is followed by one line `    finding <finding>` for each of them.
   - `fix: <words>`, with words that are not empty, runs one more fix round as above, with the words as its one finding
-    and `round` one more than the fix round before it. A score above 0 ships the item, a score of 0
-    again asks again, and any other outcome fails the item as below.
-  - `reset` fails the item as below.
-  - `stop` prints `stopped <subject> at item <n>: <worktree>`, then the lesson lines, and exits 1.
-    The commit of the item and the branch stay, and the result has no `rundown`.
+    and `round` one more than the fix round before it. A score above 0 ships the part, a score of 0
+    again asks again, and any other outcome fails the part as below.
+  - `reset` fails the part as below.
+  - `stop` prints `stopped <subject> at part <n>: <worktree>`, then the lesson lines, and exits 1.
+    The commit of the part and the branch stay, and the result has no `rundown`.
   - Any other answer asks the same question again, after the line `Unknown answer: <answer>` and an empty line.
-- When an item is blocked or stopped, its fix round fails, leaves no change or ends with an unknown status, or the
-  answer to the question above is `reset`, the item fails. The run writes the change of the item, from
-  the commit that the item started from to `HEAD`, as `item-<n>/item.patch` in the run directory. It checks that the
-  commit that the item started from is the last shipped commit, or the start commit when no item shipped, and that
+- When a part is blocked or stopped, its fix round fails, leaves no change or ends with an unknown status, or the
+  answer to the question above is `reset`, the part fails. The run writes the change of the part, from
+  the commit that the part started from to `HEAD`, as `item-<n>/item.patch` in the run directory. It checks that the
+  commit that the part started from is the last shipped commit, or the start commit when no part shipped, and that
   `HEAD` contains it; else the run fails with `HEAD <commit> does not contain the last shipped commit <commit>: the
-  campaign does not reset it`. Then it resets the worktree with `git reset --hard` to that commit, and adds the note `campaign: item <n>
+  campaign does not reset it`. Then it resets the worktree with `git reset --hard` to that commit, and adds the note `campaign: part <n>
 failed and was reset: its notes describe code that is gone` to the run memory. Then a new planner session gets the
-  `rundown` prompt with the inputs `goal`, `shipped` (the shipped items, each one as `{ item, commit, divergence }`, as JSON), `item`, `status`
+  `rundown` prompt with the inputs `goal`, `shipped` (the shipped parts, each one as `{ item, commit, divergence }`, as JSON), `item`, `status`
   (the ship status, or `shipped with judge score 0`, with `, <outcome>`
-  of the fix round after it when the item had one), `reply` (the reply of the fix round's implementer after a fix round that has one), `handoff`, `findings` (the findings of the
+  of the fix round after it when the part had one), `reply` (the reply of the fix round's implementer after a fix round that has one), `handoff`, `findings` (the findings of the
   fix round's judge when it gave some), `memory` (the notes of the run memory of the campaign, as `#<k> <note>` lines), `remaining` (the
-  remaining items, as JSON) and `patch` (the path of `item-<n>/item.patch`, when the item changed something). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and proposed items.
+  remaining parts, as JSON) and `patch` (the path of `item-<n>/item.patch`, when the part changed something). Empty inputs are left out. It answers through `respond` with a rundown, suggestions and proposed parts.
   The run asks the question of [Input](#input): the question summary, which is the rundown, after a fix round
   `Fix round: <outcome>` with one `- <finding>` line for each finding of the fix round's judge, `Suggestions:` with one
-  `- <suggestion>` line each, `Proposed items:` with the numbered items, and `Patch of the failed item: <path>` when
+  `- <suggestion>` line each, `Proposed parts:` with the numbered parts, and `Patch of the failed part: <path>` when
   the patch exists, then `How should the campaign continue? Answer stop to end it.` The command prints
   the question and exits 3 with the status `waiting`. Continue with `workflows resume <run-id> --answer <text>`.
-- When the answer is `stop`, in any case, the command prints `stopped <subject> at item <n>: <worktree>`,
+- When the answer is `stop`, in any case, the command prints `stopped <subject> at part <n>: <worktree>`,
   with the path of the campaign's worktree,
   then the rundown, then the lesson lines, and exits 1. The branch keeps its name `campaign/<run-id>`, or `--branch`.
 - Any other answer goes back to the step `split`: a new planner session with the `split` prompt and the inputs
-  `goal`, `shipped`, `rundown` (the whole question summary) and `answer`. Its items replace the remaining items on the
-  same branch, and the next item has the next item number. A later failure asks again. The campaign ends as a campaign
-  with no failed item.
+  `goal`, `shipped`, `rundown` (the whole question summary) and `answer`. Its parts replace the remaining parts on the
+  same branch, and the next part has the next part number. A later failure asks again. The campaign ends as a campaign
+  with no failed part.
 
 `<subject>` is the first non-empty line of the goal without leading `#`. `<n>` in the `done` line counts the shipped
-items. The number of the item step counts every item that ran. The result is
+parts. The number of the part step counts every part that ran. The result is
 `{ "status": "done", "subject", "head", "score", "findings", "change", "items": [{ "item", "result" }], "lessons" }`,
 where `score` and `findings` are those of the campaign judge, as in a ship result, with the status `rejected` when the
 campaign judge gave 0, or `{ "status": "stopped", "items", "rundown", "lessons", "change" }`,
-with no `rundown` when the user stopped at the question about an item still at 0. An item that the user kept has `"kept": true` and `findings`. The `result` of
-each shipped item, and of the failed item in a stopped result, is its `ship` result, with its `divergence` and its child run ID as
-`runId`, and after a fix round that shipped, that the user kept or at which the user stopped, the `head`, `subject` and judge fields of the last fix round. `head` is the commit of the last item, and `change` has the main
+with no `rundown` when the user stopped at the question about a part still at 0. A part that the user kept has `"kept": true` and `findings`. The `result` of
+each shipped part, and of the failed part in a stopped result, is its `ship` result, with its `divergence` and its child run ID as
+`runId`, and after a fix round that shipped, that the user kept or at which the user stopped, the `head`, `subject` and judge fields of the last fix round. `head` is the commit of the last part, and `change` has the main
 checkout and the branch that the worktree ends on, as [Branch name](#branch-name) gives it.
 
 ## Optimize
@@ -711,18 +712,19 @@ matters. It runs these steps in order, with `git -C` in the repository of the ch
    comes first, so that a rejected push leaves `main` untouched on both sides. When `main` is already the head, both
    do nothing.
 6. Delete the branch on `origin` when `git ls-remote` still lists it, and its remote-tracking branch.
-7. For a run whose `serves` is an item, `{ "item": <n> }`: link the item to the head with the edge
-   `item:<n> landed commit:<full head>`, then read the item. When the item has a `serves` edge from an `agent:` end,
-   read the tree of the project: an `agent` node that serves `{ "kind": "item", "id": <n> }` and whose state is not
-   `ended` is a live agent. With no live agent, set the item to `done`; with one, the item stays `open`. These are
-   `harness` calls of the land run. The step never sets an item to `open`. It adds the report line `item <n> done` or
+7. For a run whose `serves` is an item, `{ "item": <n> }`: `closeItem(<n>, <full head>)` (see
+   [Harness requests](#harness-requests)) links the item to the head with the edge `item:<n> landed commit:<full head>`,
+   and sets the item to `done` when no live agent serves it; with one, the item stays `open`. These are `harness` calls
+   of the land run. The step never sets an item to `open`. It adds the report line `item <n> done` or
    `item <n> stays open: <node name> serves it`. A failure, such as the refusal of the host while a run that serves
    the item is live, adds `check failed: item <n>: <message>`, and the status does not change. A branch, a PR, and a
    run that serves no item or a parley, skip the step.
 8. Wait for the CI of `main` at the head.
 9. Run `workflows sweep <branch> --yes` of this package (`workflowsCommand`) in the repository (see
    [Sweep](#sweep)), unless the local branch is already gone. It removes the worktree that has the branch and the
-   local branch, and marks each run of the branch `landed`.
+   local branch, and marks each run of the branch `landed`. It also closes the item of each run of the branch, at the
+   same head as step 7: the host writes the same edge once, so this changes nothing after step 7. Its stderr and its
+   item lines do not change the report.
 10. Check the repository: `core.bare` is not true, `main` equals `main` on `origin`, and the branch is gone locally, as
    a remote-tracking branch and on `origin`.
 
@@ -887,7 +889,7 @@ export const meta = {
 - `outline` is the map of the script before a run: an array of the steps that a user sees in the progress of the
   script, in order. A step is `{ kind: "agent", role, label }`, a turn of the role `role`; `{ kind: "run", workflow,
   label }`, a child run of the workflow `workflow`; or `{ kind: "loop", label, steps }`, steps that repeat, such as
-  review rounds or the items of a campaign. `steps` has at least one step, and loops can nest. `role`, `workflow` and
+  review rounds or the parts of a campaign. `steps` has at least one step, and loops can nest. `role`, `workflow` and
   `label` are non-empty strings with no line break, and a step has no other field. A child run whose phases show as
   steps of the caller gives those steps in place of one `run` step, as `rpi` and `thermoloop` do in `ship`:
 
@@ -945,7 +947,7 @@ workflow <workflow>`, where `<pointer>` is the pointer of the `workflow` field. 
 
 A run with a worktree of its own whose result has a string `subject` names its branch: a shipped `ship` returns the
 commit subject, and a done `campaign` the subject of the last split. A child run without a worktree of its own, such
-as each item of a campaign, names no branch. The name is `subject` as a branch name: the Conventional Commit type,
+as each part of a campaign, names no branch. The name is `subject` as a branch name: the Conventional Commit type,
 `/`, then the lowercase words of the description joined with `-`, at most 48 characters cut at a word end. A subject
 without a type gives the words alone. `feat(pi): Show the runs` gives `feat/show-the-runs`, and `Fix the README typo`
 gives `fix-the-readme-typo`. A subject without a letter or digit keeps `<wf>/<run-id>`.
@@ -1020,7 +1022,7 @@ first `phase` line of an execution of a run, such as after a resume, continues t
 without the time between, and prints nothing. Any other `phase` line starts a new step.
 
 The status of the run is the text of each step that runs, outermost first, joined with ` › `, such as
-`item 2/5: Add a thanks line › round 1/3: review`; child runs that run at once join with `, `. Only the `--json` line,
+`part 2/5: Add a thanks line › round 1/3: review`; child runs that run at once join with `, `. Only the `--json` line,
 the [Pi widget](#background-runs-in-pi) and `show --pick` show it.
 
 When the run ends, the steps that still run become `✓` when the run is `done` or `waiting`, `·` when it was
@@ -1134,6 +1136,7 @@ returns its session at once, and `phase`, `log` and `title` need no `await`.
 | `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
 | `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow`, or of every workflow for `null`, in the project store. See [Past runs](#past-runs) |
 | `await harness(request)` | Sends one request to the harness host of the run's project and returns its reply. See [Harness requests](#harness-requests) |
+| `await closeItem(item, head)` | Closes the item `item` at the commit `head`, as step 7 of [Land](#land) does, and returns the line of the report. See [Harness requests](#harness-requests) |
 | `await todo.add(text)` | Adds a todo with the state `open` and the next ID to the list of the run, and returns it, `{ id, text, state }`. See [Todos](#todos) |
 | `await todo.set(id, state, text)` | Sets the state of the todo `id` of the list of the run to `open`, `doing`, `done` or `dropped`, and its text when `text` is given, and returns the todo |
 | `await todo.list()` | The todos of the list of the run, in ID order |
@@ -1184,6 +1187,15 @@ The call adds `caller: workflows:<run-id>` to a `link` and a `set`. Another requ
 `harness got bad arguments: <path> <problem>`. An error of the host fails the call with its message, and no host
 fails it with `no harness host runs for <project>`. The call is of the kind `harness`, with the request as its args,
 and saves the reply, so a resume returns it and does not send the request again.
+
+`closeItem(item, head)` closes an item when the work of a run lands. It sends `item link` with the edge
+`item:<item> landed commit:<head>`, then `item read`. When the item has a `serves` edge from an `agent:` end, it sends
+`tree`: an `agent` node that serves `{ "kind": "item", "id": <item> }` and whose state is not `ended` is a live agent.
+With no live agent, it sends `item set` with the state `done`; with one, the item stays `open`. It never sets an item to
+`open`. It returns `item <item> done` or `item <item> stays open: <node name> serves it`. Each request is a `harness`
+call, with its caller, its key and its saved reply. A reply that does not have the shape of its request fails with
+`the harness host gave a bad reply to <request>`. `sweep --yes` closes the item of a merged run with the same rule (see
+[Sweep](#sweep)).
 
 #### Todos
 
@@ -1385,8 +1397,8 @@ item that the host does not know fails the run with `Unknown item: <id>`, and an
 <slug>`, and a parley that is not open and not a contract with `Parley <slug> is <status>: a run cannot serve it`. So
 a resume after the end of the item or the parley fails. After the check of an item, the task sends `item link` with
 the caller `workflows:<run-id>` and the edge `run:<run-id> serves item:<id>`. The host writes the edge once, so each
-resume sends it again with no change. A child run does not check or link. `land` of a run ID sets the item of the
-run to `done` (see [Land](#land)). `serves` is a reserved argument name.
+resume sends it again with no change. A child run does not check or link. `land` of a run ID, and `sweep --yes` of a
+merged branch, set the item of the run to `done` when no live agent serves it (see [Land](#land) and [Sweep](#sweep)). `serves` is a reserved argument name.
 
 ### Input
 
@@ -1703,14 +1715,14 @@ workflows sweep [<branch>|<run-id>...] [--yes] [--install-hook] [--json]
 
 `workflows sweep` prints one line `<run-id> landed <branch> <worktree>` for each run of the harness project of the
 current directory, newest run ID first, whose worktree is on a merged branch. With `--json`, it prints one JSON array
-of `{ "runId", "swept", "branch", "worktree" }`, with the schema `SWEPT_RUNS` of `src/cli/commands/sweep.ts`. `swept`
+of `{ "runId", "swept", "branch", "worktree", "item"? }`, with the schema `SWEPT_RUNS` of `src/cli/commands/sweep.ts`. `swept`
 is the word that `--yes` writes for the run: `landed` for a merged branch, `dropped` for a branch that is not merged.
 Without `--yes`, each line and each entry shows the word that `--yes` would write. A run is a candidate only when it
 has a run directory with a `project` file, its last task has ended, a task of this version or of an earlier version
 saved it, its saved input has a worktree, the worktree exists, and the worktree is on a branch. For a run of an earlier
 version, `sweep` reads only the `worktree` of its saved input. A run of a later version, a run without a worktree, a
 run that has not ended, a detached worktree, and a worktree that is not a Git worktree of its own are never swept.
-`sweep` reads the project store file read-only, as `list` does, and does not start the host. When the project store
+`sweep` reads the project store file read-only, as `list` does, and never starts the host. When the project store
 file does not exist, `sweep` prints `workflows: cannot sweep: the project store <store> does not exist, so no run
 directory counts as unstarted; remove the run directories that you do not need from <runs directory> by hand`, removes
 nothing and exits 1, also without `--yes`. With arguments, `sweep` needs no project store.
@@ -1743,6 +1755,19 @@ with changes, prints `workflows: cannot sweep <run-id>: <error>` on stderr, leav
 and goes on with the next run; `sweep` then exits 1. A failed worktree removal deletes the marker and writes no word,
 as the worktree can get more work; a failed branch removal keeps the marker. The run directory and the run's records
 stay, so `list` and `show` still show the run, and their JSON gives the word as `swept` (see [List](#list)).
+
+With `--yes`, `sweep` closes the item of each `landed` run that serves an item, as `land` does: after the check of the
+tasks above and before it writes the marker, while the branch still exists. A run serves an item when the saved input
+of its last task has `serves` `{ "item": <n> }`. The head is `git rev-parse refs/heads/<branch>` in the repository.
+`sweep` closes each item once for each branch, in the name of the first run of the branch, in task ID order, that
+serves it, with the rule of `closeItem` (see [Harness requests](#harness-requests)): it sends `item link`, `item read`,
+`tree` and `item set` to the host of the project, with no start of a host, and with the caller `workflows:<run-id>`
+for `link` and `set`. The line of that run ends with ` item <n> done` or ` item <n> stays open: <node name> serves it`,
+and its JSON entry has `"item": { "id": <n>, "state": "done" | "open" }`. A close that fails, such as with no host, or
+with a refusal of the host, prints `workflows: cannot close item <n> of <run-id>: <error>` on stderr; the branch is still
+swept, its line has no item, and the exit code does not change. A `dropped` branch, a run that serves a parley, a run
+whose branch is already gone, such as at the end of an interrupted sweep, and a run without `--yes` get no close and no
+request to the host.
 
 `sweep` also prints one line `<run-id> unstarted <run directory>` for each run directory of the project whose run has
 no task (the `unstarted` runs of `list`) and whose `project` file is more than 1 hour old, after the merged runs. With
@@ -1929,7 +1954,7 @@ first line with an agent. A read that fails keeps the lines it has.
 
 - A step line has the first session that opened a conversation under the step: a `session` call whose phase line is the
   step, in the run of the step, or a session of a child run that a `run` call under the step started, at any depth. When
-  a run has more than one step with the same text, such as the `split` of a campaign after a failed item, a session
+  a run has more than one step with the same text, such as the `split` of a campaign after a failed part, a session
   belongs to the last of them that started at or before it. The first session to start counts, so the summarizer of the run memory, which starts after the session whose note it
   compresses, never counts. A log line, and a line of a child run under a step, has the agent of the step.
 - For a run without steps, a `session` line has its conversation, and an `ask` line the conversation of its session.
@@ -2119,7 +2144,7 @@ store and calls no model.
   alone. `workflows outline judge` prints `judge  judge`, and `workflows outline` prints for the package scripts:
 
   ```text
-  campaign    split ─ each item: ship ─ judge
+  campaign    split ─ each part: ship ─ judge
   fix         fix ─ judge
   implement   implement
   judge       judge
@@ -2380,7 +2405,7 @@ In Pi, the call line is `workflow <name> <slug>`, `workflow <name>`, `workflow s
 `workflow save <run-id> <name>`, such as `workflow ship Fix the README typo` or `workflow optimize ship`. The slug comes from the first string arg: the
 file name of a `.md` file without `.md`, or else the first 40 characters of its subject. Under it are the lines of the last `{"progress":[...]}` line of the command, as the
 command draws them on a terminal, with the marks in the theme's colors, then the last 100 other stderr lines, such as a warning.
-See [Progress](#progress). So a campaign shows its item steps with the ship steps of each item under them. The tool
+See [Progress](#progress). So a campaign shows its part steps with the ship steps of each part under them. The tool
 does not make the steps itself. A run that is `done` or `waiting` ends with its `report` lines,
 such as `shipped Fix the README typo in 2 rounds, judge 1.00, 4dfb5c8` and `branch fix/readme-typo`. A failed, orphaned, aborted or detached run ends with
 the error or the state, and the run ID to resume. The steps are in the `details` of each update and of the result, so the list draws the
@@ -2438,7 +2463,7 @@ order that they started to be followed, one run on each line: `<workflow>: <repo
 after a wait that failed, such as
 
 ```text
-campaign: harness 935f6d89 item 2/3: Add a thanks line › round 1/3: review
+campaign: harness 935f6d89 part 2/3: Add a thanks line › round 1/3: review
 ship: workflows e235d11b plan
 ```
 
@@ -2528,7 +2553,7 @@ A ship run also has:
 A campaign run has `repository/` and `.worktrees/repository/<run-id>/` in the same way, plus:
 
 - `item-<n>/`: the `round-<n>.patch` and `round-<n>-fix.patch` files of item `n`
-- `item-<n>/item.patch`: the whole change of a failed item
+- `item-<n>/item.patch`: the whole change of a failed part
 - `memory/`: the OptMem store of the run memory of every item
 
 An `rpi`, `thermoloop` or `implement` run without a caller has `memory/`, the OptMem store of its run memory. A

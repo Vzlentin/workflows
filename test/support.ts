@@ -29,7 +29,7 @@ import { connect, request } from "@vzlentin/harness/client";
 import { entriesPath } from "@vzlentin/harness/entries";
 import { type Host, runHost } from "@vzlentin/harness/host";
 import { projectDir } from "@vzlentin/harness/projects";
-import { AGENT_HANDLE, type Request, statePaths } from "@vzlentin/harness/protocol";
+import { AGENT_HANDLE, type Request, StagedItem, statePaths } from "@vzlentin/harness/protocol";
 import { REMINDER } from "@vzlentin/harness/respond";
 import { StartedTasks } from "@vzlentin/harness/tasks";
 import { Type } from "typebox";
@@ -461,8 +461,8 @@ const KINDS: readonly (readonly [string, Kind])[] = [
 	["Perform a deep code quality audit", "review"],
 	["## Vocabulary", "judge"],
 	["Write the commit message", "commit"],
-	["Split this goal into work items.", "split"],
-	["Give a rundown of the failed work item", "rundown"],
+	["Split this goal into parts.", "split"],
+	["Give a rundown of the failed part", "rundown"],
 	["Compress memories", "summarize"],
 	["Propose edits to the workflow prompts of", "inv"],
 	["Propose edits to the practitioner skills", "dom"],
@@ -1067,6 +1067,19 @@ export async function startHost(project = "main", models = createModels()): Prom
 	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
 
 	return host;
+}
+
+/** Sends the `item` request `sent`, an `add` or a `read`, to a new host of the sandbox, and gives the item. */
+export async function toHost(
+	sent: Extract<Request, { type: "item"; action: "add" }> | Extract<Request, { type: "item"; action: "read" }>,
+): Promise<StagedItem> {
+	const host = await startHost();
+
+	try {
+		return Value.Parse(StagedItem, await request(sent, { start: false }));
+	} finally {
+		await host.close();
+	}
 }
 
 /** The list of todos of the task `wf:<id>#1` of the root run `id`, from the `todo` request of a host of the sandbox. */

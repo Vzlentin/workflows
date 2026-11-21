@@ -2,10 +2,20 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { request } from "@vzlentin/harness/client";
-import { type Request, StagedItem } from "@vzlentin/harness/protocol";
-import { Value } from "typebox/value";
+import type { Request } from "@vzlentin/harness/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { fake, gateGit, git, hostModel, repository, sandbox, startHost, workflows, worktreeAt } from "./support.ts";
+import {
+	fake,
+	gateGit,
+	git,
+	hostModel,
+	repository,
+	sandbox,
+	startHost,
+	toHost,
+	workflows,
+	worktreeAt,
+} from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -64,19 +74,6 @@ esac
 });
 
 afterEach(() => rm(root, { recursive: true, force: true }));
-
-/** Sends the `item` request `sent`, an `add` or a `read`, to a new host of the sandbox, and gives the item. */
-async function toHost(
-	sent: Extract<Request, { type: "item"; action: "add" }> | Extract<Request, { type: "item"; action: "read" }>,
-): Promise<StagedItem> {
-	const host = await startHost();
-
-	try {
-		return Value.Parse(StagedItem, await request(sent, { start: false }));
-	} finally {
-		await host.close();
-	}
-}
 
 /**
  * A completed ship run with a commit on its branch, which serves `serves` when given: its ID, its branch, and the full

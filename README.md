@@ -3,8 +3,8 @@
 `workflows` runs durable, resumable coding workflows on [Pi](https://github.com/earendil-works/pi) sessions:
 
 - `workflows ship` ships one work item onto a new Git branch: research, plan, implement, review, one squashed commit, judge.
-- `workflows campaign` splits a goal into work items and ships them one after another onto one branch, then judges
-  the whole branch. It asks you about an item that is still at judge 0 after its fix round.
+- `workflows campaign` splits a goal into parts and ships them one after another onto one branch, then judges
+  the whole branch. It asks you about a part that is still at judge 0 after its fix round.
 - `workflows thermoloop` reviews a change (your current branch, a PR, a ref or a range) and fixes it in rounds;
   `workflows judge` judges it.
 - `workflows rpi` researches, plans and implements a work item in one commit, with no review.
@@ -83,7 +83,7 @@ workflows outline ship                     # the steps of ship, before a run
 
 A ship run works on the branch `ship/<run-id>` in its own worktree, and renames the branch at the end. It does not push
 and does not open a pull request. The judge judges the squashed commit and its message. Its result gives the divergence:
-one line from the judge that tells how the commit differs from the work item, or `none`. A ship that is not a campaign item, and a campaign, also give `lessons`: up to 3 lessons of its
+one line from the judge that tells how the commit differs from the work item, or `none`. A ship that is not a campaign part, and a campaign, also give `lessons`: up to 3 lessons of its
 notes, each also a report line. [docs/spec.md](docs/spec.md) describes all the commands, workflow scripts, runs, and the
 `workflow` tool.
 

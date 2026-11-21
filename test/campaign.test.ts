@@ -83,15 +83,15 @@ function itemSteps(stat: string, subject: string) {
 const FINDING = "  finding 4 FAIL README.md:3 adds a line the work item does not need";
 
 /** The steps of the judge of a campaign that is done. */
-const JUDGE_STEPS = ["✓ all 2 items", "  ✓ judge", "    judge 0.83"];
+const JUDGE_STEPS = ["✓ all 2 parts", "  ✓ judge", "    judge 0.83"];
 
 /** The question about item 1 that the fix round keeps at 0 with the findings of `ZERO`, at the commit `head`. */
 const stillZero = (head: string) =>
 	[
-		`Item 1 shipped with judge score 0, still 0 after one fix round: ${head} fix: correct the README typo`,
+		`Part 1 shipped with judge score 0, still 0 after one fix round: ${head} fix: correct the README typo`,
 		"Findings:\n- 1 FAIL: the typo stays.",
-		"How should the campaign continue? Answer keep to ship the item as it is, fix: <words> for one more fix round on " +
-			"your words, or reset to reset the item and get a rundown. Answer stop to end the campaign and keep the " +
+		"How should the campaign continue? Answer keep to ship the part as it is, fix: <words> for one more fix round on " +
+			"your words, or reset to reset the part and get a rundown. Answer stop to end the campaign and keep the " +
 			"commit.",
 	].join("\n\n");
 
@@ -154,7 +154,7 @@ describe("workflows campaign", () => {
 		expect(run.stdout).toHaveLength(2);
 		expect(run.stdout[0]).toBe(`run ${run.id}`);
 		expect(report).toEqual([
-			expect.stringMatching(/^done Fix the README in 2 items, judge 0\.83, [0-9a-f]+$/),
+			expect.stringMatching(/^done Fix the README in 2 parts, judge 0\.83, [0-9a-f]+$/),
 			itemLine(COMMIT.subject),
 			itemLine(THANKS.subject),
 			FINDING,
@@ -170,28 +170,28 @@ describe("workflows campaign", () => {
 			status: "shipped",
 			findings: PASSING_JUDGE.findings,
 			memory: [
-				"#0 item 1 planner: Handoff 1: one word changes.",
-				"#1 item 1 implementer r1: Implement 1: README.md had wrold.",
+				"#0 part 1 planner: Handoff 1: one word changes.",
+				"#1 part 1 implementer r1: Implement 1: README.md had wrold.",
 			],
 		});
 		// The items share the memory of the campaign.
 		expect(run.model.find("plan", 1)?.prompt).toMatch(
-			/^## memory\n#0 item 1 planner: Handoff 1: [^\n]*\n#1 item 1 implementer r1: [^\n]*\n\nPlan this change\./,
+			/^## memory\n#0 part 1 planner: Handoff 1: [^\n]*\n#1 part 1 implementer r1: [^\n]*\n\nPlan this change\./,
 		);
 		expect(progressOf(run.stderr)).toEqual([
 			"✓ split",
-			"  2 items",
-			"✓ item 1/2: Fix the README typo",
+			"  2 parts",
+			"✓ part 1/2: Fix the README typo",
 			...itemSteps("+1 -1 in 1 file", COMMIT.subject),
-			"✓ item 2/2: Add a thanks line",
+			"✓ part 2/2: Add a thanks line",
 			...itemSteps("+1 -0 in 1 file", THANKS.subject),
 			...JUDGE_STEPS,
 		]);
 		// The end of an item's ship run and the step of the next item come in either order, so the bare item steps
 		// between them are left out.
-		const statuses = statusesOf(run.stderr).filter((status) => !/^item \d\/\d: [^›]+$/.test(status));
-		const one = "item 1/2: Fix the README typo";
-		const two = "item 2/2: Add a thanks line";
+		const statuses = statusesOf(run.stderr).filter((status) => !/^part \d\/\d: [^›]+$/.test(status));
+		const one = "part 1/2: Fix the README typo";
+		const two = "part 2/2: Add a thanks line";
 		expect(statuses.filter((status, i) => status !== statuses[i - 1])).toEqual([
 			"split",
 			`${one} › research`,
@@ -204,15 +204,15 @@ describe("workflows campaign", () => {
 			`${two} › implement`,
 			`${two} › round 1/3: review`,
 			`${two} › judge`,
-			"all 2 items",
-			"all 2 items › judge",
-			"all 2 items",
+			"all 2 parts",
+			"all 2 parts › judge",
+			"all 2 parts",
 			"-",
 		]);
 		expect(run.model.calls.map((call) => call.kind)).toEqual(["split", ...SHIP, ...SHIP, "judge", "harvest"]);
 		expect(run.model.calls.at(-2)?.prompt).toMatch(new RegExp(`## item\\n${GOAL.trim()}\\n\\n## base\\n${start}\\n`));
 		const [split] = run.model.calls;
-		expect(split?.prompt).toMatch(/^Split this goal into work items\.\n[\s\S]*\n\n## goal\n# Fix the README\n/);
+		expect(split?.prompt).toMatch(/^Split this goal into parts\.\n[\s\S]*\n\n## goal\n# Fix the README\n/);
 		expect(split?.prompt).not.toContain("## answer");
 		expect(split?.tools).toContain("respond");
 		expect(run.model.find("commit")?.prompt).not.toContain("branch");
@@ -242,9 +242,9 @@ describe("workflows campaign", () => {
 
 		for (const [n, child] of children.entries()) {
 			const item = n === 0 ? "Fix the README typo" : "Add a thanks line";
-			const at = logged.stdout.findIndex((text) => text.includes(`] item ${n + 1}/2: ${item}  `));
+			const at = logged.stdout.findIndex((text) => text.includes(`] part ${n + 1}/2: ${item}  `));
 			const head = logged.stdout[at] ?? "";
-			expect(head, child).toEqual(logLine(`\\[campaign\\] item ${n + 1}/2: ${item}  \\d+s  \\d+ calls  \\d+ B  s\\d+`));
+			expect(head, child).toEqual(logLine(`\\[campaign\\] part ${n + 1}/2: ${item}  \\d+s  \\d+ calls  \\d+ B  s\\d+`));
 			// The child ship run has no step of its own: the start of its rpi run follows its start.
 			expect(logged.stdout.slice(at + 1, at + 3), child).toEqual([
 				logLine("\\[campaign/ship\\] start"),
@@ -324,8 +324,8 @@ describe("workflows campaign", () => {
 		expect(git(worktree, "log", "-1", "--format=%B").trim()).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
 		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(FIX);
 		const progress = progressOf(run.stderr);
-		const item = progress.indexOf("✓ item 1/1: Fix the README typo");
-		expect(progress.slice(item + 1, progress.indexOf("✓ all 1 item"))).toEqual([
+		const item = progress.indexOf("✓ part 1/1: Fix the README typo");
+		expect(progress.slice(item + 1, progress.indexOf("✓ all 1 part"))).toEqual([
 			...itemSteps("+1 -1 in 1 file", COMMIT.subject).slice(0, 7),
 			"  ✓ judge",
 			"    judge 0.00",
@@ -540,7 +540,7 @@ describe("workflows campaign", () => {
 		expect(git(worktree, "rev-list", "--count", `${start}..HEAD`)).toBe("1");
 		expect(git(worktree, "log", "-1", "--format=%B").trim()).toBe(`${COMMIT.subject}\n\n${COMMIT.body}`);
 		const reflog = git(worktree, "reflog", "--format=%gs").split("\n");
-		expect(reflog.filter((line) => line === "commit: fix: judge findings of item 1")).toHaveLength(1);
+		expect(reflog.filter((line) => line === "commit: fix: judge findings of part 1")).toHaveLength(1);
 		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(FIX);
 	});
 
@@ -611,7 +611,7 @@ describe("workflows campaign", () => {
 		// Each of the two fix rounds makes one fix commit before its squash.
 		const reflog = git(worktree, "reflog", "--format=%gs");
 		expect(reflog.endsWith(before)).toBe(true);
-		const fixes = reflog.split("\n").filter((line) => line === "commit: fix: judge findings of item 1");
+		const fixes = reflog.split("\n").filter((line) => line === "commit: fix: judge findings of part 1");
 		expect(fixes).toHaveLength(2);
 	});
 
@@ -677,8 +677,8 @@ describe("workflows campaign", () => {
 				"Rundown 1: the item failed.",
 				"Fix round: still 0 after one fix round\n- 1 FAIL: the typo stays.",
 				"Suggestions:\n- Split the item.",
-				"Proposed items:",
-				`Patch of the failed item: ${patch}`,
+				"Proposed parts:",
+				`Patch of the failed part: ${patch}`,
 				"How should the campaign continue? Answer stop to end it.",
 			].join("\n\n"),
 		]);
@@ -690,7 +690,7 @@ describe("workflows campaign", () => {
 		expect(rundown).toContain("## findings\n1 FAIL");
 		expect(rundown).toContain(`## remaining\n${JSON.stringify([SECOND])}`);
 		expect(rundown).toMatch(
-			/\n## memory\n#0 item 1 planner: [^\n]*\n#1 item 1 implementer r1: [^\n]*\n#2 item 1 implementer r2: [^\n]*\n#3 campaign: item 1 failed and was reset: its notes describe code that is gone\n/,
+			/\n## memory\n#0 part 1 planner: [^\n]*\n#1 part 1 implementer r1: [^\n]*\n#2 part 1 implementer r2: [^\n]*\n#3 campaign: part 1 failed and was reset: its notes describe code that is gone\n/,
 		);
 		expect(rundown).toContain(`## patch\n${patch}`);
 
@@ -705,7 +705,7 @@ describe("workflows campaign", () => {
 		expect(stopped.code).toBe(1);
 		expect(stopped.stdout).toEqual([
 			`run ${run.id}`,
-			`stopped Fix the README at item 1: ${worktree}`,
+			`stopped Fix the README at part 1: ${worktree}`,
 			"Rundown 1: the item failed.",
 		]);
 		expect(stopped.model.calls.map((call) => call.kind)).toEqual(["harvest"]);
@@ -793,7 +793,7 @@ describe("workflows campaign", () => {
 		expect(run.model.calls.at(-1)?.kind).toBe("harvest");
 		expect(result.lessons).toEqual([LESSONED]);
 		expect(report).toEqual([
-			expect.stringMatching(/^done Fix the README in 2 items, judge 0\.83, [0-9a-f]+$/),
+			expect.stringMatching(/^done Fix the README in 2 parts, judge 0\.83, [0-9a-f]+$/),
 			itemLine(COMMIT.subject),
 			itemLine(THANKS.subject),
 			FINDING,
@@ -827,7 +827,7 @@ describe("workflows campaign", () => {
 		});
 
 		expect(stopped.code).toBe(1);
-		expect(stopped.stdout.slice(1)).toEqual([`stopped Fix the README at item 1: ${worktreeOf(run.id)}`, LESSON_LINE]);
+		expect(stopped.stdout.slice(1)).toEqual([`stopped Fix the README at part 1: ${worktreeOf(run.id)}`, LESSON_LINE]);
 		const json = await workflows(["resume", run.id ?? "", "--json"], { cwd: root });
 		const { value: result } = JSON.parse(json.stdout[1] ?? "");
 		expect(result).toMatchObject({
@@ -880,9 +880,9 @@ describe("workflows campaign", () => {
 		const split = resumed.model.find("split")?.prompt;
 		expect(split).toContain("## rundown\nRundown 1");
 		expect(split).toContain("## answer\nThank the reader in one line");
-		expect(progressOf(resumed.stderr)).toEqual(expect.arrayContaining(["✓ split", "✓ item 3/3: Thank the reader"]));
+		expect(progressOf(resumed.stderr)).toEqual(expect.arrayContaining(["✓ split", "✓ part 3/3: Thank the reader"]));
 		expect(JSON.parse(resumed.stdout[1] ?? "").report).toEqual([
-			expect.stringMatching(/^done Fix the README in 2 items, judge 0\.83, [0-9a-f]+$/),
+			expect.stringMatching(/^done Fix the README in 2 parts, judge 0\.83, [0-9a-f]+$/),
 			itemLine(COMMIT.subject),
 			itemLine(THANKS.subject),
 			FINDING,
@@ -913,7 +913,7 @@ describe("workflows campaign", () => {
 
 		expect(resumed.code).toBe(0);
 		expect(JSON.parse(resumed.stdout[1] ?? "").report).toEqual([
-			expect.stringMatching(/^done Fix the README in 2 items, judge 0\.83, [0-9a-f]+$/),
+			expect.stringMatching(/^done Fix the README in 2 parts, judge 0\.83, [0-9a-f]+$/),
 			itemLine(COMMIT.subject),
 			itemLine(THANKS.subject),
 			FINDING,
@@ -922,7 +922,7 @@ describe("workflows campaign", () => {
 		// The pending nested ship task restarts at the same time as the campaign script replays to it, so its first
 		// steps can come before the item line. They move under the item line when it comes.
 		expect(progressOf(resumed.stderr)).toEqual([
-			"✓ item 2/2: Add a thanks line",
+			"✓ part 2/2: Add a thanks line",
 			...itemSteps("+1 -0 in 1 file", THANKS.subject),
 			...JUDGE_STEPS,
 		]);
@@ -987,7 +987,7 @@ describe("workflows campaign", () => {
 		expect(run.code).toBe(0);
 		expect(run.stdout).toEqual([
 			`run ${run.id}`,
-			expect.stringMatching(/^done Fix the README in 1 item, judge 0\.83, [0-9a-f]+$/),
+			expect.stringMatching(/^done Fix the README in 1 part, judge 0\.83, [0-9a-f]+$/),
 			itemLine(COMMIT.subject),
 			FINDING,
 			`branch docs/readme is in conflict with an existing branch; kept campaign/${run.id}`,
@@ -1018,7 +1018,7 @@ describe("workflows campaign", () => {
 		expect(resumed.model.calls).toEqual([]);
 		expect(resumed.stdout).toEqual([
 			`run ${first.id}`,
-			expect.stringMatching(/^done Fix the README in 1 item, judge 0\.83, [0-9a-f]+$/),
+			expect.stringMatching(/^done Fix the README in 1 part, judge 0\.83, [0-9a-f]+$/),
 			itemLine(COMMIT.subject),
 			FINDING,
 			"branch docs/readme",
