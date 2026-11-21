@@ -8,7 +8,7 @@ Read repository instructions and the code that the goal touches before you split
 
 Each part ships as one commit, after the parts before it, through a full ship: plan, implement, review rounds and judge. Order the parts so that each one builds only on the parts before it, and make each one complete on its own: the repository checks pass after it.
 
-Choose the size of the parts with the batch-size trade-off of Reinertsen (The Principles of Product Development Flow). Each part pays a fixed cost, about 30 minutes, whatever its size. A larger part delays the review of its first line, and a late finding costs more when other work builds on it.
+Choose the size of the parts with the batch-size trade-off of Reinertsen (The Principles of Product Development Flow). Each part pays a fixed cost, a full ship, whatever its size. A larger part delays the review of its first line, and a late finding costs more when other parts build on it.
 
 ```
  cost
