@@ -138,11 +138,10 @@ async function pullBranch(number, end) {
 /**
  * Where `target` points, as `changeOf` reads it: `{ from, end, start, intent }`. `from` names the start in messages,
  * `end` is the ref that the change ends on, `start` the commit that it starts from, and `intent` the PR of a PR number.
- * Fetches the head of a PR, and moves its branch there with `pullBranch`. A plain value that is a local branch, other
- * than `here` and `base`, and that another worktree has checked out reads as that branch: from its merge base with
- * `base` to the branch.
+ * Fetches the head of a PR, and moves its branch there with `pullBranch`. A plain value that is a local branch other
+ * than `base` reads as that branch, wherever it is checked out: from its merge base with `base` to the branch.
  */
-async function targetOf(target, base, here) {
+async function targetOf(target, base) {
 	const mergeBase = (a, b) => sh(["git", "merge-base", a, b]);
 
 	if (target === undefined || target === "") return { from: base, end: "HEAD", start: await mergeBase(base, "HEAD") };
@@ -159,9 +158,8 @@ async function targetOf(target, base, here) {
 	}
 
 	const range = /^(.*?)\.\.\.?(.*)$/.exec(target);
-	const other = range === null && target !== here && target !== base;
 
-	if (other && (await isBranch(target)) && (await checkedOutAt(target)) !== undefined)
+	if (range === null && target !== base && (await isBranch(target)))
 		return { from: base, end: target, start: await mergeBase(base, target) };
 	const from = range === null ? target : range[1] || "HEAD";
 	const end = range === null ? "HEAD" : range[2] || "HEAD";
@@ -174,18 +172,18 @@ async function targetOf(target, base, here) {
  * change: `start`, and `args.item` as the intent, with no Git step. Else the change is the one that `args.change`
  * points at, from the current directory, and the run gets the subject of its intent as its title. `args.change` is
  * nothing (the current branch from its merge base with `args.base`, default `main`), a PR number, a range `A..B` or
- * `A...B` (from the merge base of `A` and `B` to `B`), a branch that another worktree has checked out (from its merge
- * base with `args.base`), or a ref (from its merge base with `HEAD` to `HEAD`). The intent is `args.item`, else the
- * PR, else the commit messages of the change. `checkout` is the branch of a change that ends on a branch other than
- * the current one, for a run in the worktree that has it, else in a worktree of its own. `dirty` says that the current
- * checkout has changes that are not committed; with `wip`, a change that ends here commits them first as `wip`. Throws
- * when the change is empty, when it ends on a commit that is not a branch, and, with `wip`, when the other worktree
- * that has its branch has changes that are not committed.
+ * `A...B` (from the merge base of `A` and `B` to `B`), a local branch other than `args.base` (from its merge base with
+ * `args.base` to the branch), or a ref (from its merge base with `HEAD` to `HEAD`). The intent is `args.item`, else
+ * the PR, else the commit messages of the change. A change on the current branch runs here. `checkout` is the branch
+ * of a change that ends on a branch other than the current one, for a run in the worktree that has it, else in a
+ * worktree of its own. `dirty` says that the current checkout has changes that are not committed; with `wip`, a change
+ * that ends here commits them first as `wip`. Throws when the change is empty, when it ends on a commit that is not a
+ * branch, and, with `wip`, when the other worktree that has its branch has changes that are not committed.
  */
 async function changeOf(args, { wip = false } = {}) {
 	if (args.start !== undefined) return { start: args.start, intent: args.item, dirty: false };
 	const here = await sh(["git", "branch", "--show-current"]);
-	const { from, end, start, intent } = await targetOf(args.change, args.base ?? "main", here);
+	const { from, end, start, intent } = await targetOf(args.change, args.base ?? "main");
 	const branch = end === "HEAD" ? here : (await isBranch(end)) ? end : undefined;
 
 	if (branch === undefined) throw new Error(`the change ends on ${end}, which is not a branch`);

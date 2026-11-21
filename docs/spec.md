@@ -291,8 +291,9 @@ answers SHIP. It commits its fixes on the branch of the change and does not push
   the merge base of the branch with `baseRefName`, or with `origin/<baseRefName>` when there is no local branch of
   that name; `--base` is not used.
 - A range `A..B` or `A...B`: from the merge base of `A` and `B` to `B`.
-- A local branch that another worktree has checked out, other than the current branch and `--base`, such as
-  `change.branch` of a `ship` result: from the merge base of `--base` and the branch to the branch.
+- A local branch other than `--base`, such as `change.branch` of a result: from the merge base of `--base` and the
+  branch to the branch. It may be the current branch, a branch that another worktree has checked out, or a branch that
+  no worktree has.
 - Any other value is a ref: from the merge base of the ref and `HEAD` to `HEAD`, such as `HEAD~1` for the last commit.
 
 The work item, which says what the change should do, is the option `--item`, as a `.md` file, inline text, or stdin

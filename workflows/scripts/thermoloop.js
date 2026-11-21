@@ -1,5 +1,5 @@
 // The thermoloop: the review loop of a change. `workflows thermoloop [<change>]` reviews the change that `changeOf`
-// finds: the current branch from its merge base with `--base`, a PR number, a ref or a range. It commits the changes
+// finds: the current branch from its merge base with `--base`, a PR number, a branch, a ref or a range. It commits the changes
 // of the checkout first as `wip`, takes the intent from `--item`, the PR or the commit messages, and fixes the change
 // in rounds until the reviewer answers SHIP. A change on another branch runs again as a child run in the worktree
 // that has that branch, else in a worktree of its own on it; a dirty worktree of that branch fails the run. A caller

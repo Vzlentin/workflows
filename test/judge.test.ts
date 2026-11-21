@@ -1,4 +1,4 @@
-import { realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { git, PASSING_JUDGE, progressOf, repository, sandbox, workflows, worktreeAt } from "./support.ts";
@@ -91,6 +91,59 @@ describe("workflows judge", () => {
 		const { value, report } = JSON.parse(child.stdout[1] ?? "");
 		expect(String(report.at(-1))).toMatch(/^worktree /);
 		expect(value.change).toEqual({ repository: await realpath(repo), branch: "feature" });
+	});
+
+	it("judges a bare branch here, in a worktree of its own, then in the worktree that has it", async () => {
+		const options = { cwd: repo, script: { judge: PASSING_JUDGE } };
+
+		// The current branch runs here.
+		const here = await workflows(["judge", "--json", "feature"], options);
+
+		expect(here.code).toBe(0);
+		const local = JSON.parse(here.stdout[1] ?? "");
+		expect(local.report).toEqual(["judge 0.83: fix the typo", `  ${PASSING_JUDGE.findings[0]}`]);
+		expect(local.value.change).toEqual({ repository: await realpath(repo), branch: "feature" });
+		const head = git(repo, "rev-parse", "HEAD");
+		expect(here.model.find("judge")?.prompt).toMatch(new RegExp(`## base\\n${start}\\n\\n## head\\n${head}$`));
+
+		// A branch that no worktree has runs in a worktree of its own.
+		git(repo, "checkout", "-q", "main");
+		const own = await workflows(["judge", "--json", "feature"], options);
+
+		expect(own.code).toBe(0);
+		const path = String(JSON.parse(own.stdout[1] ?? "").report.at(-1)).slice("worktree ".length);
+		expect(dirname(path)).toBe(dirname(worktreeAt(repo, own.id)));
+		expect(git(path, "branch", "--show-current")).toBe("feature");
+
+		// A branch that another worktree has checked out runs there.
+		const there = await workflows(["judge", "--json", "feature"], options);
+
+		expect(there.code).toBe(0);
+		expect(JSON.parse(there.stdout[1] ?? "").report.at(-1)).toBe(`worktree ${path}`);
+	});
+
+	it("chains a judge on the branch of a change that has no worktree of its own", async () => {
+		const scripts = join(repo, ".workflows", "scripts");
+		await mkdir(scripts, { recursive: true });
+		await writeFile(
+			join(scripts, "caller.js"),
+			[
+				"export const meta = { exit: { judged: 0 } }",
+				'const first = await run("judge", {})',
+				'const again = await run("judge", { change: first.change.branch })',
+				"return { ...again, first: first.change }",
+			].join("\n"),
+		);
+		git(repo, "add", ".workflows");
+		git(repo, "commit", "-qm", "caller");
+		const run = await workflows(["caller", "--json"], { cwd: repo, script: { judge: PASSING_JUDGE } });
+
+		expect(run.code).toBe(0);
+		const { value, report } = JSON.parse(run.stdout[1] ?? "");
+		expect(value.status).toBe("judged");
+		expect(value.first).toEqual({ repository: await realpath(repo), branch: "feature" });
+		expect(value.change).toEqual(value.first);
+		expect(report.join("\n")).not.toContain("worktree ");
 	});
 
 	it("judges the change of the repository of --repo from another directory", async () => {
