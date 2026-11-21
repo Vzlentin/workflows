@@ -56,15 +56,13 @@ esac
 
 afterEach(() => rm(root, { recursive: true, force: true }));
 
-/** An ended run of `w` whose worktree is on the branch feat/x, with its ID and worktree. */
-async function mergedRun(): Promise<{ id: string; worktree: string }> {
-	const run = await workflows(["w"], { cwd: repo });
+/** An ended run of `w` whose worktree is on the branch `branch`, with its ID and worktree. */
+async function mergedRun(branch = "feat/x"): Promise<{ id: string; worktree: string }> {
+	const run = await workflows(["w", "--branch", branch], { cwd: repo });
 	expect(run.code).toBe(0);
 	const id = run.id ?? "";
-	const worktree = worktreeAt(repo, id);
-	git(worktree, "branch", "-m", "feat/x");
 
-	return { id, worktree };
+	return { id, worktree: worktreeAt(repo, id) };
 }
 
 const hasBranch = (name: string) => git(repo, "branch", "--list", name) !== "";
@@ -297,14 +295,9 @@ describe("workflows sweep", () => {
 	});
 
 	it("sweeps only the given runs, an unmerged one as dropped and a merged one as landed", async () => {
-		const other = await mergedRun();
-		git(other.worktree, "branch", "-m", "feat/y");
+		const other = await mergedRun("feat/y");
 		const kept = await mergedRun();
-		const run = await workflows(["w"], { cwd: repo });
-		expect(run.code).toBe(0);
-		const id = run.id ?? "";
-		const worktree = worktreeAt(repo, id);
-		git(worktree, "branch", "-m", "feat/z");
+		const { id, worktree } = await mergedRun("feat/z");
 
 		const listed = await workflows(["sweep", id], { cwd: repo });
 		expect([listed.code, listed.stdout]).toEqual([0, [`${id} dropped feat/z ${worktree}`]]);
@@ -327,21 +320,170 @@ describe("workflows sweep", () => {
 		]);
 	});
 
-	it("removes nothing, and exits 1, when a given run is not an ended run of the project with a worktree", async () => {
+	it("removes nothing, and exits 1, when a given argument is no run and no branch of this repository", async () => {
 		const { id, worktree } = await mergedRun();
-		const slow = await workflows(["slow"], { cwd: repo, script: { interruptAt: { kind: "script", nth: 1 } } });
-		expect(slow.code).toBe(130);
+		const other = join(root, "other");
+		await repository(other);
+		await mkdir(join(other, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(other, ".workflows", "scripts", "w.js"), "export const meta = { worktree: true }\nreturn 1");
+		const elsewhere = await workflows(["w", "--branch", "feat/o"], { cwd: other });
+		expect(elsewhere.code).toBe(0);
 
-		for (const bad of [slow.id ?? "", "20990101T000000-00000000", "../x"]) {
+		for (const bad of [elsewhere.id ?? "", "feat/o", "20990101T000000-00000000", "../x"]) {
 			const swept = await workflows(["sweep", id, bad, "--yes"], { cwd: repo });
 			expect([swept.code, swept.stdout, swept.stderr]).toEqual([
 				1,
 				[],
-				[`workflows: cannot sweep ${bad}: not an ended run of this project with a worktree on a branch`],
+				[`workflows: cannot sweep ${bad}: no run of this repository and no branch of that name`],
 			]);
 		}
 
-		expect([existsSync(worktree), existsSync(worktreeAt(repo, slow.id))]).toEqual([true, true]);
+		expect([existsSync(worktree), existsSync(worktreeAt(other, elsewhere.id))]).toEqual([true, true]);
+	});
+
+	it("removes nothing, and exits 1, when a run of a given branch has not ended", async () => {
+		const { id, worktree } = await mergedRun();
+
+		const slow = await workflows(["slow", "--branch", "feat/s"], {
+			cwd: repo,
+			script: { interruptAt: { kind: "script", nth: 1 } },
+		});
+
+		expect(slow.code).toBe(130);
+
+		for (const bad of [slow.id ?? "", "feat/s"]) {
+			const swept = await workflows(["sweep", id, bad, "--yes"], { cwd: repo });
+			expect([swept.code, swept.stdout, swept.stderr]).toEqual([
+				1,
+				[],
+				[`workflows: cannot sweep ${bad}: the run ${slow.id} on feat/s has not ended, or a later version saved it`],
+			]);
+		}
+
+		expect([existsSync(worktree), existsSync(worktreeAt(repo, slow.id)), hasBranch("feat/s")]).toEqual([
+			true,
+			true,
+			true,
+		]);
+	});
+
+	it("removes nothing, and exits 1, when a given run has no branch, or its branch and worktree are gone", async () => {
+		const { id, worktree } = await mergedRun();
+		await writeFile(join(repo, ".workflows", "scripts", "plain.js"), 'return "done"');
+		const plain = await workflows(["plain"], { cwd: repo });
+		expect(plain.code).toBe(0);
+		const gone = await mergedRun("feat/gone");
+		git(repo, "worktree", "remove", gone.worktree);
+		git(repo, "branch", "-D", "feat/gone");
+
+		const refusals = [
+			[plain.id ?? "", `workflows: cannot sweep ${plain.id}: the run has no branch`],
+			[gone.id, `workflows: cannot sweep ${gone.id}: no worktree and no branch feat/gone`],
+			["feat/gone", "workflows: cannot sweep feat/gone: no worktree and no branch feat/gone"],
+		];
+
+		for (const [bad, message] of refusals) {
+			const swept = await workflows(["sweep", id, bad ?? "", "--yes"], { cwd: repo });
+			expect([swept.code, swept.stdout, swept.stderr]).toEqual([1, [], [message]]);
+		}
+
+		expect([existsSync(worktree), hasBranch("feat/x"), await sweptFile(gone.id)]).toEqual([true, true, undefined]);
+	});
+
+	it("sweeps a given branch that no run has, with or without a worktree", async () => {
+		const path = join(root, "hand");
+		git(repo, "worktree", "add", "-q", "-b", "feat/hand", path);
+		git(path, "commit", "-q", "--allow-empty", "-m", "hand");
+		git(repo, "branch", "feat/bare");
+
+		const swept = await workflows(["sweep", "feat/hand", "feat/bare", "feat/hand", "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout, swept.stderr]).toEqual([
+			0,
+			[`- dropped feat/hand ${join(await realpath(root), "hand")}`, "- landed feat/bare -"],
+			[],
+		]);
+		expect([existsSync(path), hasBranch("feat/hand"), hasBranch("feat/bare")]).toEqual([false, false, false]);
+
+		git(repo, "branch", "feat/bare");
+		const json = await workflows(["sweep", "feat/bare", "--json"], { cwd: repo });
+		const entries: unknown = JSON.parse(json.stdout[0] ?? "");
+		expect(entries).toEqual([{ swept: "landed", branch: "feat/bare" }]);
+		expect(Value.Check(SWEPT_RUNS, entries)).toBe(true);
+	});
+
+	it("sweeps the branch of a stopped thermoloop by its run ID or by the branch, with its child run", async () => {
+		const branch = "feature";
+
+		for (const byId of [true, false]) {
+			git(repo, "checkout", "-q", "-b", branch);
+			await writeFile(join(repo, "README.md"), "# Demo\n\nHello world\n");
+			git(repo, "commit", "-q", "-am", "fix the typo");
+			git(repo, "checkout", "-q", "main");
+
+			const run = await workflows(["thermoloop", "--item", "Fix the README typo", `main..${branch}`], {
+				cwd: repo,
+				script: { verdicts: ["FIX", "SHIP"], interruptAt: { kind: "implement", nth: 1 } },
+			});
+
+			expect(run.code).toBe(130);
+			const id = run.id ?? "";
+			const stopped = await workflows(["stop", id], { cwd: repo, script: { interruptAt: { kind: "script", nth: 1 } } });
+			expect(stopped.code).toBe(0);
+
+			const worktree = git(repo, "worktree", "list", "--porcelain")
+				.split("\n")
+				.filter((entry) => entry.startsWith("worktree "))
+				.map((entry) => entry.slice("worktree ".length))
+				.at(-1);
+
+			expect(git(worktree ?? "", "branch", "--show-current")).toBe(branch);
+
+			const swept = await workflows(["sweep", byId ? id : branch, "--yes", "--json"], { cwd: repo });
+			expect(swept.code).toBe(0);
+			const entries: unknown = JSON.parse(swept.stdout[0] ?? "");
+			expect(Value.Check(SWEPT_RUNS, entries)).toBe(true);
+			expect(entries).toEqual([
+				{ runId: id, swept: "dropped", branch, worktree },
+				{ runId: expect.any(String), swept: "dropped", branch, worktree },
+			]);
+			expect([existsSync(worktree ?? ""), hasBranch(branch)]).toEqual([false, false]);
+			expect(await sweptFields(id)).toEqual(["dropped", "dropped"]);
+		}
+	});
+
+	it("keeps the word of a swept run when a later branch of its name is swept", async () => {
+		const old = await mergedRun();
+		const first = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect([first.code, first.stdout]).toEqual([0, [`${old.id} landed feat/x ${old.worktree}`]]);
+
+		// The new branch has a commit of its own and no worktree, so gh, in the main checkout, finds it not merged.
+		const path = join(root, "again");
+		git(repo, "worktree", "add", "-q", "-b", "feat/x", path);
+		git(path, "commit", "-q", "--allow-empty", "-m", "again");
+		git(repo, "worktree", "remove", path);
+
+		const listed = await workflows(["sweep", "feat/x"], { cwd: repo });
+		expect([listed.code, listed.stdout]).toEqual([0, ["- dropped feat/x -"]]);
+		const swept = await workflows(["sweep", "feat/x", "--yes", "--json"], { cwd: repo });
+		expect([swept.code, JSON.parse(swept.stdout[0] ?? "")]).toEqual([0, [{ swept: "dropped", branch: "feat/x" }]]);
+		expect(hasBranch("feat/x")).toBe(false);
+		expect(await sweptFields(old.id)).toEqual(["landed", "landed"]);
+	});
+
+	it("refuses the ID of a swept run and keeps a later branch of its name", async () => {
+		const old = await mergedRun();
+		const first = await workflows(["sweep", "--yes"], { cwd: repo });
+		expect(first.code).toBe(0);
+
+		const path = join(root, "again");
+		git(repo, "worktree", "add", "-q", "-b", "feat/x", path);
+		git(path, "commit", "-q", "--allow-empty", "-m", "again");
+
+		const swept = await workflows(["sweep", old.id, "--yes"], { cwd: repo });
+		expect([swept.code, swept.stdout]).toEqual([1, []]);
+		expect(swept.stderr).toEqual([`workflows: cannot sweep ${old.id}: an earlier sweep swept its branch feat/x`]);
+		expect([existsSync(path), hasBranch("feat/x")]).toEqual([true, true]);
+		expect(await sweptFields(old.id)).toEqual(["landed", "landed"]);
 	});
 
 	it("keeps a run that has not ended, also on a merged branch", async () => {

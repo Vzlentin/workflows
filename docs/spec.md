@@ -1675,7 +1675,7 @@ its result has none. `startedAt` is the time when the first task of the run star
 what the run serves (see [Serves](#serves)). `item` is the absolute path of the `.md` file that the positional text
 argument of the run named, as the run saved it (see [Saved inputs and resume](#saved-inputs-and-resume)); a run
 started with inline text or stdin has none. `swept` is the word in the `swept` file of the run directory, `landed` or
-`dropped`, which `sweep --yes` wrote when it removed the worktree of the run (see [Sweep](#sweep)). A run that no
+`dropped`, which `sweep --yes` wrote when it removed the branch of the run and its worktree (see [Sweep](#sweep)). A run that no
 sweep removed has no `swept`.
 `repository` is the path of the Git repository of the run's worktree, as the run saved it, and it is `null` for a run
 without a worktree.
@@ -1695,7 +1695,7 @@ start the host once, such as with harness --project <project> host, and run the 
 ## Sweep
 
 ```sh
-workflows sweep [<run-id>...] [--yes] [--install-hook] [--json]
+workflows sweep [<branch>|<run-id>...] [--yes] [--install-hook] [--json]
 ```
 
 `workflows sweep` prints one line `<run-id> landed <branch> <worktree>` for each run of the harness project of the
@@ -1710,10 +1710,10 @@ run that has not ended, a detached worktree, and a worktree that is not a Git wo
 `sweep` reads the project store file read-only, as `list` does, and does not start the host. When the project store
 file does not exist, `sweep` prints `workflows: cannot sweep: the project store <store> does not exist, so no run
 directory counts as unstarted; remove the run directories that you do not need from <runs directory> by hand`, removes
-nothing and exits 1, also without `--yes` and with run IDs.
+nothing and exits 1, also without `--yes`. With arguments, `sweep` needs no project store.
 
-For each candidate, `sweep` first runs `git merge-base --is-ancestor HEAD refs/heads/main` in the worktree, then
-`git merge-base --is-ancestor HEAD origin/main`. A branch is merged when one of them succeeds: the commit that the
+For each candidate, `sweep` first runs `git merge-base --is-ancestor refs/heads/<branch> refs/heads/main` in the
+worktree, then `git merge-base --is-ancestor refs/heads/<branch> origin/main`. A branch is merged when one of them succeeds: the commit that the
 worktree is on is in the local `main` or in `origin/main`, which is also true of a worktree with no commit of its own.
 Otherwise, when `git remote get-url origin` succeeds, `sweep` runs
 `gh pr list --head <branch> --state merged --json headRefOid` in the worktree, and a branch is merged when one pull
@@ -1721,8 +1721,8 @@ request in the list has the commit that the worktree is on as its head. A reposi
 call, and its branch is not merged. A branch name that comes back in a later run, with a merged pull request of an
 earlier commit, is not merged. `sweep` runs every `gh` call before it removes anything. A failed `gh` call, a missing
 `gh`, or a `gh` output that is not a list, prints `workflows: cannot ask gh whether <branch> is merged, so it counts as
-not merged: <error>` on stderr, and the branch is not merged: a run of the project is left out, and a given run gets
-`dropped`.
+not merged: <error>` on stderr, and the branch is not merged: a run of the project is left out, and a given branch
+gets `dropped`.
 
 With `--yes`, `sweep` removes each worktree in order, and prints its line after the removal. It runs
 `git worktree remove <worktree>` in the run's repository, without `--force`, and deletes the branch with
@@ -1731,7 +1731,7 @@ tasks of the run from the store again. When the last task has not ended now, suc
 `gh` call, it prints `workflows: skips <run-id>: its run has a task that has not ended; sweep it after the run ends` on
 stderr, removes nothing of the run, leaves it out of stdout and the JSON, and goes on with the next run; the exit code
 does not change. Then it writes the marker `runs/<run-id>/sweeping`, a JSON object
-`{ "branch", "repository", "path", "swept" }`, removes the worktree, removes the branch, writes the word to the file
+`{ "branch", "repository", "path"?, "swept" }`, removes the worktree, removes the branch, writes the word to the file
 `runs/<run-id>/swept`, `landed` or `dropped` and a newline, and deletes the marker. An ended run with a marker is a
 candidate with the word of its marker, with no other check and no `gh` call, so a `sweep` that stopped after the
 worktree removal is finished by the next one. A run with a marker whose last task has not ended is not a candidate,
@@ -1751,12 +1751,47 @@ prints `workflows: keeps <run directory>: it holds a Git clone with commits that
 cannot read; push them, or remove the directory by hand` on stderr, leaves the directory out of stdout and the JSON, and
 the exit code does not change.
 
-With run IDs, `sweep` takes only these runs, in the given order, and leaves the unstarted run directories. Each one
-must be a root run of the project store of the current directory that has a marker or is a candidate, such as a run
-whose branch went into another pull request. It runs the same merge test on each run without a marker: a merged one
-gets `landed`, and one that is not merged gets `dropped`. Before it removes anything, `sweep` checks every ID: one that
-fails prints `workflows: cannot sweep <run-id>: not an ended run of this project with a worktree on a branch`, removes
-nothing and exits 1.
+With arguments, `sweep` takes only the branches that they give, in the given order and each once, in the main
+checkout of the repository of the current directory (the first worktree of `git worktree list`), and leaves the
+unstarted run directories. It needs no project store: without one, no run has a branch. An argument is a run ID or a
+branch:
+
+- A run ID of the store, root or child, gives the branch of the run: the `change.branch` of its result, else the
+  branch of the worktree of its saved input, else the worktree branch of its newest direct child run that has a
+  worktree. A direct child run is a run with a task that a task of the run owns. So a `thermoloop` that reviews a
+  branch in the worktree of its child run gives that branch. The run must be of this repository: the main checkout of
+  the repository that the same source saved is the main checkout of the current directory.
+- Any other argument is a branch. It must be a local branch of the repository, or the branch of a run of it.
+
+The runs of a branch are the runs of the store, root and child, whose result `change` or saved worktree is on the
+branch in this repository, and, for a run that has neither, the run whose newest direct child run with a worktree is
+on the branch. A run whose run directory has a `swept` file and no marker is not a run of the branch: an earlier sweep
+removed its branch, so a later branch of that name is not its branch, and its word stays. `sweep` checks every
+argument before it removes anything. An argument that it cannot sweep prints one
+of these lines, removes nothing and exits 1:
+
+- `workflows: cannot sweep <arg>: no run of this repository and no branch of that name`: a run of another repository
+  counts as unknown.
+- `workflows: cannot sweep <arg>: an earlier sweep swept its branch <branch>`: the run directory of the run `<arg>`
+  has a `swept` file and no marker.
+- `workflows: cannot sweep <arg>: the run has no branch`: the run and its direct child runs have no worktree and no
+  `change`.
+- `workflows: cannot sweep <arg>: the run <run-id> on <branch> has not ended, or a later version saved it`: a run of
+  the branch, root or child, has a last task that has not ended or that a later version saved.
+- `workflows: cannot sweep <arg>: no worktree and no branch <branch>`: no worktree has the branch, the branch does not
+  exist, and no run directory of a run of the branch has a marker on it.
+
+A marker on the branch in the run directory of a run of the branch gives the word and the worktree path, with no merge
+test. Otherwise the worktree is the one that `git worktree list` gives with the branch checked out, and `sweep` runs
+the merge test on `refs/heads/<branch>`, in that worktree, or in the repository when no worktree has the branch: a
+merged branch gets `landed`, and one that is not merged gets `dropped`. It prints one line
+`<run-id> <swept> <branch> <worktree>` for each run of the branch with a run directory, in task ID order, so a root
+run comes before its child run, with `-` for the worktree when no worktree has the branch. A branch that no run has
+prints one line with `-` for the run ID. In the JSON, such an entry has no `runId`, and an entry has no `worktree` when
+no worktree has the branch. With `--yes`, `sweep` reads the tasks of the runs of the branch again, as above, writes the
+marker, with no `path` when no worktree has the branch, in the run directory of each run of the branch, removes the
+worktree, then the branch, then writes the word to the `swept` file of each run and deletes the markers. A failed
+worktree removal deletes all the markers. A branch that no run has gets no marker and no `swept` file.
 
 `--install-hook` writes the executable `post-merge` hook of the Git repository of the current directory, with the line
 `workflows sweep --yes >/dev/null 2>&1 &`, and prints the hook's path. When `core.hooksPath` is set or a `post-merge`
@@ -2472,7 +2507,8 @@ attach fails, it notifies the error `<stderr>. Run in another terminal: workflow
 Runs live in `$XDG_STATE_HOME/workflows/runs/<run-id>`, by default `~/.local/state/workflows/runs/<run-id>`:
 
 - `project`: the name of the harness project whose store holds the run: its saved inputs, calls, sessions and progress
-- `swept`: `landed` or `dropped`, after `sweep --yes` removed the worktree of the run (see [Sweep](#sweep))
+- `swept`: `landed` or `dropped`, after `sweep --yes` removed the branch of the run and its worktree (see
+  [Sweep](#sweep)); a child run directory gets it too when its run has the branch
 - `sweeping`: the marker of a removal of `sweep --yes` that has not finished
 
 The project store is `$XDG_STATE_HOME/harness/<project>/durable.sqlite`. See [Runs in the harness

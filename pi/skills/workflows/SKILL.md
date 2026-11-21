@@ -167,9 +167,10 @@ commit).
   review, `round-<n>.patch` and `round-<n>-fix.patch`, and for a campaign `item-<n>/`.
 - `land` sweeps the run that it lands, or deletes the local branch of a thermoloop run. After a run's branch is merged or fast-forwarded onto `origin/main` in another
   way, run `workflows sweep --yes` (or
-  `workflows sweep <runId>... --yes` for a branch that went into another pull request or that you drop) to remove its
-  worktree and its local branch. The sweep writes `landed` or `dropped` to the `swept` file of the run directory, and
-  `list --json` and `show --json` give it as `swept`.
+  `workflows sweep <branch>|<runId>... --yes` for a branch that went into another pull request or that you drop) to
+  remove the worktree that has the branch and the local branch. A run ID gives the branch of the run, also of a
+  thermoloop that reviewed the branch in a child run. The sweep writes `landed` or `dropped` to the `swept` file of the
+  run directory of each run of the branch, and `list --json` and `show --json` give it as `swept`.
 
 ## /skill:workflows
 

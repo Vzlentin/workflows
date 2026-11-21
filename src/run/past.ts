@@ -224,7 +224,7 @@ export function rootRuns(tasks: readonly RunTask[]): Map<string, RunTask[]> {
 	const runs = new Map<string, RunTask[]>();
 
 	for (const task of tasks) {
-		const id = Value.Check(RUN_ID, task.input) ? task.input.runId : undefined;
+		const id = runIdOf(task);
 
 		if (task.owner !== undefined || id === undefined) continue;
 		runs.set(id, [...(runs.get(id) ?? []), task]);
@@ -243,7 +243,12 @@ export function firstTask(tasks: readonly RunTask[], runId: string): RunTask | u
 
 /** Whether the saved input of `task`, of any version, has the run ID `runId`. */
 export function isOfRun(task: RunTask, runId: string): boolean {
-	return Value.Check(RUN_ID, task.input) && task.input.runId === runId;
+	return runIdOf(task) === runId;
+}
+
+/** The run ID of the saved input of `task`, of any version, or undefined when the input has none. */
+export function runIdOf(task: RunTask): string | undefined {
+	return Value.Check(RUN_ID, task.input) ? task.input.runId : undefined;
 }
 
 /**

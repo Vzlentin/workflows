@@ -190,7 +190,7 @@ export async function renameBranch(path: string, from: string, to: string, signa
 }
 
 /** The path of the worktree of `repository` that has `branch` checked out, or undefined when none has it. */
-async function checkedOutAt(repository: string, branch: string): Promise<string | undefined> {
+export async function checkedOutAt(repository: string, branch: string): Promise<string | undefined> {
 	let path: string | undefined;
 
 	for (const line of (await git(repository, "worktree", "list", "--porcelain")).split("\n")) {

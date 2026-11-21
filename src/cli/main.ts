@@ -5,7 +5,8 @@
  * project, `workflows show <run-id>` prints the steps or the calls of one run, `workflows log <run-id>` prints the
  * short log of one run or the output of one of its calls, `workflows attach <run-id>` opens a session of one run in
  * Pi, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow;
- * `workflows sweep` removes the worktrees of the ended runs whose branch is merged. The project store holds the runs; a
+ * `workflows sweep` removes the worktrees of the ended runs whose branch is merged, or the given branches. The project
+ * store holds the runs; a
  * run directory holds the run's `project` file and whatever the workflow writes there.
  */
 import { readFile } from "node:fs/promises";

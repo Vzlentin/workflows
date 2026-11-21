@@ -7,8 +7,8 @@ import { current } from "../run/version.ts";
 import { RUN_RESULT, RUN_STATE, waits } from "../tool.ts";
 
 /**
- * What `sweep --yes` did with the worktree of a run: `landed` when its branch was merged, `dropped` when it was not
- * and the run was given by ID.
+ * What `sweep --yes` did with the branch of a run and its worktree: `landed` when the branch was merged, `dropped` when
+ * it was not and the branch was given, by name or by run ID.
  */
 export const SWEPT = Type.Union([Type.Literal("landed"), Type.Literal("dropped")]);
 

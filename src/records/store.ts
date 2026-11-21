@@ -28,7 +28,7 @@ import { Value } from "typebox/value";
 import type { ScriptInput } from "../launch/input.ts";
 import { CALL_KIND, CALL_RECORD, childOf, type SavedCall } from "../run/calls.ts";
 import { callPrefix } from "../run/keys.ts";
-import { allPages, isOfRun, type RunTask, rootRuns, runStatus } from "../run/past.ts";
+import { allPages, isOfRun, type RunTask, rootRuns, runIdOf, runStatus } from "../run/past.ts";
 import { PROGRESS_EVENT, PROGRESS_KIND, type ProgressEvent } from "../run/progress.ts";
 import { TASK } from "../run/version.ts";
 import { type Progress, progressOf } from "./steps.ts";
@@ -250,6 +250,22 @@ export function inputWorktree(input: JsonValue): SavedWorktree | undefined {
 /** The tasks of the kind `workflows.run`, root or child, also of another version. */
 function scanRuns(store: Store): Promise<RunTask[]> {
 	return allPages((cursor) => store.scanTasks({ kind: TASK.name }, 256, cursor, BACKGROUND_CONTEXT));
+}
+
+/**
+ * The tasks of the kind `workflows.run`, root and child, of every version, by the run ID of their input, in task ID
+ * order: a run comes before the runs that start after its first task.
+ */
+export async function everyRun(store: Store): Promise<Map<string, RunTask[]>> {
+	const runs = new Map<string, RunTask[]>();
+
+	for (const task of (await scanRuns(store)).toSorted((a, b) => a.id - b.id)) {
+		const id = runIdOf(task);
+
+		if (id !== undefined) runs.set(id, [...(runs.get(id) ?? []), task]);
+	}
+
+	return runs;
 }
 
 /** The task `id` of the store when it is of the kind `workflows.run`, of any version. */
