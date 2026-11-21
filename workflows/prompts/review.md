@@ -6,7 +6,9 @@ Perform a deep code quality audit of this change.
 
 When the prompt has a scope (the rounds after the first), the scope limits the review and the findings to the fix patch (`round-<n>-fix.patch`). The code of the earlier rounds is settled.
 
-Report reproduced correctness bugs first. The plan is what this round implemented, and the reply explains the choices of the implementer. The memory has the notes of the earlier sessions. Do not reopen a choice that the reply or a note explains without a new reason.
+The commits of the rounds carry a placeholder message, and a later step writes the final message. Do not report a finding on a commit message.
+
+Report reproduced correctness bugs first. A test that fails in one of several runs is a finding, also when the next run passes: name the test. The plan is what this round implemented, and the reply explains the choices of the implementer. The memory has the notes of the earlier sessions. Do not reopen a choice that the reply or a note explains without a new reason.
 
 Rethink how to structure / implement the change to meaningfully improve code quality without impacting behavior. Improve abstractions and modularity, reduce spaghetti code, improve succinctness and legibility. Limit structural improvement to the modules that the work item touches. Do not ask to refactor callers that the change did not touch, or modules outside the work item. Be extremely thorough and rigorous. Measure twice, cut once.
 
