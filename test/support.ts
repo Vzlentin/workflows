@@ -509,7 +509,7 @@ export type Script = {
 	 * provider answers a cut text that stopped for that reason instead.
 	 */
 	readonly failAt?: { readonly kind: Kind; readonly nth: number; readonly stopReason?: "length" };
-	/** The plan prompt first calls `probe` and `ls`, review and judge call `probe`, and implement calls `probe` next to its edit. */
+	/** The plan prompt first calls `probe` and then `bash` to run `ls`, review and judge call `probe`, and implement calls `probe` next to its edit. */
 	readonly probe?: boolean;
 	/** A prompt whose requests this model never answers: they wait until they are aborted. */
 	readonly hang?: string;
@@ -712,7 +712,7 @@ export class FakeModel {
 		const probe = fauxToolCall("probe", {});
 
 		if (this.#script.probe && kind === "plan") {
-			return fauxAssistantMessage([probe, fauxToolCall("ls", {})], { stopReason: "toolUse" });
+			return fauxAssistantMessage([probe, fauxToolCall("bash", { command: "ls" })], { stopReason: "toolUse" });
 		}
 
 		if (this.#script.probe && (kind === "review" || kind === "judge")) {

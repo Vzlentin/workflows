@@ -28,14 +28,14 @@
 		"test": "vp test"
 	},
 	"dependencies": {
-		"@earendil-works/chord": "1.5.2",
-		"@earendil-works/pi-ai": "1.5.2",
-		"@earendil-works/pi-codemode": "1.5.2",
-		"@earendil-works/pi-coding-agent": "1.5.2",
-		"@earendil-works/pi-durable": "1.5.2",
-		"@earendil-works/pi-mcp": "1.5.2",
-		"@earendil-works/pi-tui": "1.5.2",
-		"@vzlentin/harness": "git+https://github.com/Vzlentin/harness.git#b4ab93e125640e8efc2b55a5ce9c8823095b8c79",
+		"@earendil-works/chord": "1.6.0",
+		"@earendil-works/pi-ai": "1.6.0",
+		"@earendil-works/pi-codemode": "1.6.0",
+		"@earendil-works/pi-coding-agent": "1.6.0",
+		"@earendil-works/pi-durable": "1.6.0",
+		"@earendil-works/pi-mcp": "1.6.0",
+		"@earendil-works/pi-tui": "1.6.0",
+		"@vzlentin/harness": "git+https://github.com/Vzlentin/harness.git#ea272014e184889d0108ee949efbe80e549814a3",
 		"typebox": "1.3.27"
 	},
 	"devDependencies": {

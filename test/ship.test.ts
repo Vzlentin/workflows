@@ -69,7 +69,7 @@ const SHIPPED = /^shipped Fix the README typo in (\d) rounds, judge ([\d.]+), [0
 
 // The branch name of the subject of COMMIT.
 const BRANCH = "fix/correct-the-readme-typo";
-const TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash"];
+const TOOLS = ["read", "write", "edit", "bash"];
 
 // The tools of the harness host, before the tools of the packages in Pi's settings.
 const HARNESS_TOOLS = ["subagent", "todo", "codemode"];

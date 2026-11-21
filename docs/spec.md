@@ -766,7 +766,7 @@ providers and credentials: Pi's, from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), 
 extension packages register, such as `cursor`. Their system prompt has the `AGENTS.md` instructions and skills that Pi
 loads for the worktree, as harness gives its children: project skills only in a project that Pi trusts.
 
-The tools are `read`, `grep`, `find`, `ls`, `write`, `edit` and `bash`, harness's `subagent`, `todo` and `codemode` tools, and the tools of
+The tools are `read`, `write`, `edit` and `bash`, harness's `subagent`, `todo` and `codemode` tools, and the tools of
 the packages in Pi's settings that declare `"piDurable": { "extensions": [...] }`, such as pi-ipython and pi-rlm. The
 host loads these packages once, when it starts, so a package installed later reaches the runs of a project after its
 host restarts. A session of a run gets none of harness's store tools (`thread`, `rule` and `parley`),
