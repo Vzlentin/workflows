@@ -1,6 +1,6 @@
 /**
  * The branch of a saved run and the saved runs of a branch, read from the tasks of every run, root and child, of a
- * project store.
+ * host store.
  */
 import { Value } from "typebox/value";
 import { mainCheckout } from "../launch/worktree.ts";

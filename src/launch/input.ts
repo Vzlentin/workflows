@@ -3,11 +3,11 @@
  * saves before it starts, and the input of a new task of a run that ended.
  */
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import type { Overlay } from "@vzlentin/harness/overlay";
-import { HARNESS_PROJECT, PI_SESSION_ID } from "@vzlentin/harness/protocol";
+import { HARNESS_HOST, PI_SESSION_ID } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { editBundle, loadBundle, projectFolder, readAgents, type RunBundle } from "../workflow/bundle.ts";
@@ -141,13 +141,13 @@ export type ScriptInput = Omit<Args, "repo" | "base" | "branch"> & {
 };
 
 /**
- * The driver of a task that a command of the environment `env` starts in `project`: the host conversation
- * `PI_SESSION_ID`, when the command runs in a shell of a conversation of that project's host, or undefined.
+ * The driver of a task that a command of the environment `env` starts in the host `host`: the host conversation
+ * `PI_SESSION_ID`, when the command runs in a shell of a conversation of that host, or undefined.
  */
-export function driverOf(env: NodeJS.ProcessEnv, project: string): string | undefined {
+export function driverOf(env: NodeJS.ProcessEnv, host: string): string | undefined {
 	const conversation = env[PI_SESSION_ID];
 
-	if (env[HARNESS_PROJECT] !== project || conversation === undefined) return undefined;
+	if (env[HARNESS_HOST] !== host || conversation === undefined) return undefined;
 
 	return /^\d+$/.test(conversation) ? conversation : undefined;
 }
@@ -199,12 +199,19 @@ export function withDriver(input: ScriptInput, driver: string | undefined): Scri
 	return driver === undefined ? rest : { ...rest, driver };
 }
 
-/**
- * The project of the root run whose run directory is `runDir`, from its `project` file, which the start of the run
- * writes. A child run directory has no such file.
- */
-export async function readProject(runDir: string): Promise<string> {
-	return (await readFile(join(runDir, "project"), "utf8")).trim();
+/** The file of the root run directory `runDir` that names the harness host of the run. A child run directory has none. */
+export function hostFile(runDir: string): string {
+	return join(runDir, "project");
+}
+
+/** Writes the host file of the root run directory `runDir`, which names the harness host `host`. */
+export async function writeHost(runDir: string, host: string): Promise<void> {
+	await writeFile(hostFile(runDir), `${host}\n`);
+}
+
+/** The harness host of the root run whose run directory is `runDir`, from its host file, which the start writes. */
+export async function readHost(runDir: string): Promise<string> {
+	return (await readFile(hostFile(runDir), "utf8")).trim();
 }
 
 export const USAGE = "workflows <workflow | file.js | -> [<text>] [--<arg> <value>]...";

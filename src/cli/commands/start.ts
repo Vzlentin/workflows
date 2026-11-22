@@ -1,9 +1,18 @@
 /** `workflows <workflow> ...`: starts a run of a workflow script in the host and follows it. */
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Client } from "@vzlentin/harness/client";
-import { resolveProject } from "@vzlentin/harness/projects";
-import { drivenInput, driverOf, newRunId, parse, postsTo, prepare, type ScriptInput } from "../../launch/input.ts";
+import { resolveHost } from "@vzlentin/harness/hosts";
+import {
+	drivenInput,
+	driverOf,
+	newRunId,
+	parse,
+	postsTo,
+	prepare,
+	type ScriptInput,
+	writeHost,
+} from "../../launch/input.ts";
 import { taskKey } from "../../run/past.ts";
 import type { Background } from "../follow.ts";
 import { connectTo, Refused, runsDirectory, startTask } from "../host.ts";
@@ -19,12 +28,12 @@ export async function start(
 	const parsed = await parse(args, terminal);
 	const id = newRunId();
 	const directory = join(runsDirectory(), id);
-	const project = resolveProject(process.env, terminal.cwd);
+	const host = resolveHost(process.env, terminal.cwd);
 	const key = taskKey(id, 1);
 	await mkdir(directory, { recursive: true });
-	// A run directory whose `project` names no task is an unstarted run, which `list` shows and `sweep` removes.
-	await writeFile(join(directory, "project"), `${project}\n`);
-	const driver = driverOf(process.env, project);
+	// A run directory whose host file names no task is an unstarted run, which `list` shows and `sweep` removes.
+	await writeHost(directory, host);
+	const driver = driverOf(process.env, host);
 	let client: Client | undefined;
 	let input: ScriptInput | undefined;
 	let sent = false;
@@ -36,10 +45,10 @@ export async function start(
 		input = drivenInput(prepared, driver, background);
 		terminal.interrupt.throwIfAborted();
 		terminal.following(true);
-		client = await connectTo(terminal, project, true);
+		client = await connectTo(terminal, host, true);
 		terminal.interrupt.throwIfAborted();
 		sent = true;
-		await startTask(client, project, input, key);
+		await startTask(client, host, input, key);
 	} catch (error) {
 		client?.close();
 		terminal.following(false);
@@ -48,7 +57,7 @@ export async function start(
 			// The host may have created the task before the error, such as a closed connection. The host creates the task
 			// of a key once, so the same `start` again gives that task, or creates it.
 			return startAgain(
-				{ id, project, key, input, error },
+				{ id, host, key, input, error },
 				terminal,
 				json,
 				background && { posts: postsTo(input, driver) },
@@ -66,7 +75,7 @@ export async function start(
 	terminal.stdout(`run ${id}`);
 
 	return followAnswering(
-		{ id, project, key, input, client, from: 0 },
+		{ id, host, key, input, client, from: 0 },
 		terminal,
 		json,
 		background && { posts: postsTo(input, driver) },
@@ -78,17 +87,17 @@ export async function start(
  * run. When it fails too, it throws, and keeps the run directory: the run may have started.
  */
 async function startAgain(
-	run: { id: string; project: string; key: string; input: ScriptInput; error: unknown },
+	run: { id: string; host: string; key: string; input: ScriptInput; error: unknown },
 	terminal: Terminal,
 	json: boolean,
 	background: Background,
 ): Promise<number> {
-	const { id, project, key, input, error } = run;
+	const { id, host, key, input, error } = run;
 	let client: Client | undefined;
 
 	try {
-		client = await connectTo(terminal, project, true);
-		await startTask(client, project, input, key);
+		client = await connectTo(terminal, host, true);
+		await startTask(client, host, input, key);
 	} catch {
 		client?.close();
 		const message = error instanceof Error ? error.message : String(error);
@@ -98,5 +107,5 @@ async function startAgain(
 	terminal.following(true);
 	terminal.stdout(`run ${id}`);
 
-	return followAnswering({ id, project, key, input, client, from: 0 }, terminal, json, background);
+	return followAnswering({ id, host, key, input, client, from: 0 }, terminal, json, background);
 }

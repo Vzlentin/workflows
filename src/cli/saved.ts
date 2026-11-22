@@ -1,6 +1,6 @@
 /**
  * The saved runs of the command line: their run directory, their root tasks with their keys, their status and their
- * progress, read from the project store.
+ * progress, read from the host store.
  */
 import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -10,7 +10,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import type { TaskId, TaskRecord } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { readProject, type ScriptInput } from "../launch/input.ts";
+import { hostFile, readHost, type ScriptInput } from "../launch/input.ts";
 import { RUN_FIELDS, SWEPT, type TaskFields, taskFields } from "../records/run.ts";
 import { type Progress, progressOf } from "../records/steps.ts";
 import { inputName, progressEvents, reading, runTasks, type Store, startedTasks } from "../records/store.ts";
@@ -36,24 +36,24 @@ export function oneRunId(args: readonly string[], usage: string): string {
  */
 export class UnfollowableRun extends Error {}
 
-/** A run that the command started: its ID, its project, and the path of the project store. */
-export type SavedRun = { readonly id: string; readonly project: string; readonly store: string };
+/** A run that the command started: its ID, its host, and the path of the host store. */
+export type SavedRun = { readonly id: string; readonly host: string; readonly store: string };
 
-/** The saved run `id`, from the `project` file of its run directory. A run ID that is a path is bad usage. */
+/** The saved run `id`, from the host file of its run directory. A run ID that is a path is bad usage. */
 export async function savedRun(id: string, usage: string): Promise<SavedRun> {
 	if (id.includes("/") || id.includes("\\") || id === "." || id === "..") {
 		throw new UsageError(`${id} is not a run ID`, usage);
 	}
 
-	const project = await readProject(join(runsDirectory(), id)).catch(() => {
+	const host = await readHost(join(runsDirectory(), id)).catch(() => {
 		throw new UnfollowableRun(`no run ${id} in ${runsDirectory()}`);
 	});
 
-	return { id, project, store: storeOf(project) };
+	return { id, host, store: storeOf(host) };
 }
 
 /**
- * A run of the project store that has a task and a run directory: the run fields, the repository of its worktree, or
+ * A run of the host store that has a task and a run directory: the run fields, the repository of its worktree, or
  * null for a run without a worktree, and its step lines, as `show --json` gives them.
  */
 export const ROW = Type.Object(
@@ -66,14 +66,14 @@ export type Row = Static<typeof ROW>;
 /** A listed run: its row, and the progress of its steps, which `steps` of the row gives as lines. */
 export type ListedRun = { readonly row: Row; readonly progress: Progress };
 
-/** The runs `runs` of the open project store `store` that have a run directory, newest run ID first. */
+/** The runs `runs` of the open host store `store` that have a run directory, newest run ID first. */
 export async function listedRuns(store: Store, runs: ReadonlyMap<string, readonly RunTask[]>): Promise<ListedRun[]> {
 	const listed: ListedRun[] = [];
 
 	for (const [id, tasks] of [...runs].sort(([a], [b]) => b.localeCompare(a))) {
 		const task = taskOf(tasks);
 
-		if (task === undefined || !existsSync(join(runsDirectory(), id, "project"))) continue;
+		if (task === undefined || !existsSync(hostFile(join(runsDirectory(), id)))) continue;
 		const fields = taskFields(tasks, task);
 		const { workflow, title, progress, repository } = current(task) ? await viewOf(store, id, task) : otherView(task);
 
@@ -97,7 +97,7 @@ type RunView = {
 	readonly repository: string | null;
 };
 
-/** The view of the run `id` of the open project store `store`, whose task `task` this version saved. */
+/** The view of the run `id` of the open host store `store`, whose task `task` this version saved. */
 async function viewOf(store: Store, id: string, task: TaskRecord<ScriptInput, JsonValue, JsonValue>): Promise<RunView> {
 	const { input } = task;
 	const events = await progressEvents(store, id);
@@ -149,31 +149,31 @@ async function sweptOf(id: string): Promise<Static<typeof SWEPT> | undefined> {
 }
 
 /**
- * A run directory whose run has no task: its run ID, its path, and the time of its `project` file in ms since the epoch.
+ * A run directory whose run has no task: its run ID, its path, and the time of its host file in ms since the epoch.
  * `start` writes that file before the host creates the task, so it is a run that has not started yet, or whose
  * command stopped before the host created its task.
  */
 export type Unstarted = { readonly runId: string; readonly directory: string; readonly since: number };
 
 /**
- * The run directories whose `project` file names `project` and whose run ID has no entry in `runs`, the root runs of
- * the project store, newest run ID first. A child run directory has no `project` file.
+ * The run directories whose host file names `host` and whose run ID has no entry in `runs`, the root runs of
+ * the host store, newest run ID first. A child run directory has no host file.
  */
-export async function unstartedRuns(project: string, runs: ReadonlyMap<string, unknown>): Promise<Unstarted[]> {
+export async function unstartedRuns(host: string, runs: ReadonlyMap<string, unknown>): Promise<Unstarted[]> {
 	const root = runsDirectory();
 	const found: Unstarted[] = [];
 
 	for (const id of (await readdir(root).catch((): string[] => [])).sort().reverse()) {
 		if (runs.has(id)) continue;
-		const file = join(root, id, "project");
-		const named = await readFile(file, "utf8").catch(() => undefined);
+		const directory = join(root, id);
+		const named = await readHost(directory).catch(() => undefined);
 
-		const since = await stat(file).then(
+		const since = await stat(hostFile(directory)).then(
 			(info) => info.mtimeMs,
 			() => undefined,
 		);
 
-		if (named?.trim() === project && since !== undefined) found.push({ runId: id, directory: join(root, id), since });
+		if (named === host && since !== undefined) found.push({ runId: id, directory, since });
 	}
 
 	return found;

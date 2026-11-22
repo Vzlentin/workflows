@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -29,7 +28,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { connect, request } from "@vzlentin/harness/client";
 import { entriesPath } from "@vzlentin/harness/entries";
 import { type Host, runHost } from "@vzlentin/harness/host";
-import { projectDir } from "@vzlentin/harness/projects";
+import { hostDir } from "@vzlentin/harness/hosts";
 import { AGENT_HANDLE, type Request, statePaths } from "@vzlentin/harness/protocol";
 import { REMINDER } from "@vzlentin/harness/respond";
 import { StartedTasks } from "@vzlentin/harness/tasks";
@@ -124,8 +123,8 @@ export function running(pid: number): boolean {
 	}
 }
 
-/** The project store of `project` in the sandbox. */
-export const storeOf = (project = "main") => join(statePaths(project).dir, "durable.sqlite");
+/** The host store of the host `host` in the sandbox. */
+export const storeOf = (host = "main") => join(statePaths(host).dir, "durable.sqlite");
 
 /**
  * Deletes the saved result of each call of `kind` whose record contains one of the texts, case-sensitive, as after a
@@ -148,9 +147,9 @@ export function forgetResults(kind: "sh" | "run", ...texts: string[]): number {
 	return new Set(forgotten.map((row) => row.document_id)).size;
 }
 
-/** The `workflows.run` tasks in the store of `project`. */
-async function runTasks(project: string) {
-	const storage = await openNodeSqliteStorage(storeOf(project));
+/** The `workflows.run` tasks in the store of `host`. */
+async function runTasks(host: string) {
+	const storage = await openNodeSqliteStorage(storeOf(host));
 
 	try {
 		const { items } = await storage.scanTasks({}, 256, undefined, BACKGROUND_CONTEXT);
@@ -167,14 +166,14 @@ const CHILD_INPUT = Type.Object({ runId: Type.String(), root: Type.String() });
 const stateOf = ({ state }: Awaited<ReturnType<typeof runTasks>>[number]) =>
 	state.status === "terminal" ? { status: state.status, outcome: state.outcome.status } : { status: state.status };
 
-/** The state of each task of the run `id` of `project` that no task owns. */
-export async function rootTasks(id: string, project = "main") {
-	return (await runTasks(project))
+/** The state of each task of the run `id` of `host` that no task owns. */
+export async function rootTasks(id: string, host = "main") {
+	return (await runTasks(host))
 		.filter((task) => task.owner === undefined && Value.Check(RUN_ID, task.input) && task.input.runId === id)
 		.map(stateOf);
 }
 
-/** The run ID and the state of each task of a child run of the run `id` of the `main` project. */
+/** The run ID and the state of each task of a child run of the run `id` of the `main` host. */
 export async function childTasks(id: string) {
 	return (await runTasks("main")).flatMap((task) =>
 		task.owner !== undefined && Value.Check(CHILD_INPUT, task.input) && task.input.root === id
@@ -183,7 +182,7 @@ export async function childTasks(id: string) {
 	);
 }
 
-/** The saved input of each task of the run `id` of the `main` project and of its child runs. */
+/** The saved input of each task of the run `id` of the `main` host and of its child runs. */
 export async function inputsOf(id: string | undefined): Promise<JsonObject[]> {
 	return (await runTasks("main")).flatMap((task) =>
 		Value.Check(CHILD_INPUT, task.input) && task.input.root === id ? [task.input] : [],
@@ -196,7 +195,7 @@ export async function inputsOf(id: string | undefined): Promise<JsonObject[]> {
 type SavedInput = { readonly name?: string; readonly args?: JsonObject; readonly meta?: JsonObject };
 
 /**
- * The ID of a new run of the `main` project of the sandbox `root` whose store holds one pending task of `kind` at
+ * The ID of a new run of the `main` host of the sandbox `root` whose store holds one pending task of `kind` at
  * `version` with `input`, as a run that another version saved. With `started`, the commit also writes the task's
  * `start` key `wf:<id>#1` in harness's document of the keys, as the host's `start` does.
  */
@@ -262,16 +261,8 @@ export async function piSettings(
 	);
 }
 
-/**
- * The projects entry of the installed harness, which checks the `item:` and `parley:` labels and answers the `item` and
- * `parley` requests. No subpath of the package exports it.
- */
-export const PROJECTS_ENTRY = join(
-	dirname(createRequire(import.meta.url).resolve("@vzlentin/harness/package.json")),
-	"dist",
-	"projects",
-	"index.js",
-);
+/** The labels entry of the tests, which checks the `item:` labels and writes the reports that it gets. */
+export const LABELS_ENTRY = fileURLToPath(new URL("./labels-entry.ts", import.meta.url));
 
 /** Writes harness's entries of the sandbox: the workflows checkout and `entries`, by name. */
 export async function setEntries(entries: Readonly<Record<string, string>> = {}): Promise<void> {
@@ -332,7 +323,7 @@ exit 0
 	};
 
 	for (const name of [
-		"HARNESS_PROJECT",
+		"HARNESS_HOST",
 		// This would make `attach` open herdr-app.
 		"HC_TERMINAL_ID",
 		"PI_SESSION_ID",
@@ -971,20 +962,20 @@ export function statusesOf(stderr: readonly string[]): string[] {
 	return statuses;
 }
 
-/** A connection to the host of `project` that runs in this process. */
-async function connectTo(project: string) {
-	const saved = process.env.HARNESS_PROJECT;
-	process.env.HARNESS_PROJECT = project;
+/** A connection to the host `host` that runs in this process. */
+async function connectTo(host: string) {
+	const saved = process.env.HARNESS_HOST;
+	process.env.HARNESS_HOST = host;
 
 	try {
 		const client = await connect({ start: false });
 
-		if (client === undefined) throw new Error(`no host for ${project}`);
+		if (client === undefined) throw new Error(`no host for ${host}`);
 
 		return client;
 	} finally {
-		if (saved === undefined) delete process.env.HARNESS_PROJECT;
-		else process.env.HARNESS_PROJECT = saved;
+		if (saved === undefined) delete process.env.HARNESS_HOST;
+		else process.env.HARNESS_HOST = saved;
 	}
 }
 
@@ -1052,14 +1043,14 @@ export async function workflows(
 		choose: options.choose,
 		stopWindowMs: options.stopWindowMs ?? 0,
 		models: async () => model.models,
-		connect: async (project, start) => {
+		connect: async (name, start) => {
 			if (host === undefined) {
 				if (!start) return undefined;
-				started = await startHost(project, model.models);
+				started = await startHost(name, model.models);
 				host = started;
 			}
 
-			const client = await connectTo(project);
+			const client = await connectTo(name);
 			addFaults(client, options, faults);
 
 			return client;
@@ -1072,33 +1063,13 @@ export async function workflows(
 	return { code, stdout, stderr, status, model, id, host: options.keepHost ? started : undefined, exits };
 }
 
-/** A harness host of `project` in this process, with `models`. */
-export async function startHost(project = "main", models = createModels()): Promise<Host> {
-	const host = await runHost({ project, cwd: projectDir(project), models });
+/** A harness host `name` in this process, with `models`. */
+export async function startHost(name = "main", models = createModels()): Promise<Host> {
+	const host = await runHost({ host: name, cwd: hostDir(name), models });
 
-	if (host === undefined) throw new Error(`another host has the lock of ${project}`);
+	if (host === undefined) throw new Error(`another host has the lock of ${name}`);
 
 	return host;
-}
-
-/** The fields of an item that the tests read. */
-const ITEM = Type.Object({
-	id: Type.Number(),
-	state: Type.String(),
-	edges: Type.Array(Type.Object({ from: Type.String(), kind: Type.String(), to: Type.String() })),
-});
-
-/** Sends the `item` request `sent`, an `add` or a `read`, to a new host of the sandbox, and gives the item. */
-export async function toHost(
-	sent: Extract<Request, { type: "item"; action: "add" }> | Extract<Request, { type: "item"; action: "read" }>,
-) {
-	const host = await startHost();
-
-	try {
-		return Value.Parse(ITEM, await request(sent, { start: false }));
-	} finally {
-		await host.close();
-	}
 }
 
 /** The list of todos of the task `wf:<id>#1` of the root run `id`, from the `todo` request of a host of the sandbox. */
@@ -1132,9 +1103,9 @@ export async function askHost(...sent: Extract<Request, { type: "ask" }>[]): Pro
 	}
 }
 
-/** Sends `request` to the host of `project` that runs in this process. */
-async function send(request: Request, project = "main"): Promise<void> {
-	const client = await connectTo(project);
+/** Sends `request` to the host `host` that runs in this process. */
+async function send(request: Request, host = "main"): Promise<void> {
+	const client = await connectTo(host);
 
 	try {
 		await client.request(request);
@@ -1143,22 +1114,22 @@ async function send(request: Request, project = "main"): Promise<void> {
 	}
 }
 
-/** Sends `message` to the project agent of the host of `project` that runs in this process. */
-export function tellAgent(message: string, project = "main"): Promise<void> {
-	return send({ type: "input", requestId: `test:${message}`, handle: AGENT_HANDLE, message, followUp: false }, project);
+/** Sends `message` to the host agent of the host `host` that runs in this process. */
+export function tellAgent(message: string, host = "main"): Promise<void> {
+	return send({ type: "input", requestId: `test:${message}`, handle: AGENT_HANDLE, message, followUp: false }, host);
 }
 
-/** Presses Esc in the project agent of the host of `project` that runs in this process: it aborts its turn. */
-export function escAgent(project = "main"): Promise<void> {
-	return send({ type: "abort", handle: AGENT_HANDLE }, project);
+/** Presses Esc in the host agent of the host `host` that runs in this process: it aborts its turn. */
+export function escAgent(host = "main"): Promise<void> {
+	return send({ type: "abort", handle: AGENT_HANDLE }, host);
 }
 
 /** A result of the `workflow` tool in a transcript: its text, its details, and whether it is an error. */
 export type WorkflowResult = { readonly text: string; readonly details: unknown; readonly isError: boolean };
 
-/** The entries in the transcripts of the store of `project`, in entry order of each conversation. */
-async function entriesOf(project: string): Promise<EntryRecord[]> {
-	const storage = await openNodeSqliteStorage(storeOf(project));
+/** The entries in the transcripts of the store of `host`, in entry order of each conversation. */
+async function entriesOf(host: string): Promise<EntryRecord[]> {
+	const storage = await openNodeSqliteStorage(storeOf(host));
 
 	try {
 		const found: EntryRecord[] = [];
@@ -1175,9 +1146,9 @@ async function entriesOf(project: string): Promise<EntryRecord[]> {
 	}
 }
 
-/** The results of the `workflow` tool in the transcripts of the store of `project`, in entry order of each conversation. */
-export async function workflowResults(project = "main"): Promise<WorkflowResult[]> {
-	return (await entriesOf(project)).flatMap((entry) =>
+/** The results of the `workflow` tool in the transcripts of the store of `host`, in entry order of each conversation. */
+export async function workflowResults(host = "main"): Promise<WorkflowResult[]> {
+	return (await entriesOf(host)).flatMap((entry) =>
 		(entry.model ?? []).flatMap((message) =>
 			message.role === "toolResult" && message.toolName === "workflow"
 				? [{ text: textOf(message), details: message.details, isError: message.isError }]
@@ -1186,9 +1157,9 @@ export async function workflowResults(project = "main"): Promise<WorkflowResult[
 	);
 }
 
-/** The conversation ID of the first transcript in the store of `project` with a user message that matches `prompt`. */
-export async function conversationOf(prompt: RegExp, project = "main"): Promise<ConversationId | undefined> {
-	const found = (await entriesOf(project)).find((entry) =>
+/** The conversation ID of the first transcript in the store of `host` with a user message that matches `prompt`. */
+export async function conversationOf(prompt: RegExp, host = "main"): Promise<ConversationId | undefined> {
+	const found = (await entriesOf(host)).find((entry) =>
 		(entry.model ?? []).some((message) => message.role === "user" && prompt.test(textOf(message))),
 	);
 
@@ -1218,21 +1189,21 @@ export const overlayOf = (prompt: RegExp) => conversationDocument("harness.overl
 /** A run outcome that a background run posted as a message: its text, its data, and the conversation it went to. */
 export type PostedResult = { readonly text: string; readonly data: unknown; readonly conversation: number };
 
-/** The `workflows.result` entries in the transcripts of the store of `project`. */
-export async function postedResults(project = "main"): Promise<PostedResult[]> {
-	return (await entriesOf(project)).flatMap((entry) =>
+/** The `workflows.result` entries in the transcripts of the store of `host`. */
+export async function postedResults(host = "main"): Promise<PostedResult[]> {
+	return (await entriesOf(host)).flatMap((entry) =>
 		entry.kind === "workflows.result"
 			? [{ text: (entry.model ?? []).map(textOf).join("\n"), data: entry.data, conversation: entry.conversationId }]
 			: [],
 	);
 }
 
-/** A catch-up entry of the project agent: its text and its data. */
+/** A catch-up entry of the host agent: its text and its data. */
 export type CatchUp = { readonly text: string; readonly data: unknown };
 
-/** The `harness.catchup` entries in the transcripts of the store of `project`. */
-export async function catchUps(project = "main"): Promise<CatchUp[]> {
-	return (await entriesOf(project)).flatMap((entry) =>
+/** The `harness.catchup` entries in the transcripts of the store of `host`. */
+export async function catchUps(host = "main"): Promise<CatchUp[]> {
+	return (await entriesOf(host)).flatMap((entry) =>
 		entry.kind === "harness.catchup" ? [{ text: (entry.model ?? []).map(textOf).join("\n"), data: entry.data }] : [],
 	);
 }
@@ -1241,15 +1212,15 @@ export async function catchUps(project = "main"): Promise<CatchUp[]> {
 const CATCH_UP_WAIT_MS = 10_000;
 
 /**
- * Waits until the store of `project` has at least `count` catch-up entries, and gives them all. An input returns when
- * the host has submitted its catch-up entry, and the project agent can write the entry later, so a test waits for the
+ * Waits until the store of `host` has at least `count` catch-up entries, and gives them all. An input returns when
+ * the host has submitted its catch-up entry, and the host agent can write the entry later, so a test waits for the
  * entry before it reads it or closes the host. It throws after `CATCH_UP_WAIT_MS`, below the timeout of a test.
  */
-export async function catchUpsAtLeast(count: number, project = "main"): Promise<CatchUp[]> {
+export async function catchUpsAtLeast(count: number, host = "main"): Promise<CatchUp[]> {
 	const deadline = Date.now() + CATCH_UP_WAIT_MS;
 
 	for (;;) {
-		const found = await catchUps(project);
+		const found = await catchUps(host);
 
 		if (found.length >= count) return found;
 
@@ -1263,10 +1234,10 @@ export async function catchUpsAtLeast(count: number, project = "main"): Promise<
 	}
 }
 
-/** Waits until the store of `project` has more than `count` results of the `workflow` tool, and gives the next one. */
-export async function nextResult(count: number, project = "main"): Promise<WorkflowResult> {
+/** Waits until the store of `host` has more than `count` results of the `workflow` tool, and gives the next one. */
+export async function nextResult(count: number, host = "main"): Promise<WorkflowResult> {
 	for (;;) {
-		const results = await workflowResults(project);
+		const results = await workflowResults(host);
 		const next = results[count];
 
 		if (next !== undefined) return next;

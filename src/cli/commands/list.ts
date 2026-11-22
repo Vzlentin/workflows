@@ -1,5 +1,5 @@
-/** `workflows list`: the runs of the project of the current directory. */
-import { resolveProject } from "@vzlentin/harness/projects";
+/** `workflows list`: the runs of the host of the current directory. */
+import { resolveHost } from "@vzlentin/harness/hosts";
 import { type Static, Type } from "typebox";
 import { reading, runTasks } from "../../records/store.ts";
 import type { RunTask } from "../../run/past.ts";
@@ -26,13 +26,13 @@ export const LISTED = Type.Union([ROW, UNSTARTED]);
 type Listed = Static<typeof LISTED>;
 
 /**
- * Prints the runs of the project of the current directory that have a run directory, newest run ID first, also the run
- * directories whose run has no task, as `unstarted`. It reads the project store only.
+ * Prints the runs of the host of the current directory that have a run directory, newest run ID first, also the run
+ * directories whose run has no task, as `unstarted`. It reads the host store only.
  */
 export async function list(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	if (args.length > 0) throw new UsageError("list takes no arguments", LIST);
 
-	const listed = await projectRuns(resolveProject(process.env, terminal.cwd));
+	const listed = await hostRuns(resolveHost(process.env, terminal.cwd));
 
 	if (json) terminal.stdout(JSON.stringify(listed));
 	else for (const run of listed) terminal.stdout(listLine(run));
@@ -51,12 +51,12 @@ function listLine(run: Listed): string {
 }
 
 /**
- * The runs of `project` that have a run directory, newest run ID first, also the run directories whose run has no task,
- * as `unstarted`. It reads the project store only.
+ * The runs of the host `host` that have a run directory, newest run ID first, also the run directories whose run has no task,
+ * as `unstarted`. It reads the host store only.
  */
-async function projectRuns(project: string): Promise<Listed[]> {
+async function hostRuns(host: string): Promise<Listed[]> {
 	const { rows, runs } = await reading(
-		storeOf(project),
+		storeOf(host),
 		{ rows: [], runs: new Map<string, RunTask[]>() },
 		async ({ store }) => {
 			const tasks = await runTasks(store);
@@ -66,7 +66,7 @@ async function projectRuns(project: string): Promise<Listed[]> {
 		},
 	);
 
-	const unstarted = (await unstartedRuns(project, runs)).map(({ runId }): Listed => ({
+	const unstarted = (await unstartedRuns(host, runs)).map(({ runId }): Listed => ({
 		runId,
 		state: "unstarted",
 		repository: null,

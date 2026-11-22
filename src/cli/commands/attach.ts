@@ -12,7 +12,7 @@ export const ATTACH = "workflows attach <run-id> [--conversation <id>] [--side]"
 
 /**
  * Opens a session of a run in Pi: the session that works now, else the last session to start, or the session of
- * `--conversation` when one is given. It runs `harness attach --conversation` of this install for the project of the
+ * `--conversation` when one is given. It runs `harness attach --conversation` of this install for the host of the
  * run, with `--side` when given, and exits with its code. Harness checks the conversation and opens Pi: in this
  * terminal, or with `--side` in an hc terminal, in a new herdr-app pane to the right of this terminal.
  */
@@ -51,7 +51,7 @@ export async function attach(args: readonly string[]): Promise<number> {
 		);
 	}
 
-	const argv = [cliPath(), "--project", run.project, "attach", "--conversation", String(session.conversation)];
+	const argv = [cliPath(), "--host", run.host, "attach", "--conversation", String(session.conversation)];
 	const side = values.side ? ["--side"] : [];
 
 	const [code]: (number | null)[] = await once(

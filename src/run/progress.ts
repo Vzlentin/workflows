@@ -1,11 +1,11 @@
 /**
- * The progress of a script run in the project store: its events, their document, and the `phase`, `log` and `title`
+ * The progress of a script run in the host store: its events, their document, and the `phase`, `log` and `title`
  * lines that wait for the next call of the script.
  */
 import { type CommonDocDefinition, defineDocFamily, type JsonObject, type Tx } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 
-/** The document kind of the progress of a run in the project store. */
+/** The document kind of the progress of a run in the host store. */
 export const PROGRESS_KIND = "workflows.progress";
 
 /**

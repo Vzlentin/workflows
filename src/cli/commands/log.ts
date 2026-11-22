@@ -18,7 +18,7 @@ const FOLLOW_POLL_MS = 1000;
 /**
  * Prints the short log of a run, or with `<step>` the line of each call of that step, or with `<call>` the full text of
  * that call, or with `--follow` the short log and its
- * new lines until the run's task does not run. It reads the project store only, for a run of any version.
+ * new lines until the run's task does not run. It reads the host store only, for a run of any version.
  */
 export async function log(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const { values, positionals } = withUsage(

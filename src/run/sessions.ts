@@ -13,7 +13,6 @@ import {
 	type ModelRef,
 } from "@earendil-works/pi-durable";
 import { type Child, type Failure, type Owner, resolveModel, type Spec } from "@vzlentin/harness/children";
-import { PROJECT_EXTENSION } from "@vzlentin/harness/protocol";
 import type { Static } from "typebox";
 import type { ScriptInput } from "../launch/input.ts";
 import { ENTRY_NAME } from "../tool.ts";
@@ -81,7 +80,7 @@ function roleFields(table: Roles, args: SessionArgs) {
 }
 
 /**
- * Where the sessions of the run sit in the children tree: under the driver of the current task, when it is the project
+ * Where the sessions of the run sit in the children tree: under the driver of the current task, when it is the host
  * agent or a conversation of the children library, else in the tree `workflows:<root run ID>`.
  */
 async function treeOf(calls: Calls): Promise<{ parent: string } | { root: string }> {
@@ -99,8 +98,8 @@ async function treeOf(calls: Calls): Promise<{ parent: string } | { root: string
 /**
  * The session of the call `key`, opened in the children library under the key `wf:<key>` in `cwd`, with
  * `INSTRUCTIONS`. Its model fields are those of `roleFields` with the agents table of the bundle; a field that neither
- * gives comes from the project agent. The session does not get the `workflow` tool, nor harness's store tools
- * `thread`, `rule` and `parley`. The commit that opens it saves its conversation and the model that the library set in
+ * gives comes from the host agent. The session does not get the `workflow` tool, nor the extensions that an entry keeps
+ * off children. The commit that opens it saves its conversation and the model that the library set in
  * the call record, and its conversation in the sessions of the run. The same key again gives the same session.
  */
 export async function sessionOf(calls: Calls, key: string, cwd: string, args: SessionArgs): Promise<JsonValue> {
@@ -129,7 +128,7 @@ export async function sessionOf(calls: Calls, key: string, cwd: string, args: Se
 			const selection = agent.extensions;
 
 			if (!Array.isArray(selection)) {
-				agent.extensions = { ...selection, remove: [...(selection?.remove ?? []), ENTRY_NAME, PROJECT_EXTENSION] };
+				agent.extensions = { ...selection, remove: [...(selection?.remove ?? []), ENTRY_NAME] };
 			}
 
 			const call = callOfKind(await tx.doc(CallDoc, key, null), "session", key);

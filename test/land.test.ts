@@ -2,18 +2,8 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import {
-	fake,
-	gateGit,
-	git,
-	PROJECTS_ENTRY,
-	repository,
-	sandbox,
-	setEntries,
-	toHost,
-	workflows,
-	worktreeAt,
-} from "./support.ts";
+import { reportedEvents } from "./labels-entry.ts";
+import { fake, gateGit, git, LABELS_ENTRY, repository, sandbox, setEntries, workflows, worktreeAt } from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -348,9 +338,8 @@ describe("workflows land", () => {
 		expectLanded(run);
 	});
 
-	it("reports the head for the run, which sets its item to done", async () => {
-		await setEntries({ projects: PROJECTS_ENTRY });
-		await toHost({ type: "item", action: "add", caller: "test", title: "Build it" });
+	it("reports the head for the run, with the labels of the run", async () => {
+		await setEntries({ labels: LABELS_ENTRY });
 		const run = await shipped("item:1");
 
 		const landed = await land(run.id);
@@ -359,11 +348,7 @@ describe("workflows land", () => {
 			[`landed ${SUBJECT} ${run.short}, CI passed on the branch and on main`],
 		]);
 		expectLanded(run);
-		const item = await toHost({ type: "item", action: "read", id: 1 });
-		expect(item).toMatchObject({
-			state: "done",
-			edges: [{ from: "item:1", kind: "landed", to: `commit:${run.head}` }],
-		});
+		expect(await reportedEvents()).toEqual([{ labels: ["item:1"], refs: [`commit:${run.head}`] }]);
 	});
 
 	it("finishes on resume a landing that stopped after the push of main", async () => {

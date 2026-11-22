@@ -200,7 +200,7 @@ async function runProbe(path: string, input: { key: string; value?: string }) {
 	}
 }
 
-/** Every row of every table in the store of the `main` project, read with `node:sqlite`. */
+/** Every row of every table in the store of the `main` host, read with `node:sqlite`. */
 function rows() {
 	const database = new DatabaseSync(storeOf(), { readOnly: true });
 
@@ -914,7 +914,7 @@ describe("workflows show", () => {
 			result: { code: 0 },
 			startedAt: expect.any(String),
 			labels: [],
-			agent: { conversation: await conversationOf(/Script: child/), project: expect.any(String) },
+			agent: { conversation: await conversationOf(/Script: child/), host: expect.any(String) },
 			ended: true,
 		});
 		expect(agents[1]).toMatchObject({ kind: "agent", depth: 0, mark: "\u2713", text: "Script: plan.", asks: 1 });
@@ -3201,7 +3201,7 @@ return await todo.list()`,
 		await writeFile(join(root, "parent.js"), 'return await run("child")');
 		await mkdir(join(root, ".workflows", "scripts"), { recursive: true });
 		await writeFile(join(root, ".workflows", "scripts", "child.js"), 'await sh("test -f fixed")\nreturn "child"');
-		process.env.HARNESS_PROJECT = "main";
+		process.env.HARNESS_HOST = "main";
 		process.env.PI_SESSION_ID = "1";
 		const failed = await workflows(["parent.js"], { cwd: root });
 		expect(failed.code).toBe(1);
@@ -3212,7 +3212,7 @@ return await todo.list()`,
 			[false, "1"],
 		]);
 
-		delete process.env.HARNESS_PROJECT;
+		delete process.env.HARNESS_HOST;
 		delete process.env.PI_SESSION_ID;
 		await writeFile(join(root, "fixed"), "");
 		const resumed = await workflows(["resume", id], { cwd: root });

@@ -11,16 +11,16 @@ import { SWEPT_RUNS } from "../src/cli/commands/sweep.ts";
 import { ROW } from "../src/cli/saved.ts";
 import { newRunId } from "../src/launch/input.ts";
 import { TASK } from "../src/run/version.ts";
+import { reportedEvents } from "./labels-entry.ts";
 import {
 	git,
-	PROJECTS_ENTRY,
+	LABELS_ENTRY,
 	repository,
 	runsOf,
 	sandbox,
 	saveAs,
 	setEntries,
 	storeOf,
-	toHost,
 	workflows,
 	worktreeAt,
 } from "./support.ts";
@@ -79,7 +79,7 @@ async function mergedRun(branch = "feat/x"): Promise<{ id: string; worktree: str
 
 const hasBranch = (name: string) => git(repo, "branch", "--list", name) !== "";
 
-/** A run directory of the project with no task, whose `project` file is 2 hours old. */
+/** A run directory of the host with no task, whose `project` file is 2 hours old. */
 async function oldRunDirectory(): Promise<{ id: string; directory: string }> {
 	const id = newRunId();
 	const directory = join(runsOf(root), id);
@@ -600,7 +600,7 @@ exec "${real}" "$@"
 		expect(existsSync(join(root, "gh.log"))).toBe(false);
 	});
 
-	it("refuses, and removes nothing, when the project store does not exist", async () => {
+	it("refuses, and removes nothing, when the host store does not exist", async () => {
 		const { directory } = await oldRunDirectory();
 
 		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
@@ -608,7 +608,7 @@ exec "${real}" "$@"
 			1,
 			[],
 			[
-				`workflows: cannot sweep: the project store ${storeOf()} does not exist, so no run directory counts as unstarted; remove the run directories that you do not need from ${runsOf(root)} by hand`,
+				`workflows: cannot sweep: the host store ${storeOf()} does not exist, so no run directory counts as unstarted; remove the run directories that you do not need from ${runsOf(root)} by hand`,
 			],
 		]);
 		expect(existsSync(directory)).toBe(true);
@@ -727,11 +727,10 @@ echo "[{\\"headRefOid\\":\\"$(git rev-parse HEAD)\\"}]"
 	});
 });
 
-describe("workflows sweep and the item of a run", () => {
-	beforeEach(() => setEntries({ projects: PROJECTS_ENTRY }));
+describe("workflows sweep and the labels of a run", () => {
+	beforeEach(() => setEntries({ labels: LABELS_ENTRY }));
 
-	it("leaves open the item of a merged run", async () => {
-		await toHost({ type: "item", action: "add", caller: "test", title: "Build it" });
+	it("reports nothing for a merged run", async () => {
 		const run = await workflows(["w", "--branch", "feat/x", "--serves", "item:1"], { cwd: repo });
 		expect(run.code).toBe(0);
 		const id = run.id ?? "";
@@ -740,13 +739,11 @@ describe("workflows sweep and the item of a run", () => {
 		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
 		expect([swept.code, swept.stdout, swept.stderr]).toEqual([0, [`${id} landed feat/x ${worktree}`], []]);
 		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([false, false]);
-		const item = await toHost({ type: "item", action: "read", id: 1 });
-		expect(item.state).toBe("open");
+		expect(await reportedEvents()).toEqual([]);
 	});
 
-	it("drops the branch of a failed run with no commit, and leaves its item open", async () => {
+	it("drops the branch of a failed run with no commit, and reports nothing", async () => {
 		await writeGated();
-		await toHost({ type: "item", action: "add", caller: "test", title: "Build it" });
 		const failed = await workflows(["gated", "--branch", "feat/n", "--serves", "item:1"], { cwd: repo });
 		expect(failed.code).toBe(1);
 		const id = failed.id ?? "";
@@ -756,7 +753,6 @@ describe("workflows sweep and the item of a run", () => {
 		expect([swept.code, swept.stdout, swept.stderr]).toEqual([0, [`${id} dropped feat/n ${worktree}`], []]);
 		expect([existsSync(worktree), hasBranch("feat/n")]).toEqual([false, false]);
 		expect(await sweptFile(id)).toBe("dropped\n");
-		const item = await toHost({ type: "item", action: "read", id: 1 });
-		expect(item.state).toBe("open");
+		expect(await reportedEvents()).toEqual([]);
 	});
 });

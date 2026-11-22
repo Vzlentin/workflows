@@ -1,15 +1,15 @@
 /**
- * The entry of workflows in the harness host. The host of a project loads it, from harness's `entries.json`, and starts its script task for
+ * The entry of workflows in the harness host. The host loads it, from harness's `entries.json`, and starts its script task for
  * `workflows <wf>`, so a run executes in the host, with its sessions on the host's children library. It also gives the
  * conversations of the host the `workflow` tool, which runs the `workflows` command of this package as a child process,
- * and the project agent the catch-up hook `workflows.runs`, which tells it about the runs that ended.
+ * and the host agent the catch-up hook `workflows.runs`, which tells it about the runs that ended.
  */
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { HARNESS_PROJECT, PI_SESSION_ID } from "@vzlentin/harness/protocol";
+import { HARNESS_HOST, PI_SESSION_ID } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { CLI } from "./command.ts";
@@ -35,12 +35,12 @@ import {
 /** The `details` of a call: the progress lines that the command drew last, then any other stderr line. */
 type WorkflowDetails = { steps: string[] };
 
-/** The project of the host, which the host gives only to the shell of each conversation. */
-async function projectOf(env: ExecutionEnv, context: Context): Promise<string> {
+/** The name of the host, which the host gives only to the shell of each conversation. */
+async function hostNameOf(env: ExecutionEnv, context: Context): Promise<string> {
 	let printed = "";
 
 	const result = await env.exec(
-		["printenv", HARNESS_PROJECT],
+		["printenv", HARNESS_HOST],
 		{
 			onOutput: (text, _context, info) => {
 				if (info.stream === "stdout") printed += text;
@@ -49,13 +49,13 @@ async function projectOf(env: ExecutionEnv, context: Context): Promise<string> {
 		context,
 	);
 
-	const project = printed.trim();
+	const name = printed.trim();
 
-	if (!result.ok || result.value.exitCode !== 0 || project === "") {
-		throw new Error(`the shell of this conversation has no ${HARNESS_PROJECT}`);
+	if (!result.ok || result.value.exitCode !== 0 || name === "") {
+		throw new Error(`the shell of this conversation has no ${HARNESS_HOST}`);
 	}
 
-	return project;
+	return name;
 }
 
 /**
@@ -71,7 +71,7 @@ async function runTool(host: Host, params: WorkflowCall, api: ToolExecutionApi<W
 
 	const env = {
 		...process.env,
-		[HARNESS_PROJECT]: await projectOf(api.env, context),
+		[HARNESS_HOST]: await hostNameOf(api.env, context),
 		[PI_SESSION_ID]: String(api.conversationId),
 	};
 

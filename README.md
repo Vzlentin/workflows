@@ -13,7 +13,7 @@
   and keeps them when a blind judge prefers the diffs they give.
 - `workflows <script>` runs your own workflow script.
 
-Runs execute in the [harness](https://github.com/Vzlentin/harness) host of the project. A run continues after a
+Runs execute in the [harness](https://github.com/Vzlentin/harness) host. A run continues after a
 crash or a Ctrl+C, and `workflows resume` follows it again.
 
 ## Install
@@ -69,7 +69,7 @@ workflows ship plan.md --agents '*=anthropic/claude-opus-5-5:high,judge=:low'   
 workflows thermoloop                                # review and fix the current branch against main
 workflows thermoloop 74                             # review and fix PR 74 in a worktree of its own
 workflows optimize ship --limit 4                   # propose and test surface edits from past ship runs
-workflows list                                      # the runs of this project
+workflows list                                      # the runs of this host
 workflows resume <run-id>
 workflows wait <run-id>                             # follow a run to its outcome
 workflows log <run-id> [<step> | <call>] [--follow] # its steps, the calls of one step, or the output of one call

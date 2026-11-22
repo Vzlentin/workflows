@@ -26,7 +26,7 @@ import {
 	workflows,
 } from "./support.ts";
 
-/** The `harness.seen` document of the project agent, version 2, as harness writes it. */
+/** The `harness.seen` document of the host agent, version 2, as harness writes it. */
 const Seen = defineDoc<{ mainSha: string | null; catchups: number; hooks: Record<string, JsonValue> }>({
 	kind: "harness.seen",
 	version: 2,
@@ -69,7 +69,7 @@ async function withStore<T>(use: (harness: Harness) => Promise<T>): Promise<T> {
 	}
 }
 
-/** What the `workflows.runs` hook said the project agent saw, in the `main` store. */
+/** What the `workflows.runs` hook said the host agent saw, in the `main` store. */
 function seenRuns(): Promise<JsonValue | undefined> {
 	return withStore(
 		async (harness) =>
@@ -78,7 +78,7 @@ function seenRuns(): Promise<JsonValue | undefined> {
 }
 
 describe("the catch-up of workflows runs", () => {
-	it("tells the project agent once about each run that ended, with its sessions", async () => {
+	it("tells the host agent once about each run that ended, with its sessions", async () => {
 		const host = await startHost("main", hostModel().models);
 
 		try {
@@ -193,7 +193,7 @@ describe("the catch-up of workflows runs", () => {
 		expect(data?.runs[0]).not.toHaveProperty("result");
 	});
 
-	it("tells the project agent the state of runStatus for a faulted and an orphaned task", async () => {
+	it("tells the host agent the state of runStatus for a faulted and an orphaned task", async () => {
 		let host = await startHost("main", hostModel().models);
 		let faulted = "";
 		let orphaned = "";
@@ -257,7 +257,7 @@ describe("the catch-up of workflows runs", () => {
 		}
 	});
 
-	it("tells the project agent about a run whose record is gone and a run whose input is not a run input", async () => {
+	it("tells the host agent about a run whose record is gone and a run whose input is not a run input", async () => {
 		let host = await startHost("main", hostModel().models);
 		let bad = 0;
 

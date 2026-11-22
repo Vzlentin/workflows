@@ -1,5 +1,5 @@
 /**
- * The script calls and their records. Each call saves its result in a document of the project store, keyed by the run
+ * The script calls and their records. Each call saves its result in a document of the host store, keyed by the run
  * ID and the call, so when the script runs again, the finished calls return their saved results and only the rest runs.
  */
 import { createHash } from "node:crypto";
@@ -19,7 +19,7 @@ import type { Ask } from "@vzlentin/harness/protocol";
 import { addTodo, readTodos, setTodo, type TodoOwner, TodoState } from "@vzlentin/harness/todo";
 import { type Static, type TLiteral, type TObject, type TProperties, type TUnion, Type } from "typebox";
 import { failure, type Result, run } from "../git.ts";
-import { readProject } from "../launch/input.ts";
+import { readHost } from "../launch/input.ts";
 import { cutTail, JSON_VALUE, OUTPUT_BYTES } from "../tool.ts";
 import type { RunBundle } from "../workflow/bundle.ts";
 import type { Roles } from "../workflow/roles.ts";
@@ -637,7 +637,7 @@ async function decide(calls: Calls, question: string, saved: number | undefined)
  */
 async function askOf(calls: Calls, question: string, saved: number | undefined): Promise<Ask> {
 	const { runId, runDir } = calls.script;
-	const asks = asksOf(await readProject(runDir), calls.context.abortSignal);
+	const asks = asksOf(await readHost(runDir), calls.context.abortSignal);
 
 	if (saved !== undefined) return readAsk(asks, saved);
 
@@ -695,13 +695,13 @@ export async function todoCall(calls: Calls, args: TodoArgs): Promise<JsonValue>
 }
 
 /**
- * The `harness` call with `args`: the reply of the host of the run's project to the request, with the run as the caller
+ * The `harness` call with `args`: the reply of the host of the run to the request, with the run as the caller
  * when the request has none. A resume replays the saved reply.
  */
 export function harnessCall(calls: Calls, args: HarnessArgs): Promise<JsonValue> {
 	return memoized(calls, callKey(calls, "harness", args), { kind: "harness", args }, async () => {
-		const project = await readProject(calls.script.runDir);
+		const host = await readHost(calls.script.runDir);
 
-		return runRequest(project, calls.script.runId, args, calls.context.abortSignal);
+		return runRequest(host, calls.script.runId, args, calls.context.abortSignal);
 	});
 }

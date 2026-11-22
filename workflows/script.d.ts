@@ -91,7 +91,7 @@ declare const prompts: Record<string, (inputs?: Record<string, string>) => Promi
  * then the `agents.json` tables, `<repo>/.workflows/agents.json` first, then `$XDG_CONFIG_HOME/workflows/agents.json`
  * (default `~/.config/workflows/agents.json`), then `workflows/agents.json` of the package, give the model and thinking
  * of each name or of `"*"`. `provider`, `model` and `thinking` override them all. A field that none gives comes from
- * the project agent: the Pi default model and thinking level.
+ * the host agent: the Pi default model and thinking level.
  */
 type SessionOptions = { as?: string; provider?: string; model?: string; thinking?: string };
 
@@ -129,7 +129,7 @@ declare function sh(cmd: string | readonly string[], options?: { settle?: false 
 declare function ok(cmd: string | readonly string[]): Promise<boolean>;
 
 /**
- * Asks the user `question`, as an ask of the project with the run as its asker. The first time, the run stops and
+ * Asks the user `question`, as an ask of the host with the run as its asker. The first time, the run stops and
  * waits: the command prints the question and exits with 3, and the `workflow` tool gives a `waiting` result with the
  * question. `workflows resume <run-id> --answer <text>`, the tool with `resume: <run-id>` and `answer`, or a resume
  * after an answer of the ask elsewhere, runs the script again, and this call returns the answer. The question must not
@@ -181,7 +181,7 @@ type ScriptResult = Result | null | boolean | number | string | Json[];
  */
 declare function run(name: string, args?: { [key: string]: Json | undefined }): Promise<ScriptResult>;
 
-/** A completed root run of the project store, as `pastRuns` gives it. */
+/** A completed root run of the host store, as `pastRuns` gives it. */
 type PastRun = {
 	readonly runId: string;
 	/** The `item` arg of the run, or null. */
@@ -202,7 +202,7 @@ type PastRun = {
 };
 
 /**
- * The completed root runs of the workflow `workflow`, or of every workflow for null, in the project store, newest
+ * The completed root runs of the workflow `workflow`, or of every workflow for null, in the host store, newest
  * first: up to `limit`, or the runs `runs` in that order. A run of `runs` that is not a completed root run of
  * `workflow` throws.
  */
@@ -225,7 +225,7 @@ declare const todo: {
 };
 
 /**
- * Sends one request to the harness host of the run's project, and returns its reply. The run is the caller of a request
+ * Sends one request to the harness host of the run, and returns its reply. The run is the caller of a request
  * that has no `caller`. The call saves its reply, so a resume does not send it again. An error of the host throws.
  */
 declare function harness(request: { type: string; [k: string]: Json }): Promise<Json>;

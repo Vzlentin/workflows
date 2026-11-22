@@ -1,5 +1,5 @@
 /**
- * The catch-up hook of the workflows entry: before an input of the project agent, the lines of the workflows runs that
+ * The catch-up hook of the workflows entry: before an input of the host agent, the lines of the workflows runs that
  * ended since the agent last saw them, with their sessions.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

@@ -236,11 +236,11 @@ export const DESCRIPTION =
 	"The result value of each of these workflows has `change: { repository, branch }`, the main checkout and the " +
 	"branch of its change. " +
 	"Each `run()` call of a " +
-	"script starts a child run, which a resume of its caller continues. A run goes on in the harness host of the " +
-	"project: Esc detaches from it, and `resume` follows it again. A failed or aborted run stays resumable. With " +
+	"script starts a child run, which a resume of its caller continues. A run goes on in its harness host: " +
+	"Esc detaches from it, and `resume` follows it again. A failed or aborted run stays resumable. With " +
 	"`background: true`, the call returns at once and the result of the run comes later as a message in this " +
 	"conversation, which drives the run: use it for long runs such as `campaign` or `optimize`, or for work that can go on while the " +
-	"conversation continues. `input(question)` in a root run asks the user, as an ask of the project, and stops the " +
+	"conversation continues. `input(question)` in a root run asks the user, as an ask of the host, and stops the " +
 	"run: the tool gives a `waiting` result with the question; answer it with `workflow` `resume: <run-id>` and " +
 	"`answer`, and `input` then returns the answer. `input` in a child run fails. With " +
 	"`name` or `script`, `cwd` is the absolute path of the directory where the run starts: the project scripts, " +

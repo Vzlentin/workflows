@@ -10,7 +10,7 @@ The behaviour of the `workflows` command, the workflow scripts, runs and the `wo
 `workflows optimize ship` proposes edits to the ship prompts, skills and `AGENTS.md` from past ship runs,
 and keeps them when a blind judge prefers the diffs they give. `workflows land <change>` lands a branch, the head branch
 of a PR or the branch of a run on `main` when its CI passes. The run is
-headless and resumable. It runs in the [harness](https://github.com/Vzlentin/harness) host of its project, whose
+headless and resumable. It runs in the [harness](https://github.com/Vzlentin/harness) host, whose
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) store keeps the sessions, model calls, tool
 calls and the progress of the run. See [Runs in the harness host](#runs-in-the-harness-host).
 
@@ -571,7 +571,7 @@ the skills or `AGENTS.md`: the result is a diff to apply by hand. It is the pack
 
 The work items and their baselines come from one of two places:
 
-- By default, from past runs: `pastRuns("ship", ...)` gives the completed root ship runs of the project store, the
+- By default, from past runs: `pastRuns("ship", ...)` gives the completed root ship runs of the host store, the
   newest `--limit` (default 8), or with `--runs` the run IDs of that comma list, in that order. A saved run keeps its
   result as its baseline when its status is `shipped` or `rejected` and its `head` is still a commit of its repository; its diff is
   `git diff <start> <head>`. Any other saved run runs its baseline again once, as the child run
@@ -686,7 +686,7 @@ workflows land <change> --wait 600
 ```
 
 `workflows land <change>` lands a change on `main` with no model call. The change is a PR number, a local branch, or
-the ID of a completed root run of any workflow in the project store. Neither the workflow nor the status of the run
+the ID of a completed root run of any workflow in the host store. Neither the workflow nor the status of the run
 matters. It runs these steps in order, with `git -C` in the repository of the change:
 
 1. Find the change, in this order. A number is a PR: `gh pr view <n> --json number,headRefName,isCrossRepository`
@@ -715,9 +715,9 @@ matters. It runs these steps in order, with `git -C` in the repository of the ch
 7. For a change that a run ID gives: the `harness` call
    `{ type: "report", key: "<key>", refs: ["commit:<full head>"] }` (see [Harness requests](#harness-requests)), where
    `<key>` is the `key` of the run in [Past runs](#past-runs), the start key of its first task. The host stores the
-   reference for that task, and acts on the labels of the run: the projects entry of harness, for example, links the
-   item of an `item:<id>` label to the commit and sets it to `done`. The step adds no report line. A failure adds
-   `check failed: report commit:<short>: <message>`, and the status does not change. A branch and a PR skip the step.
+   reference for that task, and acts on the labels of the run: the entry that checks the kind of a label acts on
+   that label. The step adds no report line. A failure adds `check failed: report commit:<short>: <message>`, and the
+   status does not change. A branch and a PR skip the step.
 8. Wait for the CI of `main` at the head.
 9. Run `workflows sweep <branch> --yes` of this package (`workflowsCommand`) in the repository (see
    [Sweep](#sweep)), unless the local branch is already gone. It removes the worktree that has the branch and the
@@ -750,7 +750,7 @@ resume <run-id>` of a land run that stopped at any step ends in the same state.
 
 The research, plan, implement, review and judge sessions use the roles `researcher`, `planner`, `implementer`,
 `reviewer` and `judge`. The `summarizer` sessions, which compress the notes of the run memory, use the role
-`summarizer`. A role takes its model and thinking level from `--agents` and the agents tables, else from the project
+`summarizer`. A role takes its model and thinking level from `--agents` and the agents tables, else from the host
 agent: the Pi default model and thinking level. The package table gives `summarizer` the thinking level `low` and
 nothing else. See [Roles](#roles). Every session gets the same tools, and the same instructions: the session is not the
 user's main agent. Like every workflow script, `ship` and `campaign` read the scripts, prompts and agents table of the
@@ -758,15 +758,15 @@ package and of the project folder `.workflows/` of the current directory, also w
 repository. See [Workflow scripts](#workflow-scripts). `{ "planner": { "model": "openai/gpt-5" } }` in
 `.workflows/agents.json`, for example, gives the planner another model.
 
-Sessions are children of harness's children library in the harness host of the run's project, and use the host's
+Sessions are children of harness's children library in the harness host of the run, and use the host's
 providers and credentials: Pi's, from `~/.pi/agent` (or `PI_CODING_AGENT_DIR`), including the providers that Pi
 extension packages register, such as `cursor`. Their system prompt has the `AGENTS.md` instructions and skills that Pi
 loads for the worktree, as harness gives its children: project skills only in a project that Pi trusts.
 
 The tools are `read`, `write`, `edit` and `bash`, harness's `subagent`, `todo` and `codemode` tools, and the tools of
 the packages in Pi's settings that declare `"piDurable": { "extensions": [...] }`, such as pi-ipython and pi-rlm. The
-host loads these packages once, when it starts, so a package installed later reaches the runs of a project after its
-host restarts. A session of a run gets none of harness's store tools (`thread`, `rule` and `parley`),
+host loads these packages once, when it starts, so a package installed later reaches the runs of a host after the
+host restarts. A session of a run gets no extension that an entry of the host keeps off children (`uninherited`),
 in its model tools or in `codemode`. A subagent that a session spawns is a child of that session.
 
 A session of a run that a command starts is at depth 1 of harness's tree of children, in the tree
@@ -874,7 +874,7 @@ export const meta = {
   place of the current directory, so `sh`, `ok`, the sessions and the child runs work in that checkout, as
   `cd <path> && workflows <wf>` would. There is no clone and no new worktree. Any other value fails with
   `--repo <value> is not the top level of a Git repository` and the usage line of the script, and exits 2, before the
-  run starts. The project folder `.workflows/`, the files of the arguments, `--prompts` and the harness project stay
+  run starts. The project folder `.workflows/`, the files of the arguments, `--prompts` and the harness host stay
   those of the current directory. `judge` and `thermoloop` have it. `repo` is then a reserved argument name. A `repo`
   that is not a boolean fails with `meta.repo is not a boolean`, and `repo: true` with `worktree: true` fails with
   `meta.repo is for a script without meta.worktree`.
@@ -975,7 +975,7 @@ and a branch that exists with `--branch <name> exists`.
 ### Output
 
 The command prints `run <run-id>` on stdout, then each `phase` and `log` line on stderr when the script's next call
-runs, or when the script ends. The script runs in the host, which saves these lines in the project store, and the
+runs, or when the script ends. The script runs in the host, which saves these lines in the host store, and the
 command reads them from the store file about every 0.5 s. A read that fails prints `warning: cannot read the progress
 of run <run-id>: <error>` on stderr once for each series of failed reads, also with `--json`; the next good read prints
 the lines that it missed. See [Progress](#progress). When the script returns a result with `report`, a list of lines,
@@ -1028,7 +1028,7 @@ so `show` and a later command show its steps as `·` too; an end event of an ear
 valid, and the commands leave it out. A command that Ctrl+C detaches leaves them as they are. On a terminal and with `--json`, the tree draws once
 more then. A command that follows a run shows only the lines that come after it starts or reaches the run. `<title>`
 is the subject of the first `text` argument, or else the file name without `.js`, the workflow name, or `stdin`. The
-run's task ends as failed, and its saved calls stay in the project store for the resume. `workflows log <run-id>` shows the failed call with the last lines of its error. See [Log](#log).
+run's task ends as failed, and its saved calls stay in the host store for the resume. `workflows log <run-id>` shows the failed call with the last lines of its error. See [Log](#log).
 
 `workflows/scripts/ship.js` stops with an error when it gets no `start` argument: `ship runs only through workflows ship or
 workflows campaign, which give it the start commit`. `run("ship", { repo })` gets its own worktree and `start`, as
@@ -1096,7 +1096,7 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
     as `overlay` in its input, over the files of the caller run: the caller's keys are inherited, and the child's own
     keys win. Keys compare as written, so a relative key and the same file as an absolute key are two keys.
   - A run without files in its overlay saves no `overlay` field, and its sessions open with no overlay.
-- `args.from` names a saved root run of the project store, of any workflow and any status. The child run gets the
+- `args.from` names a saved root run of the host store, of any workflow and any status. The child run gets the
   prompts and agents table of the saved bundle of the last task of that run in place of the caller's; the scripts and
   the lib stay the caller's. `args.prompts` and `args.overlay` apply on top of them. A run ID that is not a root run
   of the store, such as a child run ID, fails the call with `run <name>: no run <id>`, and a `from` that is not a
@@ -1131,12 +1131,12 @@ returns its session at once, and `phase`, `log` and `title` need no `await`.
 | `await sh(cmd, { settle })` | Runs `sh -c <cmd>` in the current directory of the start, with no stdin: a command that reads stdin reads end of file. Returns stdout without the last newline, and throws on a nonzero exit code. The error is `sh exited with <code>: <cmd>`, then a newline and the stderr when it is not empty. With an array `[program, ...arguments]`, runs the program with no shell, and the error is `<program> <first argument> failed: <output>`, with the stdout and the stderr as the output. In the error, output of more than 4096 UTF-8 bytes is cut to a note `[… <n> bytes cut; workflows log <root-run-id> <call> shows the call]`, a newline and the longest end of the output that fits, from a line start when that end has one, else from a character, together at most 4096 bytes. The record of a failed call keeps its exit code, stdout and stderr, as [Saved inputs and resume](#saved-inputs-and-resume) says. With `settle: true`, a failure returns `{ error }` with that message, and a resume returns the same `{ error }` |
 | `await ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
-| `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow`, or of every workflow for `null`, in the project store. See [Past runs](#past-runs) |
-| `await harness(request)` | Sends one request to the harness host of the run's project and returns its reply. See [Harness requests](#harness-requests) |
+| `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow`, or of every workflow for `null`, in the host store. See [Past runs](#past-runs) |
+| `await harness(request)` | Sends one request to the harness host of the run and returns its reply. See [Harness requests](#harness-requests) |
 | `await todo.add(text)` | Adds a todo with the state `open` and the next ID to the list of the run, and returns it, `{ id, text, state }`. See [Todos](#todos) |
 | `await todo.set(id, state, text)` | Sets the state of the todo `id` of the list of the run to `open`, `doing`, `done` or `dropped`, and its text when `text` is given, and returns the todo |
 | `await todo.list()` | The todos of the list of the run, in ID order |
-| `await input(question)` | Asks the user `question` as an ask of the project, and returns its answer: from `workflows resume <run-id> --answer <text>`, the `workflow` tool with `resume` and `answer`, or an answer of the ask elsewhere. Only a root run can ask. See [Input](#input) |
+| `await input(question)` | Asks the user `question` as an ask of the host, and returns its answer: from `workflows resume <run-id> --answer <text>`, the `workflow` tool with `resume` and `answer`, or an answer of the ask elsewhere. Only a root run can ask. See [Input](#input) |
 | `prompts.<name>(inputs)` | The instructions of `prompts/<name>.md`, then each non-empty input as a `## <name>` section |
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
 | `title(text)` | Name the run `text` in `list`, `show` and the end lines, in place of the subject of its first `text` argument; the last call wins. `changeOf` calls it with the subject of the intent |
@@ -1149,7 +1149,7 @@ or an array of strings, or a `prompts.<name>` input that is not a string, fails 
 #### Past runs
 
 `pastRuns(workflow, { runs, limit })` returns the root runs of the script `workflow`, or of every script when
-`workflow` is `null`, in the project store whose last task completed with a result that does not wait for an answer,
+`workflow` is `null`, in the host store whose last task completed with a result that does not wait for an answer,
 newest first by run ID. Child runs, waiting runs and runs in progress are not in the list. It reads the tasks of
 `workflows.run` through the host, at the current task version and at earlier ones, and skips a task whose saved input
 does not have the fields below. Each run is an object:
@@ -1172,14 +1172,14 @@ saves its result, so a resume returns the same list and does not read the store 
 
 #### Harness requests
 
-`harness(request)` sends one request to the harness host of the run's project, with no start of a host, and returns
+`harness(request)` sends one request to the harness host of the run, with no start of a host, and returns
 the reply of the host. The request is an object with a non-empty string `type` and other JSON properties, such as
 `{ type: "item", action: "read", id: 1 }` or `{ type: "report", key, refs }`. Workflows does not check the request
 further: the host checks it, and its entries answer the request types that they serve.
 
 The call adds `caller: workflows:<run-id>` to a request that has no `caller`. A request that is not such an object
 fails with `harness got bad arguments: <path> <problem>`. An error of the host fails the call with its message, and no
-host fails it with `no harness host runs for <project>`. The call is of the kind `harness`, with the request as its
+host fails it with `no harness host runs for <host>`. The call is of the kind `harness`, with the request as its
 args, and saves the reply, so a resume returns it and does not send the request again.
 
 #### Todos
@@ -1262,7 +1262,7 @@ first:
 3. `<repo>/.workflows/agents.json`, in the project folder.
 4. `$XDG_CONFIG_HOME/workflows/agents.json`, or `~/.config/workflows/agents.json` without `XDG_CONFIG_HOME`.
 5. `workflows/agents.json` of the package: `{ "summarizer": { "thinking": "low" } }`.
-6. The project agent of harness: the Pi default model and thinking level.
+6. The host agent of harness: the Pi default model and thinking level.
 
 ```json
 {
@@ -1294,8 +1294,8 @@ level names are not checked here. A bad part is bad usage, exit 2, before the ru
 `agents` is a reserved argument name. `resume` and `check` take no `--agents`: a resume keeps the saved run layer.
 
 A call can give `provider`, `model` and `thinking`. Each field that the call gives overrides the role, and the role
-fills the rest. A session without a provider or a model from the call or the role takes the model of the project
-agent of harness (Pi's default model), and without a thinking level it takes the project agent's level, cut to the
+fills the rest. A session without a provider or a model from the call or the role takes the model of the host
+agent of harness (Pi's default model), and without a thinking level it takes the host agent's level, cut to the
 nearest level that the model has. Every session gets the same tools as the ship sessions, and the same instructions in
 its system prompt: it is a session of a workflows run, not the user's main agent. A model that the host's model
 registry does not have, or a `thinking` level that the model does not have, fails the `session` call, or the `ask`
@@ -1354,7 +1354,7 @@ schema, so they skip the calls that an earlier version saved: `show` of such a r
 result unless `settle`, so every call that failed runs again, also one that the script caught. `settle` is `true` when
 present: an `ask` or `sh` call with `settle` saves its failure as the result `{ "error" }`, and a resume returns it. A
 call that the end of its script cancelled saves no result and runs again, also with `settle`. The
-saved results stay in the project store also after the run fails. `phase` and `log` lines are progress, not saved
+saved results stay in the host store also after the run fails. `phase` and `log` lines are progress, not saved
 results. A resume prints the phase line of the first call that runs, and the lines after it. A call that returns a saved result drops the `log`
 lines before it, and keeps the last `phase` line waiting for the next call that runs.
 
@@ -1376,15 +1376,14 @@ keep them. `list --json` and `show --json` give them as `labels`.
 
 Each `start` request of a root run, the first one, its second try, and each resume, sends the labels as `labels`. The
 host checks them at the first start of a key, with the entry of each label kind, before it creates the task, and
-stores them for the task by its key. A kind with no entry, and a label that its entry refuses, such as an unknown
-item, an item that is done or dropped, or a parley that is not open and not a contract, refuse the start: the command
-prints `workflows: <reason of the host>` and exits 1, and a new run has no run directory. So a resume after the end of
-the item or the parley does not start. `land` of a run ID reports the commit that it lands for the first task of the
+stores them for the task by its key. A kind that no loaded entry checks, or a label that its entry refuses, refuses
+the start: the command prints `workflows: <reason of the host>` and exits 1, and a new run has no run directory. So a
+resume after its entry refuses the label does not start. `land` of a run ID reports the commit that it lands for the first task of the
 run (see [Land](#land)), and the host acts on the labels of that task. `serves` is a reserved argument name.
 
 ### Input
 
-`input(question)` asks the user a question, as an ask of the project in the store of the harness host (see "Asks and
+`input(question)` asks the user a question, as an ask of the host in the store of the harness host (see "Asks and
 parleys" in the spec of harness). The ask has the asker `workflows:<run-id>` and the title `question`, with its
 backticks removed and each run of two or more `*` cut to one, because a title is plain text; when that changes the
 question, the ask keeps the question as it was as its `view`. The call record saves the ID of the ask as `ask`. The
@@ -1440,8 +1439,8 @@ workflows resume <run-id> [--answer <text>]
 `workflows resume` finds the workflow that the run saved and continues the run. A run that is gone, with no run
 directory or no task, prints `workflows: no run <run-id> in <runs>` or `workflows: run <run-id> has no workflow`, and
 exits 4 (`UNFOLLOWABLE_EXIT` of `src/tool.ts`). Every command that reads a saved run (`resume`, `wait`, `stop`, `show`, `log`, `save` and `attach`) does the same. A run of a workflow script continues
-with the script that the run saved. The `project` file of the run directory names the run's project, so resume reaches
-the host of that project from any directory.
+with the script that the run saved. The `project` file of the run directory names the run's host, so resume reaches
+that host from any directory.
 
 Resume continues the pending work in the host. For a script, see [Saved inputs and resume](#saved-inputs-and-resume).
 For `ship`, it uses the work item, repository, start commit, `workflows/scripts/ship.js`, prompts and round limit
@@ -1463,7 +1462,7 @@ Else it is `false`, also for a task that has not ended and that another conversa
 ignore `--background`. Follow such a run with `workflows wait <run-id>` or `workflows resume <run-id>`. A start with `--background` saves `notify` in the
 input of the run. A resume that starts a new task saves `notify` only with `--background`, whatever the last task
 had. A task saves `notify` only with a driver, so a task without a driver never has it. The driver of a task is the conversation of the host that the command runs in: `PI_SESSION_ID`, when
-`HARNESS_PROJECT` is the project of the run and `PI_SESSION_ID` is a conversation ID of the host (a number). A start
+`HARNESS_HOST` is the host of the run and `PI_SESSION_ID` is a conversation ID of the host (a number). A start
 saves it in the input of the run as `driver`. A resume that starts a new task saves the driver of the resume, or
 no driver, whatever the last task had. A resume that follows a task that has not ended does not change it. See
 [The `workflow` tool of the host](#the-workflow-tool-of-the-host) for what `notify` and the driver do.
@@ -1471,7 +1470,7 @@ no driver, whatever the last task had. A resume that follows a task that has not
 A run has one live task at a time. When the run's last task has not ended, because it runs in the host or waits for
 the host to start, resume follows that task and prints its outcome. When the host runs, resume prints the progress
 lines of the task's current execution from its start. When no host runs, resume starts it and prints the progress
-lines that come after. A host that starts continues the unfinished runs of its project on its own. When resume starts
+lines that come after. A host that starts continues its unfinished runs on its own. When resume starts
 a new task, it prints the progress lines of that task. Resume reads the run's tasks, their keys and the ask of the
 open `input` call in one read of the store, then the state of that ask from the host. When two resumes of a run that ended run at the same time, there are two cases:
 
@@ -1519,7 +1518,7 @@ Runs saved before runs moved into the harness host stay in their run directories
 A host keeps the version of workflows that it loaded when it started. Each `start` request, of a new run or of a
 resume, gives the version of the workflows task, and a host with another version refuses it before it creates
 anything. The command then prints `workflows: This host has version <n> of workflows.run, not <m>: stop the host so
-it starts again with the installed version (the harness host of project <project> has pid <pid>: kill <pid>)` and
+it starts again with the installed version (the harness host <host> has pid <pid>: kill <pid>)` and
 exits 1. A new run then has no run directory; a resumed run keeps its tasks as they were. When a command follows a task
 that it did not start, it checks the version of that task in the same way.
 
@@ -1579,7 +1578,7 @@ workflows wait <run-id> [--json]
 
 `workflows wait` follows a run to its outcome, and never starts a task or stops the run. It prints `run <run-id>`, then
 the same outcome lines, JSON line and exit code as `resume`. A waiting run prints its question and exits 3. A run whose task ended, completed or not, prints its
-outcome from the project store: `wait` starts no host and no task, so a failed run prints its `failed` and `continue
+outcome from the host store: `wait` starts no host and no task, so a failed run prints its `failed` and `continue
 with` lines and exits 1. A run whose task has not ended is followed as `resume` follows it, with every step of the run
 from its first line, and `wait` starts the host when none runs. `wait` checks the version of the host's task as `resume` does, and refuses a run that another version
 saved with `workflows: run <run-id> was saved by an earlier version of <workflow> and cannot be waited for`, and exits
@@ -1652,8 +1651,8 @@ workflows list
 workflows list --json
 ```
 
-`workflows list` prints one line for each run of the harness project of the current directory, newest run ID first:
-`<run-id> <workflow> <state> <title>`. Runs of other projects are not listed. `<workflow>` is the script name. Child
+`workflows list` prints one line for each run of the harness host of the current directory, newest run ID first:
+`<run-id> <workflow> <state> <title>`. Runs of other hosts are not listed. `<workflow>` is the script name. Child
 runs are not listed: they are tasks of their caller. The title is the last `title(text)` of the run, such as the subject of the intent of
 `thermoloop`, else the subject of the first `text` argument, such as the work item for ship and the goal for campaign, or
 else the script name. `<state>` is the state of the run, which `runStatus` in `src/run/past.ts` alone computes, with
@@ -1682,15 +1681,15 @@ without a worktree.
 `steps` has the step lines of the run, the same lines as the `steps` of `show <run-id> --json`: a step that still runs
 when the run ended gets the mark of its end.
 Only the runs that have a run directory with a `project` file are listed. The command writes that file before it
-prepares the run, so a run directory of the project whose run has no task is listed as `<run-id> - unstarted -`, and
+prepares the run, so a run directory of the host whose run has no task is listed as `<run-id> - unstarted -`, and
 with `--json` as `{ "runId", "state": "unstarted", "repository": null }`, with no other field: its run is about to
 start, or its command stopped before the host created the task. `LISTED` is the union of these two strict shapes,
 `ROW` of `src/cli/saved.ts` for a run with a task and the shape of an unstarted run. `list` takes no argument.
 
-`list` reads the project store file read-only and does not start the host, so no run continues. It takes no lock that
+`list` reads the host store file read-only and does not start the host, so no run continues. It takes no lock that
 the host waits for, and runs no checkpoint of the file. A store whose schema pi-durable must update first cannot open
 read-only: `list`, `show` and `save` then fail with `<store> needs a schema update that only its harness host makes:
-start the host once, such as with harness --project <project> host, and run the command again`.
+start the host once, such as with harness --host <host> host, and run the command again`.
 
 ## Sweep
 
@@ -1698,7 +1697,7 @@ start the host once, such as with harness --project <project> host, and run the 
 workflows sweep [<branch>|<run-id>...] [--yes] [--install-hook] [--json]
 ```
 
-`workflows sweep` prints one line `<run-id> <word> <branch> <worktree>` for each run of the harness project of the
+`workflows sweep` prints one line `<run-id> <word> <branch> <worktree>` for each run of the harness host of the
 current directory, newest run ID first, whose worktree is on a merged branch (`landed`) or on a branch with no commit
 of the run (`dropped`). With `--json`, it prints one JSON array of `{ "runId", "swept", "branch", "worktree" }`, with the schema `SWEPT_RUNS` of `src/cli/commands/sweep.ts`. `swept`
 is the word that `--yes` writes for the run: `landed` for a merged branch, `dropped` for a branch that is not merged or has no commit of its runs.
@@ -1707,10 +1706,10 @@ has a run directory with a `project` file, its last task has ended, a task of th
 saved it, its saved input has a worktree, the worktree exists, and the worktree is on a branch. For a run of an earlier
 version, `sweep` reads only the `worktree` of its saved input. A run of a later version, a run without a worktree, a
 run that has not ended, a detached worktree, and a worktree that is not a Git worktree of its own are never swept.
-`sweep` reads the project store file read-only, as `list` does, and never starts the host. When the project store
-file does not exist, `sweep` prints `workflows: cannot sweep: the project store <store> does not exist, so no run
+`sweep` reads the host store file read-only, as `list` does, and never starts the host. When the host store
+file does not exist, `sweep` prints `workflows: cannot sweep: the host store <store> does not exist, so no run
 directory counts as unstarted; remove the run directories that you do not need from <runs directory> by hand`, removes
-nothing and exits 1, also without `--yes`. With arguments, `sweep` needs no project store.
+nothing and exits 1, also without `--yes`. With arguments, `sweep` needs no host store.
 
 Before the merge test, a branch whose commit, `git rev-parse refs/heads/<branch>`, is the saved `worktree.start` of
 every run of the branch has no commit of its runs: it is not merged and gets `dropped`, with no merge test and no `gh`
@@ -1725,7 +1724,7 @@ request in the list has the commit that the worktree is on as its head. A reposi
 call, and its branch is not merged. A branch name that comes back in a later run, with a merged pull request of an
 earlier commit, is not merged. `sweep` runs every `gh` call before it removes anything. A failed `gh` call, a missing
 `gh`, or a `gh` output that is not a list, prints `workflows: cannot ask gh whether <branch> is merged, so it counts as
-not merged: <error>` on stderr, and the branch is not merged: a run of the project is left out, and a given branch
+not merged: <error>` on stderr, and the branch is not merged: a run of the host is left out, and a given branch
 gets `dropped`.
 
 With `--yes`, `sweep` removes each worktree in order, and prints its line after the removal. It runs
@@ -1748,7 +1747,7 @@ stay, so `list` and `show` still show the run, and their JSON gives the word as 
 `sweep` sends no request to the host, and closes no item: a merged pull request does not close the item of its run.
 `land` reports the commit of a run that it lands (see [Land](#land)).
 
-`sweep` also prints one line `<run-id> unstarted <run directory>` for each run directory of the project whose run has
+`sweep` also prints one line `<run-id> unstarted <run directory>` for each run directory of the host whose run has
 no task (the `unstarted` runs of `list`) and whose `project` file is more than 1 hour old, after the merged runs. With
 `--json`, each is an object `{ "runId", "directory" }` in the same array. With `--yes`, after every `gh` call, `sweep`
 removes these run directories. A run directory with `repository/` or `.worktrees/` is kept when the clone in
@@ -1760,7 +1759,7 @@ the exit code does not change.
 
 With arguments, `sweep` takes only the branches that they give, in the given order and each once, in the main
 checkout of the repository of the current directory (the first worktree of `git worktree list`), and leaves the
-unstarted run directories. It needs no project store: without one, no run has a branch. An argument is a run ID or a
+unstarted run directories. It needs no host store: without one, no run has a branch. An argument is a run ID or a
 branch:
 
 - A run ID of the store, root or child, gives the branch of the run: the `change.branch` of its result, else the
@@ -1814,7 +1813,7 @@ workflows show <run-id> --json
 workflows show [<run-id>] --pick
 ```
 
-`workflows show` prints one run from the store of its project: the line `run <run-id> <workflow> <state> <title>`,
+`workflows show` prints one run from the store of its host: the line `run <run-id> <workflow> <state> <title>`,
 with the fields of `workflows list`, then the steps of [Progress](#progress) from the first line of the run, then the
 report lines, or the `failed` and `continue with` lines. Once the run's task ended, the steps that still ran are `✓`
 when it completed, `·` when it was aborted, and `✗` otherwise. The calls of a run are in [Log](#log).
@@ -1857,8 +1856,8 @@ When a call runs again after a resume, `show` shows only its latest attempt. Wit
 object with both trees: `{ <run fields>, "agent"?, "todos", "steps", "stepNames", "calls", "agents" }`, with `report` for a run with a
 result or `error` for a failed or orphaned run, never both, with the schema `SHOWN` of `src/cli/commands/show.ts`, a
 union of these three strict shapes. The run fields are those of [List](#list). `agent` is
-`{ "conversation", "project" }`, what `harness attach` needs to open the agent of the run: the agent that works now,
-else the last agent to start, as [Attach](#attach) takes it (`runAgent` of `src/records/tree.ts`), and the project of
+`{ "conversation", "host" }`, what `harness attach` needs to open the agent of the run: the agent that works now,
+else the last agent to start, as [Attach](#attach) takes it (`runAgent` of `src/records/tree.ts`), and the host of
 the run; a run without an agent has none. `error` is the error of a failed run or the reason of an orphaned run, and
 `todos` is the list of todos of the run, as in [Todos](#todos): an array of `{ "id", "text", "state" }` in ID order,
 or `[]` when the run has no todo, and
@@ -1918,7 +1917,7 @@ The runs are those of `list` without the unstarted ones. The mark is `◉` runni
 in any case; the arrows move, Enter takes the run, and Esc or Ctrl+C exits 130. While the pick waits for a key, the
 command reads the runs again 1 s after each read ends and draws the new lines, with the typed filter kept and the cursor
 on the same run, else on the first match. A read that fails keeps the lines it has, and a read that finds no run shows
-`nothing matches`. A project with no run at the first read prints `workflows: no runs in the project of <cwd>` and
+`nothing matches`. A host with no run at the first read prints `workflows: no runs in the host of <cwd>` and
 exits 1.
 
 With `--pick`, on a terminal, the command then asks `Pick an agent:` with the lines that `show` prints of the run: the
@@ -1944,7 +1943,7 @@ Ctrl+C exits 130. A run that ended with no agent prints `workflows: run <run-id>
 the pick exits 130. `--pick` without a terminal, with `--agents` or `--json`, or with more than one run ID, is bad
 usage.
 
-`show` exits 0 for every run it can show. It reads the project store through pi-durable's storage functions, as `list`
+`show` exits 0 for every run it can show. It reads the host store through pi-durable's storage functions, as `list`
 does, and does not start the host. It reads the file read-only as `list` does. An unknown run ID, or a run directory
 without a `project` file, prints the
 `no run` error of `resume`. `show` shows a run that another version saved, ended or not, from its task record only,
@@ -1962,7 +1961,7 @@ workflows log <run-id> <call>
 workflows log <run-id> --follow
 ```
 
-`workflows log` prints what a run did from the store of its project: its steps first, then the calls of one step, and
+`workflows log` prints what a run did from the store of its host: its steps first, then the calls of one step, and
 the full output of one call. It reads only the root tasks, the progress and the call records of the run, in one read,
 so it also prints the steps, the calls and the end of a run that another version saved, which `show` leaves out. The
 end line has the state of the outcome of its task.
@@ -2066,9 +2065,9 @@ workflows attach <run-id> [--conversation <id>] [--side]
   as `show --json` and `show --pick` give it.
 - The command opens the session that works now, as `show --agents` marks it `◉`. When no session works, it opens the
   last session that started. `show --json` gives the same session as its `agent`.
-- It runs `harness --project <project> attach --conversation <id>`, with `--side` when given, with the harness CLI of
+- It runs `harness --host <host> attach --conversation <id>`, with `--side` when given, with the harness CLI of
   this install, in this terminal, and exits with its code. A child that a signal ends exits 1. Harness owns the open:
-  it starts the host of the run's project when none runs, checks the conversation before Pi starts, and runs Pi in
+  it starts the host of the run when none runs, checks the conversation before Pi starts, and runs Pi in
   this terminal. With `--side` in an hc terminal (`HC_TERMINAL_ID` is set), it opens Pi in a new herdr-app pane to the
   right of this terminal instead, and exits 0. See the harness spec, Open in Pi.
 
@@ -2102,7 +2101,7 @@ with its `export const meta` header. Only the script is saved: no prompts, agent
   replace it with --force` and exits 1. With `--force`, the file replaces the project script of the name, or adds a
   project script before the package script of the name.
 
-`save` reads the project store as `show` does, and does not start the host. It exits 0 when it wrote the file. `--json`
+`save` reads the host store as `show` does, and does not start the host. It exits 0 when it wrote the file. `--json`
 has no effect.
 
 ## Outline
@@ -2160,14 +2159,14 @@ lines.
 
 ## Runs in the harness host
 
-A run executes in the [harness](https://github.com/Vzlentin/harness) host of a project, as a task of the entry of
-workflows, `src/entry.ts`. harness picks the project from the current directory of the command (or
-`HARNESS_PROJECT`): the project with the longest directory that contains it, or `main`. One host runs per project,
-with one store, `$XDG_STATE_HOME/harness/<project>/durable.sqlite`, that holds the project agent, its subagents, and
-the runs of the project with their saved calls and sessions. The command is a client: it prepares the run (the
-arguments, the run ID, the run directory and the worktree), writes the project to the `project` file of the run
+A run executes in the [harness](https://github.com/Vzlentin/harness) host, as a task of the entry of
+workflows, `src/entry.ts`. harness picks the host from the current directory of the command (or
+`HARNESS_HOST`): the host with the longest directory that contains it, or `main`. One host process runs for each name,
+with one store, `$XDG_STATE_HOME/harness/<host>/durable.sqlite`, that holds the host agent, its subagents, and
+the runs of the host with their saved calls and sessions. The command is a client: it prepares the run (the
+arguments, the run ID, the run directory and the worktree), writes the host to the `project` file of the run
 directory, starts the host when none runs, asks it to start the run's task, and follows the run. `resume`, `wait`,
-`stop`, `show` and `save` read the `project` file, so they reach the run's project from any directory.
+`stop`, `show` and `save` read the `project` file, so they reach the run's host from any directory.
 
 - The host loads its entries when it starts: the `piDurable` entries of the packages in Pi's settings, and the entries
   of harness's `entries.json`. Each command that can start a host sets the entry `workflows` there to `dist/entry.js`
@@ -2175,12 +2174,12 @@ directory, starts the host when none runs, asks it to start the run's task, and 
   host that started with another version of workflows runs that
   version until it restarts. A host that started before the entry was set refuses a start with
   `workflows: Unknown task kind: workflows.run: the harness host started before it had the entry of workflows; stop it
-  so it starts again with the entry (the harness host of project <project> has pid <pid>: kill <pid>)`, and no run
+  so it starts again with the entry (the harness host <host> has pid <pid>: kill <pid>)`, and no run
   directory stays. When the entry loads, it compares the version of its `@earendil-works/pi-durable` with the version of
   the one that its harness resolves. When they differ, the load fails with `workflows uses
   @earendil-works/pi-durable <version>, but its harness uses <version>; install equal versions of the @earendil-works
   packages for harness and workflows`, and the host does not start: the command says `The harness host exited
-  with code 1; see <host.log>`, and the error is in `host.log`. A host of a project inherits the environment of
+  with code 1; see <host.log>`, and the error is in `host.log`. A host inherits the environment of
   the command that starts it, so `sh` and `ok` calls and the sessions' tools see that environment.
 - `sh` and `ok` run in the host's process. A host that stops, or crashes, stops its runs, and the host continues them
   when it starts again.
@@ -2188,7 +2187,7 @@ directory, starts the host when none runs, asks it to start the run's task, and 
   key>`. The task of each resume finds the sessions of the earlier tasks of the run. When the run completes, its task
   closes its sessions and their subagents. When it fails or stops, it closes only what is under its sessions, such as
   their subagents, and stops the turns of its sessions, which stay for a resume.
-- The run lists its sessions in the session-scoped document `workflows.sessions` of the project store, keyed by the
+- The run lists its sessions in the session-scoped document `workflows.sessions` of the host store, keyed by the
   root run ID. Each record has `run`, `conversation`, `task` and `label`, the role name that opened the
   session. A record that an earlier version saved can have no `label`. This `label` is not the call label of `show`.
 - Each try of a run is a task that harness starts with the key `wf:<run-id>#<n>`, from 1. A new task of a run gets the
@@ -2196,7 +2195,7 @@ directory, starts the host when none runs, asks it to start the run's task, and 
   store as the task that it continues. `stop`, and `resume` of a task that has not ended, reach the task by its own key
   in that document. A task that has no key there, such as one that no `start` created, fails them with
   `workflows: run <run-id> has no harness task key for its task <task-id>`.
-- The entry gives the host the catch-up hook `workflows.runs`. Before each input of the project agent, the host calls
+- The entry gives the host the catch-up hook `workflows.runs`. Before each input of the host agent, the host calls
   it with what it said the agent saw at the last catch-up, `{ lastTaskId, pending }`: the highest task ID of harness's
   document of keys, and the `workflows.run` tasks that were not terminal. The hook reads each task after `lastTaskId`,
   and each task in `pending`. A task of another kind is skipped, and a task that is not terminal goes in `pending`.
@@ -2218,7 +2217,7 @@ directory, starts the host when none runs, asks it to start the run's task, and 
 
 ### The `workflow` tool of the host
 
-The entry also gives the conversations of the host the `workflow` tool: the project agent, its subagents, and the
+The entry also gives the conversations of the host the `workflow` tool: the host agent, its subagents, and the
 subagents of sessions. The sessions of a run do not get it. `src/tool.ts` defines it once for the host and for Pi: its
 description, its parameters, its output schema, the command arguments of a call, how the command runs and how its
 stderr lines become progress updates and steps, and the text and the outcome of a result. The description tells the model to start or resume a run only when the user asks for that run in his
@@ -2226,7 +2225,7 @@ message, and that a contract or a goal file is not a go; the skill gives the sam
 guidelines. It takes the parameters of [The `workflow` tool](#the-workflow-tool) of
 Pi, and runs the `workflows` command of the same install as a child process with the Node of the host, in the
 `cwd` of the call, else the directory of the conversation, with `--json`. `args.agents` reaches the command as `--agents=<text>`, so a bad part is the
-error result of the command's usage error, before a run exists. It sets `HARNESS_PROJECT` to the project of the host and
+error result of the command's usage error, before a run exists. It sets `HARNESS_HOST` to the name of the host and
 `PI_SESSION_ID` to the conversation ID.
 
 - When the command prints `run <run-id>`, the running output of the call gets `run <run-id>: if this call stops, the
@@ -2280,8 +2279,8 @@ error result of the command's usage error, before a run exists. It sets `HARNESS
   it with `resume`. A call
   that a host restart interrupts does not run again; its error result also keeps the running output.
 - The command saves the conversation as the `driver` of the task, and each child run, also a new task of a child
-  run, gets the driver of its caller's current task. When the driver is the project agent or a conversation of the
-  children library, the new sessions of the task are children of that conversation: under the project agent at depth
+  run, gets the driver of its caller's current task. When the driver is the host agent or a conversation of the
+  children library, the new sessions of the task are children of that conversation: under the host agent at depth
   1, under a subagent at depth 2. Else, such as for a task with no driver, they are in the tree
   `workflows:<root-run-id>`. A session of a run under a subagent is in the subagent's
   list of children, so closing that subagent closes the session.
@@ -2329,7 +2328,7 @@ checkout through the link `pi/node_modules/@vzlentin/workflows`, see the README.
 
 The extension runs each workflow as a child process of the `workflows` command of its dependency
 (`<package>/dist/cli.js`), with the Node that runs Pi, in the `cwd` of the call, else the directory of the session, always with `--json`. With `background`, the call returns at once, and the extension posts the outcome of the run to the
-session as a message, see [Background runs in Pi](#background-runs-in-pi). So a run that starts in Pi is a normal run of the project of that directory, and `workflows resume`
+session as a message, see [Background runs in Pi](#background-runs-in-pi). So a run that starts in Pi is a normal run of the host of that directory, and `workflows resume`
 follows or continues it from a terminal.
 
 ### The `workflow` tool
@@ -2358,8 +2357,8 @@ The tool takes one of `name`, `script`, `resume` or `save`, plus `args` with `na
   error `background works only with name, script or resume`, and no command starts.
 - `cwd`, with `name` or `script`, is the absolute path of the directory where the command starts, in place of the
   directory of the conversation. The project scripts, the `.workflows` configuration and the default repository of the
-  run come from it. The harness project of the host tool stays the project of the host; the extension of Pi sets no
-  `HARNESS_PROJECT`, so its run is a run of the project of `cwd`. The commands that follow a run, `resume` and the
+  run come from it. The harness host of the host tool stays the host of the conversation; the extension of Pi sets no
+  `HARNESS_HOST`, so its run is a run of the host of `cwd`. The commands that follow a run, `resume` and the
   `wait` of a background run in Pi, run in the directory of the conversation, and find the run by its ID through the
   `project` file of its run directory, as from any directory. With `resume` or `save`, it is
   the error `cwd works only with name or script`. A relative path is the error `cwd must be an absolute path: <cwd>`,
@@ -2421,7 +2420,7 @@ is cut after its run line, with no outcome, still posts the result of its run. A
 the `workflow` and the `repository` of the outcome into the run that the session follows, and the widget shows them; it
 appends no entry. A call with `background` whose own outcome has a `state` that is not `running`, such as a
 resume of a run that ended, ends the run as a resume without `background` does, so the wait posts nothing. The wait
-finds the run by its ID, so it also follows a run of another project. When the wait prints an
+finds the run by its ID, so it also follows a run of another host. When the wait prints an
 outcome whose `state` is not `running`, the extension sends the message `workflow-result`, with the text of a
 call without `background` for that outcome (the summary, then the report lines of a run that is `done`, with the limits on
 the summary and the report lines of the host tool; for a waiting run,
@@ -2485,7 +2484,7 @@ text>`, or `run <run-id>: workflows exited with <code>` with no stderr, so the e
 `workflows list --json` in Pi's working directory, and lists the runs in that order, one line each:
 `<run-id>  <workflow>  <state>  <title>`, with the state and the result as `workflows list` gives them, under the
 title `Show workflow run`. With no run, it notifies
-`No workflow runs in this project`. When the list fails, it notifies its stderr as an error.
+`No workflow runs in this host`. When the list fails, it notifies its stderr as an error.
 
 For the chosen run, it reads [`workflows show <run-id> --agents --json`](#show) once. When the `show` fails, it
 notifies its stderr as an error, such as `workflows: no run <run-id>`, or `workflows show exited with <code>` with no
@@ -2513,12 +2512,12 @@ attach fails, it notifies the error `<stderr>. Run in another terminal: workflow
 
 Runs live in `$XDG_STATE_HOME/workflows/runs/<run-id>`, by default `~/.local/state/workflows/runs/<run-id>`:
 
-- `project`: the name of the harness project whose store holds the run: its saved inputs, calls, sessions and progress
+- `project`: the name of the harness host whose store holds the run: its saved inputs, calls, sessions and progress
 - `swept`: `landed` or `dropped`, after `sweep --yes` removed the branch of the run and its worktree (see
   [Sweep](#sweep)); a child run directory gets it too when its run has the branch
 - `sweeping`: the marker of a removal of `sweep --yes` that has not finished
 
-The project store is `$XDG_STATE_HOME/harness/<project>/durable.sqlite`. See [Runs in the harness
+The host store is `$XDG_STATE_HOME/harness/<host>/durable.sqlite`. See [Runs in the harness
 host](#runs-in-the-harness-host).
 
 A ship run also has:
@@ -2571,7 +2570,7 @@ The engine files in `src/`:
 
 - `cli.ts`: the `workflows` command entry point.
 - `cli/main.ts`: the command line: the terminal, the table of commands, usage and `--version`.
-- `cli/host.ts`: the connection to the harness host, the task keys, the run directories and the project store file.
+- `cli/host.ts`: the connection to the harness host, the task keys, the run directories and the host store file.
 - `cli/saved.ts`: the saved runs of the command: their run directory, root tasks and their keys, the status that
   `list` and `show` print, and progress.
 - `cli/follow.ts`: how the command follows a run to its outcome, the answer of a waiting run, and the Ctrl+C presses.
@@ -2596,7 +2595,7 @@ The engine files in `src/`:
 - `records/log.ts`: the text of `workflows log`: the flat short log of a run, each line with its time and the path of
   its run, with the start and end of each run, its steps and the calls that did not end done, the calls of one step,
   and the full text of one call.
-- `records/store.ts`: the command's read-only reads of the project store: the tasks of the runs, harness's task
+- `records/store.ts`: the command's read-only reads of the host store: the tasks of the runs, harness's task
   keys, their progress, calls and lists of todos.
 - `cli/terminal/redraw.ts`: how the command draws the tree of steps of a run on stderr.
 - `launch/input.ts`: the generic entry point `workflows <wf>`: the checked arguments of a run, its run ID, its saved
@@ -2613,23 +2612,23 @@ The engine files in `src/`:
 - `workflow/roles.ts`: the `agents.json` tables, the `--agents` parser, their merge, and the role of a name.
 - `cli/commands/check.ts`: the static analysis of `workflows check`.
 - `run/version.ts`: the kind and version of the script task, and the task types that the `run/` files share.
-- `run/past.ts`: the saved root runs of the project store, for the `pastRuns` call and `run(name, { from })`, the task
+- `run/past.ts`: the saved root runs of the host store, for the `pastRuns` call and `run(name, { from })`, the task
   of a run that the commands go by, the first task of a run, whose list of todos is the list of the run, and
   `runStatus`, the one place that computes the status of a run.
 - `run/progress.ts`: the progress events of a run, their document, and the lines that wait for the next call.
-- `run/calls.ts`: the workflow script calls and their records in the project store.
+- `run/calls.ts`: the workflow script calls and their records in the host store.
 - `run/keys.ts`: the one owner of the format of the store keys of the calls, `<run ID>/<call key>`, and of the step
   names, `s<n>` and `<run ID>/s<n>`.
 - `run/asks.ts`: the asks of the `input` calls in the store of the host: the asker and the title of an ask, its
   requests, the value of its answer, and the answer of `resume --answer`.
-- `run/requests.ts`: the requests of a run to the host of its project: the args of a `harness` call, and the send of
+- `run/requests.ts`: the requests of a run to its host: the args of a `harness` call, and the send of
   one request with the run as its caller.
 - `run/sessions.ts`: the sessions on harness's children library, their move to the model of their role before a turn,
   and the end of the sessions of a run.
 - `run/child.ts`: the child runs that the `run` calls start.
 - `run/sandbox.ts`: the run of a script in the sandbox, with its globals and prompts.
 - `run/task.ts`: the task of every script run, its phase, its outcome, and the message of a background run.
-- `run/catchup.ts`: the catch-up hook `workflows.runs`, which tells the project agent about the runs that ended.
+- `run/catchup.ts`: the catch-up hook `workflows.runs`, which tells the host agent about the runs that ended.
 - `git.ts`: run a process, and Git commands.
 
 The script side in `workflows/`, published as it is:

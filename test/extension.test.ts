@@ -126,7 +126,7 @@ wait)
 		echo '{"runId":"'"$2"'","state":"done","result":{"code":0},"value":1,"report":["one"]}' ;;
 	esac ;;
 list)
-	if [ -e list.fails ]; then echo "workflows: no harness project" >&2; exit 1; fi
+	if [ -e list.fails ]; then echo "workflows: no harness host" >&2; exit 1; fi
 	if [ -e runs.json ]; then cat runs.json; else echo '[]'; fi ;;
 show) if [ -e show.json ]; then cat show.json; else echo "workflows: no run $2" >&2; exit 1; fi ;;
 attach) case "$2" in *-bad) echo "workflows: run $2 has no session" >&2; exit 1 ;; esac ;;
@@ -641,8 +641,8 @@ describe("the workflow tool", () => {
 
 	it("gives the question of a waiting run, and continues the run with the answer", async () => {
 		const cwd = await sandbox();
-		// The command runs as a child process, which finds the host of this process through HARNESS_PROJECT.
-		process.env.HARNESS_PROJECT = "main";
+		// The command runs as a child process, which finds the host of this process through HARNESS_HOST.
+		process.env.HARNESS_HOST = "main";
 		const host = await startHost("main", hostModel().models);
 		const cli = [process.execPath, join(import.meta.dirname, "..", "src", "cli.ts")];
 		const real = fakePi([], cli).registered;
@@ -1120,12 +1120,12 @@ describe("the /workflows command", () => {
 
 	const commands = async () => (await readFile(join(root, "args.log"), "utf8")).split("\n").filter(Boolean);
 
-	it("says that the project has no run, and shows no list", async () => {
+	it("says that the host has no run, and shows no list", async () => {
 		await rm(join(root, "runs.json"));
 		const pi = fakePi();
 		const fake = fakeUi();
 		await pi.runCommand("workflows", fake.ui);
-		expect([fake.notes, fake.selects]).toEqual([[["No workflow runs in this project", "info"]], []]);
+		expect([fake.notes, fake.selects]).toEqual([[["No workflow runs in this host", "info"]], []]);
 	});
 
 	it("gives the error of a list that fails", async () => {
@@ -1133,7 +1133,7 @@ describe("the /workflows command", () => {
 		const pi = fakePi();
 		const fake = fakeUi();
 		await pi.runCommand("workflows", fake.ui);
-		expect([fake.notes, fake.selects]).toEqual([[["workflows: no harness project", "error"]], []]);
+		expect([fake.notes, fake.selects]).toEqual([[["workflows: no harness host", "error"]], []]);
 	});
 
 	/** An agent of `show --agents --json` on the model `sonnet`. */

@@ -602,7 +602,7 @@ export default function ({ events }) {
 
 		expect([run.code, run.stdout]).toEqual([1, []]);
 		expect(run.stderr).toEqual([
-			`workflows: Unknown task kind: workflows.run: the harness host started before it had the entry of workflows; stop it so it starts again with the entry (the harness host of project main has pid ${process.pid}: kill ${process.pid})`,
+			`workflows: Unknown task kind: workflows.run: the harness host started before it had the entry of workflows; stop it so it starts again with the entry (the harness host main has pid ${process.pid}: kill ${process.pid})`,
 		]);
 		expect(existsSync(runs()) ? await readdir(runs()) : []).toEqual([]);
 	});

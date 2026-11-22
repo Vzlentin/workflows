@@ -30,7 +30,7 @@ async function ran(script: string): Promise<string> {
 
 /** Stops the host that `harness attach` started as a separate process, and waits until it exits. */
 async function stopHost(): Promise<void> {
-	const client = await connect({ project: "main", start: false });
+	const client = await connect({ host: "main", start: false });
 	client?.close();
 	const pid = client?.pid;
 
@@ -138,7 +138,7 @@ describe("show --pick", () => {
 
 	it("fails with no runs", async () => {
 		const picked = await workflows(["show", "--pick"], { cwd: root, choose: async () => undefined });
-		expect([picked.code, picked.stderr]).toEqual([1, [`workflows: no runs in the project of ${root}`]]);
+		expect([picked.code, picked.stderr]).toEqual([1, [`workflows: no runs in the host of ${root}`]]);
 	});
 
 	it("reads the runs again while the pick waits, with the run ID of each run as its value", async () => {

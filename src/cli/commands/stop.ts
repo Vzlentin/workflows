@@ -22,7 +22,7 @@ export async function stop(args: readonly string[], terminal: Terminal, json: bo
 
 	if (endedStatus(latest) !== undefined) throw new Error(`run ${run.id} is not running`);
 	const key = keys.keyOf(latest);
-	const ended = await abortRun(terminal, run.project, key);
+	const ended = await abortRun(terminal, run.host, key);
 	const { outcome } = ended;
 
 	if (outcome?.status !== "aborted" && outcome?.status !== "orphaned") throw new Error(`run ${run.id} is not running`);

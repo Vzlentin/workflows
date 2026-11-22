@@ -1,13 +1,13 @@
 /**
- * The `workflows` command line, a client of the harness host of a project. `workflows <workflow> ...` starts a run of a
+ * The `workflows` command line, a client of a harness host. `workflows <workflow> ...` starts a run of a
  * workflow script in the host and follows it, `workflows resume <run-id>` continues or follows one, `workflows wait
  * <run-id>` follows one to its outcome, `workflows stop <run-id>` stops one, `workflows list` prints the runs of the
- * project, `workflows show <run-id>` prints the steps or the calls of one run, `workflows log <run-id>` prints the
+ * host, `workflows show <run-id>` prints the steps or the calls of one run, `workflows log <run-id>` prints the
  * short log of one run or the output of one of its calls, `workflows attach <run-id>` opens a session of one run in
  * Pi, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow;
- * `workflows sweep` removes the worktrees of the ended runs whose branch is merged, or the given branches. The project
+ * `workflows sweep` removes the worktrees of the ended runs whose branch is merged, or the given branches. The host
  * store holds the runs; a
- * run directory holds the run's `project` file and whatever the workflow writes there.
+ * run directory holds the run's host file and whatever the workflow writes there.
  */
 import { readFile } from "node:fs/promises";
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -66,10 +66,10 @@ export type Terminal = Io & {
 	/** Pi's model registry, for `check`. */
 	readonly models: () => Promise<Models>;
 	/**
-	 * Connects to the host of `project`. With `start`, it starts the host when none runs; without, it gives undefined
+	 * Connects to the host `host`. With `start`, it starts the host when none runs; without, it gives undefined
 	 * then. Default: harness's client.
 	 */
-	readonly connect?: (project: string, start: boolean) => Promise<Client | undefined>;
+	readonly connect?: (host: string, start: boolean) => Promise<Client | undefined>;
 };
 
 export type Command = (

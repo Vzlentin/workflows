@@ -1,6 +1,6 @@
 /**
  * The asks of the `input` calls of a run: the questions that a root run puts to the user, in the store of the host of
- * its project, through the `ask` requests of harness. The run is the asker, and the answer of the ask is the answer of
+ * the run, through the `ask` requests of harness. The run is the asker, and the answer of the ask is the answer of
  * the call.
  */
 import { request } from "@vzlentin/harness/client";
@@ -11,7 +11,7 @@ import { Value } from "typebox/value";
 /** An `ask` request. */
 type AskRequest = Extract<Request, { type: "ask" }>;
 
-/** What sends the `ask` requests to the host of the project of the run, and gives the reply. */
+/** What sends the `ask` requests to the host of the run, and gives the reply. */
 export type Asks = (request: AskRequest) => Promise<Replies["ask"]>;
 
 /** The asker of the asks of the run `runId`. It is not a conversation, so harness pushes its answers to no one. */
@@ -88,14 +88,14 @@ export async function answerAsk(asks: Asks, runId: string, id: number, text: str
 }
 
 /**
- * The `ask` requests to the host of `project` that runs, the host of the task, each on its own connection. When
+ * The `ask` requests to the host `host` that runs, the host of the task, each on its own connection. When
  * `signal` aborts, a request rejects with its reason.
  */
-export function asksOf(project: string, signal: AbortSignal | undefined): Asks {
+export function asksOf(host: string, signal: AbortSignal | undefined): Asks {
 	return async (sent) => {
-		const reply = await request(sent, { project, start: false, signal });
+		const reply = await request(sent, { host, start: false, signal });
 
-		if (reply === undefined) throw new Error(`no harness host runs for ${project}`);
+		if (reply === undefined) throw new Error(`no harness host runs for ${host}`);
 
 		return reply;
 	};

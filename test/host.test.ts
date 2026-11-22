@@ -22,7 +22,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type Cursor, createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { request } from "@vzlentin/harness/client";
-import { addProject } from "@vzlentin/harness/projects";
+import { addHost } from "@vzlentin/harness/hosts";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -81,7 +81,7 @@ async function reached(name: string): Promise<void> {
 	while (!existsSync(join(root, `${name}.reached`))) await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
-/** A copy of the store of the `main` project, made while no host runs, as a command read it at this time. */
+/** A copy of the store of the `main` host, made while no host runs, as a command read it at this time. */
 async function copyStore(): Promise<string> {
 	const copy = join(root, "before.sqlite");
 
@@ -93,7 +93,7 @@ async function copyStore(): Promise<string> {
 }
 
 /**
- * `command`, whose first read-only open of the store of the `main` project opens `copy`: the command reads the store
+ * `command`, whose first read-only open of the store of the `main` host opens `copy`: the command reads the store
  * as it was earlier, and its later reads see the store as it is.
  */
 async function readingFrom<T>(copy: string, command: () => Promise<T>): Promise<T> {
@@ -304,7 +304,7 @@ async function otherDurableEntry(): Promise<string> {
 
 /** The line of a command that a host of the version `version` of the workflows task refused. */
 const refused = (version: number) =>
-	`workflows: This host has version ${version} of workflows.run, not ${TASK.version}: stop the host so it starts again with the installed version (the harness host of project main has pid ${process.pid}: kill ${process.pid})`;
+	`workflows: This host has version ${version} of workflows.run, not ${TASK.version}: stop the host so it starts again with the installed version (the harness host main has pid ${process.pid}: kill ${process.pid})`;
 
 describe("runs in the harness host", () => {
 	it("goes on in the host after Ctrl+C, and resume follows the same task from the start of its execution", async () => {
@@ -728,7 +728,7 @@ describe("runs in the harness host", () => {
 		const stopped = await workflows(["stop", id], { cwd: root });
 		expect([stopped.code, stopped.stderr]).toEqual([4, [`workflows: run ${id} has no workflow`]]);
 
-		// sweep needs the project store, which a run makes.
+		// sweep needs the host store, which a run makes.
 		await writeFile(join(root, "x.js"), 'return "done"');
 		expect((await workflows(["x.js"], { cwd: root })).code).toBe(0);
 		const young = await workflows(["sweep", "--yes"], { cwd: root });
@@ -938,7 +938,7 @@ describe("runs in the harness host", () => {
 		expect([shown.code, shown.stderr]).toEqual([
 			1,
 			[
-				`workflows: ${storeOf()} needs a schema update that only its harness host makes: start the host once, such as with harness --project main host, and run the command again`,
+				`workflows: ${storeOf()} needs a schema update that only its harness host makes: start the host once, such as with harness --host main host, and run the command again`,
 			],
 		]);
 	});
@@ -1438,10 +1438,10 @@ await Promise.all([...asks, Promise.reject(new Error("no"))])`,
 		]);
 	});
 
-	it("lists the runs of the project of the current directory, and resumes a run from another directory", async () => {
-		const project = join(root, "project");
-		await mkdir(project);
-		const real = addProject("demo", project);
+	it("lists the runs of the host of the current directory, and resumes a run from another directory", async () => {
+		const folder = join(root, "project");
+		await mkdir(folder);
+		const real = addHost("demo", folder);
 		await writeFile(join(real, "x.js"), 'return await agent("Script: one")');
 		await writeFile(join(root, "y.js"), 'return "main"');
 
@@ -1465,7 +1465,7 @@ await Promise.all([...asks, Promise.reject(new Error("no"))])`,
 		expect(shown.stdout[0]).toBe(`run ${id} x done, exit 0 x`);
 	});
 
-	it("gives a session the provider, model and thinking of its call, and the project agent's model without one", async () => {
+	it("gives a session the provider, model and thinking of its call, and the host agent's model without one", async () => {
 		await piSettings(root, [], { defaultProvider: "anthropic", defaultModel: "claude-haiku-5" });
 		await mkdir(join(root, ".workflows"), { recursive: true });
 		await writeFile(join(root, ".workflows", "agents.json"), JSON.stringify({ fast: { thinking: "low" } }));
@@ -1634,7 +1634,7 @@ async function until(check: () => Promise<boolean>): Promise<void> {
 describe("the workflow tool of the harness host", () => {
 	beforeEach(() => piSettings(root, [], { defaultProvider: "anthropic", defaultModel: "claude-haiku-5" }));
 
-	it("runs a script for the project agent, with its sessions under the agent and without the tool", async () => {
+	it("runs a script for the host agent, with its sessions under the agent and without the tool", async () => {
 		const model = hostModel();
 		const host = await startHost("main", model.models);
 
@@ -1652,7 +1652,7 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 				details: { steps: [expect.stringMatching(/^✓ check {2}\d+s$/), "  lists"] },
 				isError: false,
 			});
-			// The project agent is the root conversation 1, and its PI_SESSION_ID puts the session under it.
+			// The host agent is the root conversation 1, and its PI_SESSION_ID puts the session under it.
 			expect(await lineages()).toEqual([{ root: "1", parent: "1", depth: 1 }]);
 			const [agent, session] = model.calls;
 			expect(agent?.tools).toContain("workflow");
@@ -1743,12 +1743,12 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 		}
 	});
 
-	it("finds a run of another project by its ID, from the directory of any project", async () => {
+	it("finds a run of another host by its ID, from the directory of any host", async () => {
 		await mkdir(join(root, "project"));
-		const project = addProject("demo", join(root, "project"));
-		await mkdir(join(project, ".workflows", "scripts"), { recursive: true });
-		await writeFile(join(project, ".workflows", "scripts", "ask.js"), 'return await input("which?")\n');
-		const asked = await workflows(["ask", "--json"], { cwd: project });
+		const folder = addHost("demo", join(root, "project"));
+		await mkdir(join(folder, ".workflows", "scripts"), { recursive: true });
+		await writeFile(join(folder, ".workflows", "scripts", "ask.js"), 'return await input("which?")\n');
+		const asked = await workflows(["ask", "--json"], { cwd: folder });
 		const id = asked.id ?? "";
 		expect([asked.code, await rootTasks(id, "demo")]).toEqual([3, [{ status: "terminal", outcome: "completed" }]]);
 
@@ -1909,8 +1909,8 @@ return "done"`;
 
 	it("cuts the error of a parent run that a child run with a long error failed, and names the root run in the cut line", async () => {
 		await mkdir(join(root, "project"));
-		const project = addProject("demo", join(root, "project"));
-		const scripts = join(project, ".workflows", "scripts");
+		const folder = addHost("demo", join(root, "project"));
+		const scripts = join(folder, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		const command = "head -c 100000 /dev/zero | tr '\\0' 'x' | fold -w 99 >&2; echo last >&2; exit 1";
 		await writeFile(join(scripts, "child.js"), `await sh(${JSON.stringify(["sh", "-c", command])})`);
@@ -2044,10 +2044,10 @@ return "done"`;
 	});
 
 	it("starts a run in the background, and posts its outcome once to the conversation when it ends", async () => {
-		// The project agent of a project runs in its folder, so the inline script finds the project's `child` workflow.
+		// The host agent of a host runs in its folder, so the inline script finds the `child` workflow of that folder.
 		await mkdir(join(root, "project"));
-		const project = addProject("demo", join(root, "project"));
-		const scripts = join(project, ".workflows", "scripts");
+		const folder = addHost("demo", join(root, "project"));
+		const scripts = join(folder, ".workflows", "scripts");
 		await mkdir(scripts, { recursive: true });
 		await writeFile(
 			join(scripts, "child.js"),
@@ -2086,7 +2086,7 @@ return "done"`;
 
 	it("gives the judge divergence of a ship in the text of the workflow tool", async () => {
 		await repository(join(root, "project"));
-		addProject("demo", join(root, "project"));
+		addHost("demo", join(root, "project"));
 		const divergence = "The commit also fixes the README title.";
 		const model = hostModel({ edits: ["# Demo\n\nHello world\n"], judge: { ...PASSING_JUDGE, divergence } });
 		const host = await startHost("demo", model.models);
@@ -2106,7 +2106,7 @@ return "done"`;
 
 	it("gives the lessons of a ship and their report lines in the text of the workflow tool", async () => {
 		await repository(join(root, "project"));
-		addProject("demo", join(root, "project"));
+		addHost("demo", join(root, "project"));
 		const lesson = { cue: "When a typo fix", lesson: "grep the repository, not one file.", evidence: "run:x #1" };
 		const model = hostModel({ edits: ["# Demo\n\nHello world\n"], lessons: [lesson] });
 		const host = await startHost("demo", model.models);
@@ -2125,7 +2125,7 @@ return "done"`;
 
 	it("gives the lessons of a root rpi and their report lines in the text of the workflow tool", async () => {
 		await repository(join(root, "project"));
-		addProject("demo", join(root, "project"));
+		addHost("demo", join(root, "project"));
 		const lesson = { cue: "When a typo fix", lesson: "grep the repository, not one file.", evidence: "run:x #1" };
 		const model = hostModel({ edits: ["# Demo\n\nHello world\n"], lessons: [lesson] });
 		const host = await startHost("demo", model.models);
@@ -2144,7 +2144,7 @@ return "done"`;
 
 	it("gives the lessons of a campaign and their report lines in the text of the workflow tool", async () => {
 		await repository(join(root, "project"));
-		addProject("demo", join(root, "project"));
+		addHost("demo", join(root, "project"));
 		const lesson = { cue: "When a typo fix", lesson: "grep the repository, not one file.", evidence: "run:x #1" };
 		const item = "# Fix the README typo\n\nThe README says wrold.";
 		const model = hostModel({ items: [[item]], edits: ["# Demo\n\nHello world\n"], lessons: [lesson] });
@@ -2283,7 +2283,7 @@ return "done"`;
 			await tellAgent(`Script workflow: ${JSON.stringify({ script, background: true })}`);
 			const id = /^run (\S+) /.exec((await nextResult(0)).text)?.[1] ?? "";
 			await reached("g");
-			process.env.HARNESS_PROJECT = "main";
+			process.env.HARNESS_HOST = "main";
 
 			const postsOf = async (conversation: string) => {
 				process.env.PI_SESSION_ID = conversation;
@@ -2304,7 +2304,7 @@ return "done"`;
 		}
 	});
 
-	it("gives no driver to a resume from a conversation of another project", async () => {
+	it("gives no driver to a resume from a conversation of another host", async () => {
 		const host = await startHost("main", hostModel().models);
 
 		try {
@@ -2313,7 +2313,7 @@ return "done"`;
 			const id = started.id ?? "";
 			expect(started.code).not.toBe(0);
 			await writeFile(join(root, "ok"), "");
-			process.env.HARNESS_PROJECT = "other";
+			process.env.HARNESS_HOST = "other";
 			process.env.PI_SESSION_ID = "1";
 			const resumed = await workflows(["resume", id, "--background", "--json"], { cwd: root, host });
 

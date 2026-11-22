@@ -7,7 +7,7 @@ import type { Task, TaskRecord, TaskRuntime } from "@earendil-works/pi-durable";
 import type { Children, Place } from "@vzlentin/harness/children";
 import type { ScriptInput } from "../launch/input.ts";
 
-/** What the script task gets from the harness host: the children library and the place of the project's children. */
+/** What the script task gets from the harness host: the children library and the place of the host's children. */
 export type Host = { readonly children: Children; readonly place: Place };
 
 /**

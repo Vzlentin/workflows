@@ -1,5 +1,5 @@
 /**
- * The saved root runs of a project store, as the `pastRuns` script call and `run(name, { from })` read them from the
+ * The saved root runs of a host store, as the `pastRuns` script call and `run(name, { from })` read them from the
  * tasks of the kind `workflows.run`, at the current version and at earlier versions alike, and the first task of a run,
  * whose list of todos is the list of the run.
  */

@@ -6,11 +6,11 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { resolveProject } from "@vzlentin/harness/projects";
+import { resolveHost } from "@vzlentin/harness/hosts";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { failure, git, gitSucceeds, run as runCommand } from "../../git.ts";
-import { SWEEP_MARKER } from "../../launch/input.ts";
+import { hostFile, SWEEP_MARKER } from "../../launch/input.ts";
 import { checkedOutAt, hasBranch, mainCheckout, repositoryAt } from "../../launch/worktree.ts";
 import { RunBranches } from "../../records/branch.ts";
 import { SWEPT } from "../../records/run.ts";
@@ -26,7 +26,7 @@ export const SWEEP = "workflows sweep [<branch>|<run-id>...] [--yes] [--install-
 /** The line of the post-merge hook that `sweep --install-hook` writes. */
 const HOOK_LINE = "workflows sweep --yes >/dev/null 2>&1 &";
 
-/** How old the `project` file of a run directory with no task must be before `sweep` removes the directory. */
+/** How old the host file of a run directory with no task must be before `sweep` removes the directory. */
 const UNSTARTED_GRACE_MS = 60 * 60 * 1000;
 
 /**
@@ -73,20 +73,20 @@ export const SWEPT_RUNS = Type.Array(
 );
 
 /**
- * Prints the ended runs of the project of the current directory whose worktree is on a merged branch: its tip is in the
+ * Prints the ended runs of the host of the current directory whose worktree is on a merged branch: its tip is in the
  * local `main` or in `origin/main`, or GitHub merged a pull request at its tip; a failed `gh` call prints a line to
  * stderr and counts the branch as not merged. A branch whose tip is the saved start of every one of its runs has no
  * commit of the runs: it is not merged and gets `dropped`, and the sweep without arguments takes it too. With `--yes`,
  * it removes their worktrees and branches, and writes the word to the `swept` file of each run. It also prints the run
- * directories of the project whose run has no task and whose `project` file is more than an hour old, and `--yes`
+ * directories of the host whose run has no task and whose host file is more than an hour old, and `--yes`
  * removes them. With arguments, it takes only the branches that they give in the main checkout of the current
  * directory: a run ID gives the branch of the run, another argument is a branch. Each branch gets the worktree that has
  * it, when one has, and the runs that have it; a merged one gets `landed` and another one `dropped`, and each of its
  * runs gets the word. It checks every argument before it removes anything. With `--install-hook`, it writes a
- * post-merge hook that runs `sweep --yes`. It reads the project store and never asks the host, and runs every `gh` call
+ * post-merge hook that runs `sweep --yes`. It reads the host store and never asks the host, and runs every `gh` call
  * before it removes anything. A branch with a marker, which an interrupted `sweep --yes` left in a run directory, is
  * swept again with the word of the marker and no merge check when its runs have ended. Without arguments, it refuses to
- * run without a project store. It keeps an old run directory with a Git clone that has commits on no remote, and skips
+ * run without a host store. It keeps an old run directory with a Git clone that has commits on no remote, and skips
  * a branch whose run started a task again before its removal. It exits 1 when a removal failed, after it tried the
  * other branches.
  */
@@ -103,14 +103,14 @@ export async function sweep(args: readonly string[], terminal: Terminal, json: b
 	);
 
 	if (values["install-hook"]) return installHook(terminal);
-	const project = resolveProject(process.env, terminal.cwd);
-	const store = storeOf(project);
+	const host = resolveHost(process.env, terminal.cwd);
+	const store = storeOf(host);
 	const warn = (line: string) => terminal.stderr(`workflows: ${line}`);
 
 	const { taken, stale } =
 		positionals.length > 0
 			? { taken: await givenBranches(positionals, store, terminal.cwd, warn), stale: [] }
-			: await mergedSweep(project, store, warn);
+			: await mergedSweep(host, store, warn);
 
 	const removed: Swept[] = [];
 	let failed = false;
@@ -235,11 +235,11 @@ async function mergeWord(
 }
 
 /**
- * The ended runs of the project store `store` of the project `project` that `mergedRuns` takes, and its run directories
- * with no task whose `project` file is older than the grace. It throws when the store does not exist.
+ * The ended runs of the host store `store` of the host `host` that `mergedRuns` takes, and its run directories
+ * with no task whose host file is older than the grace. It throws when the store does not exist.
  */
 async function mergedSweep(
-	project: string,
+	host: string,
 	store: string,
 	warn: (line: string) => void,
 ): Promise<{ taken: Swept[]; stale: Unstarted[] }> {
@@ -247,7 +247,7 @@ async function mergedSweep(
 
 	if (runs === undefined) {
 		throw new Error(
-			`cannot sweep: the project store ${store} does not exist, so no run directory counts as unstarted; remove the run directories that you do not need from ${runsDirectory()} by hand`,
+			`cannot sweep: the host store ${store} does not exist, so no run directory counts as unstarted; remove the run directories that you do not need from ${runsDirectory()} by hand`,
 		);
 	}
 
@@ -260,8 +260,8 @@ async function mergedSweep(
 	}
 
 	const taken = await mergedRuns(ended, warn);
-	// A run directory gets its task within moments of its `project` file, so a younger one may be a run that starts.
-	const unstarted = await unstartedRuns(project, runs);
+	// A run directory gets its task within moments of its host file, so a younger one may be a run that starts.
+	const unstarted = await unstartedRuns(host, runs);
 
 	return { taken, stale: unstarted.filter(({ since }) => Date.now() - since > UNSTARTED_GRACE_MS) };
 }
@@ -301,7 +301,7 @@ async function candidate(id: string, task: RunTask, warn: (line: string) => void
 
 /**
  * The branches of the arguments `args`, in their order and each once, with the runs of each branch in the main checkout
- * of `cwd`, as the project store `store` has them; a branch needs no store. An argument is a run ID of that repository,
+ * of `cwd`, as the host store `store` has them; a branch needs no store. An argument is a run ID of that repository,
  * which gives the branch of the run, or a branch. A branch has the word of a marker in a run directory of its runs.
  * Otherwise it is `dropped` when its runs made no commit on it, that is it has runs and each saved start of them is its
  * tip, else `landed` when it is merged, else `dropped`. It throws for the first argument that it cannot sweep, before
@@ -443,7 +443,7 @@ async function sweepable(
 	id: string,
 	task: RunTask,
 ): Promise<{ branch: string; repository: string; path: string } | undefined> {
-	if (!existsSync(join(runsDirectory(), id, "project"))) return undefined;
+	if (!existsSync(hostFile(join(runsDirectory(), id)))) return undefined;
 	const worktree = inputWorktree(task.input);
 
 	if (worktree === undefined || (await repositoryAt(worktree.path)) === undefined) return undefined;

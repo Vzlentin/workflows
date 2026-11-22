@@ -1,6 +1,6 @@
 /**
  * Workflow scripts. A script is JavaScript that runs in the pi-codemode sandbox in the phase of the run's task, in the
- * harness host of the run's project. Each call it makes saves its result in a document of the project store, keyed by
+ * harness host of the run. Each call it makes saves its result in a document of the host store, keyed by
  * the run ID and the call, so when the script runs again after an interruption or a failure, the finished calls return
  * their saved results and only the rest runs. A call records its kind, args, phase and start time when it starts, and
  * its end time with its result or error when it ends; only a saved result replays, so a failed or stopped call runs

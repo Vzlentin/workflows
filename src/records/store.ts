@@ -1,5 +1,5 @@
 /**
- * The command's reads of a project store, which the harness host writes at the same time. The command opens the file
+ * The command's reads of a host store, which the harness host writes at the same time. The command opens the file
  * read-only: it takes no write lock, and its close runs no checkpoint, which would make the host wait.
  */
 import { existsSync } from "node:fs";
@@ -183,7 +183,7 @@ export type Opened = { readonly store: Store; readonly database: ReadOnlyDatabas
 
 /**
  * The store at `path`, open for reads with its database, or undefined when it does not exist. A store whose schema
- * pi-durable must update first cannot open read-only; the host of its project updates it when it starts.
+ * pi-durable must update first cannot open read-only; its host updates it when it starts.
  */
 export async function openReadOnly(path: string): Promise<Opened | undefined> {
 	if (!existsSync(path)) return undefined;
@@ -193,9 +193,9 @@ export async function openReadOnly(path: string): Promise<Opened | undefined> {
 		return { store: await SqliteStorage.open(database), database };
 	} catch (error) {
 		if (!String(error).includes("readonly")) throw error;
-		const project = basename(dirname(path));
+		const host = basename(dirname(path));
 		throw new Error(
-			`${path} needs a schema update that only its harness host makes: start the host once, such as with harness --project ${project} host, and run the command again`,
+			`${path} needs a schema update that only its harness host makes: start the host once, such as with harness --host ${host} host, and run the command again`,
 		);
 	}
 }

@@ -1,6 +1,6 @@
 /**
  * The roles of a run. A role is a name, given by `session(name)` or `as`. The `agents.json` tables give each name, or
- * `"*"` for every name, a model and a thinking level; a field that no table gives comes from the project agent.
+ * `"*"` for every name, a model and a thinking level; a field that no table gives comes from the host agent.
  */
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";

@@ -1,6 +1,6 @@
 /** `workflows show <run-id>`: the steps, the calls or the agents of a run. */
 import { parseArgs } from "node:util";
-import { resolveProject } from "@vzlentin/harness/projects";
+import { resolveHost } from "@vzlentin/harness/hosts";
 import { Todo } from "@vzlentin/harness/todo";
 import { type Static, Type } from "typebox";
 import { RUN_FIELDS, type TaskFields, taskFields } from "../../records/run.ts";
@@ -41,9 +41,9 @@ import type { PickItem } from "../terminal/pick.ts";
 export const SHOW = "workflows show (<run-id> [--agents] [--json] | [<run-id>] --pick)";
 
 /**
- * The agent of a run, as `harness attach` opens it: its conversation, and the project of the run, whose host has it.
+ * The agent of a run, as `harness attach` opens it: its conversation, and the host of the run, which has it.
  */
-const RUN_AGENT = Type.Object({ conversation: Type.Number(), project: Type.String() }, { additionalProperties: false });
+const RUN_AGENT = Type.Object({ conversation: Type.Number(), host: Type.String() }, { additionalProperties: false });
 
 /**
  * The fields of every run of `show --json`: the run fields, its agent when it has one, its todos, its step lines, the
@@ -92,7 +92,7 @@ const PICK_POLL_MS = 1000;
  * Prints the steps of a run as a tree, or with `--agents` its agents, then its report lines, or how it ended. A run
  * without steps prints its calls. With `--pick`, it asks on the terminal for a run when no run ID is given, then for a
  * line of that run, and prints the conversation of the agent of that line. It reads the task records, the progress, and
- * the call records when it needs them, from the project store only.
+ * the call records when it needs them, from the host store only.
  */
 export async function show(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const { values, positionals } = withUsage(
@@ -137,7 +137,7 @@ export async function show(args: readonly string[], terminal: Terminal, json: bo
 
 	const agent = runAgent(rows);
 
-	if (agent !== undefined) fields.agent = { conversation: agent.conversation, project: shown.project };
+	if (agent !== undefined) fields.agent = { conversation: agent.conversation, host: shown.host };
 
 	if (agents && json) {
 		const agentsShown: Static<typeof SHOWN_AGENTS> = { ...fields, ended, agents: rows };
@@ -167,8 +167,8 @@ type ShownRun = {
 	readonly workflow: string;
 	readonly title: string;
 	readonly fields: TaskFields;
-	/** The project of the run, whose host has its agents. */
-	readonly project: string;
+	/** The host of the run, which has its agents. */
+	readonly host: string;
 	readonly head: string;
 	readonly ended: boolean;
 	readonly todos: Todo[];
@@ -224,7 +224,7 @@ export async function readRun(run: SavedRun, withCalls: boolean): Promise<ShownR
 		workflow: input.name,
 		title,
 		fields,
-		project: run.project,
+		host: run.host,
 		head,
 		ended,
 		todos: todos.get(id) ?? [],
@@ -251,7 +251,7 @@ function otherRun(run: SavedRun, task: RunTask, fields: TaskFields): ShownRun {
 		workflow,
 		title,
 		fields,
-		project: run.project,
+		host: run.host,
 		head: `run ${run.id} ${workflow} ${stateText(fields.state)} ${title}`,
 		ended: true,
 		todos: [],
@@ -303,43 +303,39 @@ function agentItems(entries: readonly TreeEntry[]): PickItem<number>[] {
 }
 
 /**
- * Asks on the terminal which run of the project of the current directory to take, and gives its run ID, or undefined
+ * Asks on the terminal which run of the host of the current directory to take, and gives its run ID, or undefined
  * when the person cancels. The runs that have not ended come first, each with the steps that run now. While it waits,
  * it reads the runs again every second.
  */
 async function pickRun(terminal: Terminal, choose: Choose): Promise<string | undefined> {
 	const items = await runItems(terminal);
 
-	if (items.length === 0) throw new Error(`no runs in the project of ${terminal.cwd}`);
+	if (items.length === 0) throw new Error(`no runs in the host of ${terminal.cwd}`);
 
 	return choose("Pick a run:", items, () => runItems(terminal));
 }
 
-/** The items of the run picker, from the project store of the current directory, each with its run ID as its value. */
+/** The items of the run picker, from the host store of the current directory, each with its run ID as its value. */
 async function runItems(terminal: Terminal): Promise<PickItem<string>[]> {
 	const empty = { runs: [], steps: new Map<string, string>() };
 
-	const { runs, steps } = await reading(
-		storeOf(resolveProject(process.env, terminal.cwd)),
-		empty,
-		async ({ store }) => {
-			// The runs that have not ended come first in the picker.
-			const live = ({ row }: ListedRun) => row.state === "running" || row.state === "waiting";
-			// A stable sort keeps the newest first within each group.
-			const tasks = await runTasks(store);
-			const sorted = (await listedRuns(store, tasks)).toSorted((a, b) => Number(live(b)) - Number(live(a)));
+	const { runs, steps } = await reading(storeOf(resolveHost(process.env, terminal.cwd)), empty, async ({ store }) => {
+		// The runs that have not ended come first in the picker.
+		const live = ({ row }: ListedRun) => row.state === "running" || row.state === "waiting";
+		// A stable sort keeps the newest first within each group.
+		const tasks = await runTasks(store);
+		const sorted = (await listedRuns(store, tasks)).toSorted((a, b) => Number(live(b)) - Number(live(a)));
 
-			const found = new Map<string, string>();
+		const found = new Map<string, string>();
 
-			for (const { row, progress } of sorted) {
-				const status = row.state === "running" ? progress.status() : undefined;
+		for (const { row, progress } of sorted) {
+			const status = row.state === "running" ? progress.status() : undefined;
 
-				if (status !== undefined) found.set(row.runId, status);
-			}
+			if (status !== undefined) found.set(row.runId, status);
+		}
 
-			return { runs: sorted.map(({ row }) => row), steps: found };
-		},
-	);
+		return { runs: sorted.map(({ row }) => row), steps: found };
+	});
 
 	return runs.map(({ runId, title, workflow, state, result }) => {
 		const step = steps.get(runId);

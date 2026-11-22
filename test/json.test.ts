@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { request } from "@vzlentin/harness/client";
-import { AskWrite, type Request } from "@vzlentin/harness/protocol";
+import type { Request } from "@vzlentin/harness/protocol";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -15,7 +15,7 @@ import {
 	hostModel,
 	inputsOf,
 	logLine,
-	PROJECTS_ENTRY,
+	LABELS_ENTRY,
 	sandbox,
 	setEntries,
 	startHost,
@@ -41,25 +41,6 @@ async function workflowsDir(scripts: Readonly<Record<string, string>>, agents: A
 	await writeFile(join(folder, "agents.json"), JSON.stringify(agents));
 
 	for (const [name, source] of Object.entries(scripts)) await writeFile(join(folder, "scripts", `${name}.js`), source);
-}
-
-/** Sends the `item` request `sent` to a host of the sandbox, and gives the reply. */
-async function item(
-	sent:
-		| { action: "add"; title: string }
-		| { action: "set"; id: number; state: "done" }
-		| { action: "read"; id: number },
-) {
-	const host = await startHost();
-
-	try {
-		return await request(
-			sent.action === "read" ? { type: "item", ...sent } : { type: "item", caller: "test", ...sent },
-			{ start: false },
-		);
-	} finally {
-		await host.close();
-	}
 }
 
 /** The JSON of the one stdout line of `workflows <argv>` in the sandbox, which must match `schema`. */
@@ -108,12 +89,12 @@ describe("the JSON of list and show", () => {
 			state: "waiting",
 			question: "Q?",
 			startedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
-			agent: { conversation, project: "main" },
+			agent: { conversation, host: "main" },
 			todos: [{ id: 1, text: "first", state: "open" }],
 		});
 
 		const agents = await printed(SHOWN_AGENTS, ["show", id, "--agents", "--json"]);
-		expect(agents.agent).toEqual({ conversation, project: "main" });
+		expect(agents.agent).toEqual({ conversation, host: "main" });
 		expect(agents.agents).toEqual([
 			expect.objectContaining({ kind: "agent", conversation, model: expect.objectContaining({ model: "o-1" }) }),
 			expect.objectContaining({ kind: "run" }),
@@ -170,11 +151,10 @@ describe("the JSON of list and show", () => {
 });
 
 describe("serves", () => {
-	beforeEach(() => setEntries({ projects: PROJECTS_ENTRY }));
+	beforeEach(() => setEntries({ labels: LABELS_ENTRY }));
 
 	it("saves the label of a run, gives it in the JSON, and keeps it in the child runs", async () => {
 		await workflowsDir({ parent: 'return await run("child", {})', child: 'return "c"' });
-		expect(await item({ action: "add", title: "Build it" })).toMatchObject({ id: 1 });
 
 		const served = await workflows(["parent", "--serves", "item:1"], { cwd: root });
 		expect(served.code).toBe(0);
@@ -200,11 +180,8 @@ describe("serves", () => {
 			return [run.code, run.stderr.join("\n")];
 		};
 
-		expect(await failed("item:99")).toEqual([1, expect.stringMatching(/^workflows: .*\b99\b/)]);
-		expect(await failed("parley:no-such")).toEqual([1, expect.stringMatching(/^workflows: .*no-such/)]);
-		await item({ action: "add", title: "Built" });
-		await item({ action: "set", id: 1, state: "done" });
-		expect(await failed("item:1")).toEqual([1, expect.stringMatching(/^workflows: .*\bdone\b/)]);
+		expect(await failed("item:99")).toEqual([1, "workflows: The fixture refuses item:99"]);
+		expect(await failed("parley:no-such")).toEqual([1, expect.stringMatching(/^workflows: .*"parley"/)]);
 		expect(await failed("Not_A_Slug")).toEqual([1, expect.stringMatching(/^workflows: /)]);
 		const empty = await workflows(["plain", "--serves", ""], { cwd: root });
 		expect([empty.code, empty.stderr[0]]).toEqual([2, "workflows: --serves needs a label"]);
@@ -214,14 +191,12 @@ describe("serves", () => {
 
 	it("accepts and refuses the labels that a harness spawn accepts and refuses", async () => {
 		await workflowsDir({ plain: 'return "x"' });
+		const labels = ["item:1", "item:99", "parley:open", "Not_A_Slug"];
 		const host = await startHost("main", hostModel().models);
 		const spawned: boolean[] = [];
-		let served: string[] = [];
 
 		try {
-			served = await servedThings();
-
-			for (const [index, label] of served.entries()) {
+			for (const [index, label] of labels.entries()) {
 				const spawn: Request = {
 					type: "spawn",
 					requestId: `served-${index}`,
@@ -248,73 +223,10 @@ describe("serves", () => {
 
 		const ran: boolean[] = [];
 
-		for (const label of served) ran.push((await workflows(["plain", "--serves", label], { cwd: root })).code === 0);
+		for (const label of labels) ran.push((await workflows(["plain", "--serves", label], { cwd: root })).code === 0);
 
 		expect(ran).toEqual(spawned);
-		// An open parley, a contract and an open item are accepted; a closed parley and a done or dropped item are not.
-		expect(ran).toEqual([true, true, false, true, false, false]);
+		// The entry checks the kind item and refuses item:99; no entry checks the kind parley.
+		expect(ran).toEqual([true, false, false, false]);
 	});
 });
-
-/** The item ID of an `item` reply. */
-const ITEM_ID = Type.Object({ id: Type.Number() });
-
-/** The open items of an `item list` reply, in ID order. */
-const ITEM_LIST = Type.Object({ items: Type.Array(ITEM_ID) });
-
-/** Sends `sent` to the running host of the sandbox, and gives its reply. */
-async function send(sent: Request) {
-	return request(sent, { start: false });
-}
-
-/**
- * Makes in the running host of the sandbox an open parley, a contract and a closed parley, and an open, a done and a
- * dropped item, and gives their labels in that order. A contract gets an item, and the close of that item ends it.
- */
-async function servedThings(): Promise<string[]> {
-	const labels: string[] = [];
-
-	for (const [slug, end] of [
-		["served-open", "open"],
-		["served-contract", "contract"],
-		["served-closed", "done"],
-	] as const) {
-		labels.push(`parley:${slug}`);
-		const parley = { slug, title: "Served", goal: "Serve it.", design_sense: "One writer." };
-		const where = { title: "Where", kind: "your call" as const, options: [{ key: "a", label: "Here" }], plan: "a" };
-		const round: Request = { type: "ask", action: "round", caller: "test", parley, asks: [where, { title: "Terms" }] };
-		const written = Value.Parse(AskWrite, await send(round));
-		const [call, readBack] = (written.parleys[0]?.asks ?? []).map((ask) => ask.id);
-
-		if (call === undefined || readBack === undefined) throw new Error(`the parley ${slug} has no asks`);
-
-		if (end === "open") continue;
-
-		const answers = [
-			{ id: call, answer: "a" },
-			{ id: readBack, answer: "ok" },
-		];
-
-		await send({ type: "ask", action: "answer", caller: "user", answers });
-
-		if (end !== "done") continue;
-		const { items } = Value.Parse(ITEM_LIST, await send({ type: "item", action: "list" }));
-		const contractItem = items.at(-1);
-
-		if (contractItem === undefined) throw new Error(`the contract ${slug} has no item`);
-		await send({ type: "item", action: "set", caller: "test", id: contractItem.id, state: "done" });
-	}
-
-	for (const [title, state] of [
-		["Open", "open"],
-		["Done", "done"],
-		["Dropped", "dropped"],
-	] as const) {
-		const { id } = Value.Parse(ITEM_ID, await send({ type: "item", action: "add", caller: "test", title }));
-		labels.push(`item:${id}`);
-
-		if (state !== "open") await send({ type: "item", action: "set", caller: "test", id, state });
-	}
-
-	return labels;
-}

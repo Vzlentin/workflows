@@ -84,7 +84,7 @@ export async function resume(
 	// its driver, so it posts to this command's conversation only when it drives the task. The new task also gets the
 	// agents tables of this command's environment, and a bad table fails here, before any task starts. A task that has
 	// not ended keeps its table.
-	const driver = driverOf(process.env, run.project);
+	const driver = driverOf(process.env, run.host);
 	const sent = ended ? await resumedInput(input, driver, background) : input;
 	followed.following(true);
 	let client: Client | undefined;
@@ -95,8 +95,8 @@ export async function resume(
 			// The new task is never the first task of the run, so it refuses what its phase would refuse.
 			if (input.worktree !== undefined) await checkWorktree(run.id, input.worktree, false);
 			from = (await eventsOf(run)).length;
-			client = await connectTo(terminal, run.project, true);
-			const started = await startTask(client, run.project, sent, key);
+			client = await connectTo(terminal, run.host, true);
+			const started = await startTask(client, run.host, sent, key);
 
 			// Another resume of the run that took the same key first started its task, which this one then follows.
 			if (!isDeepStrictEqual(await inputOf(run, started.id), JSON.parse(JSON.stringify(sent)))) {
@@ -106,18 +106,18 @@ export async function resume(
 			}
 		} else {
 			const before = (await eventsOf(run)).length;
-			client = await connectTo(terminal, run.project, false);
+			client = await connectTo(terminal, run.host, false);
 
 			if (client === undefined) {
 				from = before;
-				client = await connectTo(terminal, run.project, true);
+				client = await connectTo(terminal, run.host, true);
 			} else {
 				const events = await eventsOf(run);
 				const started = events.findLastIndex((event) => event.kind === "start" && event.run === run.id);
 				from = started === -1 ? events.length : started;
 			}
 
-			checkVersion(client, run.project, await client.request({ type: "task", key }));
+			checkVersion(client, run.host, await client.request({ type: "task", key }));
 		}
 	} catch (error) {
 		client?.close();
@@ -129,7 +129,7 @@ export async function resume(
 
 	// A wait shows every step of the run, from its first execution.
 	return followAnswering(
-		{ id: run.id, project: run.project, key, input: sent, client, from: wait ? 0 : from },
+		{ id: run.id, host: run.host, key, input: sent, client, from: wait ? 0 : from },
 		followed,
 		json,
 		background && { posts: postsTo(sent, driver) },
@@ -199,16 +199,16 @@ async function openAsk(opened: Opened, id: string): Promise<number | undefined> 
 }
 
 /**
- * Whether the waiting run `run` still waits for its ask `ask`, which the host of its project keeps. With `answer`, it
+ * Whether the waiting run `run` still waits for its ask `ask`, which its host keeps. With `answer`, it
  * first answers the ask, and the run no longer waits.
  */
 async function settleAsk(
 	terminal: Terminal,
-	run: { readonly id: string; readonly project: string },
+	run: { readonly id: string; readonly host: string },
 	ask: number | undefined,
 	answer: string | undefined,
 ): Promise<boolean> {
-	const client = await connectTo(terminal, run.project, true);
+	const client = await connectTo(terminal, run.host, true);
 	const asks: Asks = (sent) => client.request(sent);
 
 	try {

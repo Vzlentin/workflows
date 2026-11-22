@@ -106,7 +106,7 @@ function aborted(signal: AbortSignal): Promise<void> {
 /** A run that the command follows: the task of `key` in the host of `client`, with the progress after `from`. */
 export type Following = {
 	readonly id: string;
-	readonly project: string;
+	readonly host: string;
 	readonly key: string;
 	readonly input: ScriptInput;
 	readonly client: Client;
@@ -168,7 +168,7 @@ export async function follow(
 		else for (const line of footer) terminal.stderr(line);
 	};
 
-	const opened = await openReadOnly(storeOf(run.project)).catch((cause: unknown) => {
+	const opened = await openReadOnly(storeOf(run.host)).catch((cause: unknown) => {
 		client.close();
 		terminal.following(false);
 		throw cause;
@@ -270,7 +270,7 @@ export async function follow(
 				return 130;
 			}
 
-			return await report(await abortRun(terminal, run.project, run.key));
+			return await report(await abortRun(terminal, run.host, run.key));
 		} catch (error) {
 			await stopPolling();
 

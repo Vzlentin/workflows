@@ -152,11 +152,11 @@ commit).
 - `{ resume: "<runId>" }` follows a run that goes on, or continues one that ended without a result. Add `background:
   true` to return at once. A background resume moves the run to this conversation: the outcome of the new task
   comes here as a message.
-- `workflows list` gives the runs of this project, newest first, with their state and result, such as `done, result
+- `workflows list` gives the runs of this host, newest first, with their state and result, such as `done, result
   shipped exit 0`. A run in the state `earlier-version` or `later-version` was saved by another version of
   workflows, and cannot resume. `workflows list --json` also gives the `question` of a waiting run, its `branch`,
   its `startedAt`, its `labels`, and the `item`, the `.md` file that the run was started with. `workflows show <runId>` gives the steps and the report of one run, and `workflows show <runId> --json` also gives its `agent`, the conversation and
-  the project that `harness attach` opens, and `stepNames`, the name that `workflows log <runId> <step>` takes for
+  the host that `harness attach` opens, and `stepNames`, the name that `workflows log <runId> <step>` takes for
   each line of `steps`. `workflows log <runId>` gives a flat log: each line has its time and the path of its run, such as
   `[ship/rpi]`, then the start or the end of a run, a step with its call count and size, or a call that failed or
   still runs. `workflows log <runId> <step>` gives the calls of one step with their exit codes

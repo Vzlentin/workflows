@@ -298,7 +298,7 @@ async function pick<T>(ui: ExtensionUIContext, title: string, options: Map<strin
 }
 
 /**
- * The `/workflows` command: it lists the runs of the project with `workflows list --json`, lets the user pick a run,
+ * The `/workflows` command: it lists the runs of the host with `workflows list --json`, lets the user pick a run,
  * then one of its agents from `workflows show --agents --json`, and opens that agent with `workflows attach
  * --conversation --side` in a herdr-app pane to the right when `inHerdr` says that Pi runs in an hc terminal, or says
  * how to attach from another terminal.
@@ -306,7 +306,7 @@ async function pick<T>(ui: ExtensionUIContext, title: string, options: Map<strin
 export function workflowsCommand(command: readonly string[], inHerdr: InHerdr, tool: ToolModule) {
 	return {
 		description:
-			"Pick a workflow run of this project, then one of its agents, and attach to it in a herdr-app pane to the right",
+			"Pick a workflow run of this host, then one of its agents, and attach to it in a herdr-app pane to the right",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const listed = await tool.runCli(command, ["list", "--json"], ctx.cwd);
 			const runs = listed.code === 0 ? JSON.parse(listed.stdout.join("\n")) : undefined;
@@ -318,7 +318,7 @@ export function workflowsCommand(command: readonly string[], inHerdr: InHerdr, t
 			}
 
 			if (runs.length === 0) {
-				ctx.ui.notify("No workflow runs in this project", "info");
+				ctx.ui.notify("No workflow runs in this host", "info");
 
 				return;
 			}
