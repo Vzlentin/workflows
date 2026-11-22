@@ -232,15 +232,29 @@ async function memory(ref = {}) {
 			return s.ask(lines.length === 0 ? text : `## memory\n${lines.join("\n")}\n\n${text}`, options);
 		};
 
-		const noted = async (round, prompt, rule) => {
+		// With `fields`, an object of field name to rule, the answer also has each field, and `noted` returns
+		// `{ text, ...fields }`.
+		const noted = async (round, prompt, rule, fields) => {
+			const names = Object.keys(fields ?? {});
+			const rules = names.map((field) => ` \`${field}\` is ${fields[field]}`).join("");
+
 			const answer =
-				`When you are done, answer with respond: text is ${rule} Each note is one line of at most ` +
+				`When you are done, answer with respond: text is ${rule}${rules} Each note is one line of at most ` +
 				`${NOTE_BYTES} bytes.`;
 
-			const { text, notes: added } = await ask(`${await prompt}\n\n${answer}`, { schema: NOTED });
+			const schema = {
+				...NOTED,
+				required: [...NOTED.required, ...names],
+				properties: {
+					...NOTED.properties,
+					...Object.fromEntries(names.map((field) => [field, { type: "string" }])),
+				},
+			};
+
+			const { notes: added, ...answered } = await ask(`${await prompt}\n\n${answer}`, { schema });
 			await note(name, round, added);
 
-			return text;
+			return fields === undefined ? answered.text : answered;
 		};
 
 		return { ask, noted };

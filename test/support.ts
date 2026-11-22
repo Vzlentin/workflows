@@ -499,6 +499,8 @@ export type Script = {
 	readonly judge?: Verdict | string | readonly (Verdict | string)[];
 	/** The `respond` answer of the commit message turn; a list gives one for each commit call. */
 	readonly commit?: Commit | readonly Commit[];
+	/** The commit subject and body of each implement turn; a list gives one for each implement turn. */
+	readonly fixes?: Commit | readonly Commit[];
 	/** The judge fails question 1 when the commit at HEAD of its directory has no message body. */
 	readonly needsBody?: boolean;
 	/** The work items of each split answer; a missing answer repeats the last one. */
@@ -581,6 +583,12 @@ export type Commit = { readonly subject: string; readonly body: string };
 export const COMMIT: Commit = {
 	subject: "fix: correct the README typo",
 	body: "The README said wrold. It now says world.",
+};
+
+/** The commit subject and body that an implement turn writes by default. */
+export const FIX_COMMIT: Commit = {
+	subject: "fix(readme): apply the review handoff",
+	body: "The round did what the handoff asked.",
 };
 
 /** The judge's answer to a commit with no message body, for `needsBody`. */
@@ -890,10 +898,15 @@ function respond(answer: ToolCall["arguments"][string]): AssistantMessage {
 }
 
 /** The `respond` answer of the nth implement turn: no notes when the script is silent. */
-function implemented(nth: number, reply: string, { note, silent }: Pick<Script, "note" | "silent">): AssistantMessage {
+function implemented(
+	nth: number,
+	reply: string,
+	{ note, silent, fixes = FIX_COMMIT }: Pick<Script, "note" | "silent" | "fixes">,
+): AssistantMessage {
 	const notes = silent ? [] : [`Implement ${nth}: README.md had wrold.`, ...(note === undefined ? [] : [note])];
+	const fix = Array.isArray(fixes) ? (fixes[nth - 1] ?? FIX_COMMIT) : fixes;
 
-	return respond({ text: reply, notes });
+	return respond({ text: reply, notes, subject: fix.subject, body: fix.body });
 }
 
 export type Outcome = {

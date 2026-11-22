@@ -276,6 +276,16 @@ type RememberingSession = {
 	 * returns the text.
 	 */
 	noted(round: number | undefined, prompt: string | Promise<string>, rule: string): Promise<string>;
+	/**
+	 * As above, and the answer also has each field of `fields` with the answer rule `` `<field>` is <rule>``. Returns
+	 * `{ text, ...fields }`.
+	 */
+	noted<F extends string>(
+		round: number | undefined,
+		prompt: string | Promise<string>,
+		rule: string,
+		fields: Record<F, string>,
+	): Promise<{ text: string } & Record<F, string>>;
 };
 
 /** Where a run memory is, and the campaign part of its notes. A child run that gets it goes on with the same memory. */

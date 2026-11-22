@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { abortFix } from "./abort-entry.ts";
 import {
 	COMMIT,
+	FIX_COMMIT,
 	type Commit,
 	conversationOf,
 	gateGit,
@@ -353,7 +354,7 @@ describe("workflows campaign", () => {
 		const { value: result, report, result: runResult } = JSON.parse(run.stdout[1] ?? "");
 		expect(runResult).toEqual({ status: "done", code: 0, score: 5 / 6 });
 		const worktree = worktreeOf(run.id);
-		expect(git(worktree, "log", "-1", "--format=%s")).toBe("round 2");
+		expect(git(worktree, "log", "-1", "--format=%s")).toBe(FIX_COMMIT.subject);
 		const head = git(worktree, "rev-parse", "--short", "HEAD");
 		expect(report[0]).toBe(`done Fix the README in 1 part, judge 0.83, ${head}`);
 		expect(report[1]).toBe("  first judge 0.00, thermoloop approved after 2 rounds");

@@ -1,7 +1,8 @@
 // The thermoloop: the review loop of a change. `workflows thermoloop [<change>]` reviews the change that `changeOf`
 // finds: the current branch from its merge base with `--base`, a PR number, a branch, a ref or a range. It commits the changes
 // of the checkout first as `wip`, takes the intent from `--item`, the PR or the commit messages, and fixes the change
-// in rounds until the reviewer answers SHIP. A change on another branch runs again as a child run in the worktree
+// in rounds until the reviewer answers SHIP. Each fix round commits with the Conventional Commit subject and the body
+// that the implementer writes for the work item. A change on another branch runs again as a child run in the worktree
 // that has that branch, else in a worktree of its own on it; a dirty worktree of that branch fails the run. A caller
 // gives `start`, the commit that its change starts from, with `item`, and may give `plan` and `reply`, the handoff and
 // the report of the implement before, `memory`, the `ref` of a run memory to go on with, and `patches`, the folder of
@@ -99,7 +100,7 @@ for (let round = 1; ; round++) {
 	const next = round + 1
 
 	phase(`round ${next}/${rounds}: implement`)
-	const fixed = await run("implement", { plan, round: next, start: before, message: `round ${next}`, memory: notes.ref })
+	const fixed = await run("implement", { plan, round: next, start: before, item, memory: notes.ref })
 	reply = fixed.reply
 
 	if (fixed.status !== "implemented") {

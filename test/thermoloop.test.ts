@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
 	fake,
+	FIX_COMMIT,
 	git,
 	LESSON,
 	LESSON_LINE,
@@ -147,7 +148,7 @@ describe("workflows thermoloop", () => {
 		);
 
 		expect(git(repo, "branch", "--show-current")).toBe("feature");
-		expect(git(repo, "log", "--format=%s", `${start}..HEAD`)).toBe("round 2\nfix the typo");
+		expect(git(repo, "log", "--format=%s", `${start}..HEAD`)).toBe(`${FIX_COMMIT.subject}\nfix the typo`);
 		expect(git(repo, "rev-parse", "HEAD^")).toBe(head);
 		expect(await readFile(join(repo, "README.md"), "utf8")).toBe(THANKED);
 	});
@@ -160,8 +161,34 @@ describe("workflows thermoloop", () => {
 
 		expect(run.code).toBe(0);
 		expect(run.stdout[1]).toBe(`approved ${ITEM} in 2 rounds, ${git(repo, "rev-parse", "--short", "HEAD")}`);
-		expect(git(repo, "log", "--format=%s", `${start}..HEAD`)).toBe("round 2\nfix the typo");
+		expect(git(repo, "log", "--format=%s", `${start}..HEAD`)).toBe(`${FIX_COMMIT.subject}\nfix the typo`);
 		expect(await readFile(join(repo, "README.md"), "utf8")).toBe(THANKED);
+	});
+
+	it("commits each fix round with the Conventional Commit subject and the body that the implementer writes", async () => {
+		const fix = { subject: "fix(readme): thank the reader", body: "The review asked for a thank-you line." };
+
+		const run = await workflows(["thermoloop", "--item", ITEM], {
+			cwd: repo,
+			script: { edits: [THANKED], verdicts: ["FIX", "SHIP"], fixes: [fix] },
+		});
+
+		expect(run.code).toBe(0);
+		expect(git(repo, "log", "--format=%s", `${start}..HEAD`)).toBe(`${fix.subject}\nfix the typo`);
+		expect(git(repo, "log", "-1", "--format=%B")).toBe(`${fix.subject}\n\n${fix.body}`);
+		const subjects = git(repo, "log", "--format=%s", `${start}..HEAD`).split("\n");
+		expect(subjects.filter((subject) => /^round \d+$/.test(subject))).toEqual([]);
+		expect(run.model.find("implement")?.prompt).toContain("`subject` is the commit subject of your change");
+	});
+
+	it("commits a fix round as fix: <item subject> when the implementer's subject is not a Conventional Commit", async () => {
+		const run = await workflows(["thermoloop", "--item", ITEM], {
+			cwd: repo,
+			script: { edits: [THANKED], verdicts: ["FIX", "SHIP"], fixes: [{ subject: "round 2", body: "" }] },
+		});
+
+		expect(run.code).toBe(0);
+		expect(git(repo, "log", "-1", "--format=%B")).toBe("fix: fix the README typo");
 	});
 
 	it("makes no harvest turn and gives no lessons when a SHIP leaves the memory empty", async () => {
@@ -425,7 +452,7 @@ echo '{"title":"Fix the typo of the README","body":"It says wrold."}'
 		]);
 		expect(dirname(path)).toBe(dirname(worktreeAt(repo, run.id)));
 		expect(git(path, "branch", "--show-current")).toBe("feature");
-		expect(git(repo, "log", "--format=%s", `${tip}..feature`)).toBe("round 2");
+		expect(git(repo, "log", "--format=%s", `${tip}..feature`)).toBe(FIX_COMMIT.subject);
 		expect(await readFile(join(path, "README.md"), "utf8")).toBe(THANKED);
 		// The checkout of the start stays as it was.
 		expect([git(repo, "branch", "--show-current"), git(repo, "rev-parse", "HEAD")]).toEqual(["main", start]);
@@ -524,7 +551,7 @@ echo '{"number":74,"title":"Fix the README typo","body":"It says wrold.","headRe
 		]);
 		expect(run.model.find("review")?.prompt).toContain(`## item\n# ${ITEM}\n\nIt says wrold.\n\n`);
 		expect(git(path, "branch", "--show-current")).toBe("fix-readme");
-		expect(git(repo, "log", "--format=%s", `${start}..fix-readme`)).toBe("round 2\nfix the typo");
+		expect(git(repo, "log", "--format=%s", `${start}..fix-readme`)).toBe(`${FIX_COMMIT.subject}\nfix the typo`);
 		expect([git(repo, "branch", "--show-current"), git(repo, "rev-parse", "HEAD")]).toEqual(["main", start]);
 		expect(git(repo, "status", "--porcelain")).toBe("");
 	});
