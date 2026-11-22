@@ -85,9 +85,12 @@ changes`; each review step logs `SHIP` or `FIX`. A failed commit message turn lo
 `judge <score>`. See the example of [Campaign](#campaign).
 
 The research session gets the work item and writes a research document: what the code that the work item touches
-does today, with `path:line` references, the patterns and tests of that area, and open questions. It documents and
-does not suggest changes, and if it has a subagent tool, can spawn subagents to search in parallel. The plan prompt
-gets its reply as its `research` section, after the work item. The research prompt has no memory and gives no notes.
+does today, with `path:line` references, the patterns and tests of that area, and open questions. The document also
+reports the false premises of the work item, the statements about the code that the code shows to be false, with
+`path:line` evidence, or says that it found none. It documents and does not suggest changes, and if it has a subagent
+tool, can spawn subagents to search in parallel. The plan prompt gets its reply as its `research` section, after the
+work item. The planner reports each false premise in its brief and does not build it. The research prompt has no
+memory and gives no notes.
 
 The work item ships onto the branch `ship/<run-id>`, or `--branch`, in a worktree next to the repository (see [The meta block](#meta)), and a shipped run renames that
 branch at the end: see [Branch name](#branch-name). The selected repository's checkout, index and local edits stay

@@ -10,6 +10,8 @@ Start from the research document below: it describes the code as it is today. Re
 
 Separate facts from assumptions. Check each fact that the plan relies on in the code, and check that each proof fails on the code as it is today. Reuse what the codebase already has before you plan new code. Investigation cannot expand the request.
 
+Read the False premises section of the research. Build only what the work item asks. Report each false premise in the brief as a fact, under Problem or Non-goals. Do not plan work that makes the premise true.
+
 ## Present the contract
 
 Give one short, plain-language brief:

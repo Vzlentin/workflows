@@ -10,6 +10,7 @@ Research the codebase for this change. Your only job is to document the code as 
 - Read repository instructions first. Then split the work item into research questions: which files and components it touches, how the current behavior works end to end, and which existing patterns, conventions and tests a change here must follow.
 - Search in parallel where questions are independent. If you have a subagent tool, spawn subagents to locate files, to trace a flow, and to find similar code, then read the files they name yourself before you rely on them.
 - Back every claim with a `path:line` reference. Separate what you read from what you infer, and say what you could not find.
+- Find each statement of the work item about the code that the code shows to be false, for example "X already exists", "Y calls Z" or "the test covers W". Report the false statement and what the code really shows, with `path:line` evidence. Do not suggest a fix.
 
 ## Write the research document
 
@@ -18,6 +19,8 @@ Research the codebase for this change. Your only job is to document the code as 
 **Findings:** one short section per component or flow, with `path:line` references.
 
 **Patterns and tests:** the conventions, similar implementations and tests that relate to this area.
+
+**False premises:** one line for each false statement of the work item, with what the code shows and its `path:line`. When there is none, say so.
 
 **Open questions:** what the code does not answer.
 
