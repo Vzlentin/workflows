@@ -22,7 +22,9 @@ Choose the size of the parts with the batch-size trade-off of Reinertsen (The Pr
 ```
 
 - Merge small changes that serve one purpose into one part: a version pin, a fixture or a rename does not pay for a ship alone.
+- A removal or a rename goes in one part, with every place that names the removed or renamed thing.
 - Split where an error would spread: a change that later parts build on, such as a protocol, a schema or a shared module, is its own part, first.
+- Part 1 turns each invariant that the goal states in prose, such as a boundary, a "never" or a "stays", into a check that the repository runs, such as a test or a lint rule: every later part runs that check.
 - Keep each part small enough for one implement and review session.
 
 The number of parts is your choice. When the goal gives a number or a list of parts, take it as the scope, not as the cut.
