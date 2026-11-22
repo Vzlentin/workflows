@@ -114,8 +114,8 @@ branch of the change. `result.code` is the exit code of the run, from the `meta.
 | ship | `rejected` | The judge scored the squashed commit 0. The commit and the branch stay. Give the branch and `value.findings`. |
 | ship | `stopped` | The review rounds ended without SHIP. Give the worktree (the path at the end of the first report line), the round patches in the run directory, and `value.handoff`, the handoff that the last round followed. |
 | ship, rpi, thermoloop | `blocked` | A round changed nothing. Give the worktree (for ship, the path at the end of the first report line) and `value.reply`, the implementer's reason. |
-| campaign | `done` | The branch, one line for each part with its commit and score, and the score and findings of the campaign judge (`result.score` and `value.findings`). |
-| campaign | `rejected` | The campaign judge gave 0. The commits and the branch stay. Give the same lines as for `done`. |
+| campaign | `done` | The branch, one line for each part with its commit and score, and the score and findings of the last campaign judge (`result.score` and `value.findings`). After a first campaign judge of 0, the second report line gives that score and the thermoloop status and rounds. |
+| campaign | `rejected` | The campaign judge gave 0 again after the thermoloop on the whole change. The commits and the branch stay. Give the same lines as for `done`. |
 | campaign | `stopped` | The user stopped the campaign at a part. Give the rundown when the result has one. |
 | campaign | `waiting` | A part failed, or is still at judge 0, and the campaign asks how to continue. See below. |
 | rpi | `implemented` | The commit `value.head` and the branch. |

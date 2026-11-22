@@ -337,6 +337,79 @@ describe("workflows campaign", () => {
 		]);
 	});
 
+	it("runs a thermoloop on the whole change after a campaign judge of 0, and judges it again", async () => {
+		const run = await workflows(["campaign", "--json", GOAL], {
+			cwd: repo,
+			script: {
+				items: [[FIRST]],
+				edits: [FIXED, FIX],
+				commit: [COMMIT],
+				judge: [PASSING_JUDGE, ZERO],
+				verdicts: ["SHIP", "FIX"],
+			},
+		});
+
+		expect(run.code).toBe(0);
+		const { value: result, report, result: runResult } = JSON.parse(run.stdout[1] ?? "");
+		expect(runResult).toEqual({ status: "done", code: 0, score: 5 / 6 });
+		const worktree = worktreeOf(run.id);
+		expect(git(worktree, "log", "-1", "--format=%s")).toBe("round 2");
+		const head = git(worktree, "rev-parse", "--short", "HEAD");
+		expect(report[0]).toBe(`done Fix the README in 1 part, judge 0.83, ${head}`);
+		expect(report[1]).toBe("  first judge 0.00, thermoloop approved after 2 rounds");
+		expect(result.head).toBe(head);
+		expect(await readFile(join(worktree, "README.md"), "utf8")).toBe(FIX);
+		expect(run.model.count("harvest")).toBe(1);
+
+		const json = JSON.parse((await workflows(["show", run.id ?? "", "--json"], { cwd: root })).stdout[0] ?? "");
+		const ran = json.calls.filter((call: { kind: string }) => call.kind === "run");
+		const labels = ran.map((call: { label: string }) => call.label.split(" ")[0]);
+		expect(labels).toEqual(["ship", "judge", "thermoloop", "judge"]);
+		const loop = ran[2].label.split(" ")[1];
+		// The first round reviews the change of the whole campaign, from its start commit.
+		expect(await readFile(join(runs(), loop, "round-1.patch"), "utf8")).toContain("+Hello world");
+	});
+
+	it("rejects a campaign that the judge after the thermoloop still gives 0", async () => {
+		const run = await workflows(["campaign", "--json", GOAL], {
+			cwd: repo,
+			script: {
+				items: [[FIRST]],
+				edits: [FIXED, FIX],
+				commit: [COMMIT],
+				judge: [PASSING_JUDGE, ZERO, ZERO],
+				verdicts: ["SHIP", "FIX"],
+			},
+		});
+
+		expect(run.code).toBe(1);
+		const { report, result: runResult } = JSON.parse(run.stdout[1] ?? "");
+		expect(runResult).toMatchObject({ status: "rejected", code: 1 });
+		expect(report[0]).toMatch(/^rejected Fix the README in 1 part, judge 0\.00, [0-9a-f]+$/);
+		expect(report[1]).toBe("  first judge 0.00, thermoloop approved after 2 rounds");
+		expect(run.model.count("judge")).toBe(3);
+		expect(report).toContain("  finding 1 FAIL: the typo stays.");
+	});
+
+	it("judges again after a thermoloop that stops at its last round", async () => {
+		const run = await workflows(["campaign", "--json", "--rounds", "1", GOAL], {
+			cwd: repo,
+			script: {
+				items: [[FIRST]],
+				edits: [FIXED],
+				commit: [COMMIT],
+				judge: [PASSING_JUDGE, ZERO],
+				verdicts: ["SHIP", "FIX"],
+			},
+		});
+
+		expect(run.code).toBe(0);
+		const { report, result: runResult } = JSON.parse(run.stdout[1] ?? "");
+		expect(runResult).toEqual({ status: "done", code: 0, score: 5 / 6 });
+		expect(report[1]).toBe("  first judge 0.00, thermoloop stopped after 1 round");
+		expect(run.model.count("judge")).toBe(3);
+	});
+
 	it("logs a failed commit message turn of the fix round, and squashes with the subject of the item", async () => {
 		const run = await workflows(["campaign", "--json", GOAL], {
 			cwd: repo,

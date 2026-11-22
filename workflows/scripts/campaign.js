@@ -4,7 +4,9 @@
 // fails the campaign. A part still at 0 is one squashed commit, and the user answers keep, one more fix round on their
 // words, reset or stop. A failed or reset part gets a rundown and a question, and the answer goes back to the split.
 // When every part shipped, judge.js judges the change of the whole campaign against the goal, which no part's judge
-// sees. The engine renames the branch from `subject` of the result, and sets its `change`.
+// sees. A campaign judge of 0 gets one thermoloop.js on the change of the whole campaign, from its start commit, and
+// judge.js judges it again: the second judge gives the status. The engine renames the branch from `subject` of the
+// result, and sets its `change`.
 // Each part is a todo of the run, not an item of the board: `open` after its split, `doing` from its part step, `done`
 // when it ships, and `dropped` at its reset, at a stop at it, or when a new split replaces it.
 // Every Git step is safe to repeat: a resume runs a step again when its result was not saved.
@@ -20,6 +22,8 @@ export const meta = {
 		{ kind: "agent", role: "planner", label: "split" },
 		{ kind: "loop", label: "each part: ship", steps: [{ kind: "run", workflow: "ship", label: "ship" }] },
 		{ kind: "run", workflow: "judge", label: "judge" },
+		{ kind: "run", workflow: "thermoloop", label: "at 0: thermoloop" },
+		{ kind: "run", workflow: "judge", label: "judge again" },
 	],
 }
 
@@ -342,16 +346,29 @@ await ensureBranch()
 
 if (stopped !== undefined) return notes.finish(goal, stopped)
 
-const head = done.at(-1).result.head
-
 // The judge of the whole campaign sees the change of every item at once, against the goal.
 phase(`all ${count(done.length)}`)
 
-const { status: verdict, score, findings } = await run("judge", { item: goal, start: first })
+let last = await run("judge", { item: goal, start: first })
+let head = done.at(-1).result.head
+const again = []
 
-// The final judge decides the status: `done` when it judged above 0, else its own `rejected`.
+// A first judge of 0 gets one thermoloop on the change of the whole campaign, and a second judge. The thermoloop
+// commits its rounds on the campaign branch, and leaves its round patches in its own run directory. A blocked or
+// stopped thermoloop still gets the second judge.
+if (last.status !== "judged") {
+	const loop = await run("thermoloop", { item: goal, start: first, rounds, memory: notes.ref })
+	const after = `${loop.rounds} round${loop.rounds === 1 ? "" : "s"}`
+	again.push(`  first judge ${last.score.toFixed(2)}, thermoloop ${loop.status} after ${after}`)
+	last = await run("judge", { item: goal, start: first })
+	head = await shortHead()
+}
+
+const { status: verdict, score, findings } = last
+
+// The last judge decides the status: `done` when it judged above 0, else its own `rejected`.
 const status = verdict === "judged" ? "done" : verdict
-const report = [`${status} ${name} in ${count(done.length)}, judge ${score.toFixed(2)}, ${head}`]
+const report = [`${status} ${name} in ${count(done.length)}, judge ${score.toFixed(2)}, ${head}`, ...again]
 
 // A divergence of `none` or an empty one adds nothing to the item line.
 const divergedOf = (divergence) =>

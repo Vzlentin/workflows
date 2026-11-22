@@ -21,6 +21,7 @@ the top of the script declares its arguments. See [Workflow scripts](#workflow-s
 `meta`, then runs in the worktree the child runs `workflows/scripts/rpi.js` and `workflows/scripts/thermoloop.js`, the commit
 message turn and the squash, and the child run `workflows/scripts/judge.js` on the squashed commit. `campaign` does the same, runs
 `workflows/scripts/ship.js` once for each work item, and `workflows/scripts/judge.js` once on the change of all the items.
+When that judge gives 0, `campaign` runs `workflows/scripts/thermoloop.js` once on that change, and `judge.js` again.
 `workflows/scripts/optimize.js` runs `workflows/scripts/ship.js` once for the candidate on each work item, and again
 for a baseline that cannot be kept.
 
@@ -325,6 +326,8 @@ Each round reviews the change, and on FIX the reviewer's handoff is implemented 
 has the step `round <n>/<rounds>: review`, after `round <n>/<rounds>: implement` from round 2.
 `ship` gives the script `start`, the commit that the change starts from, and `item`, so the script does none of the
 steps above, and `plan`, `reply` from `rpi`, which the first review gets, and `memory`, the `ref` of its run memory.
+`campaign` gives `start`, `item` (the goal), `rounds` and `memory` after a campaign judge of 0. It gives no `patches`,
+so the round patches go into the run directory of the thermoloop.
 
 The step `round <n>/<rounds>: implement` runs [implement](#implement) as a child run, with the handoff as the plan,
 round `<n>`, the commit of `HEAD` before the round as the start commit, the message `round <n>` and the `ref` of the run memory:
@@ -428,7 +431,7 @@ harvest while it waits for an answer. Its result then has `lessons`, and its par
 
 The command prints `run <run-id>`, the step `split`, then the step `part <n>/<total>: <subject>` on stderr before the
 steps of each part, and the step `all <n> part(s)`, with the step `judge` of the campaign judge under it, when every
-part shipped.
+part shipped. After a campaign judge of 0, the steps of the thermoloop and of the second judge follow under it.
 `<total>` is the number of parts known when the part starts: the parts that ran before it, this part, and the parts of
 the split after it. The steps and log lines of the part's ship run are under the part step, indented by 2:
 
@@ -468,6 +471,13 @@ terminal and in Pi they move under the part step when it comes.
   [Branch name](#branch-name), with the `subject` of the last split. The campaign judge gives the status: `done` and
   exit 0 when its score is above 0, and `rejected` and exit 1 when it is 0. The commits and the branch stay in each
   case. A campaign judge that fails fails the run, and a resume judges the campaign again.
+- When the campaign judge gives 0, the campaign runs the child run [`thermoloop`](#thermoloop) once on the same
+  change, with `start` at the start commit, the goal as `item`, `--rounds` and the run memory of the campaign. The
+  first judge's findings do not go to the reviewer. Then it runs the child run `judge` again on the same change, also
+  when the thermoloop is `blocked` or `stopped`. The second judge gives the status, the score and the findings of the
+  report and the result, and the commit of the first line is the branch head after the thermoloop. The line
+  `  first judge <score>, thermoloop <status> after <n> round(s)` follows the first line, with the score of the first
+  judge and the status and rounds of the thermoloop. When the first judge gives above 0, no thermoloop runs.
 
 - A part whose ship is `shipped` ships. A part whose ship is `rejected` (a judge score of 0) and whose judge gave
   findings gets one fix round: the child run
@@ -550,11 +560,12 @@ failed and was reset: its notes describe code that is gone` to the run memory. T
 `<subject>` is the first non-empty line of the goal without leading `#`. `<n>` in the `done` line counts the shipped
 parts. The number of the part step counts every part that ran. The result is
 `{ "status": "done", "subject", "head", "score", "findings", "change", "items": [{ "item", "result" }], "lessons" }`,
-where `score` and `findings` are those of the campaign judge, as in a ship result, with the status `rejected` when the
-campaign judge gave 0, or `{ "status": "stopped", "items", "rundown", "lessons", "change" }`,
+where `score` and `findings` are those of the last campaign judge, as in a ship result, with the status `rejected` when the
+last campaign judge gave 0, or `{ "status": "stopped", "items", "rundown", "lessons", "change" }`,
 with no `rundown` when the user stopped at the question about a part still at 0. A part that the user kept has `"kept": true` and `findings`. The `result` of
 each shipped part, and of the failed part in a stopped result, is its `ship` result, with its `divergence` and its child run ID as
-`runId`, and after a fix round that shipped, that the user kept or at which the user stopped, the `head`, `subject` and judge fields of the last fix round. `head` is the commit of the last part, and `change` has the main
+`runId`, and after a fix round that shipped, that the user kept or at which the user stopped, the `head`, `subject` and judge fields of the last fix round. `head` is the commit of the last part, or the branch head
+after the thermoloop when one ran, and `change` has the main
 checkout and the branch that the worktree ends on, as [Branch name](#branch-name) gives it.
 
 ## Optimize
@@ -2125,7 +2136,7 @@ store and calls no model.
   alone. `workflows outline judge` prints `judge  judge`, and `workflows outline` prints for the package scripts:
 
   ```text
-  campaign    split ─ each part: ship ─ judge
+  campaign    split ─ each part: ship ─ judge ─ at 0: thermoloop ─ judge again
   fix         fix ─ judge
   implement   implement
   judge       judge
