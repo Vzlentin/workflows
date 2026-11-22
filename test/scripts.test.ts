@@ -1701,7 +1701,7 @@ return findings[0].finding`,
 
 		const run = await workflows(["x.js"], {
 			cwd: root,
-			script: { failAt: { kind: "script", nth: 2, stopReason: "length" } },
+			script: { failAt: { kind: "script", nth: 2, cut: { stopReason: "length" } } },
 		});
 
 		expect(run.code).toBe(1);
@@ -1709,6 +1709,21 @@ return findings[0].finding`,
 		const resumed = await workflows(["resume", run.id ?? ""], { cwd: root });
 		expect([resumed.code, resumed.stdout]).toEqual([0, [`run ${run.id}`, "Reply to two, Reply to one"]]);
 		expect(resumed.model.calls.map((call) => call.prompt)).toEqual(["Script: two"]);
+	});
+
+	it("names the provider error of a cut answer", async () => {
+		await writeFile(
+			join(root, "x.js"),
+			'const one = await agent("Script: one")\nreturn await agent("Script: two") + ", " + one',
+		);
+
+		const run = await workflows(["x.js"], {
+			cwd: root,
+			script: { failAt: { kind: "script", nth: 2, cut: { stopReason: "length", errorMessage: "rate_limit_error" } } },
+		});
+
+		expect(run.code).toBe(1);
+		expect(run.stderr[0]).toMatch(/^failed x: The \S+ turn stopped: length: rate_limit_error$/);
 	});
 
 	it("reminds the model to call respond after an answer without it", async () => {

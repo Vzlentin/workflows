@@ -35,7 +35,7 @@
 		"@earendil-works/pi-durable": "1.6.0",
 		"@earendil-works/pi-mcp": "1.6.0",
 		"@earendil-works/pi-tui": "1.6.0",
-		"@vzlentin/harness": "git+https://github.com/Vzlentin/harness.git#614162834d40c2e14d0c439ea2614dac3972dd51",
+		"@vzlentin/harness": "git+https://github.com/Vzlentin/harness.git#bc5fcff50e750b86fa20112bf1b129639b7e9c95",
 		"typebox": "1.3.27"
 	},
 	"devDependencies": {

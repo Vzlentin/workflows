@@ -510,10 +510,15 @@ export type Script = {
 	/** The prompt that interrupts the run: Ctrl+C is pressed while it waits for its answer. */
 	readonly interruptAt?: { readonly kind: Kind; readonly nth: number };
 	/**
-	 * The prompt that the provider answers with an error, once: a retry of it is answered. With `stopReason`, the
-	 * provider answers a cut text that stopped for that reason instead.
+	 * The prompt that the provider answers with an error, once: a retry of it is answered. With `cut`, the provider
+	 * answers a cut text that stopped for `cut.stopReason` instead, with the provider error `cut.errorMessage` when it
+	 * is given.
 	 */
-	readonly failAt?: { readonly kind: Kind; readonly nth: number; readonly stopReason?: "length" };
+	readonly failAt?: {
+		readonly kind: Kind;
+		readonly nth: number;
+		readonly cut?: { readonly stopReason: "length"; readonly errorMessage?: string };
+	};
 	/** The plan prompt first calls `probe` and then `bash` to run `ls`, review and judge call `probe`, and implement calls `probe` next to its edit. */
 	readonly probe?: boolean;
 	/** A prompt whose requests this model never answers: they wait until they are aborted. */
@@ -706,7 +711,7 @@ export class FakeModel {
 		if (failAt?.kind === kind && failAt.nth === nth && !this.#failed) {
 			this.#failed = true;
 
-			if (failAt.stopReason !== undefined) return fauxAssistantMessage("cut", { stopReason: failAt.stopReason });
+			if (failAt.cut !== undefined) return fauxAssistantMessage("cut", failAt.cut);
 
 			return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" });
 		}

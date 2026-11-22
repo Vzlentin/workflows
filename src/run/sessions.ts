@@ -210,7 +210,10 @@ async function moveToRole(calls: Calls, child: Child): Promise<void> {
 
 /** Throws the error of the turn `key` whose answer does not count. */
 function failed(key: string, answer: Failure): never {
-	if (answer.reason === "cut") throw new Error(`The ${key} turn stopped: ${answer.stopReason}`);
+	if (answer.reason === "cut") {
+		const error = answer.errorMessage === undefined ? "" : `: ${answer.errorMessage}`;
+		throw new Error(`The ${key} turn stopped: ${answer.stopReason}${error}`);
+	}
 
 	if (answer.reason === "no-respond") throw new Error("the answer did not call respond");
 	const detail = answer.detail === undefined ? "" : ` ${JSON.stringify(answer.detail)}`;
