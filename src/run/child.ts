@@ -77,8 +77,8 @@ async function startChild(
 
 	try {
 		const run = { id, directory, cwd, root: script.root };
-		const { agents, serves, overlay, driver, definition } = script;
-		const input = await childInput({ name, args, bundle, agents, serves, overlay, driver }, run);
+		const { agents, labels, overlay, driver, definition } = script;
+		const input = await childInput({ name, args, bundle, agents, labels, overlay, driver }, run);
 		await runtime.commit(async (tx) => {
 			const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 			callOfKind(await tx.doc(CallDoc, key, null), "run", key).child = { task, runId: id };

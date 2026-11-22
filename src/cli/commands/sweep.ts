@@ -1,13 +1,12 @@
 /**
- * `workflows sweep`: removes the worktrees of the ended runs whose branch is merged, or the given branches with their
- * worktrees, and the old run directories that have no task.
+ * `workflows sweep`: removes the worktrees of the ended runs whose branch is merged or has no commit of the run, or the
+ * given branches with their worktrees, and the old run directories that have no task.
  */
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { resolveProject } from "@vzlentin/harness/projects";
-import { ServesInput } from "@vzlentin/harness/protocol";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { failure, git, gitSucceeds, run as runCommand } from "../../git.ts";
@@ -17,7 +16,6 @@ import { RunBranches } from "../../records/branch.ts";
 import { SWEPT } from "../../records/run.ts";
 import { everyRun, inputWorktree, reading, runTasks } from "../../records/store.ts";
 import { endedStatus, type RunTask, taskOf } from "../../run/past.ts";
-import { type Closed, closeItem, type HarnessArgs, runRequest } from "../../run/serves.ts";
 import { withUsage } from "../../workflow/find.ts";
 import { runsDirectory, storeOf } from "../host.ts";
 import type { Terminal } from "../main.ts";
@@ -49,32 +47,18 @@ const MARKED = Type.Object({
  */
 type Swept = { readonly subject: string; readonly runIds: readonly string[] } & Readonly<Static<typeof MARKED>>;
 
-/**
- * An entry of `sweep --json` for a run of a removed branch. `item` is the item that the run serves, with its state after
- * the sweep closed it; it is absent when the sweep did not close an item for the run.
- */
+/** An entry of `sweep --json` for a run of a removed branch. */
 const SWEPT_ENTRY = Type.Object(
 	{
 		runId: Type.Optional(Type.String()),
 		swept: SWEPT,
 		branch: Type.String(),
 		worktree: Type.Optional(Type.String()),
-		item: Type.Optional(
-			Type.Object(
-				{ id: Type.Integer({ minimum: 1 }), state: Type.Union([Type.Literal("done"), Type.Literal("open")]) },
-				{ additionalProperties: false },
-			),
-		),
 	},
 	{ additionalProperties: false },
 );
 
 type Entry = Static<typeof SWEPT_ENTRY>;
-
-/** The item that the sweep closed for a run, with what `closeItem` did. */
-type ClosedItem = { readonly id: number } & Closed;
-
-const SERVES = Type.Object({ serves: ServesInput });
 
 /**
  * The output of `sweep --json`: one entry for each run of each removed branch, with its word, or one entry with no run
@@ -89,23 +73,22 @@ export const SWEPT_RUNS = Type.Array(
 );
 
 /**
- * Prints the ended runs of the project of the current directory whose worktree is on a merged branch: its tip is in
- * the local `main` or in `origin/main`, or GitHub merged a pull request at its tip; a failed `gh` call prints a line to
- * stderr and counts the branch as not merged. With `--yes`, it removes their worktrees and branches, and writes
- * `landed` to the `swept` file of each run. It also prints the run directories of the project whose run has no task and
- * whose `project` file is more than an hour old, and `--yes` removes them. With arguments, it takes only the branches
- * that they give in the main checkout of the current directory: a run ID gives the branch of the run, another argument
- * is a branch. Each branch gets the worktree that has it, when one has, and the runs that have it; a merged one gets
- * `landed` and another one `dropped`, and each of its runs gets the word. It checks every argument before it removes
- * anything. With `--yes`, before it removes a `landed` branch, it closes each item that a run of the branch serves, as
- * `land` does, at the tip of the branch, through the host of the project, which it never starts; a failed close prints
- * a line to stderr and does not stop the sweep. With `--install-hook`, it writes a post-merge hook that runs `sweep
- * --yes`. It reads the project store and asks the host only for these closes, and runs every `gh` call before it
- * removes anything. A branch with a marker, which an interrupted `sweep --yes` left in a run directory, is swept again
- * with the word of the marker and no merge check when its runs have ended. Without arguments, it refuses to run
- * without a project store. It keeps an old run directory with a Git clone that has commits on no remote, and skips a
- * branch whose run started a task again before its removal. It exits 1 when a
- * removal failed, after it tried the other branches.
+ * Prints the ended runs of the project of the current directory whose worktree is on a merged branch: its tip is in the
+ * local `main` or in `origin/main`, or GitHub merged a pull request at its tip; a failed `gh` call prints a line to
+ * stderr and counts the branch as not merged. A branch whose tip is the saved start of every one of its runs has no
+ * commit of the runs: it is not merged and gets `dropped`, and the sweep without arguments takes it too. With `--yes`,
+ * it removes their worktrees and branches, and writes the word to the `swept` file of each run. It also prints the run
+ * directories of the project whose run has no task and whose `project` file is more than an hour old, and `--yes`
+ * removes them. With arguments, it takes only the branches that they give in the main checkout of the current
+ * directory: a run ID gives the branch of the run, another argument is a branch. Each branch gets the worktree that has
+ * it, when one has, and the runs that have it; a merged one gets `landed` and another one `dropped`, and each of its
+ * runs gets the word. It checks every argument before it removes anything. With `--install-hook`, it writes a
+ * post-merge hook that runs `sweep --yes`. It reads the project store and never asks the host, and runs every `gh` call
+ * before it removes anything. A branch with a marker, which an interrupted `sweep --yes` left in a run directory, is
+ * swept again with the word of the marker and no merge check when its runs have ended. Without arguments, it refuses to
+ * run without a project store. It keeps an old run directory with a Git clone that has commits on no remote, and skips
+ * a branch whose run started a task again before its removal. It exits 1 when a removal failed, after it tried the
+ * other branches.
  */
 export async function sweep(args: readonly string[], terminal: Terminal, json: boolean): Promise<number> {
 	const { values, positionals } = withUsage(
@@ -129,12 +112,10 @@ export async function sweep(args: readonly string[], terminal: Terminal, json: b
 			? { taken: await givenBranches(positionals, store, terminal.cwd, warn), stale: [] }
 			: await mergedSweep(project, store, warn);
 
-	const removed: { found: Swept; closed: ReadonlyMap<string, ClosedItem> }[] = [];
+	const removed: Swept[] = [];
 	let failed = false;
 
 	for (const found of taken) {
-		let closed: ReadonlyMap<string, ClosedItem> = new Map();
-
 		if (values.yes) {
 			// A run can have started a new task since the first read, such as during a `gh` call.
 			const now = await reading(store, new Map<string, RunTask[]>(), (opened) => everyRun(opened.store));
@@ -148,8 +129,6 @@ export async function sweep(args: readonly string[], terminal: Terminal, json: b
 				continue;
 			}
 
-			closed = await closeItems(project, found, now, terminal);
-
 			try {
 				await removeWorktree(found);
 			} catch (error) {
@@ -161,9 +140,9 @@ export async function sweep(args: readonly string[], terminal: Terminal, json: b
 			}
 		}
 
-		removed.push({ found, closed });
+		removed.push(found);
 
-		if (!json) for (const entry of entries(found, closed)) terminal.stdout(line(entry, closed));
+		if (!json) for (const entry of entries(found)) terminal.stdout(line(entry));
 	}
 
 	const unstartedShown: { runId: string; directory: string }[] = [];
@@ -184,10 +163,7 @@ export async function sweep(args: readonly string[], terminal: Terminal, json: b
 	}
 
 	if (json) {
-		const shown: Static<typeof SWEPT_RUNS> = [
-			...removed.flatMap(({ found, closed }) => entries(found, closed)),
-			...unstartedShown,
-		];
+		const shown: Static<typeof SWEPT_RUNS> = [...removed.flatMap((found) => entries(found)), ...unstartedShown];
 
 		terminal.stdout(JSON.stringify(shown));
 	}
@@ -226,71 +202,36 @@ function endedTask(tasks: readonly RunTask[]): RunTask | undefined {
 	return task !== undefined && endedStatus(task) !== undefined && !savedBy(task).later ? task : undefined;
 }
 
-/**
- * The output entries of `found`: one for each of its runs, or one with no run ID when it has no run. A run of `closed`
- * gets its item.
- */
-function entries({ runIds, swept, branch, path }: Swept, closed: ReadonlyMap<string, ClosedItem>): Entry[] {
+/** The output entries of `found`: one for each of its runs, or one with no run ID when it has no run. */
+function entries({ runIds, swept, branch, path }: Swept): Entry[] {
 	const worktree = path === undefined ? {} : { worktree: path };
 
 	if (runIds.length === 0) return [{ swept, branch, ...worktree }];
 
-	return runIds.map((runId) => {
-		const item = closed.get(runId);
+	return runIds.map((runId) => ({ runId, swept, branch, ...worktree }));
+}
 
-		return item === undefined
-			? { runId, swept, branch, ...worktree }
-			: { runId, swept, branch, ...worktree, item: { id: item.id, state: item.state } };
-	});
+/** The text line of an entry of `entries`, with `-` for a run ID or a worktree that it does not have. */
+function line(entry: Entry): string {
+	return `${entry.runId ?? "-"} ${entry.swept} ${entry.branch} ${entry.worktree ?? "-"}`;
 }
 
 /**
- * The text line of an entry of `entries`, with `-` for a run ID or a worktree that it does not have, and the line of the
- * item that `closed` has for its run at the end.
+ * The word of the branch `branch` in `cwd`, whose runs saved the worktree starts `starts`: `dropped` when its runs made no
+ * commit on it, that is `starts` is not empty and each start is the tip of the branch, else `landed` when the branch is
+ * merged, else undefined. A run with no saved start counts as a run with a commit.
  */
-function line(entry: Entry, closed: ReadonlyMap<string, ClosedItem>): string {
-	const item = entry.runId === undefined ? undefined : closed.get(entry.runId);
-	const shown = `${entry.runId ?? "-"} ${entry.swept} ${entry.branch} ${entry.worktree ?? "-"}`;
+async function mergeWord(
+	branch: string,
+	cwd: string,
+	starts: readonly (string | undefined)[],
+	warn: (line: string) => void,
+): Promise<"dropped" | "landed" | undefined> {
+	const head = await git(cwd, "rev-parse", `refs/heads/${branch}`);
 
-	return item === undefined ? shown : `${shown} ${item.line}`;
-}
+	if (starts.length > 0 && starts.every((start) => start === head)) return "dropped";
 
-/**
- * Closes, as `land` does, each item that the runs of `found` serve, as their tasks in `runs` give it, when `found` is
- * `landed` and its branch still exists: once for each item, at the tip of the branch, in the name of the first run in
- * task ID order that serves it. It sends the requests to the host of `project` and never starts one. A failed close
- * prints a line to the stderr of `terminal`. Returns the closed items by the run that closed them.
- */
-async function closeItems(
-	project: string,
-	found: Swept,
-	runs: ReadonlyMap<string, readonly RunTask[]>,
-	terminal: Terminal,
-): Promise<Map<string, ClosedItem>> {
-	const closed = new Map<string, ClosedItem>();
-
-	// A branch that is gone was removed by an earlier sweep, which closed its items.
-	if (found.swept !== "landed" || !(await hasBranch(found.repository, found.branch))) return closed;
-	const head = await git(found.repository, "rev-parse", `refs/heads/${found.branch}`);
-	const done = new Set<number>();
-
-	for (const runId of found.runIds) {
-		const input = endedTask(runs.get(runId) ?? [])?.input;
-
-		if (!Value.Check(SERVES, input) || !("item" in input.serves) || done.has(input.serves.item)) continue;
-		const id = input.serves.item;
-		done.add(id);
-
-		try {
-			const send = (sent: HarnessArgs) => runRequest(project, runId, sent);
-			closed.set(runId, { id, ...(await closeItem(send, id, head)) });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			terminal.stderr(`workflows: cannot close item ${id} of ${runId}: ${message}`);
-		}
-	}
-
-	return closed;
+	return (await isMerged(branch, cwd, warn)) ? "landed" : undefined;
 }
 
 /**
@@ -326,8 +267,8 @@ async function mergedSweep(
 }
 
 /**
- * The runs of `ended`, newest first, that have a marker, with its word, or that are sweepable on a merged branch, with
- * `landed`.
+ * The runs of `ended`, newest first, that have a marker, with its word, or that are sweepable and get a word from
+ * `mergeWord`: `dropped` on a branch with no commit of the run, `landed` on a merged branch.
  */
 async function mergedRuns(ended: ReadonlyMap<string, RunTask>, warn: (line: string) => void): Promise<Swept[]> {
 	const merged: Swept[] = [];
@@ -342,8 +283,8 @@ async function mergedRuns(ended: ReadonlyMap<string, RunTask>, warn: (line: stri
 }
 
 /**
- * The run `id`, whose task `task` has ended, with the word of its marker when it has one. Otherwise it is the run with
- * `landed` when it is sweepable and its branch is merged, else undefined.
+ * The run `id`, whose task `task` has ended, with the word of its marker when it has one. Otherwise, when it is
+ * sweepable, it is the run with the word of `mergeWord` for its branch and its saved start, else undefined.
  */
 async function candidate(id: string, task: RunTask, warn: (line: string) => void): Promise<Swept | undefined> {
 	const marked = await marker(id);
@@ -351,16 +292,19 @@ async function candidate(id: string, task: RunTask, warn: (line: string) => void
 	if (marked !== undefined) return { subject: id, runIds: [id], ...marked };
 	const found = await sweepable(id, task);
 
-	if (found === undefined || !(await isMerged(found.branch, found.path, warn))) return undefined;
+	if (found === undefined) return undefined;
 
-	return { subject: id, runIds: [id], ...found, swept: "landed" };
+	const swept = await mergeWord(found.branch, found.path, [inputWorktree(task.input)?.start], warn);
+
+	return swept === undefined ? undefined : { subject: id, runIds: [id], ...found, swept };
 }
 
 /**
  * The branches of the arguments `args`, in their order and each once, with the runs of each branch in the main checkout
  * of `cwd`, as the project store `store` has them; a branch needs no store. An argument is a run ID of that repository,
- * which gives the branch of the run, or a branch. A branch is `landed` when it is merged, else `dropped`, or has the
- * word of a marker in a run directory of its runs. It throws for the first argument that it cannot sweep, before
+ * which gives the branch of the run, or a branch. A branch has the word of a marker in a run directory of its runs.
+ * Otherwise it is `dropped` when its runs made no commit on it, that is it has runs and each saved start of them is its
+ * tip, else `landed` when it is merged, else `dropped`. It throws for the first argument that it cannot sweep, before
  * anything is removed.
  */
 async function givenBranches(
@@ -387,7 +331,7 @@ async function givenBranches(
 			);
 		}
 
-		found.push(await givenBranch(arg, branch, runIds, repository, warn));
+		found.push(await givenBranch(arg, branch, runIds, runs, repository, warn));
 	}
 
 	return found;
@@ -436,13 +380,15 @@ function wasSwept(id: string): boolean {
 
 /**
  * The branch `branch` of the argument `arg` in the main checkout `repository`, whose ended runs are `runIds`, with the
- * runs that have a run directory. A marker on the branch in one of these gives the word and the worktree path. Otherwise
- * the worktree is the one that has the branch checked out, and the word comes from the merge test.
+ * runs that have a run directory, whose tasks are in `runs`. A marker on the branch in one of these gives the word and
+ * the worktree path. Otherwise the worktree is the one that has the branch checked out, and the word is the word of
+ * `mergeWord` for the saved starts of these runs, else `dropped`.
  */
 async function givenBranch(
 	arg: string,
 	branch: string,
 	runIds: readonly string[],
+	runs: ReadonlyMap<string, readonly RunTask[]>,
 	repository: string,
 	warn: (line: string) => void,
 ): Promise<Swept> {
@@ -460,7 +406,13 @@ async function givenBranch(
 		throw new Error(`cannot sweep ${arg}: no worktree and no branch ${branch}`);
 	}
 
-	const swept = (await isMerged(branch, path ?? repository, warn)) ? "landed" : "dropped";
+	const starts = kept.map((id) => {
+		const task = taskOf(runs.get(id) ?? []);
+
+		return task === undefined ? undefined : inputWorktree(task.input)?.start;
+	});
+
+	const swept = (await mergeWord(branch, path ?? repository, starts, warn)) ?? "dropped";
 
 	const found: Swept = { subject: branch, runIds: kept, branch, repository, swept };
 

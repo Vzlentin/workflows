@@ -36,8 +36,8 @@ import {
 import { childResult } from "./child.ts";
 import { PAST_OPTIONS } from "./past.ts";
 import { addProgress, type PhaseLines, phaseLine, takeLines } from "./progress.ts";
+import { HARNESS_ARGS } from "./requests.ts";
 import { RESULT, statusOf } from "./result.ts";
-import { closeItem, HARNESS_ARGS } from "./serves.ts";
 import { askTurn, ownerOf, sessionOf } from "./sessions.ts";
 import type { Host, Runtime } from "./version.ts";
 
@@ -117,7 +117,6 @@ const INPUT_ARGS = Type.Tuple([Type.String()]);
 const PAST_ARGS = Type.Tuple([Type.Union([Type.String(), Type.Null()]), PAST_OPTIONS]);
 const TODO_ADD_ARGS = Type.Tuple([Type.String()]);
 const TODO_SET_ARGS = Type.Tuple([Type.Integer({ minimum: 1 }), TodoState, Type.Union([Type.String(), Type.Null()])]);
-const CLOSE_ITEM_ARGS = Type.Tuple([Type.Integer({ minimum: 1 }), Type.String()]);
 const LINE_ARGS = Type.Array(JSON_VALUE);
 const PROMPT_ARGS = Type.Tuple([Type.String(), Type.Union([Type.Record(Type.String(), Type.String()), Type.Null()])]);
 
@@ -256,12 +255,6 @@ export async function runScript(
 			),
 			global("__todoList", Type.Tuple([]), () => todoCall(calls, { action: "list" }), "todo"),
 			global("__harness", Type.Tuple([HARNESS_ARGS]), ([args]) => harnessCall(calls, args), "harness"),
-			// Each request is a `harness` call, so a resume returns its saved reply.
-			global(
-				"closeItem",
-				CLOSE_ITEM_ARGS,
-				async ([item, head]) => (await closeItem((request) => harnessCall(calls, request), item, head)).line,
-			),
 			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
 			global("log", LINE_ARGS, ([line]) => progress.lines.push({ kind: "log", text: String(line), at: Date.now() })),
 			global("title", LINE_ARGS, ([text]) => progress.lines.push({ kind: "title", text: String(text) })),

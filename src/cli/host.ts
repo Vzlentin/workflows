@@ -2,7 +2,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Client, connect, hostStopped } from "@vzlentin/harness/client";
+import { type Client, connect, HostUnreachableError, hostStopped } from "@vzlentin/harness/client";
 import { setEntry } from "@vzlentin/harness/entries";
 import { statePaths, type TaskInfo } from "@vzlentin/harness/protocol";
 import type { ScriptInput } from "../launch/input.ts";
@@ -50,33 +50,26 @@ export function runsDirectory(): string {
 	return join(state, "workflows", "runs");
 }
 
-/** The start of the `start` key of every task of the run `id`. */
-const keyPrefix = (id: string) => `wf:${id}#`;
-
-/** The `start` key of the task `n` of the run `id`, counting from 1. */
-export const taskKey = (id: string, n: number) => `${keyPrefix(id)}${n}`;
-
-/** The number `n` of the `start` key `key` of a task of the run `id`, or undefined when `key` is not one. */
-export function keyNumber(id: string, key: string): number | undefined {
-	const prefix = keyPrefix(id);
-	const n = key.startsWith(prefix) ? key.slice(prefix.length) : "";
-
-	return /^[1-9]\d*$/.test(n) ? Number(n) : undefined;
-}
-
 /** An error after which the host has no task of the request, or none that runs. */
 export class Refused extends Error {}
 
 /**
- * Starts the task of `key` with `input` in the host of `client`, and checks the version of the host's task. It gives
- * the info of the task of `key`, which is a task that an earlier `start` of the same key created, when there is one.
+ * Starts the task of `key` with `input` and its labels in the host of `client`, and checks the version of the host's
+ * task. It gives the info of the task of `key`, which is a task that an earlier `start` of the same key created, when
+ * there is one. An error reply of the host is a `Refused`.
  */
 export async function startTask(client: Client, project: string, input: ScriptInput, key: string): Promise<TaskInfo> {
+	const { labels } = input;
+
 	try {
-		// A host whose workflows task has another version refuses before it creates anything, so the key stays free.
-		return await client.request({ type: "start", kind: TASK.name, version: TASK.version, input, key });
+		// A host refuses a kind, a version or a label before it creates anything, so the key stays free.
+		return await client.request({ type: "start", kind: TASK.name, version: TASK.version, input, key, labels });
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		// A host that the client did not reach, or that stopped, may have created the task.
+		if (!(error instanceof Error) || error instanceof HostUnreachableError) throw error;
+		const { message } = error;
+
+		if (hostStopped(error)) throw error;
 
 		if (message.startsWith("Unknown task kind")) {
 			throw new Refused(
@@ -85,7 +78,7 @@ export async function startTask(client: Client, project: string, input: ScriptIn
 		}
 
 		if (message.startsWith("This host has version")) throw new Refused(`${message} (${hostOf(client, project)})`);
-		throw error;
+		throw new Refused(message);
 	}
 }
 

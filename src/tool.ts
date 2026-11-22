@@ -76,7 +76,7 @@ export const PARAMETERS = Type.Object({
 	save: Type.Optional(SAVE),
 	serves: Type.Optional(
 		Type.String({
-			description: "With `name` or `script`: what the run builds, the ID of an item or the slug of a parley",
+			description: "With `name` or `script`: a label of the run, such as `item:<id>`, that the host checks",
 		}),
 	),
 	args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
@@ -216,8 +216,8 @@ export const DESCRIPTION =
 	"his message: a contract or a goal file is not a go. Give exactly one of: `name` (a workflow script such as " +
 	"`ship`, `campaign` or `optimize`), `script` (the body of an inline workflow script), `resume` (a run " +
 	"ID), or `save` (keeps the script of a run as a named workflow of the project). With `name` or `script`, the " +
-	"optional `serves` names what the run builds: the ID of an item, or the slug of an open parley or a contract; " +
-	"the run fails when the item is done or dropped, or the parley is not open and not a contract. " +
+	"optional `serves` is a label of the run, such as `item:<id>` or `parley:<slug>`, that the host checks; " +
+	"the run does not start when the host refuses the label. " +
 	"`args` are the arguments of " +
 	"`name` or `script`, each passed as `--<key>`; a script's `meta` declares them. Every run also takes `agents`, " +
 	"`<name>=<provider>/<id>:<thinking>,...` (`*` for every role), the models of its roles above the agents.json " +

@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { Owner } from "@vzlentin/harness/children";
 import type { Overlay } from "@vzlentin/harness/overlay";
-import type { Ask, ServesInput } from "@vzlentin/harness/protocol";
+import type { Ask } from "@vzlentin/harness/protocol";
 import { addTodo, readTodos, setTodo, type TodoOwner, TodoState } from "@vzlentin/harness/todo";
 import { type Static, type TLiteral, type TObject, type TProperties, type TUnion, Type } from "typebox";
 import { failure, type Result, run } from "../git.ts";
@@ -27,7 +27,7 @@ import { answerOf, asksOf, newAsk, openAsk, plainText, readAsk } from "./asks.ts
 import { keyIn } from "./keys.ts";
 import { firstTask, PAST_OPTIONS, type PastOptions, pastRuns, scanRuns, scanTasks } from "./past.ts";
 import { addProgress, checkpointWhen, type PhaseLines, takeLines } from "./progress.ts";
-import { HARNESS_ARGS, type HarnessArgs, runRequest } from "./serves.ts";
+import { HARNESS_ARGS, type HarnessArgs, runRequest } from "./requests.ts";
 import type { Host, Runtime, ScriptTask } from "./version.ts";
 
 /** A started child run: its task and its run ID. */
@@ -44,8 +44,8 @@ export type ScriptRun = {
 	readonly bundle: RunBundle;
 	/** The run layer of the roles, from `--agents`, which its child runs keep. */
 	readonly agents: Roles;
-	/** What the run serves, the item or the parley, from the saved input, which its child runs keep. */
-	readonly serves: ServesInput | undefined;
+	/** The labels of the run, from the saved input, which its child runs keep. */
+	readonly labels: string[];
 	readonly args: JsonObject;
 	/** The files that the sessions of the run see in place of the disk, from the saved input. */
 	readonly overlay: Overlay | undefined;
@@ -696,7 +696,7 @@ export async function todoCall(calls: Calls, args: TodoArgs): Promise<JsonValue>
 
 /**
  * The `harness` call with `args`: the reply of the host of the run's project to the request, with the run as the caller
- * of a `link` and a `set`. A resume replays the saved reply.
+ * when the request has none. A resume replays the saved reply.
  */
 export function harnessCall(calls: Calls, args: HarnessArgs): Promise<JsonValue> {
 	return memoized(calls, callKey(calls, "harness", args), { kind: "harness", args }, async () => {

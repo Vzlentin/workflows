@@ -4,8 +4,9 @@ import { join } from "node:path";
 import type { Client } from "@vzlentin/harness/client";
 import { resolveProject } from "@vzlentin/harness/projects";
 import { drivenInput, driverOf, newRunId, parse, postsTo, prepare, type ScriptInput } from "../../launch/input.ts";
+import { taskKey } from "../../run/past.ts";
 import type { Background } from "../follow.ts";
-import { connectTo, Refused, runsDirectory, startTask, taskKey } from "../host.ts";
+import { connectTo, Refused, runsDirectory, startTask } from "../host.ts";
 import type { Terminal } from "../main.ts";
 import { followAnswering } from "./resume.ts";
 

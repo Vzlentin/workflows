@@ -539,6 +539,7 @@ describe("runs in the harness host", () => {
 				title: "gated",
 				state: "aborted",
 				startedAt: expect.any(String),
+				labels: [],
 				repository: null,
 				steps: [],
 			},
@@ -576,6 +577,7 @@ describe("runs in the harness host", () => {
 				state: "done",
 				result: { status: "stopped", code: 1 },
 				startedAt: expect.any(String),
+				labels: [],
 				repository: null,
 				steps: [],
 			},
@@ -1105,6 +1107,7 @@ describe("runs in the harness host", () => {
 					title: "thrown",
 					state: "failed",
 					startedAt: expect.any(String),
+					labels: [],
 					repository: null,
 					steps: [],
 				},
@@ -1115,6 +1118,7 @@ describe("runs in the harness host", () => {
 					state: "done",
 					result: { status: "failed", code: 1 },
 					startedAt: expect.any(String),
+					labels: [],
 					repository: null,
 					steps: [],
 				},
@@ -1676,7 +1680,7 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 		}
 	});
 
-	it("starts a run without serves, and gives no serves in its JSON", async () => {
+	it("starts a run without serves, and gives no labels in its JSON", async () => {
 		const host = await startHost("main", hostModel().models);
 		let id = "";
 
@@ -1693,11 +1697,11 @@ return { report: ["ran", JSON.stringify(answer)] }`;
 		const rows = JSON.parse(listed.stdout[0] ?? "");
 		expect(Value.Check(Type.Array(LISTED), rows)).toBe(true);
 		expect(rows).toEqual([expect.objectContaining({ runId: id, state: "done" })]);
-		expect(rows[0]).not.toHaveProperty("serves");
+		expect(rows[0].labels).toEqual([]);
 		const shown = await workflows(["show", id, "--json"], { cwd: root });
 		const run = JSON.parse(shown.stdout[0] ?? "");
 		expect([Value.Check(SHOWN, run), run.state]).toEqual([true, "done"]);
-		expect(run).not.toHaveProperty("serves");
+		expect(run.labels).toEqual([]);
 	});
 
 	it("starts a run in the cwd of the call, and refuses a cwd that is not an absolute directory", async () => {

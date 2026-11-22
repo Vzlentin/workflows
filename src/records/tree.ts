@@ -4,6 +4,7 @@
  */
 import { Todo } from "@vzlentin/harness/todo";
 import { type Static, Type } from "typebox";
+import { Value } from "typebox/value";
 import {
 	CALL_END,
 	type CallEnd,
@@ -493,12 +494,14 @@ export type Labels = {
 	readonly [K in CallKind]: (record: CallOf<K>, records: ReadonlyMap<string, SavedCall>) => string;
 };
 
+/** A `harness` request with a string `action`. */
+const ACTION = Type.Object({ action: Type.String() });
+
 /**
  * The label of each kind of call: the role name and conversation of a session, the role name of the session for an
  * ask, the command on one line for `sh` and `ok`, the workflow and child run ID for `run`, the question on one line
  * for `input`, the workflow for `pastRuns` (`any` for every workflow), the action with its text, or its ID and state,
- * on one line for `todo`, and the request for `harness`: `tree`, or the item action with its ID and state or the ends
- * and kind of its edge.
+ * on one line for `todo`, and the request type for `harness`, with its action when that is a string, on one line.
  * A kind without a label fails the type check.
  */
 export const LABELS: Labels = {
@@ -523,15 +526,7 @@ export const LABELS: Labels = {
 
 		return labelLine(args.action);
 	},
-	harness: ({ args }) => {
-		if (args.type === "tree") return "tree";
-
-		if (args.action === "read") return `item read ${args.id}`;
-
-		if (args.action === "set") return `item set ${args.id} ${args.state}`;
-
-		return labelLine(`item link ${args.from} ${args.kind} ${args.to}`);
-	},
+	harness: ({ args }) => labelLine(Value.Check(ACTION, args) ? `${args.type} ${args.action}` : args.type),
 };
 
 /** The label of the call of the kind `kind` with the record `record` among the records of its run, from `LABELS`. */

@@ -116,11 +116,7 @@ export function usageOf(name: string, meta: Meta): string {
 	for (const [arg, spec] of entries) if (!spec.positional) words.push(flagUsage(arg, spec));
 
 	for (const option of PLACEMENT_OPTIONS[meta.placement]) words.push(PLACEMENT_USAGE[option]);
-	words.push(
-		"[--prompts <folder>]",
-		"[--agents <name>=<provider/id>:<thinking>,...]",
-		"[--serves <item-id | parley-slug>]",
-	);
+	words.push("[--prompts <folder>]", "[--agents <name>=<provider/id>:<thinking>,...]", "[--serves <label>]");
 
 	for (const [arg, spec] of entries) {
 		if (!spec.positional) continue;

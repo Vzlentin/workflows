@@ -412,7 +412,7 @@ describe("the workflow tool", () => {
 		});
 		expect(await readFile(join(root, "stdin.js"), "utf8")).toBe("return 'hi'");
 
-		const ship = await call({ name: "ship", serves: "12", args: { item: "Fix the README typo", rounds: 2 } });
+		const ship = await call({ name: "ship", serves: "item:12", args: { item: "Fix the README typo", rounds: 2 } });
 		expect(ship.result.structuredContent).toEqual({
 			runId: "r5",
 			state: "done",
@@ -421,7 +421,12 @@ describe("the workflow tool", () => {
 			report: ["shipped Fix the README typo in 1 rounds, judge failed, abc"],
 		});
 
-		const campaign = await call({ name: "campaign", serves: "docs-goal", args: { base: "develop", goal: "goal.md" } });
+		const campaign = await call({
+			name: "campaign",
+			serves: "parley:docs-goal",
+			args: { base: "develop", goal: "goal.md" },
+		});
+
 		expect(campaign.result.structuredContent).toEqual({
 			runId: "r6",
 			state: "done",
@@ -439,8 +444,8 @@ describe("the workflow tool", () => {
 		});
 		expect((await readFile(join(root, "args.log"), "utf8")).split("\n")).toEqual([
 			"- --word=a --all --json",
-			"ship --item=Fix the README typo --rounds=2 --serves=12 --json",
-			"campaign --base=develop --goal=goal.md --serves=docs-goal --json",
+			"ship --item=Fix the README typo --rounds=2 --serves=item:12 --json",
+			"campaign --base=develop --goal=goal.md --serves=parley:docs-goal --json",
 			"optimize --workflow=ship --limit=4 --json",
 			"",
 		]);
@@ -627,7 +632,7 @@ describe("the workflow tool", () => {
 		const both = "give exactly one of name, script, resume or save";
 		await expect(call({ name: "ok", resume: "r1" })).rejects.toThrow(both);
 		await expect(call({ script: "return 1", save: { runId: "r2", name: "fix" } })).rejects.toThrow(both);
-		await expect(call({ resume: "r1", serves: "3" })).rejects.toThrow("serves works only with name or script");
+		await expect(call({ resume: "r1", serves: "item:3" })).rejects.toThrow("serves works only with name or script");
 	});
 
 	it("throws the stderr text after the run ID when the run started and the command gave no outcome", async () => {

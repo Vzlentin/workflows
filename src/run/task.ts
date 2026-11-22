@@ -8,14 +8,13 @@ import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { type ConversationHandle, type ConversationId, defineTask, type RunningTask } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import { SWEEP_MARKER, posts, readProject, type ScriptInput } from "../launch/input.ts";
+import { SWEEP_MARKER, posts, type ScriptInput } from "../launch/input.ts";
 import { branchOf, ensureWorktree, mainCheckout, type Renamed, renameBranch } from "../launch/worktree.ts";
 import { outcomeText, waits } from "../tool.ts";
 import { firstTask, outcomeFrom, scanTasks, type TaskEnd } from "./past.ts";
 import { addProgress, type ProgressEvent } from "./progress.ts";
 import { RESULT_OBJECT } from "./result.ts";
 import { runScript } from "./sandbox.ts";
-import { checkServes } from "./serves.ts";
 import { endSessions } from "./sessions.ts";
 import { type Checkpoint, current, type Host, type Runtime, type ScriptTask, TASK } from "./version.ts";
 
@@ -184,12 +183,6 @@ async function runPhase(
 			return undefined;
 		}, context);
 
-		// Each task of a root run checks what it serves and links the run to its item, so a resume after the end of the
-		// item or the parley fails.
-		if (task.owner === undefined && input.serves !== undefined) {
-			await checkServes(await readProject(input.runDir), runId, input.serves, context.abortSignal);
-		}
-
 		// A new task of the run cancels the removal that an interrupted `sweep --yes` left.
 		await rm(join(input.runDir, SWEEP_MARKER), { force: true });
 
@@ -206,7 +199,7 @@ async function runPhase(
 			runDir: input.runDir,
 			bundle: input.bundle,
 			agents: input.agents,
-			serves: input.serves,
+			labels: input.labels,
 			overlay: input.overlay,
 			driver: input.driver,
 			args: worktree === undefined ? input.args : { ...input.args, start: worktree.start },

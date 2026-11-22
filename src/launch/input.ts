@@ -7,7 +7,7 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import type { Overlay } from "@vzlentin/harness/overlay";
-import { HARNESS_PROJECT, PI_SESSION_ID, type ServesInput } from "@vzlentin/harness/protocol";
+import { HARNESS_PROJECT, PI_SESSION_ID } from "@vzlentin/harness/protocol";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { editBundle, loadBundle, projectFolder, readAgents, type RunBundle } from "../workflow/bundle.ts";
@@ -101,8 +101,8 @@ type Args = {
 	 * run has none.
 	 */
 	readonly tables?: string;
-	/** `--serves`: the item or the parley that the run builds, which its child runs keep. */
-	readonly serves?: ServesInput;
+	/** The labels of the run, from `--serves`, which the host checks and its child runs keep; `[]` without it. */
+	readonly labels: string[];
 	/** The absolute path of the `.md` file that the positional text of a root run names; a child run has none. */
 	readonly item?: string;
 	/** The files that the run's sessions see in place of the disk, by path: see `Spec.overlay` of the children library. */
@@ -214,7 +214,7 @@ export async function parse([word = "", ...argv]: readonly string[], io: Io): Pr
 	const found = await findScript(word, io);
 	const meta = await readMeta(found.source, found.name);
 	const values = await parseValues(meta, argv, io, usageOf(found.name, meta));
-	const { args, prompts, agents, serves, item, repo, base, branch } = values;
+	const { args, prompts, agents, labels, item, repo, base, branch } = values;
 	const bundle = prompts === undefined ? found.bundle : await loadBundle(io.cwd, resolve(io.cwd, prompts));
 	const failed = problem(found.source, found.name, bundle);
 
@@ -223,10 +223,9 @@ export async function parse([word = "", ...argv]: readonly string[], io: Io): Pr
 	const resolved = { ...bundle, agents: mergeRoles([agents, bundle.agents]), main: found.source };
 
 	const tables = await projectFolder(io.cwd);
-	const parsed = { name: found.name, args, meta, bundle: resolved, agents, tables, repo, base, branch };
-	const served = serves === undefined ? parsed : { ...parsed, serves };
+	const parsed = { name: found.name, args, meta, bundle: resolved, agents, labels, tables, repo, base, branch };
 
-	return item === undefined ? served : { ...served, item };
+	return item === undefined ? parsed : { ...parsed, item };
 }
 
 /**
@@ -275,7 +274,7 @@ export async function prepare(
  * directory, and then needs `start` as a string. `runArgs` checks the declared args against `meta` before any worktree
  * exists. With `meta.worktree`, `checkArgs` first checks `repo`, `base`, `branch` and `start` as optional strings, with
  * the same wording. `prompts` and `overlay` edit the bundle as `editBundle` says. The child keeps `agents`, the caller's
- * run layer, `serves`, what the caller serves, and `driver`, the driver of the caller's current task.
+ * run layer, `labels`, the caller's labels, and `driver`, the driver of the caller's current task.
  */
 export async function childInput(
 	request: {
@@ -283,13 +282,13 @@ export async function childInput(
 		readonly args: JsonObject;
 		readonly bundle: RunBundle;
 		readonly agents: Roles;
-		readonly serves: ServesInput | undefined;
+		readonly labels: string[];
 		readonly overlay?: Overlay | undefined;
 		readonly driver: string | undefined;
 	},
 	run: Run & { readonly root: string },
 ): Promise<ScriptInput> {
-	const { name, bundle, agents, serves, driver } = request;
+	const { name, bundle, agents, labels, driver } = request;
 	const source = Object.hasOwn(bundle.scripts, name) ? bundle.scripts[name] : undefined;
 
 	if (source === undefined) throw new Error(`no workflow ${name}`);
@@ -310,10 +309,10 @@ export async function childInput(
 		meta,
 		bundle: { ...bundle, prompts: edited.prompts, main: source },
 		agents,
+		labels,
 	};
 
-	const served = serves === undefined ? bundled : { ...bundled, serves };
-	const driven = driver === undefined ? served : { ...served, driver };
+	const driven = driver === undefined ? bundled : { ...bundled, driver };
 	const script = Object.keys(edited.files).length === 0 ? driven : { ...driven, overlay: edited.files };
 
 	const here = { runId: run.id, root: run.root, runDir: run.directory, cwd: run.cwd };

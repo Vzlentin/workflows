@@ -461,6 +461,7 @@ describe("input", () => {
 				result: { status: "waiting", code: 3 },
 				question: "A?",
 				startedAt: expect.any(String),
+				labels: [],
 				repository: null,
 				steps: [],
 			},
@@ -756,6 +757,7 @@ describe("workflows show", () => {
 			title: "x",
 			state: "failed",
 			startedAt: expect.any(String),
+			labels: [],
 			error: "sh exited with 3: exit 3",
 			todos: [],
 			stepNames: ["s1", null],
@@ -911,6 +913,7 @@ describe("workflows show", () => {
 			state: "done",
 			result: { code: 0 },
 			startedAt: expect.any(String),
+			labels: [],
 			agent: { conversation: await conversationOf(/Script: child/), project: expect.any(String) },
 			ended: true,
 		});
@@ -3019,17 +3022,17 @@ return [one.reply, two.reply].join(", ")`,
 		]);
 		const plain = await workflows(["plain", "--help"], { cwd: root });
 		expect(plain.stdout).toEqual([
-			"usage: workflows plain [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <item-id | parley-slug>] [--background] [--json]",
+			"usage: workflows plain [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <label>] [--background] [--json]",
 		]);
 
 		const ship = await workflows(["ship", "--help"], { cwd: root });
 		expect([ship.code, ship.stdout[0]]).toEqual([
 			0,
-			"usage: workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <item-id | parley-slug>] [<item.md> | <text>] [--background] [--json]",
+			"usage: workflows ship [--rounds <n>] [--repo <repository>] [--base <branch>] [--branch <name>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <label>] [<item.md> | <text>] [--background] [--json]",
 		]);
 		const own = await workflows(["count.js", "--help"], { cwd: root });
 		expect(own.stdout).toEqual([
-			"usage: workflows count [--depth <n>] [--all] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <item-id | parley-slug>] <path> [--background] [--json]",
+			"usage: workflows count [--depth <n>] [--all] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <label>] <path> [--background] [--json]",
 			"Count words.",
 		]);
 
@@ -3064,7 +3067,7 @@ return [one.reply, two.reply].join(", ")`,
 		);
 
 		const usage =
-			"usage: workflows x [--depth <n>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <item-id | parley-slug>] <path> [--background] [--json]";
+			"usage: workflows x [--depth <n>] [--prompts <folder>] [--agents <name>=<provider/id>:<thinking>,...] [--serves <label>] <path> [--background] [--json]";
 
 		const cases: [string[], string][] = [
 			[["x.js", "--depth", "two", "src"], "workflows: --depth must be a positive integer"],

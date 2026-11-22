@@ -4,8 +4,8 @@
 // and `git worktree list`; 2. switch the main checkout to `main` when it is on the branch, and check that it is clean
 // and on `main`, that `main` equals `origin/main` after a fetch, and that the branch is a fast-forward of `main`; 3.
 // push the branch; 4. wait for its CI; 5. push the head to `main` on `origin`, then fast-forward `main` in the main
-// checkout; 6. delete the branch on `origin`; 7. for a run that serves an item, `closeItem` links the item to the head
-// with a `landed` edge, and sets the item to `done` when no live agent serves it; 8. wait for the CI of `main`; 9. sweep
+// checkout; 6. delete the branch on `origin`; 7. for a change that a run ID gives, report the head as `commit:<sha>` for
+// the first task of the run, so the host acts on the labels of the run; 8. wait for the CI of `main`; 9. sweep
 // the branch with `workflows sweep <branch> --yes` in the repository; 10. check the repository. A failed step from 1 to 6
 // refuses, with the step and the reason in one line, and changes nothing after it: a refusal before step 5 leaves
 // `main` untouched on both sides. A failed step 7 is a `check failed` line. A red `main` gives `landed-red`, and
@@ -37,7 +37,7 @@ function begin(n, name) {
 	phase(name)
 }
 
-// Step 1, first part: the change of `arg`, `{ repository, branch, serves }`, where `serves` is what a run serves. A PR
+// Step 1, first part: the change of `arg`, `{ repository, branch, key }`, where `key` is the start key of a run. A PR
 // number gives the local branch of the PR, and a local branch of the main checkout gives itself, both in the main
 // checkout of the current directory; else `arg` is a run ID, and its `change` gives both. Throws the reason of a
 // refusal when `arg` is none of these, or names a run with no change.
@@ -61,7 +61,7 @@ async function changeOfArg() {
 	// A run on a detached HEAD, or saved by an older version, has no `change`.
 	if (change === undefined || change.branch === "") throw new Error(`the run ${arg} has no change`)
 
-	return { repository: change.repository, branch: change.branch, serves: past.serves }
+	return { repository: change.repository, branch: change.branch, key: past.key }
 }
 
 // Step 1, second part: the change `target` with its main checkout and its head, `{ ...target, main, head, short,
@@ -216,17 +216,16 @@ try {
 	}
 }
 
-const { repository, branch, head, short, subject, serves } = found
-const notes = []
+const { repository, branch, head, short, subject, key } = found
 const failures = []
 
-if (serves?.item !== undefined) {
-	begin(7, `item ${serves.item}`)
+if (key !== undefined) {
+	begin(7, "report")
 
 	try {
-		notes.push(await closeItem(serves.item, head))
+		await harness({ type: "report", key, refs: [`commit:${head}`] })
 	} catch (error) {
-		failures.push(`check failed: item ${serves.item}: ${oneLine(error.message)}`)
+		failures.push(`check failed: report commit:${short}: ${oneLine(error.message)}`)
 	}
 }
 
@@ -282,4 +281,4 @@ if (local || tracked) failures.push(`check failed: the branch ${branch} stays in
 
 if ((await onOrigin(repository, `refs/heads/${branch}`)) !== "") failures.push(`check failed: the branch ${branch} stays on origin`)
 
-return { status: landed.status, head: short, change, report: [landed.line, ...notes, ...failures] }
+return { status: landed.status, head: short, change, report: [landed.line, ...failures] }

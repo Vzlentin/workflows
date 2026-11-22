@@ -712,19 +712,16 @@ matters. It runs these steps in order, with `git -C` in the repository of the ch
    comes first, so that a rejected push leaves `main` untouched on both sides. When `main` is already the head, both
    do nothing.
 6. Delete the branch on `origin` when `git ls-remote` still lists it, and its remote-tracking branch.
-7. For a run whose `serves` is an item, `{ "item": <n> }`: `closeItem(<n>, <full head>)` (see
-   [Harness requests](#harness-requests)) links the item to the head with the edge `item:<n> landed commit:<full head>`,
-   and sets the item to `done` when no live agent serves it; with one, the item stays `open`. These are `harness` calls
-   of the land run. The step never sets an item to `open`. It adds the report line `item <n> done` or
-   `item <n> stays open: <node name> serves it`. A failure, such as the refusal of the host while a run that serves
-   the item is live, adds `check failed: item <n>: <message>`, and the status does not change. A branch, a PR, and a
-   run that serves no item or a parley, skip the step.
+7. For a change that a run ID gives: the `harness` call
+   `{ type: "report", key: "<key>", refs: ["commit:<full head>"] }` (see [Harness requests](#harness-requests)), where
+   `<key>` is the `key` of the run in [Past runs](#past-runs), the start key of its first task. The host stores the
+   reference for that task, and acts on the labels of the run: the projects entry of harness, for example, links the
+   item of an `item:<id>` label to the commit and sets it to `done`. The step adds no report line. A failure adds
+   `check failed: report commit:<short>: <message>`, and the status does not change. A branch and a PR skip the step.
 8. Wait for the CI of `main` at the head.
 9. Run `workflows sweep <branch> --yes` of this package (`workflowsCommand`) in the repository (see
    [Sweep](#sweep)), unless the local branch is already gone. It removes the worktree that has the branch and the
-   local branch, and marks each run of the branch `landed`. It also closes the item of each run of the branch, at the
-   same head as step 7: the host writes the same edge once, so this changes nothing after step 7. Its stderr and its
-   item lines do not change the report.
+   local branch, and marks each run of the branch `landed`. Its stderr does not change the report.
 10. Check the repository: `core.bare` is not true, `main` equals `main` on `origin`, and the branch is gone locally, as
    a remote-tracking branch and on `origin`.
 
@@ -917,7 +914,7 @@ export const meta = {
   `workflows outline --json` gives it with the rest of the checked `meta`: see [Outline](#outline).
 
 Every script also takes `--prompts <folder>`, as `ship` does, `--agents <name>=<provider>/<id>:<thinking>,...`, the
-run layer of the roles (see [Roles](#roles)), `--serves <item-id | parley-slug>`, what the run builds (see
+run layer of the roles (see [Roles](#roles)), `--serves <label>`, a label of the run (see
 [Serves](#serves)), `--background`, `--json` and `--help`. These flag names, and the options that a placement adds,
 are reserved argument names: `meta.args.<name>` with one of them fails with `meta.args.<name> is a reserved name`.
 `workflows <wf> --help` prints
@@ -1136,7 +1133,6 @@ returns its session at once, and `phase`, `log` and `title` need no `await`.
 | `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
 | `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow`, or of every workflow for `null`, in the project store. See [Past runs](#past-runs) |
 | `await harness(request)` | Sends one request to the harness host of the run's project and returns its reply. See [Harness requests](#harness-requests) |
-| `await closeItem(item, head)` | Closes the item `item` at the commit `head`, as step 7 of [Land](#land) does, and returns the line of the report. See [Harness requests](#harness-requests) |
 | `await todo.add(text)` | Adds a todo with the state `open` and the next ID to the list of the run, and returns it, `{ id, text, state }`. See [Todos](#todos) |
 | `await todo.set(id, state, text)` | Sets the state of the todo `id` of the list of the run to `open`, `doing`, `done` or `dropped`, and its text when `text` is given, and returns the todo |
 | `await todo.list()` | The todos of the list of the run, in ID order |
@@ -1165,7 +1161,8 @@ does not have the fields below. Each run is an object:
 | `cwd` | The directory that the run ran in: the top level of the repository of `--repo`, else the caller's directory |
 | `repository`, `start` | The repository and the start commit of the run's worktree, or `null` |
 | `prompts` | The saved template texts, by prompt name |
-| `serves` | What the run serves, `{ "item": <id> }` or `{ "parley": "<slug>" }`, or `null` when its start named nothing or its input has another shape |
+| `labels` | The labels of the run, from `--serves` (see [Serves](#serves)): an array of strings, empty when its start named none or its input has another shape |
+| `key` | The `start` key of the first task of the run, `wf:<run-id>#1`, which holds its labels in the host |
 | `result` | The result of the run |
 
 `runs`, an array of run IDs, gives those runs in that order: an ID that is not a completed root run of `workflow` fails
@@ -1176,26 +1173,14 @@ saves its result, so a resume returns the same list and does not read the store 
 #### Harness requests
 
 `harness(request)` sends one request to the harness host of the run's project, with no start of a host, and returns
-the reply of the host. The request is one of:
+the reply of the host. The request is an object with a non-empty string `type` and other JSON properties, such as
+`{ type: "item", action: "read", id: 1 }` or `{ type: "report", key, refs }`. Workflows does not check the request
+further: the host checks it, and its entries answer the request types that they serve.
 
-- `{ type: "item", action: "read", id }`: the item `id` with its edges.
-- `{ type: "item", action: "link", from, kind, to }`: writes the edge, and returns it.
-- `{ type: "item", action: "set", id, state }`: sets the state of the item `id`, and returns the item.
-- `{ type: "tree" }`: the nodes of the tree of the project, `{ nodes }`.
-
-The call adds `caller: workflows:<run-id>` to a `link` and a `set`. Another request fails with
-`harness got bad arguments: <path> <problem>`. An error of the host fails the call with its message, and no host
-fails it with `no harness host runs for <project>`. The call is of the kind `harness`, with the request as its args,
-and saves the reply, so a resume returns it and does not send the request again.
-
-`closeItem(item, head)` closes an item when the work of a run lands. It sends `item link` with the edge
-`item:<item> landed commit:<head>`, then `item read`. When the item has a `serves` edge from an `agent:` end, it sends
-`tree`: an `agent` node that serves `{ "kind": "item", "id": <item> }` and whose state is not `ended` is a live agent.
-With no live agent, it sends `item set` with the state `done`; with one, the item stays `open`. It never sets an item to
-`open`. It returns `item <item> done` or `item <item> stays open: <node name> serves it`. Each request is a `harness`
-call, with its caller, its key and its saved reply. A reply that does not have the shape of its request fails with
-`the harness host gave a bad reply to <request>`. `sweep --yes` closes the item of a merged run with the same rule (see
-[Sweep](#sweep)).
+The call adds `caller: workflows:<run-id>` to a request that has no `caller`. A request that is not such an object
+fails with `harness got bad arguments: <path> <problem>`. An error of the host fails the call with its message, and no
+host fails it with `no harness host runs for <project>`. The call is of the kind `harness`, with the request as its
+args, and saves the reply, so a resume returns it and does not send the request again.
 
 #### Todos
 
@@ -1320,7 +1305,7 @@ call of a session that moves to it after a resume, with harness's error, such as
 
 Before the run starts, it saves the script, every `scripts/*.js` of the package and the project, the lib, the instructions
 of every prompt, the merged agents table, the run layer of `--agents` apart from it (`agents`, `{}` without the
-option), `serves` of `--serves` (none without the option), `item`, the absolute path of the `.md` file that the
+option), `labels` of `--serves` (`[]` without the option), `item`, the absolute path of the `.md` file that the
 positional text argument names (none for inline text, for stdin and in a child run), the args, the project folder of the
 start (none in a child run) and the directory of the run: the current directory, or the repository of `--repo` with
 `repo: true`. Resume and `run()` use these saved
@@ -1384,21 +1369,18 @@ a call that a stop or a host stop cut records nothing more.
 
 ### Serves
 
-`--serves <value>` names what a run builds, apart from the text of the run: a value of digits only is the ID of an
-item, and any other value is the slug of a parley. A value that is neither, such as `Bad_Slug`, is bad usage:
-`--serves <value> is not an item ID or a parley slug`. The run saves it in its input as `serves`, `{ "item": <id> }`
-or `{ "parley": "<slug>" }`, the `ServesInput` of harness, and its child runs keep it. `list --json`
-and `show --json` give it as `serves`; a run that names nothing has no `serves`.
+`--serves <label>` gives the run a label, such as `item:<id>` or `parley:<slug>`, apart from the text of the run.
+Workflows does not parse the label: an empty one is bad usage, `--serves needs a label`, and the host checks any other.
+The run saves its labels in its input as `labels`, an array of strings, `[]` without the option, and its child runs
+keep them. `list --json` and `show --json` give them as `labels`.
 
-Each task of a root run, the first one and each resume, checks it when it starts, through the `item read` and
-`parley read` requests of harness to the host of its project, with the rule of harness for what an agent serves. An
-item that the host does not know fails the run with `Unknown item: <id>`, and an item that is done or dropped with
-`Item <id> is <state>: a run cannot serve it`. A parley that the host does not know fails it with `Unknown parley:
-<slug>`, and a parley that is not open and not a contract with `Parley <slug> is <status>: a run cannot serve it`. So
-a resume after the end of the item or the parley fails. After the check of an item, the task sends `item link` with
-the caller `workflows:<run-id>` and the edge `run:<run-id> serves item:<id>`. The host writes the edge once, so each
-resume sends it again with no change. A child run does not check or link. `land` of a run ID, and `sweep --yes` of a
-merged branch, set the item of the run to `done` when no live agent serves it (see [Land](#land) and [Sweep](#sweep)). `serves` is a reserved argument name.
+Each `start` request of a root run, the first one, its second try, and each resume, sends the labels as `labels`. The
+host checks them at the first start of a key, with the entry of each label kind, before it creates the task, and
+stores them for the task by its key. A kind with no entry, and a label that its entry refuses, such as an unknown
+item, an item that is done or dropped, or a parley that is not open and not a contract, refuse the start: the command
+prints `workflows: <reason of the host>` and exits 1, and a new run has no run directory. So a resume after the end of
+the item or the parley does not start. `land` of a run ID reports the commit that it lands for the first task of the
+run (see [Land](#land)), and the host acts on the labels of that task. `serves` is a reserved argument name.
 
 ### Input
 
@@ -1541,6 +1523,9 @@ it starts again with the installed version (the harness host of project <project
 exits 1. A new run then has no run directory; a resumed run keeps its tasks as they were. When a command follows a task
 that it did not start, it checks the version of that task in the same way.
 
+Any other error reply of the host to `start`, such as a label that it refuses (see [Serves](#serves)), is a refusal too:
+the command prints `workflows: <reason of the host>` and exits 1, and a new run has no run directory.
+
 When the `start` request fails in another way, such as a connection that closes, the command sends the same `start`
 again, with the same key and input, on a new connection, and starts the host when none runs. The host creates the task
 of a key once, so this gives the task that the first request created, or creates it, and the command follows the run.
@@ -1679,15 +1664,15 @@ to start. A run whose task ended without a result is `aborted` (a second Ctrl+C 
 another version of workflows saved is `earlier-version` or `later-version`, also when its task ended: it cannot resume.
 For such a run, the command reads only its task record and reads its input only with the input schema of this version:
 its workflow is the `name` of its saved input, or `?`, its title is its workflow, and it has no `result`, `question`,
-`branch`, `serves` or `item`, no `repository` and no steps. With `--json`, the command prints one JSON array of
-`{ "runId", "workflow", "title", "state", "result"?, "question"?, "branch"?, "startedAt"?, "serves"?, "item"?,
+`branch`, `labels` or `item`, no `repository` and no steps. With `--json`, the command prints one JSON array of
+`{ "runId", "workflow", "title", "state", "result"?, "question"?, "branch"?, "startedAt"?, "labels"?, "item"?,
 "swept"?, "repository", "steps" }`, with the schema `LISTED` of `src/cli/commands/list.ts`. The fields before `repository`
 are the run fields, `RUN_FIELDS` of `src/records/run.ts`, which `show --json` and `show --agents --json` give too. `result` is
 `{ "status"?, "code", "score"? }` as in [JSON output](#json-output), for a run that is `done` or `waiting`. `question` is the question of a run that is `waiting`. `branch` is
 the `change.branch` of the value of the result, the branch that the change is on, else the branch of the run's worktree;
 `runBranch` of `src/run/result.ts` gives it, also for the catch-up. A run without a worktree and without a `change` in
-its result has none. `startedAt` is the time when the first task of the run started, as an ISO string. `serves` is
-what the run serves (see [Serves](#serves)). `item` is the absolute path of the `.md` file that the positional text
+its result has none. `startedAt` is the time when the first task of the run started, as an ISO string. `labels` is
+the array of the labels of the run, `[]` without them (see [Serves](#serves)). `item` is the absolute path of the `.md` file that the positional text
 argument of the run named, as the run saved it (see [Saved inputs and resume](#saved-inputs-and-resume)); a run
 started with inline text or stdin has none. `swept` is the word in the `swept` file of the run directory, `landed` or
 `dropped`, which `sweep --yes` wrote when it removed the branch of the run and its worktree (see [Sweep](#sweep)). A run that no
@@ -1713,10 +1698,10 @@ start the host once, such as with harness --project <project> host, and run the 
 workflows sweep [<branch>|<run-id>...] [--yes] [--install-hook] [--json]
 ```
 
-`workflows sweep` prints one line `<run-id> landed <branch> <worktree>` for each run of the harness project of the
-current directory, newest run ID first, whose worktree is on a merged branch. With `--json`, it prints one JSON array
-of `{ "runId", "swept", "branch", "worktree", "item"? }`, with the schema `SWEPT_RUNS` of `src/cli/commands/sweep.ts`. `swept`
-is the word that `--yes` writes for the run: `landed` for a merged branch, `dropped` for a branch that is not merged.
+`workflows sweep` prints one line `<run-id> <word> <branch> <worktree>` for each run of the harness project of the
+current directory, newest run ID first, whose worktree is on a merged branch (`landed`) or on a branch with no commit
+of the run (`dropped`). With `--json`, it prints one JSON array of `{ "runId", "swept", "branch", "worktree" }`, with the schema `SWEPT_RUNS` of `src/cli/commands/sweep.ts`. `swept`
+is the word that `--yes` writes for the run: `landed` for a merged branch, `dropped` for a branch that is not merged or has no commit of its runs.
 Without `--yes`, each line and each entry shows the word that `--yes` would write. A run is a candidate only when it
 has a run directory with a `project` file, its last task has ended, a task of this version or of an earlier version
 saved it, its saved input has a worktree, the worktree exists, and the worktree is on a branch. For a run of an earlier
@@ -1727,10 +1712,14 @@ file does not exist, `sweep` prints `workflows: cannot sweep: the project store 
 directory counts as unstarted; remove the run directories that you do not need from <runs directory> by hand`, removes
 nothing and exits 1, also without `--yes`. With arguments, `sweep` needs no project store.
 
+Before the merge test, a branch whose commit, `git rev-parse refs/heads/<branch>`, is the saved `worktree.start` of
+every run of the branch has no commit of its runs: it is not merged and gets `dropped`, with no merge test and no `gh`
+call. Without arguments, `sweep` takes such a run too, as `dropped`, and `--yes` removes its worktree and branch. With
+arguments, the rule applies to a given branch that has runs.
+
 For each candidate, `sweep` first runs `git merge-base --is-ancestor refs/heads/<branch> refs/heads/main` in the
 worktree, then `git merge-base --is-ancestor refs/heads/<branch> origin/main`. A branch is merged when one of them succeeds: the commit that the
-worktree is on is in the local `main` or in `origin/main`, which is also true of a worktree with no commit of its own.
-Otherwise, when `git remote get-url origin` succeeds, `sweep` runs
+worktree is on is in the local `main` or in `origin/main`. Otherwise, when `git remote get-url origin` succeeds, `sweep` runs
 `gh pr list --head <branch> --state merged --json headRefOid` in the worktree, and a branch is merged when one pull
 request in the list has the commit that the worktree is on as its head. A repository with no `origin` gets no `gh`
 call, and its branch is not merged. A branch name that comes back in a later run, with a merged pull request of an
@@ -1756,18 +1745,8 @@ and goes on with the next run; `sweep` then exits 1. A failed worktree removal d
 as the worktree can get more work; a failed branch removal keeps the marker. The run directory and the run's records
 stay, so `list` and `show` still show the run, and their JSON gives the word as `swept` (see [List](#list)).
 
-With `--yes`, `sweep` closes the item of each `landed` run that serves an item, as `land` does: after the check of the
-tasks above and before it writes the marker, while the branch still exists. A run serves an item when the saved input
-of its last task has `serves` `{ "item": <n> }`. The head is `git rev-parse refs/heads/<branch>` in the repository.
-`sweep` closes each item once for each branch, in the name of the first run of the branch, in task ID order, that
-serves it, with the rule of `closeItem` (see [Harness requests](#harness-requests)): it sends `item link`, `item read`,
-`tree` and `item set` to the host of the project, with no start of a host, and with the caller `workflows:<run-id>`
-for `link` and `set`. The line of that run ends with ` item <n> done` or ` item <n> stays open: <node name> serves it`,
-and its JSON entry has `"item": { "id": <n>, "state": "done" | "open" }`. A close that fails, such as with no host, or
-with a refusal of the host, prints `workflows: cannot close item <n> of <run-id>: <error>` on stderr; the branch is still
-swept, its line has no item, and the exit code does not change. A `dropped` branch, a run that serves a parley, a run
-whose branch is already gone, such as at the end of an interrupted sweep, and a run without `--yes` get no close and no
-request to the host.
+`sweep` sends no request to the host, and closes no item: a merged pull request does not close the item of its run.
+`land` reports the commit of a run that it lands (see [Land](#land)).
 
 `sweep` also prints one line `<run-id> unstarted <run directory>` for each run directory of the project whose run has
 no task (the `unstarted` runs of `list`) and whose `project` file is more than 1 hour old, after the merged runs. With
@@ -2372,9 +2351,9 @@ The tool takes one of `name`, `script`, `resume` or `save`, plus `args` with `na
   command starts. `answer` works with `background`.
 - `save: { runId, name, force? }` runs `workflows save <run-id> <name>`, with `--force` when `force` is true. See
   [Save](#save).
-- `serves`, optional with `name` and `script`, names what the run builds: an item ID or a parley slug adds
-  `--serves=<value>` before `--json` (see [Serves](#serves)). Without it, the run serves nothing and its JSON has no
-  `serves`. With `resume` or `save`, it is the error `serves works only with name or script`, and no command starts.
+- `serves`, optional with `name` and `script`, is a label of the run, such as `item:<id>`, that the host checks: it
+  adds `--serves=<value>` before `--json` (see [Serves](#serves)). Without it, the run has no labels and its JSON has
+  `labels: []`. With `resume` or `save`, it is the error `serves works only with name or script`, and no command starts.
 - `background: true`, with `name`, `script` or `resume`, adds `--background` before `--json`. With `save`, it is the
   error `background works only with name, script or resume`, and no command starts.
 - `cwd`, with `name` or `script`, is the absolute path of the directory where the command starts, in place of the
@@ -2643,8 +2622,8 @@ The engine files in `src/`:
   names, `s<n>` and `<run ID>/s<n>`.
 - `run/asks.ts`: the asks of the `input` calls in the store of the host: the asker and the title of an ask, its
   requests, the value of its answer, and the answer of `resume --answer`.
-- `run/serves.ts`: the check of what a run serves, an item or a parley, in the store of the host, and the `serves`
-  edge from the run to its item.
+- `run/requests.ts`: the requests of a run to the host of its project: the args of a `harness` call, and the send of
+  one request with the run as its caller.
 - `run/sessions.ts`: the sessions on harness's children library, their move to the model of their role before a turn,
   and the end of the sessions of a run.
 - `run/child.ts`: the child runs that the `run` calls start.

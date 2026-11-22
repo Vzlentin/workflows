@@ -1,5 +1,4 @@
 /** The fields of a run that `list --json`, `show --json` and `show --agents --json` give, from its root tasks. */
-import { ServesInput } from "@vzlentin/harness/protocol";
 import { type Static, Type } from "typebox";
 import { type RunTask, stateFields, taskOutcome } from "../run/past.ts";
 import { runBranch } from "../run/result.ts";
@@ -8,7 +7,7 @@ import { RUN_RESULT, RUN_STATE, waits } from "../tool.ts";
 
 /**
  * What `sweep --yes` did with the branch of a run and its worktree: `landed` when the branch was merged, `dropped` when
- * it was not and the branch was given, by name or by run ID.
+ * it had no commit of its runs, or was not merged and was given, by name or by run ID.
  */
 export const SWEPT = Type.Union([Type.Literal("landed"), Type.Literal("dropped")]);
 
@@ -16,7 +15,7 @@ export const SWEPT = Type.Union([Type.Literal("landed"), Type.Literal("dropped")
  * The fields of a run with a task. `result` is the result of a run that is `done` or `waiting`, and `question` the
  * question of a waiting run. `branch` is
  * the branch of the run, from its result or its worktree, `startedAt` the time when its first task started, as an ISO
- * string, `serves` the item or the parley that the run builds, when its start named one, `item` the absolute path of
+ * string, `labels` the labels of the run, from `--serves`, for a task of this version, `item` the absolute path of
  * the `.md` file that its positional text named, and `swept` the word that `sweep --yes` wrote when it removed the
  * worktree of the run.
  */
@@ -29,7 +28,7 @@ export const RUN_FIELDS = {
 	question: Type.Optional(Type.String()),
 	branch: Type.Optional(Type.String()),
 	startedAt: Type.Optional(Type.String()),
-	serves: Type.Optional(ServesInput),
+	labels: Type.Optional(Type.Array(Type.String())),
 	item: Type.Optional(Type.String()),
 	swept: Type.Optional(SWEPT),
 };
@@ -54,7 +53,7 @@ export function taskFields(tasks: readonly RunTask[], task: RunTask): TaskFields
 	if (branch !== undefined) fields.branch = branch;
 	withStart(fields, tasks);
 
-	if (input.serves !== undefined) fields.serves = input.serves;
+	fields.labels = input.labels;
 
 	if (input.item !== undefined) fields.item = input.item;
 

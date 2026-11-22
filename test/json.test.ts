@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { request } from "@vzlentin/harness/client";
-import { AskWrite, type Request, type ServesInput } from "@vzlentin/harness/protocol";
+import { AskWrite, type Request } from "@vzlentin/harness/protocol";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -10,7 +10,18 @@ import { SHOWN, SHOWN_AGENTS } from "../src/cli/commands/show.ts";
 import { ROW } from "../src/cli/saved.ts";
 import { LABELS, type Labels } from "../src/records/tree.ts";
 import type { CallKind } from "../src/run/calls.ts";
-import { conversationOf, hostModel, inputsOf, logLine, sandbox, startHost, untimed, workflows } from "./support.ts";
+import {
+	conversationOf,
+	hostModel,
+	inputsOf,
+	logLine,
+	PROJECTS_ENTRY,
+	sandbox,
+	setEntries,
+	startHost,
+	untimed,
+	workflows,
+} from "./support.ts";
 
 let root: string;
 
@@ -159,69 +170,58 @@ describe("the JSON of list and show", () => {
 });
 
 describe("serves", () => {
-	it("saves the item that a run serves, gives it in the JSON, and keeps it in the child runs", async () => {
+	beforeEach(() => setEntries({ projects: PROJECTS_ENTRY }));
+
+	it("saves the label of a run, gives it in the JSON, and keeps it in the child runs", async () => {
 		await workflowsDir({ parent: 'return await run("child", {})', child: 'return "c"' });
 		expect(await item({ action: "add", title: "Build it" })).toMatchObject({ id: 1 });
 
-		const served = await workflows(["parent", "--serves", "1"], { cwd: root });
+		const served = await workflows(["parent", "--serves", "item:1"], { cwd: root });
 		expect(served.code).toBe(0);
 		const inputs = await inputsOf(served.id);
-		expect(inputs.map((input) => input.serves)).toEqual([{ item: 1 }, { item: 1 }]);
+		expect(inputs.map((input) => input.labels)).toEqual([["item:1"], ["item:1"]]);
 		const shown = await printed(SHOWN, ["show", served.id ?? "", "--json"]);
-		expect(shown.serves).toEqual({ item: 1 });
+		expect(shown.labels).toEqual(["item:1"]);
 
 		const plain = await workflows(["parent"], { cwd: root });
 		expect(plain.code).toBe(0);
 		// Every run of this list has a task, so each row is a run with the run fields.
 		const listed = await printed(Type.Array(ROW), ["list", "--json"]);
-		expect(listed.find((row) => row.runId === served.id)?.serves).toEqual({ item: 1 });
-		expect(listed.find((row) => row.runId === plain.id)).not.toHaveProperty("serves");
+		expect(listed.find((row) => row.runId === served.id)?.labels).toEqual(["item:1"]);
+		expect(listed.find((row) => row.runId === plain.id)?.labels).toEqual([]);
 	});
 
-	it("links the run to its item once, also after a resume", async () => {
-		await workflowsDir({ asks: 'return await input("Go?")' });
-		await item({ action: "add", title: "Build it" });
-
-		const waiting = await workflows(["asks", "--serves", "1"], { cwd: root });
-		expect(waiting.code).toBe(3);
-		const id = waiting.id ?? "";
-		const resumed = await workflows(["resume", id, "--answer", "yes"], { cwd: root });
-		expect(resumed.code).toBe(0);
-
-		const read = await item({ action: "read", id: 1 });
-		expect(read).toMatchObject({
-			state: "open",
-			edges: [{ from: `run:${id}`, kind: "serves", to: "item:1", by: `workflows:${id}` }],
-		});
-	});
-
-	it("fails a run that serves an unknown item or parley, or an item that is done", async () => {
+	it("refuses a run whose label the host refuses, with the reason of the host, and keeps no run", async () => {
 		await workflowsDir({ plain: 'return "x"' });
 
-		const failed = async (serves: string) => {
-			const run = await workflows(["plain", "--serves", serves], { cwd: root });
+		const failed = async (label: string) => {
+			const run = await workflows(["plain", "--serves", label], { cwd: root });
 
 			return [run.code, run.stderr.join("\n")];
 		};
 
-		expect(await failed("99")).toEqual([1, expect.stringContaining("Unknown item: 99")]);
-		expect(await failed("no-such")).toEqual([1, expect.stringContaining("Unknown parley: no-such")]);
+		expect(await failed("item:99")).toEqual([1, expect.stringMatching(/^workflows: .*\b99\b/)]);
+		expect(await failed("parley:no-such")).toEqual([1, expect.stringMatching(/^workflows: .*no-such/)]);
 		await item({ action: "add", title: "Built" });
 		await item({ action: "set", id: 1, state: "done" });
-		expect(await failed("1")).toEqual([1, expect.stringContaining("Item 1 is done: a run cannot serve it")]);
-		const bad = await workflows(["plain", "--serves", "Not_A_Slug"], { cwd: root });
-		expect([bad.code, bad.stderr[0]]).toEqual([2, "workflows: --serves Not_A_Slug is not an item ID or a parley slug"]);
+		expect(await failed("item:1")).toEqual([1, expect.stringMatching(/^workflows: .*\bdone\b/)]);
+		expect(await failed("Not_A_Slug")).toEqual([1, expect.stringMatching(/^workflows: /)]);
+		const empty = await workflows(["plain", "--serves", ""], { cwd: root });
+		expect([empty.code, empty.stderr[0]]).toEqual([2, "workflows: --serves needs a label"]);
+		const listed = await workflows(["list", "--json"], { cwd: root });
+		expect(JSON.parse(listed.stdout[0] ?? "")).toEqual([]);
 	});
 
-	it("accepts and refuses what a harness spawn accepts and refuses", async () => {
+	it("accepts and refuses the labels that a harness spawn accepts and refuses", async () => {
 		await workflowsDir({ plain: 'return "x"' });
 		const host = await startHost("main", hostModel().models);
 		const spawned: boolean[] = [];
+		let served: string[] = [];
 
 		try {
-			await servedThings();
+			served = await servedThings();
 
-			for (const [index, { input }] of SERVED.entries()) {
+			for (const [index, label] of served.entries()) {
 				const spawn: Request = {
 					type: "spawn",
 					requestId: `served-${index}`,
@@ -232,7 +232,7 @@ describe("serves", () => {
 					callerThinking: "medium",
 					cwd: root,
 					prompt: `Served ${index}`,
-					serves: input,
+					labels: [label],
 				};
 
 				const accepted = await request(spawn, { start: false }).then(
@@ -248,7 +248,7 @@ describe("serves", () => {
 
 		const ran: boolean[] = [];
 
-		for (const { flag } of SERVED) ran.push((await workflows(["plain", "--serves", flag], { cwd: root })).code === 0);
+		for (const label of served) ran.push((await workflows(["plain", "--serves", label], { cwd: root })).code === 0);
 
 		expect(ran).toEqual(spawned);
 		// An open parley, a contract and an open item are accepted; a closed parley and a done or dropped item are not.
@@ -256,35 +256,34 @@ describe("serves", () => {
 	});
 });
 
-/** The things that a run or a spawn can serve, in the order that `servedThings` makes them: the flag and the input. */
-const SERVED: readonly { readonly flag: string; readonly input: ServesInput }[] = [
-	{ flag: "served-open", input: { parley: "served-open" } },
-	{ flag: "served-contract", input: { parley: "served-contract" } },
-	{ flag: "served-closed", input: { parley: "served-closed" } },
-	{ flag: "1", input: { item: 1 } },
-	{ flag: "2", input: { item: 2 } },
-	{ flag: "3", input: { item: 3 } },
-];
+/** The item ID of an `item` reply. */
+const ITEM_ID = Type.Object({ id: Type.Number() });
 
-/** Sends `sent` to the running host of the sandbox. */
-async function send(sent: Request): Promise<void> {
-	await request(sent, { start: false });
+/** The open items of an `item list` reply, in ID order. */
+const ITEM_LIST = Type.Object({ items: Type.Array(ITEM_ID) });
+
+/** Sends `sent` to the running host of the sandbox, and gives its reply. */
+async function send(sent: Request) {
+	return request(sent, { start: false });
 }
 
 /**
- * Makes the things of `SERVED` in the running host of the sandbox: an open parley, a contract and a closed parley, and
- * an open, a done and a dropped item.
+ * Makes in the running host of the sandbox an open parley, a contract and a closed parley, and an open, a done and a
+ * dropped item, and gives their labels in that order. A contract gets an item, and the close of that item ends it.
  */
-async function servedThings(): Promise<void> {
+async function servedThings(): Promise<string[]> {
+	const labels: string[] = [];
+
 	for (const [slug, end] of [
 		["served-open", "open"],
 		["served-contract", "contract"],
 		["served-closed", "done"],
 	] as const) {
+		labels.push(`parley:${slug}`);
 		const parley = { slug, title: "Served", goal: "Serve it.", design_sense: "One writer." };
 		const where = { title: "Where", kind: "your call" as const, options: [{ key: "a", label: "Here" }], plan: "a" };
 		const round: Request = { type: "ask", action: "round", caller: "test", parley, asks: [where, { title: "Terms" }] };
-		const written = Value.Parse(AskWrite, await request(round, { start: false }));
+		const written = Value.Parse(AskWrite, await send(round));
 		const [call, readBack] = (written.parleys[0]?.asks ?? []).map((ask) => ask.id);
 
 		if (call === undefined || readBack === undefined) throw new Error(`the parley ${slug} has no asks`);
@@ -298,11 +297,24 @@ async function servedThings(): Promise<void> {
 
 		await send({ type: "ask", action: "answer", caller: "user", answers });
 
-		if (end === "done") await send({ type: "parley", action: "end", caller: "test", slug, status: end });
+		if (end !== "done") continue;
+		const { items } = Value.Parse(ITEM_LIST, await send({ type: "item", action: "list" }));
+		const contractItem = items.at(-1);
+
+		if (contractItem === undefined) throw new Error(`the contract ${slug} has no item`);
+		await send({ type: "item", action: "set", caller: "test", id: contractItem.id, state: "done" });
 	}
 
-	for (const title of ["Open", "Done", "Dropped"]) await send({ type: "item", action: "add", caller: "test", title });
+	for (const [title, state] of [
+		["Open", "open"],
+		["Done", "done"],
+		["Dropped", "dropped"],
+	] as const) {
+		const { id } = Value.Parse(ITEM_ID, await send({ type: "item", action: "add", caller: "test", title }));
+		labels.push(`item:${id}`);
 
-	await send({ type: "item", action: "set", caller: "test", id: 2, state: "done" });
-	await send({ type: "item", action: "set", caller: "test", id: 3, state: "dropped" });
+		if (state !== "open") await send({ type: "item", action: "set", caller: "test", id, state });
+	}
+
+	return labels;
 }

@@ -49,17 +49,18 @@ as a `.md` path that does not exist or an issue that `gh` cannot find, stop and 
 Each arg becomes a flag of `workflows <name>`. Give only the args that the user asks for:
 
 ```js
-{ name: "ship", serves?: "<item ID | parley slug>", args: { item: "<absolute path of the work item>", rounds?: 3, base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
-{ name: "campaign", serves?: "<item ID | parley slug>", args: { goal: "<absolute path of the goal>", rounds?: 3, base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
-{ name: "rpi", serves?: "<item ID | parley slug>", args: { item: "<absolute path of the work item>", base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
-{ name: "thermoloop", serves?: "<item ID | parley slug>", args: { change?: "<change>", item?: "<work item>", base?: "main", rounds?: 3, repo?: "<absolute path of a local repository>" } }
-{ name: "judge", serves?: "<item ID | parley slug>", args: { change?: "<change>", item?: "<work item>", base?: "main", repo?: "<absolute path of a local repository>" } }
+{ name: "ship", serves?: "<label: item:<id> | parley:<slug>>", args: { item: "<absolute path of the work item>", rounds?: 3, base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
+{ name: "campaign", serves?: "<label: item:<id> | parley:<slug>>", args: { goal: "<absolute path of the goal>", rounds?: 3, base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
+{ name: "rpi", serves?: "<label: item:<id> | parley:<slug>>", args: { item: "<absolute path of the work item>", base?: "main", branch?: "<name>", repo?: "<path or owner/name>" } }
+{ name: "thermoloop", serves?: "<label: item:<id> | parley:<slug>>", args: { change?: "<change>", item?: "<work item>", base?: "main", rounds?: 3, repo?: "<absolute path of a local repository>" } }
+{ name: "judge", serves?: "<label: item:<id> | parley:<slug>>", args: { change?: "<change>", item?: "<work item>", base?: "main", repo?: "<absolute path of a local repository>" } }
 { name: "land", args: { change: "<branch, PR number or run ID>", wait?: 1800 } }
 ```
 
-- `serves`: what the run builds: the ID of an item, or the slug of an open parley or a contract. When the user names
-  an item or a parley for the work, give it; else leave it out. An item that is done or dropped, or a parley that
-  ended, fails the run. `land` of a run ID sets the item of the run to done.
+- `serves`: a label of the run, `item:<id>` or `parley:<slug>`, that the host checks. When the user names an item or a
+  parley for the work, give its label; else leave it out. The run does not start when the host refuses the label,
+  such as an item that is done or dropped, or a parley that ended. `land` of a run ID reports the commit for the run,
+  and the host closes the item of its label.
 - `repo`: without it, the run uses the Git repository of the current directory. A local path uses that repository.
   Write the path in full, with no `~`: the tool does not expand it. For ship, campaign and rpi only, any other value,
   such as `owner/name`, is cloned with `gh` into the run directory. For thermoloop and judge, `repo` is the top
@@ -154,7 +155,7 @@ commit).
 - `workflows list` gives the runs of this project, newest first, with their state and result, such as `done, result
   shipped exit 0`. A run in the state `earlier-version` or `later-version` was saved by another version of
   workflows, and cannot resume. `workflows list --json` also gives the `question` of a waiting run, its `branch`,
-  its `startedAt`, what it `serves`, and the `item`, the `.md` file that the run was started with. `workflows show <runId>` gives the steps and the report of one run, and `workflows show <runId> --json` also gives its `agent`, the conversation and
+  its `startedAt`, its `labels`, and the `item`, the `.md` file that the run was started with. `workflows show <runId>` gives the steps and the report of one run, and `workflows show <runId> --json` also gives its `agent`, the conversation and
   the project that `harness attach` opens, and `stepNames`, the name that `workflows log <runId> <step>` takes for
   each line of `steps`. `workflows log <runId>` gives a flat log: each line has its time and the path of its run, such as
   `[ship/rpi]`, then the start or the end of a run, a step with its call count and size, or a call that failed or

@@ -6,7 +6,6 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { Cursor, Page, TaskOutcome, TaskRecord } from "@earendil-works/pi-durable";
-import { ServesInput } from "@vzlentin/harness/protocol";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type { Mark } from "../records/steps.ts";
@@ -16,6 +15,20 @@ import { reportOf, runResult, type ShownInput } from "./result.ts";
 import { current, type Runtime, TASK, thisVersion } from "./version.ts";
 
 export type RunTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
+
+/** The start of the `start` key of every task of the run `id`. */
+const keyPrefix = (id: string) => `wf:${id}#`;
+
+/** The `start` key of the task `n` of the run `id`, counting from 1. */
+export const taskKey = (id: string, n: number) => `${keyPrefix(id)}${n}`;
+
+/** The number `n` of the `start` key `key` of a task of the run `id`, or undefined when `key` is not one. */
+export function keyNumber(id: string, key: string): number | undefined {
+	const prefix = keyPrefix(id);
+	const n = key.startsWith(prefix) ? key.slice(prefix.length) : "";
+
+	return /^[1-9]\d*$/.test(n) ? Number(n) : undefined;
+}
 
 /** A task as the host's `TaskInfo` gives it: its kind and version, and its outcome once it ended. */
 export type TaskEnd = { readonly kind: string; readonly version: number; readonly outcome?: TaskOutcome<JsonValue> };
@@ -195,7 +208,7 @@ const SAVED = Type.Object({
 		agents: Type.Record(Type.String(), ROLE),
 	}),
 	worktree: Type.Optional(Type.Object({ repository: Type.String(), start: Type.String() })),
-	serves: Type.Optional(Type.Unknown()),
+	labels: Type.Optional(Type.Array(Type.String())),
 });
 
 type Saved = Static<typeof SAVED>;
@@ -307,7 +320,7 @@ export function pastRuns(
 
 	for (const [id, { task, input }] of savedRuns(roots)) {
 		if ((workflow !== null && input.name !== workflow) || endedStatus(task) !== "done") continue;
-		const { args, cwd, worktree, bundle, serves } = input;
+		const { args, cwd, worktree, bundle, labels } = input;
 
 		completed.set(id, {
 			runId: id,
@@ -316,8 +329,9 @@ export function pastRuns(
 			repository: worktree?.repository ?? null,
 			start: worktree?.start ?? null,
 			prompts: bundle.prompts,
-			// A run of an older version can serve a todo, which is no item or parley.
-			serves: Value.Check(ServesInput, serves) ? serves : null,
+			// A run of an older version has no labels.
+			labels: labels ?? [],
+			key: taskKey(id, 1),
 			result: taskOutcome(task)?.result ?? null,
 		});
 	}

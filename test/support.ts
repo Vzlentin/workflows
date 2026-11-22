@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -29,7 +30,7 @@ import { connect, request } from "@vzlentin/harness/client";
 import { entriesPath } from "@vzlentin/harness/entries";
 import { type Host, runHost } from "@vzlentin/harness/host";
 import { projectDir } from "@vzlentin/harness/projects";
-import { AGENT_HANDLE, type Request, StagedItem, statePaths } from "@vzlentin/harness/protocol";
+import { AGENT_HANDLE, type Request, statePaths } from "@vzlentin/harness/protocol";
 import { REMINDER } from "@vzlentin/harness/respond";
 import { StartedTasks } from "@vzlentin/harness/tasks";
 import { Type } from "typebox";
@@ -260,6 +261,17 @@ export async function piSettings(
 		JSON.stringify({ retry: { enabled: false }, ...settings, packages }),
 	);
 }
+
+/**
+ * The projects entry of the installed harness, which checks the `item:` and `parley:` labels and answers the `item` and
+ * `parley` requests. No subpath of the package exports it.
+ */
+export const PROJECTS_ENTRY = join(
+	dirname(createRequire(import.meta.url).resolve("@vzlentin/harness/package.json")),
+	"dist",
+	"projects",
+	"index.js",
+);
 
 /** Writes harness's entries of the sandbox: the workflows checkout and `entries`, by name. */
 export async function setEntries(entries: Readonly<Record<string, string>> = {}): Promise<void> {
@@ -1069,14 +1081,21 @@ export async function startHost(project = "main", models = createModels()): Prom
 	return host;
 }
 
+/** The fields of an item that the tests read. */
+const ITEM = Type.Object({
+	id: Type.Number(),
+	state: Type.String(),
+	edges: Type.Array(Type.Object({ from: Type.String(), kind: Type.String(), to: Type.String() })),
+});
+
 /** Sends the `item` request `sent`, an `add` or a `read`, to a new host of the sandbox, and gives the item. */
 export async function toHost(
 	sent: Extract<Request, { type: "item"; action: "add" }> | Extract<Request, { type: "item"; action: "read" }>,
-): Promise<StagedItem> {
+) {
 	const host = await startHost();
 
 	try {
-		return Value.Parse(StagedItem, await request(sent, { start: false }));
+		return Value.Parse(ITEM, await request(sent, { start: false }));
 	} finally {
 		await host.close();
 	}

@@ -87,6 +87,8 @@ one line from the judge that tells how the commit differs from the work item, or
 notes, each also a report line. [docs/spec.md](docs/spec.md) describes all the commands, workflow scripts, runs, and the
 `workflow` tool.
 
+`workflows list --json` gives `labels`, a list of strings: the labels of a run, from `--serves`, such as `item:12`.
+
 Optimize uses past completed ship runs as baselines. An INV turn edits prompts, a DOM turn edits skills and
 `AGENTS.md`. A Compose turn merges the edits into one candidate overlay, with one `kept`, `revised` or `dropped` note
 per edit in the report and in `notes.txt`. An invalid candidate does not roll out; the run reports each reason: a skill
