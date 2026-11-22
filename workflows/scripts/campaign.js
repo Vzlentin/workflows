@@ -61,7 +61,7 @@ const RUNDOWN = {
 const answer =
 	"\n\nAnswer with respond: the subject, and the parts as `items`, each one as the full text of one part, in order."
 
-const count = (n) => `${n} part${n === 1 ? "" : "s"}`
+const count = (n, noun = "part") => `${n} ${noun}${n === 1 ? "" : "s"}`
 
 const done = []
 
@@ -258,6 +258,18 @@ function stoppedAt(n, item, result, rundown) {
 	return { status: "stopped", items, rundown, report: [line, rundown] }
 }
 
+// A first judge of 0 gets one thermoloop on the change of the whole campaign, and a second judge. The thermoloop
+// commits its rounds on the campaign branch, and leaves its round patches in its own run directory. A blocked or
+// stopped thermoloop still gets the second judge.
+async function judgeAgain(firstJudge) {
+	const loop = await run("thermoloop", { item: goal, start: first, rounds, memory: notes.ref })
+	const judge = await run("judge", { item: goal, start: first })
+	const head = await shortHead()
+	const line = `  first judge ${firstJudge.score.toFixed(2)}, thermoloop ${loop.status} after ${count(loop.rounds, "round")}`
+
+	return { judge, head, lines: [line] }
+}
+
 let { subject, queue } = await split({})
 const notes = await memory()
 
@@ -349,26 +361,16 @@ if (stopped !== undefined) return notes.finish(goal, stopped)
 // The judge of the whole campaign sees the change of every item at once, against the goal.
 phase(`all ${count(done.length)}`)
 
-let last = await run("judge", { item: goal, start: first })
-let head = done.at(-1).result.head
-const again = []
+const judged = await run("judge", { item: goal, start: first })
 
-// A first judge of 0 gets one thermoloop on the change of the whole campaign, and a second judge. The thermoloop
-// commits its rounds on the campaign branch, and leaves its round patches in its own run directory. A blocked or
-// stopped thermoloop still gets the second judge.
-if (last.status !== "judged") {
-	const loop = await run("thermoloop", { item: goal, start: first, rounds, memory: notes.ref })
-	const after = `${loop.rounds} round${loop.rounds === 1 ? "" : "s"}`
-	again.push(`  first judge ${last.score.toFixed(2)}, thermoloop ${loop.status} after ${after}`)
-	last = await run("judge", { item: goal, start: first })
-	head = await shortHead()
-}
+const { judge, head, lines } =
+	judged.status === "judged" ? { judge: judged, head: done.at(-1).result.head, lines: [] } : await judgeAgain(judged)
 
-const { status: verdict, score, findings } = last
+const { status: verdict, score, findings } = judge
 
 // The last judge decides the status: `done` when it judged above 0, else its own `rejected`.
 const status = verdict === "judged" ? "done" : verdict
-const report = [`${status} ${name} in ${count(done.length)}, judge ${score.toFixed(2)}, ${head}`, ...again]
+const report = [`${status} ${name} in ${count(done.length)}, judge ${score.toFixed(2)}, ${head}`, ...lines]
 
 // A divergence of `none` or an empty one adds nothing to the item line.
 const divergedOf = (divergence) =>
