@@ -79,8 +79,9 @@ export const SWEPT_RUNS = Type.Array(
  * commit of the runs: it is not merged and gets `dropped`, and the sweep without arguments takes it too. With `--yes`,
  * it removes their worktrees and branches, and writes the word to the `swept` file of each run. It also prints the run
  * directories of the host whose run has no task and whose host file is more than an hour old, and `--yes`
- * removes them. With arguments, it takes only the branches that they give in the main checkout of the current
- * directory: a run ID gives the branch of the run, another argument is a branch. Each branch gets the worktree that has
+ * removes them. With arguments, it takes only the branches that they give: a run ID gives the branch of the run in the
+ * repository that the run recorded, from any directory of the host, and another argument is a branch of the main
+ * checkout of the current directory. Each branch gets the worktree that has
  * it, when one has, and the runs that have it; a merged one gets `landed` and another one `dropped`, and each of its
  * runs gets the word. It checks every argument before it removes anything. With `--install-hook`, it writes a
  * post-merge hook that runs `sweep --yes`. It reads the host store and never asks the host, and runs every `gh` call
@@ -300,12 +301,12 @@ async function candidate(id: string, task: RunTask, warn: (line: string) => void
 }
 
 /**
- * The branches of the arguments `args`, in their order and each once, with the runs of each branch in the main checkout
- * of `cwd`, as the host store `store` has them; a branch needs no store. An argument is a run ID of that repository,
- * which gives the branch of the run, or a branch. A branch has the word of a marker in a run directory of its runs.
- * Otherwise it is `dropped` when its runs made no commit on it, that is it has runs and each saved start of them is its
- * tip, else `landed` when it is merged, else `dropped`. It throws for the first argument that it cannot sweep, before
- * anything is removed.
+ * The branches of the arguments `args`, in their order and each once per repository, with the runs of each branch, as
+ * the host store `store` has them; a branch needs no store. An argument is a run ID, which gives the branch of the run
+ * in the repository that the run recorded, or a branch of the main checkout of `cwd`. Only a branch argument reads the
+ * main checkout of `cwd`. A branch has the word of a marker in a run directory of its runs. Otherwise it is `dropped`
+ * when its runs made no commit on it, that is it has runs and each saved start of them is its tip, else `landed` when
+ * it is merged, else `dropped`. It throws for the first argument that it cannot sweep, before anything is removed.
  */
 async function givenBranches(
 	args: readonly string[],
@@ -314,14 +315,13 @@ async function givenBranches(
 	warn: (line: string) => void,
 ): Promise<Swept[]> {
 	const runs = await reading(store, new Map<string, RunTask[]>(), (opened) => everyRun(opened.store));
-	const repository = await mainCheckout(cwd);
 	const branches = new RunBranches(runs);
 	const found: Swept[] = [];
 
 	for (const arg of args) {
-		const branch = await branchOfArgument(arg, branches, repository);
+		const { repository, branch } = await branchOfArgument(arg, branches, cwd);
 
-		if (found.some((taken) => taken.branch === branch)) continue;
+		if (found.some((taken) => taken.repository === repository && taken.branch === branch)) continue;
 		const runIds = await unsweptRuns(branches, repository, branch);
 		const running = runIds.find((id) => endedTask(runs.get(id) ?? []) === undefined);
 
@@ -338,23 +338,29 @@ async function givenBranches(
 }
 
 /**
- * The branch of the argument `arg` in the main checkout `repository`: the branch of the run `arg` when it is a run of
- * that repository and no sweep has swept it, else `arg` when it is a branch there or the branch of one of its runs that
- * no sweep has swept.
+ * The repository and the branch of the argument `arg`: the recorded repository and branch of the run `arg` when no
+ * sweep has swept it, else `arg` as a branch of the main checkout of `cwd`, when it is a branch
+ * there or the branch of one of its runs that no sweep has swept.
  */
-async function branchOfArgument(arg: string, branches: RunBranches, repository: string): Promise<string> {
+async function branchOfArgument(
+	arg: string,
+	branches: RunBranches,
+	cwd: string,
+): Promise<{ readonly repository: string; readonly branch: string }> {
 	if (branches.has(arg)) {
 		const change = await branches.changeOf(arg);
 
 		if (change === undefined) throw new Error(`cannot sweep ${arg}: the run has no branch`);
 
-		if (change.repository === repository) {
-			if (wasSwept(arg)) throw new Error(`cannot sweep ${arg}: an earlier sweep swept its branch ${change.branch}`);
+		if (wasSwept(arg)) throw new Error(`cannot sweep ${arg}: an earlier sweep swept its branch ${change.branch}`);
 
-			return change.branch;
-		}
-	} else if ((await hasBranch(repository, arg)) || (await unsweptRuns(branches, repository, arg)).length > 0) {
-		return arg;
+		return { repository: change.repository, branch: change.branch };
+	}
+
+	const repository = await mainCheckout(cwd);
+
+	if ((await hasBranch(repository, arg)) || (await unsweptRuns(branches, repository, arg)).length > 0) {
+		return { repository, branch: arg };
 	}
 
 	throw new Error(`cannot sweep ${arg}: no run of this repository and no branch of that name`);

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { addHost } from "@vzlentin/harness/hosts";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
@@ -332,6 +333,35 @@ describe("workflows sweep", () => {
 		]);
 	});
 
+	it("sweeps a given run ID from a host folder that is not a Git repository", async () => {
+		const { id, worktree } = await mergedRun("feat/z");
+
+		const swept = await workflows(["sweep", id, "--yes"], { cwd: root });
+		expect([swept.code, swept.stdout]).toEqual([0, [`${id} dropped feat/z ${worktree}`]]);
+		expect([existsSync(worktree), hasBranch("feat/z")]).toEqual([false, false]);
+	});
+
+	it("sweeps each given run ID in the repository that the run recorded", async () => {
+		const project = join(root, "project");
+		await repository(project);
+		await mkdir(join(project, ".workflows", "scripts"), { recursive: true });
+		await writeFile(
+			join(project, ".workflows", "scripts", "w.js"),
+			'export const meta = { worktree: true }\nawait sh("git commit -q --allow-empty -m work")\nreturn "done"',
+		);
+		addHost("demo", project);
+		const inRepo = await workflows(["w", "--repo", "../repo", "--branch", "feat/q"], { cwd: project });
+		const inProject = await workflows(["w", "--branch", "feat/q"], { cwd: project });
+		expect([inRepo.code, inProject.code]).toEqual([0, 0]);
+		const worktrees = [worktreeAt(repo, inRepo.id), worktreeAt(project, inProject.id)];
+		expect(worktrees.map((path) => existsSync(path))).toEqual([true, true]);
+
+		const swept = await workflows(["sweep", inRepo.id ?? "", inProject.id ?? "", "--yes"], { cwd: project });
+		expect([swept.code, swept.stderr]).toEqual([0, []]);
+		expect(worktrees.map((path) => existsSync(path))).toEqual([false, false]);
+		expect([hasBranch("feat/q"), git(project, "branch", "--list", "feat/q")]).toEqual([false, ""]);
+	});
+
 	it("removes nothing, and exits 1, when a given argument is no run and no branch of this repository", async () => {
 		const { id, worktree } = await mergedRun();
 		const other = join(root, "other");
@@ -341,7 +371,7 @@ describe("workflows sweep", () => {
 		const elsewhere = await workflows(["w", "--branch", "feat/o"], { cwd: other });
 		expect(elsewhere.code).toBe(0);
 
-		for (const bad of [elsewhere.id ?? "", "feat/o", "20990101T000000-00000000", "../x"]) {
+		for (const bad of ["feat/o", "20990101T000000-00000000", "../x"]) {
 			const swept = await workflows(["sweep", id, bad, "--yes"], { cwd: repo });
 			expect([swept.code, swept.stdout, swept.stderr]).toEqual([
 				1,

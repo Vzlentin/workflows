@@ -170,7 +170,8 @@ commit).
   way, run `workflows sweep --yes` (or
   `workflows sweep <branch>|<runId>... --yes` for a branch that went into another pull request or that you drop) to
   remove the worktree that has the branch and the local branch. A run ID gives the branch of the run, also of a
-  thermoloop that reviewed the branch in a child run. The sweep writes `landed` or `dropped` to the `swept` file of the
+  thermoloop that reviewed the branch in a child run. A run ID sweeps in the repository that the run recorded, from
+  any directory of the host. A branch name needs a current directory in its repository. The sweep writes `landed` or `dropped` to the `swept` file of the
   run directory of each run of the branch, and `list --json` and `show --json` give it as `swept`.
 
 ## /skill:workflows

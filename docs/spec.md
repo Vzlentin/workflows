@@ -1771,27 +1771,28 @@ prints `workflows: keeps <run directory>: it holds a Git clone with commits that
 cannot read; push them, or remove the directory by hand` on stderr, leaves the directory out of stdout and the JSON, and
 the exit code does not change.
 
-With arguments, `sweep` takes only the branches that they give, in the given order and each once, in the main
-checkout of the repository of the current directory (the first worktree of `git worktree list`), and leaves the
-unstarted run directories. It needs no host store: without one, no run has a branch. An argument is a run ID or a
-branch:
+With arguments, `sweep` takes only the branches that they give, in the given order and each once in its repository,
+and leaves the unstarted run directories. It needs no host store: without one, no run has a branch. An argument is a
+run ID or a branch:
 
 - A run ID of the store, root or child, gives the branch of the run: the `change.branch` of its result, else the
   branch of the worktree of its saved input, else the worktree branch of its newest direct child run that has a
   worktree. A direct child run is a run with a task that a task of the run owns. So a `thermoloop` that reviews a
-  branch in the worktree of its child run gives that branch. The run must be of this repository: the main checkout of
-  the repository that the same source saved is the main checkout of the current directory.
-- Any other argument is a branch. It must be a local branch of the repository, or the branch of a run of it.
+  branch in the worktree of its child run gives that branch. The branch is swept in the main checkout of the
+  repository that the same source saved, from any directory of the host, also one that is not in a Git repository.
+- Any other argument is a branch of the main checkout of the repository of the current directory (the first worktree
+  of `git worktree list`), so it needs a current directory in a Git repository. It must be a local branch of the
+  repository, or the branch of a run of it.
 
 The runs of a branch are the runs of the store, root and child, whose result `change` or saved worktree is on the
-branch in this repository, and, for a run that has neither, the run whose newest direct child run with a worktree is
+branch in its repository, and, for a run that has neither, the run whose newest direct child run with a worktree is
 on the branch. A run whose run directory has a `swept` file and no marker is not a run of the branch: an earlier sweep
 removed its branch, so a later branch of that name is not its branch, and its word stays. `sweep` checks every
 argument before it removes anything. An argument that it cannot sweep prints one
 of these lines, removes nothing and exits 1:
 
-- `workflows: cannot sweep <arg>: no run of this repository and no branch of that name`: a run of another repository
-  counts as unknown.
+- `workflows: cannot sweep <arg>: no run of this repository and no branch of that name`: the argument is no run ID of
+  the store, and no branch of the repository of the current directory.
 - `workflows: cannot sweep <arg>: an earlier sweep swept its branch <branch>`: the run directory of the run `<arg>`
   has a `swept` file and no marker.
 - `workflows: cannot sweep <arg>: the run has no branch`: the run and its direct child runs have no worktree and no
