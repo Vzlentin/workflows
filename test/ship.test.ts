@@ -901,7 +901,11 @@ export default function ({ events }) {
 			[["ship", "  \n"], "workflows: the work item is empty", 1],
 			[["ship"], "workflows: the work item is empty", 1, "\n\n"],
 			[["ship"], "workflows: missing work item", 2],
-			[["ship", "missing.md"], `workflows: cannot read work item ${join(repo, "missing.md")}`, 1],
+			[
+				["ship", "missing.md"],
+				`workflows: cannot read work item ${join(repo, "missing.md")}: give text with no space that ends in .md on stdin`,
+				1,
+			],
 			[["ship", "--rounds", "0", "Fix it"], "workflows: --rounds must be a positive integer", 2],
 			[["ship", "Fix", "it"], "workflows: give the work item as one argument", 2],
 			[["ship", "--pi", "pi", "Fix it"], "workflows: Unknown option '--pi'", 2],

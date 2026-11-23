@@ -82,6 +82,9 @@ workflows ship --help
 workflows outline ship                     # the steps of ship, before a run
 ```
 
+An argument with no whitespace that ends in `.md` is a file. Any other argument is text. Without an argument, the
+text comes from stdin.
+
 A ship run works on the branch `ship/<run-id>` in its own worktree, and renames the branch at the end. It does not push
 and does not open a pull request. The judge judges the squashed commit and its message. Its result gives the divergence:
 one line from the judge that tells how the commit differs from the work item, or `none`. A ship that is not a campaign part, and a campaign, also give `lessons`: up to 3 lessons of its

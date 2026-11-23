@@ -8,35 +8,39 @@ import { type Io, labelOf, UsageError, withUsage } from "../workflow/find.ts";
 import { ARG_VALUES, type ArgSpec, type Meta, PLACEMENT_OPTIONS, type PlacementOption } from "../workflow/meta.ts";
 import { parseRoles, type Roles } from "../workflow/roles.ts";
 
-/** The file that `argument` names when it ends with `.md`, resolved against `cwd`. */
-function itemFile(argument: string | undefined, cwd: string): string | undefined {
-	return argument?.endsWith(".md") === true ? resolve(cwd, argument) : undefined;
+/** A raw text argument: a work item file, as an absolute path, or inline text. */
+type TextArgument = { readonly file: string } | { readonly text: string };
+
+/** `argument` as a file when it has no whitespace and ends in `.md`, resolved against `cwd`, else as text. */
+function parseTextArgument(argument: string, cwd: string): TextArgument {
+	return !/\s/.test(argument) && argument.endsWith(".md") ? { file: resolve(cwd, argument) } : { text: argument };
 }
 
 /**
- * The text that `noun` names, such as `work item`: a `.md` file, inline text, or piped stdin. Throws when it has no
- * non-empty line. It is undefined without an argument and without stdin, and also with blank stdin when it is
- * `optional`, because the `workflow` tool pipes an empty stdin.
+ * The text that `noun` names, such as `work item`: the file or the inline text of `argument`, or piped stdin without
+ * it. Throws when it has no non-empty line. It is undefined without an argument and without stdin, and also with blank
+ * stdin when it is `optional`, because the `workflow` tool pipes an empty stdin.
  */
 async function readItem(
-	argument: string | undefined,
+	argument: TextArgument | undefined,
 	io: Io,
 	noun: string,
 	optional: boolean,
 ): Promise<string | undefined> {
 	let text: string | undefined;
-	const path = itemFile(argument, io.cwd);
 
 	if (argument === undefined) {
 		text = await io.stdin();
 
 		if (text === undefined || (optional && text.trim() === "")) return undefined;
-	} else if (path !== undefined) {
-		text = await readFile(path, "utf8").catch(() => {
-			throw new Error(`cannot read ${noun} ${path}`);
+	} else if ("file" in argument) {
+		const { file } = argument;
+
+		text = await readFile(file, "utf8").catch(() => {
+			throw new Error(`cannot read ${noun} ${file}: give text with no space that ends in .md on stdin`);
 		});
 	} else {
-		text = argument;
+		text = argument.text;
 	}
 
 	if (text.trim() === "") throw new Error(`the ${noun} is empty`);
@@ -103,7 +107,7 @@ export function runArgs(name: string, meta: Meta, given: JsonObject): JsonObject
 /**
  * The checked `meta.args` values of `argv`; texts are read after every other value is checked. `repo`, `base` and
  * `branch` are the options that the placement of `meta` adds, and are undefined without them; `base` is `main` then.
- * `item` is the absolute path of the `.md` file that the positional text names, and is undefined for any other text.
+ * `item` is the absolute path of the work item file that the positional text names, and is undefined for inline text.
  */
 export async function parseValues(meta: Meta, argv: readonly string[], io: Io, usage: string) {
 	const entries = Object.entries(meta.args);
@@ -167,14 +171,19 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 
 	if (found !== undefined) throw new UsageError(`--${found.arg} must be ${found.expected}`, usage);
 
+	let item: string | undefined;
+
 	for (const [arg, spec] of entries) {
 		if (spec.type !== "text") continue;
 		const raw = stringOption(values[arg]);
+		const parsedArg = raw === undefined ? undefined : parseTextArgument(raw, io.cwd);
 		const label = labelOf(arg, spec);
 		const optional = spec.required !== true;
 
+		if (spec.positional === true && parsedArg !== undefined && "file" in parsedArg) item = parsedArg.file;
+
 		const value =
-			raw === undefined && spec.default !== undefined ? spec.default : await readItem(raw, io, label, optional);
+			raw === undefined && spec.default !== undefined ? spec.default : await readItem(parsedArg, io, label, optional);
 
 		if (value !== undefined) args[arg] = value;
 	}
@@ -183,8 +192,6 @@ export async function parseValues(meta: Meta, argv: readonly string[], io: Io, u
 	const missing = entries.find(([arg, spec]) => spec.type === "text" && spec.required && args[arg] === undefined);
 
 	if (missing !== undefined) throw new UsageError(`missing ${labelOf(...missing)}`);
-
-	const item = positional?.[1].type === "text" ? itemFile(stringOption(values[positional[0]]), io.cwd) : undefined;
 
 	const placedOption = (option: PlacementOption) =>
 		placed.includes(option) ? stringOption(values[option]) : undefined;

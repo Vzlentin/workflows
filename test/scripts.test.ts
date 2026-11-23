@@ -3075,6 +3075,39 @@ return [one.reply, two.reply].join(", ")`,
 		expect([required.code, required.stderr]).toEqual([1, ["workflows: the note is empty"]]);
 	});
 
+	it("reads a text argument with no whitespace that ends in .md as a file, and any other argument as text", async () => {
+		await writeFile(
+			join(root, "note.js"),
+			`export const meta = { args: { note: { type: "text", positional: true, required: true } } }\nreturn args.note`,
+		);
+		await mkdir(join(root, "items"));
+		await writeFile(join(root, "plan.md"), "the plan");
+		await writeFile(join(root, "items", "plan.md"), "the item plan");
+
+		const cases: [string[], string, string | undefined][] = [
+			[["plan.md"], "the plan", join(root, "plan.md")],
+			[["./items/plan.md"], "the item plan", join(root, "items", "plan.md")],
+			[["fix the login bug"], "fix the login bug", undefined],
+			[["edit plan.md"], "edit plan.md", undefined],
+			[["Add a line second to SECOND.md"], "Add a line second to SECOND.md", undefined],
+			[["--note", "edit plan.md"], "edit plan.md", undefined],
+		];
+
+		for (const [argv, note, item] of cases) {
+			const run = await workflows(["note.js", ...argv], { cwd: root });
+			expect([run.code, run.stderr, run.stdout.at(-1)], argv.join(" ")).toEqual([0, [], note]);
+			const shown = await workflows(["show", run.id ?? "", "--json"], { cwd: root });
+			expect(JSON.parse(shown.stdout[0] ?? "").item, argv.join(" ")).toBe(item);
+		}
+
+		const missing = await workflows(["note.js", "plna.md"], { cwd: root });
+
+		expect([missing.code, missing.stderr]).toEqual([
+			1,
+			[`workflows: cannot read note ${join(root, "plna.md")}: give text with no space that ends in .md on stdin`],
+		]);
+	});
+
 	it("rejects bad arguments with the usage of the workflow", async () => {
 		await writeFile(
 			join(root, "x.js"),

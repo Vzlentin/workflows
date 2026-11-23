@@ -53,9 +53,12 @@ workflows ship --repo owner/calibre --base develop plan.md
 
 The work item comes from one argument or from stdin:
 
-- An argument that ends in `.md` is a work item file, relative to the current directory. A missing file is an error.
-- Any other argument is the work item text.
-- Without an argument, the work item is read from stdin.
+- An argument with no whitespace that ends in `.md` is a work item file, relative to the current directory, such as
+  `plan.md` or `./items/plan.md`. A missing file fails with
+  `cannot read work item <absolute path>: give text with no space that ends in .md on stdin`.
+- Any other argument is the work item text, such as `"fix the login bug"` or `"edit plan.md"`. A path that contains
+  whitespace is text: to use the file, give its content on stdin.
+- Without an argument, the work item is read from stdin. Stdin is always text.
 
 A work item without a non-empty line fails before the run starts. `--base` defaults to `main` and `--rounds`
 defaults to 3. `--branch <name>` gives the name of the run's branch: see
@@ -1325,8 +1328,8 @@ call of a session that moves to it after a resume, with harness's error, such as
 
 Before the run starts, it saves the script, every `scripts/*.js` of the package and the project, the lib, the instructions
 of every prompt, the merged agents table, the run layer of `--agents` apart from it (`agents`, `{}` without the
-option), `labels` of `--serves` (`[]` without the option), `item`, the absolute path of the `.md` file that the
-positional text argument names (none for inline text, for stdin and in a child run), the args, the project folder of the
+option), `labels` of `--serves` (`[]` without the option), `item`, the absolute path of the work item file that
+the positional argument names (none for inline text, for stdin and in a child run), the args, the project folder of the
 start (none in a child run) and the directory of the run: the current directory, or the repository of `--repo` with
 `repo: true`. Resume and `run()` use these saved
 inputs, so a later edit of a script or prompt, in the package or `.workflows/`, changes only new runs. The shared
@@ -1691,7 +1694,7 @@ are the run fields, `RUN_FIELDS` of `src/records/run.ts`, which `show --json` an
 the `change.branch` of the value of the result, the branch that the change is on, else the branch of the run's worktree;
 `runBranch` of `src/run/result.ts` gives it, also for the catch-up. A run without a worktree and without a `change` in
 its result has none. `startedAt` is the time when the first task of the run started, as an ISO string. `labels` is
-the array of the labels of the run, `[]` without them (see [Serves](#serves)). `item` is the absolute path of the `.md` file that the positional text
+the array of the labels of the run, `[]` without them (see [Serves](#serves)). `item` is the absolute path of the work item file that the positional
 argument of the run named, as the run saved it (see [Saved inputs and resume](#saved-inputs-and-resume)); a run
 started with inline text or stdin has none. `swept` is the word in the `swept` file of the run directory, `landed` or
 `dropped`, which `sweep --yes` wrote when it removed the branch of the run and its worktree (see [Sweep](#sweep)). A run that no
