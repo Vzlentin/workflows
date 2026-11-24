@@ -27,6 +27,7 @@ import {
 	inputCall,
 	JSON_OBJECT,
 	memoized,
+	namedChangeCall,
 	pastRunsCall,
 	type ScriptRun,
 	SESSION_ARGS,
@@ -97,6 +98,7 @@ const input = (question) => {
 	return answer;
 };
 const pastRuns = (workflow, options) => __pastRuns(workflow, options ?? {});
+const namedChange = (arg) => __namedChange(arg);
 const harness = (request) => __harness(request);
 const gitHost = Object.freeze({
 	create: (branch, base, title, body) => __gitHost({ action: "create", branch, base, title, body }),
@@ -126,6 +128,7 @@ const SH_ARGS = Type.Tuple([SHELL_CMD, Type.Boolean()]);
 const OK_ARGS = Type.Tuple([SHELL_CMD]);
 const RUN_ARGS = Type.Tuple([Type.String(), JSON_OBJECT]);
 const INPUT_ARGS = Type.Tuple([Type.String()]);
+const NAMED_CHANGE_ARGS = Type.Tuple([Type.String()]);
 const PAST_ARGS = Type.Tuple([Type.Union([Type.String(), Type.Null()]), PAST_OPTIONS]);
 const TODO_ADD_ARGS = Type.Tuple([Type.String()]);
 const TODO_SET_ARGS = Type.Tuple([Type.Integer({ minimum: 1 }), TodoState, Type.Union([Type.String(), Type.Null()])]);
@@ -255,6 +258,7 @@ export async function runScript(
 				turnEnd = Promise.withResolvers<void>();
 			}),
 			global("__pastRuns", PAST_ARGS, ([workflow, options]) => pastRunsCall(calls, workflow, options)),
+			global("__namedChange", NAMED_CHANGE_ARGS, ([arg]) => namedChangeCall(calls, cwd, arg)),
 			// A text is any string, so an empty text fails with the error of harness.
 			global("__todoAdd", TODO_ADD_ARGS, ([text]) => todoCall(calls, { action: "add", text }), "todo"),
 			// The sandbox sends a missing text as null, and the args leave it out.

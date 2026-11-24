@@ -1,9 +1,9 @@
 /**
  * The Git host of a repository, from the URL of its `origin`: its pull requests (on GitLab, merge requests), its CI
- * runs and its issues, through a GitHub back end (`gh`) and a GitLab back end (`glab`), and the clone of a GitHub
- * repository. It is the only module that runs `gh` or `glab`. The `gitHost` calls of a script and `sweep` use it. Next
- * to it, the checks that need only Git: a conflict of a branch with its base, a branch that its base already has, and
- * the push of a branch.
+ * runs, its issues and the references to them in a text, through a GitHub back end (`gh`) and a GitLab back end
+ * (`glab`), and the clone of a GitHub repository. It is the only module that runs `gh` or `glab`. The `gitHost` calls
+ * of a script, `sweep` and `pr` use it. Next to it, the checks that need only Git: a conflict of a branch with its
+ * base, a branch that its base already has, and the push of a branch.
  */
 import { setTimeout as sleep } from "node:timers/promises";
 import { type Static, type TSchema, Type } from "typebox";
@@ -145,6 +145,15 @@ export async function gitHostOf(cwd: string, signal?: AbortSignal): Promise<GitH
 	return null;
 }
 
+/** The Git host of the repository `cwd`, as `gitHostOf` gives it; it throws when the repository has none. */
+export async function requiredGitHost(cwd: string, signal?: AbortSignal): Promise<GitHost> {
+	const host = await gitHostOf(cwd, signal);
+
+	if (host === null) throw new Error(`the origin of ${cwd} is on no Git host that gh or glab knows`);
+
+	return host;
+}
+
 /** Whether the tool of `host` is logged in to it, or is missing. */
 async function login(host: GitHost, signal: AbortSignal | undefined): Promise<"in" | "out" | "missing"> {
 	let result: Result;
@@ -271,6 +280,24 @@ export async function mergePullRequest(host: GitHost, number: number, signal?: A
 /** Whether `#<number>` is an open issue of `host`. An issue that the host does not have is not open. */
 export async function isOpenIssue(host: GitHost, number: number, signal?: AbortSignal): Promise<boolean> {
 	return (await backendOf(host, signal)).issue(host, number, signal);
+}
+
+/**
+ * The number of the first issue that `text` names: `#<n>`, not after a word character, `&` or `/`, or the URL of an
+ * issue of the repository of `host` (`https://<name>/<path>/issues/<n>`, or `.../-/issues/<n>` on GitLab), with no
+ * regard to case. Undefined when it names none.
+ */
+export function issueReference(host: GitHost, text: string): number | undefined {
+	const url = `https?://${escaped(host.name)}/${escaped(host.path)}/(?:-/)?issues/(\\d+)`;
+	const match = new RegExp(`(?<![\\w&/])#(\\d+)(?!\\w)|${url}(?![\\w/])`, "i").exec(text);
+	const number = match?.[1] ?? match?.[2];
+
+	return number === undefined ? undefined : Number(number);
+}
+
+/** `text` with each character that a regular expression reads as special escaped. */
+function escaped(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 }
 
 /**

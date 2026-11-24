@@ -43,6 +43,7 @@ export const COMMAND_NAMES = [
 	"attach",
 	"save",
 	"sweep",
+	"pr",
 	"check",
 	"outline",
 ] as const;

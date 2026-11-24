@@ -82,7 +82,7 @@ async function commitOf(repository: string, ref: string): Promise<string> {
  * is the local `base` when the repository has no `origin`, when the fetch fails, which `warn` gets as one line, or when
  * `origin` has no branch `base`, such as when `base` is a commit.
  */
-async function startRef(repository: string, base: string, warn: (line: string) => void): Promise<string> {
+export async function startRef(repository: string, base: string, warn: (line: string) => void): Promise<string> {
 	if (!(await gitSucceeds(repository, "remote", "get-url", "origin"))) return base;
 	const fetched = await run("git", ["fetch", "--quiet", "origin"], repository);
 

@@ -208,6 +208,16 @@ type PastRun = {
  */
 declare function pastRuns(workflow: string | null, options?: { runs?: readonly string[]; limit?: number }): Promise<PastRun[]>;
 
+/**
+ * The change that `arg` names, from the main checkout of the current directory: a local branch gives itself in that
+ * checkout, and the ID of a completed root run gives the `change` of its result, with `key`, the `start` key of the
+ * first task of the run. Null when `arg` is neither. A completed run with no change throws. The call saves its result,
+ * so a resume does not look again.
+ */
+declare function namedChange(
+	arg: string,
+): Promise<{ repository: string; branch: string } | { repository: string; branch: string; key: string } | null>;
+
 /** A todo of the list of the run: a line of intent with a state. Its ID is its place in the list: 1, 2, 3 and so on. */
 type Todo = { readonly id: number; readonly text: string; readonly state: "open" | "doing" | "done" | "dropped" };
 

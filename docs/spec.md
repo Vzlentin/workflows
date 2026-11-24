@@ -723,12 +723,12 @@ workflows land <change> --wait 600
 the ID of a completed root run of any workflow in the host store. Neither the workflow nor the status of the run
 matters. It runs these steps in order, with `git -C` in the repository of the change:
 
-1. Find the change, in this order. A number is a PR: `gitHost.state(<n>)` (see [Git host](#git-host)) gives the
-   branch `prBranch(pr)`, `pr/<n>` for a PR from another repository, else its head branch. `land` does not
-   fetch the PR, so its branch must already be local. Else a local branch of the main checkout of the current
-   directory is that branch. For both, the repository is that main checkout, the first entry of `git worktree list`.
-   Else the change is a run ID: `pastRuns(null, { runs: [<change>] })` gives the run, and `result.change` its
-   repository and branch. It refuses a value that is none of these (`<change> is no PR number, no branch of
+1. Find the change, in this order. A number is a PR: `gitHost.state(<n>)` (see [Git host](#git-host)) gives the branch
+   `prBranch(pr)`, `pr/<n>` for a PR from another repository, else its head branch. `land` does not fetch the PR, so its
+   branch must already be local. Else a local branch of the main checkout of the current directory is that branch. For
+   both, the repository is that main checkout, the first entry of `git worktree list`. Else the change is a run ID:
+   `namedChange(<change>)` (see [Named change](#named-change)) gives the repository and the branch of the
+   `result.change` of the run. It refuses a value that is none of these (`<change> is no PR number, no branch of
    <repository> and no completed run`), and a run with no `result.change` or an empty branch in it (`the run <run-id>
    has no change`, such as a run on a detached HEAD, or a run that an earlier version saved). It refuses the branch
    `main` (`the branch is main`) and a branch that the repository does not have (`the branch <branch> is not in
@@ -827,7 +827,7 @@ workflows check audit
   script replaces a package script of the same name. An unknown name fails with `workflows: unknown command <name>`
   and exits 2.
 
-`list`, `resume`, `wait`, `stop`, `show`, `log`, `attach`, `save`, `sweep`, `check` and `outline` are commands,
+`list`, `resume`, `wait`, `stop`, `show`, `log`, `attach`, `save`, `sweep`, `pr`, `check` and `outline` are commands,
 `COMMAND_NAMES` of `src/tool.ts`, so no script of these names can run. A project script with one of these names fails
 every command that loads the scripts of the project, also `workflows` and `outline --json`, with `workflows:
 <project>/scripts/<name>.js has the name of the command <name>; rename the script`, and exit 1. Bad usage of a command
@@ -1165,6 +1165,7 @@ returns its session at once, and `phase`, `log` and `title` need no `await`.
 | `await ok(cmd)` | Runs `cmd` as `sh` does. Returns true when the exit code is 0 |
 | `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
 | `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow`, or of every workflow for `null`, in the host store. See [Past runs](#past-runs) |
+| `await namedChange(arg)` | The change that a branch or a run ID names, or `null`. See [Named change](#named-change) |
 | `await harness(request)` | Sends one request to the harness host of the run and returns its reply. See [Harness requests](#harness-requests) |
 | `await gitHost.create(branch, base, title, body)`, `gitHost.state(change)`, `gitHost.merge(number)`, `gitHost.issue(number)` | The pull requests and the issues of the Git host of the origin of `cwd`. See [Git host](#git-host) |
 | `await todo.add(text)` | Adds a todo with the state `open` and the next ID to the list of the run, and returns it, `{ id, text, state }`. See [Todos](#todos) |
@@ -1175,10 +1176,11 @@ returns its session at once, and `phase`, `log` and `title` need no `await`.
 | `phase(title)`, `log(text)` | Write one step, or one line under the current step, on stderr before the script's next call that runs |
 | `title(text)` | Name the run `text` in `list`, `show` and the end lines, in place of the subject of its first `text` argument; the last call wins. `changeOf` calls it with the subject of the intent |
 
-A call with an argument of the wrong type, such as a prompt that is not a string, a `sh` command that is not a string
-or an array of strings, or a `prompts.<name>` input that is not a string, fails with
-`<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run`, `pastRuns`, `todo`, `harness`, `gitHost`, `input` or `prompt`, and
-`<path>` points to the deepest wrong value in the arguments, such as `/0/1` for `sh(["git", 1])`.
+A call with an argument of the wrong type, such as a prompt that is not a string, a `sh` command that is not a string or
+an array of strings, or a `prompts.<name>` input that is not a string, fails with `<call> got bad arguments: <path>
+<problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run`, `pastRuns`, `namedChange`, `todo`, `harness`,
+`gitHost`, `input` or `prompt`, and `<path>` points to the deepest wrong value in the arguments, such as `/0/1` for
+`sh(["git", 1])`.
 
 #### Past runs
 
@@ -1204,6 +1206,17 @@ the call with `no completed <workflow> run <id>`, or with `no completed run <id>
 many runs; without `limit`, it gives all of them. Another option fails with `pastRuns got bad arguments`. The call
 saves its result, so a resume returns the same list and does not read the store again.
 
+#### Named change
+
+`namedChange(arg)` gives the change that `arg` names, with the rule of `workflows pr` (see [Pr](#pr)). A local branch of
+the main checkout of `cwd`, the first entry of `git worktree list`, gives `{ repository, branch }`, with that main
+checkout and the branch, and no `key`. Else the ID of a completed root run in the host store, a run that `pastRuns`
+gives, gives the `repository` and the `branch` of its `result.change`, and `key`, the `start` key of the first task of
+the run, `wf:<run-id>#1`. A completed run with no `result.change`, or with an empty branch in it, fails the call with
+`the run <run-id> has no change`. Another value gives `null`. An argument that is not a string fails with
+`namedChange got bad arguments: <path> <problem>`. The call is of the kind `namedChange`, with the args `{ arg }`, and
+saves its result, so a resume returns it and does not look again.
+
 #### Harness requests
 
 `harness(request)` sends one request to the harness host of the run, with no start of a host, and returns
@@ -1219,9 +1232,10 @@ args, and saves the reply, so a resume returns it and does not send the request 
 #### Git host
 
 `src/githost.ts` asks a Git host about pull requests (on GitLab, merge requests), CI runs and issues, and clones a
-GitHub repository. The `gitHost` calls of a script, `sweep` and the clone of `--repo` use it. It runs `gh` for GitHub
-and `glab` for GitLab, and it is the only code of the package that runs them: a test fails when another `.ts` or `.js`
-file of `src/`, `workflows/` or `pi/` names `gh` or `glab` as a string, or a command such as `gh pr` or `glab api`.
+GitHub repository. The `gitHost` calls of a script, `sweep`, `pr` and the clone of `--repo` use it. It runs `gh` for
+GitHub and `glab` for GitLab, and it is the only code of the package that runs them: a test fails when another `.ts` or
+`.js` file of `src/`, `workflows/` or `pi/` names `gh` or `glab` as a string, or a command such as `gh pr` or `glab
+api`.
 
 - The Git host of a repository comes from the URL of its `origin`, `git@<host>:<path>` or
   `<scheme>://[<user>@]<host>[:<port>]/<path>`, with no `.git` at the end. `github.com` is GitHub and `gitlab.com` is
@@ -1434,10 +1448,12 @@ continues in its session. A command that was in progress runs again, so commands
 records its kind, the arguments of its kind, its phase and its start time when it starts, and its `end` when it ends:
 `{ "kind": "done", "at", "result" }`, `{ "kind": "failed", "at", "error" }`, or `{ "kind": "cancelled", "at" }`. A
 call without `end` has not ended. The arguments of each kind are: `session` `{ "profile", "provider"?, "model"?,
-"thinking"?, "key"? }` (`key` is the first 16 hex characters of the sha256 of the key that the script gives, the prompt of an `agent` call), `ask` `{ "conversation", "prompt", "schema", "settle"? }` (`schema` is `null` without one), `sh`
-`{ "cmd", "check", "settle"? }`, `ok` `{ "cmd", "check" }`, `run` `{ "name", "args" }`, `input` `{ "question" }`, `pastRuns` `{ "workflow", "options" }`, and
-`todo` `{ "action": "add", "text" }`, `{ "action": "set", "id", "state", "text"? }` or `{ "action": "list" }`,
-`harness` the request, as in [Harness requests](#harness-requests), and `gitHost` its action with its values, as in
+"thinking"?, "key"? }` (`key` is the first 16 hex characters of the sha256 of the key that the script gives, the
+prompt of an `agent` call), `ask` `{ "conversation", "prompt", "schema", "settle"? }` (`schema` is `null` without
+one), `sh` `{ "cmd", "check", "settle"? }`, `ok` `{ "cmd", "check" }`, `run` `{ "name", "args" }`, `input`
+`{ "question" }`, `pastRuns` `{ "workflow", "options" }`, `namedChange` `{ "arg" }`, and `todo`
+`{ "action": "add", "text" }`, `{ "action": "set", "id", "state", "text"? }` or `{ "action": "list" }`, `harness` the
+request, as in [Harness requests](#harness-requests), and `gitHost` its action with its values, as in
 [Git host](#git-host).
 `CALL_RECORD` of `src/run/calls.ts` is the schema of a record, one member for each kind. It also records the task that
 started it, for a `session` call its conversation and the model of the session, `{ "provider", "model",
@@ -1905,6 +1921,51 @@ worktree removal deletes all the markers. A branch that no run has gets no marke
 hook exists, it writes nothing, prints an error with the line to add, and exits 1. `--install-hook` ignores `--yes` and
 `--json`.
 
+## Pr
+
+```sh
+workflows pr <branch>|<run-id>
+```
+
+`workflows pr <change>` opens the pull request of a change into `main` on the Git host of its repository (see
+[Git host](#git-host)), with no model call. It takes exactly one change, and has no other option. The change is a
+local branch of the main checkout of the current directory, or the ID of a completed root run of the harness host of
+the current directory, as `namedChange` gives it (see [Named change](#named-change)): a run's branch given by its name
+is a branch. Without a host store, only a branch is a change. It runs these steps in order, in the repository of the
+change:
+
+1. Find the change. A value that is neither fails with `<change> is no branch of <repository> and no completed run`,
+   where `<repository>` is the main checkout of the current directory, and a run with no change fails with `the run
+   <run-id> has no change`.
+2. Find the Git host of the origin of the repository. A repository with none fails with `the origin of <repository> is
+   on no Git host that gh or glab knows`.
+3. Find the base: after `git fetch origin`, `origin/main`, as a run starts (see [Ship](#ship)). A failed fetch prints
+   one line `workflows: cannot fetch origin, ...` on stderr and takes the local `main`.
+4. Read the newest pull request of the branch. This request checks the login of the tool first, and nothing is
+   pushed before it.
+5. When that pull request is open, push the branch to the branch of the same name on `origin`, print the URL of the
+   pull request, and exit 0.
+6. When it is merged and its head is the tip of the branch, refuse with `the branch <branch> is merged: <url>`.
+7. When the branch has no commit that the base does not have, refuse with `the branch <branch> has no commit ahead of
+   main`.
+8. When the base already has the changes of the branch (see [Git host](#git-host)), refuse with `the branch <branch>
+   is merged in main`.
+9. Else push the branch, create its pull request into `main` with the title and the body below, and print its URL as
+   the last line.
+
+The title is the subject of the commit when the branch has one commit ahead of the base. With more commits, it is the
+title of the run, as `list` gives it, for a change that a run gives, else the subject of the oldest commit. The body
+joins these parts with a blank line, and leaves out an empty part:
+
+- with one commit, its body, trimmed; with more commits, one line `- <subject>` for each commit, oldest first;
+- `judge <score>`, with two decimals, when the `score` of the result of the run is a number;
+- `Closes #<n>`, last, for the first issue that the `item` arg of the run names, as `#<n>` or as the URL of an issue
+  of the repository of `origin` (`https://<host>/<path>/issues/<n>` or `https://<host>/<path>/-/issues/<n>`), when
+  that issue is open.
+
+A refusal and a failure print `workflows: <reason>` and exit 1. Bad usage exits 2. It never force-pushes, and it does
+not commit changes of a worktree.
+
 ## Show
 
 ```sh
@@ -1930,7 +1991,8 @@ run <run-id> <workflow> <state> <title>
 
 - The calls are in the order they started. Each call is under the phase line that was current when it started, and is
   indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `sh`, `ok`,
-  `run`, `input`, `pastRuns`, `todo`, `harness` or `gitHost`. An `agent` call is a `session` call and an `ask` call.
+  `run`, `input`, `pastRuns`, `namedChange`, `todo`, `harness` or `gitHost`. An `agent` call is a `session` call and an
+  `ask` call.
 - Each call has a state. It is `done` or `failed` once it ended. A call that did not end is `cancelled` when the end of
   its script cancelled it, `waiting` when it is the open `input` call of a waiting run, `running` while the task that
   started it has not ended (it runs now, or the host stopped), and `cut` once that task ended. A call that an earlier
@@ -1938,15 +2000,15 @@ run <run-id> <workflow> <state> <title>
 - The mark is `◉` for `running`, `✓` for `done`, and `✗` for every other state. A `cancelled`, `cut` or `waiting` call
   shows its state in place of its duration. A session is `◉` while one of its asks is `◉`; once the task ended, it
   keeps its `✓` or `✗`.
-- The label is `<role> conversation <id>` for a `session` that opened, with the role name and the conversation ID of
-  the session, and the role name only for a `session` that did not open. For `ask`, it is the role name of its session. For
+- The label is `<role> conversation <id>` for a `session` that opened, with the role name and the conversation ID of the
+  session, and the role name only for a `session` that did not open. For `ask`, it is the role name of its session. For
   `sh` and `ok`, it is the command on one line, cut at 80 characters. For `run`, it is the workflow name and the child
-  run ID. For `input`, it is the question on one line, cut at 80 characters. For `pastRuns`, it is the workflow, or `any` for `null`. For `todo`, it is `add <text>`,
-  `set <id> <state>` or `list`, on one line, cut at 80 characters. For `harness`, it is `tree`, `item read <id>`,
-  `item set <id> <state>`, or `item link <from> <kind> <to>` on one line, cut at 80 characters. For `gitHost`, it is
-  `create <branch>`, `state <number or branch>`, `merge <number>`, `issue <number>` or `ci <branch>`, on one line, cut at 80
-  characters. The phase lines and calls of the child run
-  are indented by 2 more under the `run` line.
+  run ID. For `input`, it is the question on one line, cut at 80 characters. For `pastRuns`, it is the workflow, or
+  `any` for `null`. For `namedChange`, it is the argument on one line, cut at 80 characters. For `todo`, it is `add
+  <text>`, `set <id> <state>` or `list`, on one line, cut at 80 characters. For `harness`, it is `tree`, `item read
+  <id>`, `item set <id> <state>`, or `item link <from> <kind> <to>` on one line, cut at 80 characters. For `gitHost`, it
+  is `create <branch>`, `state <number or branch>`, `merge <number>`, `issue <number>` or `ci <branch>`, on one line,
+  cut at 80 characters. The phase lines and calls of the child run are indented by 2 more under the `run` line.
 - The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, also for a working session, it is
   the time since the call started.
 - A finished run ends with its report lines. A failed run ends with `failed <title>: <error>` and `continue with:
@@ -2678,7 +2740,7 @@ The engine files in `src/`:
   `list` and `show` print, and progress.
 - `cli/follow.ts`: how the command follows a run to its outcome, the answer of a waiting run, and the Ctrl+C presses.
 - `cli/commands/`: one file for each command: `start.ts`, `resume.ts` (also `wait`), `stop.ts`, `list.ts`, `show.ts`,
-  `attach.ts`, `save.ts`, `sweep.ts` and `outline.ts`.
+  `attach.ts`, `save.ts`, `sweep.ts`, `pr.ts` and `outline.ts`.
 - `command.ts`: the `workflows` command of the package, for the `workflow` tool of the host, which runs it with
   `runCli` of `tool.ts`.
 - `cli/commands/log.ts`: `workflows log <run-id>`: the short log of a run, the full output of one call, or the log as
@@ -2715,6 +2777,7 @@ The engine files in `src/`:
 - `workflow/roles.ts`: the `agents.json` tables, the `--agents` parser, their merge, and the role of a name.
 - `cli/commands/check.ts`: the static analysis of `workflows check`.
 - `run/version.ts`: the kind and version of the script task, and the task types that the `run/` files share.
+- `run/change.ts`: the change that a branch or a run ID names, for `land` and `pr`.
 - `run/past.ts`: the saved root runs of the host store, for the `pastRuns` call and `run(name, { from })`, the task
   of a run that the commands go by, the first task of a run, whose list of todos is the list of the run, and
   `runStatus`, the one place that computes the status of a run.

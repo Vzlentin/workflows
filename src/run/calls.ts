@@ -24,18 +24,19 @@ import {
 	branchPullRequest,
 	ciRuns,
 	createPullRequest,
-	gitHostOf,
 	isOpenIssue,
 	mergePullRequest,
 	pullRequestOf,
+	requiredGitHost,
 } from "../githost.ts";
 import { readHost } from "../launch/input.ts";
 import { cutTail, JSON_VALUE, OUTPUT_BYTES } from "../tool.ts";
 import type { RunBundle } from "../workflow/bundle.ts";
 import type { Roles } from "../workflow/roles.ts";
 import { answerOf, asksOf, newAsk, openAsk, plainText, readAsk } from "./asks.ts";
+import { namedChange } from "./change.ts";
 import { keyIn } from "./keys.ts";
-import { firstTask, PAST_OPTIONS, type PastOptions, pastRuns, scanRuns, scanTasks } from "./past.ts";
+import { firstTask, PAST_OPTIONS, type PastOptions, pastRuns, scanRuns, scanTasks, taskKey } from "./past.ts";
 import { addProgress, checkpointWhen, type PhaseLines, takeLines } from "./progress.ts";
 import { HARNESS_ARGS, type HarnessArgs, runRequest } from "./requests.ts";
 import type { Host, Runtime, ScriptTask } from "./version.ts";
@@ -119,6 +120,9 @@ export const PAST_RUNS_ARGS = Type.Object(
 	{ workflow: Type.Union([Type.String(), Type.Null()]), options: PAST_OPTIONS },
 	{ additionalProperties: false },
 );
+
+/** The args of a `namedChange` call: the argument that names the change. */
+export const NAMED_CHANGE_ARGS = Type.Object({ arg: Type.String() }, { additionalProperties: false });
 
 /** A positive integer: the number of a pull request or of an issue. */
 const NUMBER = Type.Integer({ minimum: 1 });
@@ -221,6 +225,7 @@ const CALL_ARGS = {
 	run: RUN_ARGS,
 	input: INPUT_ARGS,
 	pastRuns: PAST_RUNS_ARGS,
+	namedChange: NAMED_CHANGE_ARGS,
 	todo: TODO_ARGS,
 	harness: HARNESS_ARGS,
 	gitHost: GIT_HOST_ARGS,
@@ -712,6 +717,24 @@ export function pastRunsCall(calls: Calls, workflow: string | null, options: Pas
 }
 
 /**
+ * The `namedChange` call of `arg` from the script directory `cwd`: the repository and the branch of the change that
+ * `namedChange` gives, with `key`, the `start` key of the first task of the run, for a change that a run gives, or
+ * null. A resume replays the saved change.
+ */
+export function namedChangeCall(calls: Calls, cwd: string, arg: string): Promise<JsonValue> {
+	const args = { arg };
+
+	return memoized(calls, callKey(calls, "namedChange", args), { kind: "namedChange", args }, async () => {
+		const change = await namedChange(cwd, arg, await scanRuns(calls.runtime, calls.context));
+
+		if (change === null) return null;
+		const { repository, branch, run } = change;
+
+		return run === null ? { repository, branch } : { repository, branch, key: taskKey(run.id, 1) };
+	});
+}
+
+/**
  * The list of todos of the run: the list of its first task, so every task of the run, and no other run, uses it. The
  * first `todo` call of the execution finds it, so the other calls do not read the tasks again.
  */
@@ -771,9 +794,7 @@ export function gitHostCall(calls: Calls, cwd: string, args: GitHostArgs): Promi
 	return memoized(calls, callKey(calls, "gitHost", args), { kind: "gitHost", args }, async () => {
 		const signal = calls.context.abortSignal;
 		const dir = args.action === "ci" ? resolve(cwd, args.dir) : cwd;
-		const host = await gitHostOf(dir, signal);
-
-		if (host === null) throw new Error(`the origin of ${dir} is on no Git host that gh or glab knows`);
+		const host = await requiredGitHost(dir, signal);
 
 		switch (args.action) {
 			case "create":

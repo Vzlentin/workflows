@@ -77,6 +77,7 @@ workflows log <run-id> [<step> | <call>] [--follow] # its steps, the calls of on
 workflows attach <run-id>                           # open its working session in Pi
 workflows stop <run-id>
 workflows sweep --yes                               # remove the worktrees of merged runs
+workflows pr <run-id>                               # open the pull request of a branch or of a run
 workflows                                           # the workflows that you can run
 workflows ship --help
 workflows outline ship                     # the steps of ship, before a run

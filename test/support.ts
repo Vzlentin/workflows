@@ -271,7 +271,7 @@ export async function setEntries(entries: Readonly<Record<string, string>> = {})
 }
 
 /** The file name of the answer of a fake Git host tool to `args`: the words joined by `_`, with `_` for each other character. */
-const answerKey = (args: readonly string[]) =>
+export const answerKey = (args: readonly string[]) =>
 	args
 		.join(" ")
 		.replace(/[^A-Za-z0-9._-]/g, "_")

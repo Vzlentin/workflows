@@ -166,6 +166,9 @@ commit).
   The branch is `<workflow>/<runId>` until a shipped run renames it from its commit subject.
 - The run directory is `${XDG_STATE_HOME:-$HOME/.local/state}/workflows/runs/<runId>`. It holds the patches of each
   review, `round-<n>.patch` and `round-<n>-fix.patch`, and for a campaign `item-<n>/`.
+- `workflows pr <branch>|<runId>` pushes the branch and opens its pull request into `main` on the Git host of the
+  repository, or prints the open one. It prints the URL as the last line. Run it with bash when the user asks for a
+  pull request rather than a landing.
 - `land` sweeps the branch that it lands. After a run's branch is merged or fast-forwarded onto `origin/main` in another
   way, run `workflows sweep --yes` (or
   `workflows sweep <branch>|<runId>... --yes` for a branch that went into another pull request or that you drop) to

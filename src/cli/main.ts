@@ -1,13 +1,13 @@
 /**
- * The `workflows` command line, a client of a harness host. `workflows <workflow> ...` starts a run of a
- * workflow script in the host and follows it, `workflows resume <run-id>` continues or follows one, `workflows wait
- * <run-id>` follows one to its outcome, `workflows stop <run-id>` stops one, `workflows list` prints the runs of the
- * host, `workflows show <run-id>` prints the steps or the calls of one run, `workflows log <run-id>` prints the
- * short log of one run or the output of one of its calls, `workflows attach <run-id>` opens a session of one run in
- * Pi, and `workflows save <run-id> <name>` keeps the script of one run as a project workflow;
- * `workflows sweep` removes the worktrees of the ended runs whose branch is merged, or the given branches. The host
- * store holds the runs; a
- * run directory holds the run's host file and whatever the workflow writes there.
+ * The `workflows` command line, a client of a harness host. `workflows <workflow> ...` starts a run of a workflow
+ * script in the host and follows it, `workflows resume <run-id>` continues or follows one, `workflows wait <run-id>`
+ * follows one to its outcome, `workflows stop <run-id>` stops one, `workflows list` prints the runs of the host,
+ * `workflows show <run-id>` prints the steps or the calls of one run, `workflows log <run-id>` prints the short log of
+ * one run or the output of one of its calls, `workflows attach <run-id>` opens a session of one run in Pi, and
+ * `workflows save <run-id> <name>` keeps the script of one run as a project workflow; `workflows sweep` removes the
+ * worktrees of the ended runs whose branch is merged, or the given branches, and `workflows pr <change>` opens the pull
+ * request of a branch or of a run. The host store holds the runs; a run directory holds the run's host file and
+ * whatever the workflow writes there.
  */
 import { readFile } from "node:fs/promises";
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -22,6 +22,7 @@ import { CHECK, check } from "./commands/check.ts";
 import { LIST, list } from "./commands/list.ts";
 import { LOG, log } from "./commands/log.ts";
 import { OUTLINE, outline } from "./commands/outline.ts";
+import { PR, pr } from "./commands/pr.ts";
 import { RESUME, resume, WAIT } from "./commands/resume.ts";
 import { SAVE, save } from "./commands/save.ts";
 import { SHOW, show } from "./commands/show.ts";
@@ -91,6 +92,7 @@ const COMMANDS = new Map<string, Command>(
 		attach,
 		save,
 		sweep,
+		pr,
 		check,
 		outline,
 	} satisfies Record<CommandName, Command>),
@@ -113,6 +115,7 @@ export async function main(argv: readonly string[], terminal: Terminal): Promise
 		ATTACH,
 		SAVE,
 		SWEEP,
+		PR,
 		CHECK,
 		OUTLINE,
 		"workflows --version",

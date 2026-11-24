@@ -1,6 +1,6 @@
 // `workflows land <change>` lands a change on `main`, with no model call. The change is a PR number, a local branch of
 // the main checkout of the current directory, or the ID of a completed root run, whose `change` gives the repository
-// and the branch. 1. find the repository, the branch and the worktree that has it, through `gitHost.state`, `pastRuns`
+// and the branch. 1. find the repository, the branch and the worktree that has it, through `gitHost.state`, `namedChange`
 // and `git worktree list`; 2. switch the main checkout to `main` when it is on the branch, and check that it is clean
 // and on `main`, that `main` equals `origin/main` after a fetch, and that the branch is a fast-forward of `main`; 3.
 // push the branch; 4. wait for its CI; 5. push the head to `main` on `origin`, then fast-forward `main` in the main
@@ -35,30 +35,18 @@ function begin(n, name) {
 }
 
 // Step 1, first part: the change of `arg`, `{ repository, branch, key }`, where `key` is the start key of a run. A PR
-// number gives the local branch of the PR, and a local branch of the main checkout gives itself, both in the main
-// checkout of the current directory; else `arg` is a run ID, and its `change` gives both. Throws the reason of a
-// refusal when `arg` is none of these, or names a run with no change.
+// number gives the local branch of the PR in the main checkout of the current directory; else `namedChange` gives the
+// change of a local branch or of a run ID. Throws the reason of a refusal when `arg` is none of these, or names a run
+// with no change.
 async function changeOfArg() {
 	const repository = (await worktrees())[0].path
 
 	if (/^\d+$/.test(arg)) return { repository, branch: prBranch(await gitHost.state(Number(arg))) }
+	const change = await namedChange(arg)
 
-	if (await isBranch(arg, repository)) return { repository, branch: arg }
-	let past
+	if (change === null) throw new Error(`${arg} is no PR number, no branch of ${repository} and no completed run`)
 
-	try {
-		past = (await pastRuns(null, { runs: [arg] }))[0]
-	} catch {
-		throw new Error(`${arg} is no PR number, no branch of ${repository} and no completed run`)
-	}
-
-	// The engine keeps `change` of a result only as an object of strings, and a result that is not an object has none.
-	const change = past.result?.change
-
-	// A run on a detached HEAD, or saved by an older version, has no `change`.
-	if (change === undefined || change.branch === "") throw new Error(`the run ${arg} has no change`)
-
-	return { repository: change.repository, branch: change.branch, key: past.key }
+	return change
 }
 
 // Step 1, second part: the change `target` with its main checkout and its head, `{ ...target, main, head, short,
