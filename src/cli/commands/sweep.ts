@@ -9,7 +9,8 @@ import { parseArgs } from "node:util";
 import { resolveHost } from "@vzlentin/harness/hosts";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { failure, git, gitSucceeds, run as runCommand } from "../../git.ts";
+import { git, gitSucceeds } from "../../git.ts";
+import { branchPullRequest, gitHostOf, isMerged } from "../../githost.ts";
 import { hostFile, SWEEP_MARKER } from "../../launch/input.ts";
 import { checkedOutAt, hasBranch, mainCheckout, repositoryAt } from "../../launch/worktree.ts";
 import { RunBranches } from "../../records/branch.ts";
@@ -74,9 +75,10 @@ export const SWEPT_RUNS = Type.Array(
 
 /**
  * Prints the ended runs of the host of the current directory whose worktree is on a merged branch: its tip is in the
- * local `main` or in `origin/main`, or GitHub merged a pull request at its tip; a failed `gh` call prints a line to
- * stderr and counts the branch as not merged. A branch whose tip is the saved start of every one of its runs has no
- * commit of the runs: it is not merged and gets `dropped`, and the sweep without arguments takes it too. With `--yes`,
+ * local `main` or in `origin/main`, one of them has its changes, or the Git host merged a pull request at its tip; the
+ * first failed Git host call prints a line to stderr, counts the branch as not merged, and stops the Git host calls.
+ * A branch whose tip is the saved start of every one of its runs has no commit of the runs: it is not merged and gets
+ * `dropped`, and the sweep without arguments takes it too. With `--yes`,
  * it removes their worktrees and branches, and writes the word to the `swept` file of each run. It also prints the run
  * directories of the host whose run has no task and whose host file is more than an hour old, and `--yes`
  * removes them. With arguments, it takes only the branches that they give: a run ID gives the branch of the run in the
@@ -84,10 +86,10 @@ export const SWEPT_RUNS = Type.Array(
  * checkout of the current directory. Each branch gets the worktree that has
  * it, when one has, and the runs that have it; a merged one gets `landed` and another one `dropped`, and each of its
  * runs gets the word. It checks every argument before it removes anything. With `--install-hook`, it writes a
- * post-merge hook that runs `sweep --yes`. It reads the host store and never asks the host, and runs every `gh` call
- * before it removes anything. A branch with a marker, which an interrupted `sweep --yes` left in a run directory, is
- * swept again with the word of the marker and no merge check when its runs have ended. Without arguments, it refuses to
- * run without a host store. It keeps an old run directory with a Git clone that has commits on no remote, and skips
+ * post-merge hook that runs `sweep --yes`. It reads the host store and never asks the host, and makes every Git host
+ * call before it removes anything. A branch with a marker, which an interrupted `sweep --yes` left in a run directory,
+ * is swept again with the word of the marker and no merge check when its runs have ended. Without arguments, it
+ * refuses to run without a host store. It keeps an old run directory with a Git clone that has commits on no remote, and skips
  * a branch whose run started a task again before its removal. It exits 1 when a removal failed, after it tried the
  * other branches.
  */
@@ -106,19 +108,19 @@ export async function sweep(args: readonly string[], terminal: Terminal, json: b
 	if (values["install-hook"]) return installHook(terminal);
 	const host = resolveHost(process.env, terminal.cwd);
 	const store = storeOf(host);
-	const warn = (line: string) => terminal.stderr(`workflows: ${line}`);
+	const asking: Asking = { warn: (line: string) => terminal.stderr(`workflows: ${line}`), failed: false };
 
 	const { taken, stale } =
 		positionals.length > 0
-			? { taken: await givenBranches(positionals, store, terminal.cwd, warn), stale: [] }
-			: await mergedSweep(host, store, warn);
+			? { taken: await givenBranches(positionals, store, terminal.cwd, asking), stale: [] }
+			: await mergedSweep(host, store, asking);
 
 	const removed: Swept[] = [];
 	let failed = false;
 
 	for (const found of taken) {
 		if (values.yes) {
-			// A run can have started a new task since the first read, such as during a `gh` call.
+			// A run can have started a new task since the first read, such as during a Git host call.
 			const now = await reading(store, new Map<string, RunTask[]>(), (opened) => everyRun(opened.store));
 			const running = found.runIds.find((id) => endedTask(now.get(id) ?? []) === undefined);
 
@@ -218,6 +220,12 @@ function line(entry: Entry): string {
 }
 
 /**
+ * The warnings of one sweep, and whether a Git host call of the sweep failed: after a failure, the sweep asks no Git
+ * host again, so a missing login gives one warning and not one per branch.
+ */
+type Asking = { readonly warn: (line: string) => void; failed: boolean };
+
+/**
  * The word of the branch `branch` in `cwd`, whose runs saved the worktree starts `starts`: `dropped` when its runs made no
  * commit on it, that is `starts` is not empty and each start is the tip of the branch, else `landed` when the branch is
  * merged, else undefined. A run with no saved start counts as a run with a commit.
@@ -226,13 +234,13 @@ async function mergeWord(
 	branch: string,
 	cwd: string,
 	starts: readonly (string | undefined)[],
-	warn: (line: string) => void,
+	asking: Asking,
 ): Promise<"dropped" | "landed" | undefined> {
 	const head = await git(cwd, "rev-parse", `refs/heads/${branch}`);
 
 	if (starts.length > 0 && starts.every((start) => start === head)) return "dropped";
 
-	return (await isMerged(branch, cwd, warn)) ? "landed" : undefined;
+	return (await isLanded(branch, head, cwd, asking)) ? "landed" : undefined;
 }
 
 /**
@@ -242,7 +250,7 @@ async function mergeWord(
 async function mergedSweep(
 	host: string,
 	store: string,
-	warn: (line: string) => void,
+	asking: Asking,
 ): Promise<{ taken: Swept[]; stale: Unstarted[] }> {
 	const runs = await reading(store, undefined, (opened) => runTasks(opened.store));
 
@@ -260,7 +268,7 @@ async function mergedSweep(
 		if (task !== undefined) ended.set(id, task);
 	}
 
-	const taken = await mergedRuns(ended, warn);
+	const taken = await mergedRuns(ended, asking);
 	// A run directory gets its task within moments of its host file, so a younger one may be a run that starts.
 	const unstarted = await unstartedRuns(host, runs);
 
@@ -271,11 +279,11 @@ async function mergedSweep(
  * The runs of `ended`, newest first, that have a marker, with its word, or that are sweepable and get a word from
  * `mergeWord`: `dropped` on a branch with no commit of the run, `landed` on a merged branch.
  */
-async function mergedRuns(ended: ReadonlyMap<string, RunTask>, warn: (line: string) => void): Promise<Swept[]> {
+async function mergedRuns(ended: ReadonlyMap<string, RunTask>, asking: Asking): Promise<Swept[]> {
 	const merged: Swept[] = [];
 
 	for (const [id, task] of [...ended].sort(([a], [b]) => b.localeCompare(a))) {
-		const found = await candidate(id, task, warn);
+		const found = await candidate(id, task, asking);
 
 		if (found !== undefined) merged.push(found);
 	}
@@ -287,7 +295,7 @@ async function mergedRuns(ended: ReadonlyMap<string, RunTask>, warn: (line: stri
  * The run `id`, whose task `task` has ended, with the word of its marker when it has one. Otherwise, when it is
  * sweepable, it is the run with the word of `mergeWord` for its branch and its saved start, else undefined.
  */
-async function candidate(id: string, task: RunTask, warn: (line: string) => void): Promise<Swept | undefined> {
+async function candidate(id: string, task: RunTask, asking: Asking): Promise<Swept | undefined> {
 	const marked = await marker(id);
 
 	if (marked !== undefined) return { subject: id, runIds: [id], ...marked };
@@ -295,7 +303,7 @@ async function candidate(id: string, task: RunTask, warn: (line: string) => void
 
 	if (found === undefined) return undefined;
 
-	const swept = await mergeWord(found.branch, found.path, [inputWorktree(task.input)?.start], warn);
+	const swept = await mergeWord(found.branch, found.path, [inputWorktree(task.input)?.start], asking);
 
 	return swept === undefined ? undefined : { subject: id, runIds: [id], ...found, swept };
 }
@@ -308,12 +316,7 @@ async function candidate(id: string, task: RunTask, warn: (line: string) => void
  * when its runs made no commit on it, that is it has runs and each saved start of them is its tip, else `landed` when
  * it is merged, else `dropped`. It throws for the first argument that it cannot sweep, before anything is removed.
  */
-async function givenBranches(
-	args: readonly string[],
-	store: string,
-	cwd: string,
-	warn: (line: string) => void,
-): Promise<Swept[]> {
+async function givenBranches(args: readonly string[], store: string, cwd: string, asking: Asking): Promise<Swept[]> {
 	const runs = await reading(store, new Map<string, RunTask[]>(), (opened) => everyRun(opened.store));
 	const branches = new RunBranches(runs);
 	const found: Swept[] = [];
@@ -331,7 +334,7 @@ async function givenBranches(
 			);
 		}
 
-		found.push(await givenBranch(arg, branch, runIds, runs, repository, warn));
+		found.push(await givenBranch(arg, branch, runIds, runs, repository, asking));
 	}
 
 	return found;
@@ -396,7 +399,7 @@ async function givenBranch(
 	runIds: readonly string[],
 	runs: ReadonlyMap<string, readonly RunTask[]>,
 	repository: string,
-	warn: (line: string) => void,
+	asking: Asking,
 ): Promise<Swept> {
 	const kept = runIds.filter((id) => existsSync(join(runsDirectory(), id)));
 
@@ -418,7 +421,7 @@ async function givenBranch(
 		return task === undefined ? undefined : inputWorktree(task.input)?.start;
 	});
 
-	const swept = (await mergeWord(branch, path ?? repository, starts, warn)) ?? "dropped";
+	const swept = (await mergeWord(branch, path ?? repository, starts, asking)) ?? "dropped";
 
 	const found: Swept = { subject: branch, runIds: kept, branch, repository, swept };
 
@@ -458,52 +461,45 @@ async function sweepable(
 	return branch === "" ? undefined : { branch, repository: worktree.repository, path: worktree.path };
 }
 
-const MERGED = Type.Array(Type.Object({ headRefOid: Type.String() }));
-
 /**
- * Whether the branch `branch` is merged, as Git and `gh` see it in `cwd`: the commit that it is on now is in the local
- * `main`, or in `origin/main`, or GitHub merged a pull request from the branch at that commit. It calls `gh` only when
- * Git finds the commit in neither `main` and the repository has an `origin`. When `gh` fails, the branch counts as not
- * merged and `warn` gets one line with the reason. A branch name can come back in a later run, so a merged pull request
- * of an earlier commit does not count.
+ * Whether the branch `branch`, with its tip `tip`, is landed, as Git and the Git host see it in `cwd`: the tip is in
+ * the local `main` or in `origin/main`, or one of them already has its changes, as after a merge by squash or rebase,
+ * or the newest pull request of the branch is merged with that commit as its head. It asks the Git host of `origin`
+ * only when Git finds none of these, and makes no call for an origin on no Git host. The first failure of a Git host
+ * call counts the branch as not merged and gives `asking.warn` one line with the reason; the sweep then asks no Git
+ * host again. A branch name can come back in a later run, so a merged pull request of an earlier commit does not count.
  */
-async function isMerged(branch: string, cwd: string, warn: (line: string) => void): Promise<boolean> {
+async function isLanded(branch: string, tip: string, cwd: string, asking: Asking): Promise<boolean> {
 	const ref = `refs/heads/${branch}`;
+	const bases = ["refs/heads/main", "refs/remotes/origin/main"];
 
-	if (await gitSucceeds(cwd, "merge-base", "--is-ancestor", ref, "refs/heads/main")) return true;
+	for (const base of bases) if (await gitSucceeds(cwd, "merge-base", "--is-ancestor", ref, base)) return true;
 
-	if (await gitSucceeds(cwd, "merge-base", "--is-ancestor", ref, "origin/main")) return true;
+	for (const base of bases) {
+		if (
+			(await gitSucceeds(cwd, "rev-parse", "--verify", "--quiet", `${base}^{commit}`)) &&
+			(await isMerged(cwd, base, ref))
+		) {
+			return true;
+		}
+	}
 
-	if (!(await gitSucceeds(cwd, "remote", "get-url", "origin"))) return false;
-	const head = await git(cwd, "rev-parse", ref);
-	let merged: Static<typeof MERGED>;
+	if (asking.failed) return false;
 
 	try {
-		merged = await mergedPullRequests(branch, cwd);
+		const host = await gitHostOf(cwd);
+
+		if (host === null) return false;
+		const pull = await branchPullRequest(host, branch);
+
+		return pull?.state === "merged" && pull.head === tip;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		warn(`cannot ask gh whether ${branch} is merged, so it counts as not merged: ${message}`);
+		asking.failed = true;
+		asking.warn(`cannot ask the Git host whether ${branch} is merged, so it counts as not merged: ${message}`);
 
 		return false;
 	}
-
-	return merged.some(({ headRefOid }) => headRefOid === head);
-}
-
-/**
- * The merged pull requests from `branch` that `gh pr list` prints in `path`. It throws when `gh` is missing, fails or
- * prints no list.
- */
-async function mergedPullRequests(branch: string, path: string): Promise<Static<typeof MERGED>> {
-	const argv = ["pr", "list", "--head", branch, "--state", "merged", "--json", "headRefOid"];
-	const result = await runCommand("gh", argv, path);
-
-	if (result.code !== 0) throw new Error(failure(["gh", ...argv], result));
-	const parsed: unknown = JSON.parse(result.stdout);
-
-	if (!Value.Check(MERGED, parsed)) throw new Error(`gh pr list printed no list: ${result.stdout}`);
-
-	return parsed;
 }
 
 /**

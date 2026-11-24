@@ -72,9 +72,10 @@ edits from the saved runs instead. As a child run, it also takes `overlay`, and 
 
 Without `--repo`, the run uses the Git repository that contains the current directory. With `--repo`, the value is
 first a path, relative to the current directory. If that path is the top level of a local Git repository, the run
-uses it. Otherwise `gh repo clone <value>` clones the repository into the run directory, and the run starts from the
-cloned `origin/<base>`. A bare name such as `calibre` clones from the authenticated user, and `owner/calibre` names the
-owner.
+uses it. Otherwise `gh repo clone <value>` of the [Git host](#git-host) module clones the GitHub repository into the
+run directory, with no time limit, and the run starts from the cloned `origin/<base>`. A failed clone fails with
+`gh repo clone <value> failed: <output>`. A bare name such as `calibre` clones from the authenticated user, and
+`owner/calibre` names the owner.
 
 In the repository of the current directory or a local `--repo`, the run first runs `git fetch --quiet origin`, and
 starts from `origin/<base>`. It starts from the local `--base` commit when the repository has no `origin`, or when
@@ -302,15 +303,15 @@ answers SHIP. It commits its fixes on the branch of the change and does not push
 - Nothing: the current branch, from the merge base of `--base` and `HEAD` to `HEAD`. When the ref
   `refs/remotes/origin/<base>` exists, the merge base is with it in place of the local `--base`. The run does not
   fetch it, so a stale `origin/<base>` stays as it is.
-- A number: the pull request with that number. The run reads it with `gh pr view <n> --json
-  number,title,body,headRefName,baseRefName,isCrossRepository`, and fails when `gh` fails. Its branch is
-  `headRefName`, or `pr/<n>` for a pull request from a fork. The run always fetches the head of the pull request with `git fetch
-  origin pull/<n>/head`. It puts the branch on that head with `git branch -f <branch> <head>` when the branch is missing
+- A number: the pull request with that number, on GitLab the merge request. The run reads it with `gitHost.state(<n>)`
+  (see [Git host](#git-host)), and fails when the call fails. Its branch is its head branch, or `pr/<n>` for a pull
+  request from another repository. The run always fetches the head of the pull request with `git fetch origin <ref>`,
+  where `<ref>` is `refs/pull/<n>/head` on GitHub and `refs/merge-requests/<n>/head` on GitLab. It puts the branch on that head with `git branch -f <branch> <head>` when the branch is missing
   or behind the head, and uses a branch that is at the head or ahead of it as it is. It fails with `<branch> has
   diverged from PR #<n>; rebase it or delete it` when the branch and the head have diverged, and with `<branch> is behind
   PR #<n> and checked out at <path>; update it there` when a worktree has the branch that is behind. The change starts at
-  the merge base of the branch with `baseRefName`, or with `origin/<baseRefName>` when there is no local branch of
-  that name; `--base` is not used.
+  the merge base of the branch with the base branch of the pull request, or with `origin/<base branch>` when there is
+  no local branch of that name; `--base` is not used.
 - A range `A..B` or `A...B`: from the merge base of `A` and `B` to `B`.
 - A local branch other than `--base`, such as `change.branch` of a result: from the merge base of `--base` and the
   branch to the branch, with `origin/<base>` in place of `--base` as for no argument. It may be the current branch, a
@@ -319,8 +320,9 @@ answers SHIP. It commits its fixes on the branch of the change and does not push
 
 The work item, which says what the change should do, is the option `--item`, as a `.md` file, inline text, or stdin
 with the rules of `ship`. A blank stdin counts as no work item. Without it, the intent is `# <title>` and the body of
-the pull request: of the number, or else of the branch of the change through `gh pr view <branch> --json title,body`.
-When there is no pull request or `gh` fails, the intent is the commit messages of the change, oldest first.
+the pull request: of the number, or else the newest pull request of the branch of the change, through
+`gitHost.state(<branch>, { settle: true })`. When the branch has no pull request, the origin is on no Git host, or the
+call fails, the intent is the commit messages of the change, oldest first.
 
 The run works in the current checkout when the change ends on its `HEAD` or on its current branch. There, it first
 commits the changes that are not committed, untracked files included, as one commit `wip`. When the change ends on
@@ -721,8 +723,8 @@ workflows land <change> --wait 600
 the ID of a completed root run of any workflow in the host store. Neither the workflow nor the status of the run
 matters. It runs these steps in order, with `git -C` in the repository of the change:
 
-1. Find the change, in this order. A number is a PR: `gh pr view <n> --json number,headRefName,isCrossRepository`
-   gives the branch `prBranch(pr)`, `pr/<n>` for a PR from another repository, else its head branch. `land` does not
+1. Find the change, in this order. A number is a PR: `gitHost.state(<n>)` (see [Git host](#git-host)) gives the
+   branch `prBranch(pr)`, `pr/<n>` for a PR from another repository, else its head branch. `land` does not
    fetch the PR, so its branch must already be local. Else a local branch of the main checkout of the current
    directory is that branch. For both, the repository is that main checkout, the first entry of `git worktree list`.
    Else the change is a run ID: `pastRuns(null, { runs: [<change>] })` gives the run, and `result.change` its
@@ -757,21 +759,20 @@ matters. It runs these steps in order, with `git -C` in the repository of the ch
 10. Check the repository: `core.bare` is not true, `main` equals `main` on `origin`, and the branch is gone locally, as
    a remote-tracking branch and on `origin`.
 
-A CI wait is one shell command in the main checkout. Every 15 seconds it runs
-`gh run list --commit <head> --branch <branch> --json databaseId,workflowName,status,conclusion,url`, until the list
-is not empty and each run has the status `completed`, or until `--wait` seconds have passed (default 1800). The CI
-passes when each run ends with `success`, `skipped` or `neutral`. Otherwise its reason is `no CI run for <short> on
-<branch> after <wait> s`, `CI failed on <branch> at <short>: <workflow> <url>, ...` with each failed run, or `the CI
-of <branch> at <short> did not finish in <wait> s: <workflow> <url>, ...`, where `<short>` is the short head. No CI is
+A CI wait is one `gitHost.ci(<main checkout>, <head>, <branch>, <wait>)` call, on the Git host of the origin of the
+main checkout (see [Git host](#git-host)), with `--wait` seconds (default 1800). The CI passes when the list is not
+empty and each run passed. Otherwise its reason is `no CI run for <short> on <branch> after <wait> s`, `CI failed on
+<branch> at <short>: <name> <url>, ...` with each failed run, or `the CI of <branch> at <short> did not finish in
+<wait> s: <name> <url>, ...`, where `<short>` is the short head. No CI is
 not a green CI.
 
 The result is `{ "status", "head", "change", "report" }`, with `head` the short head and `change`
-`{ repository, branch }`. `change` is there once step 1 resolved it, and `head` once step 1 found it. A failed step from 1 to 6, or a failed Git or `gh` command in it, gives the status `refused`
+`{ repository, branch }`. `change` is there once step 1 resolved it, and `head` once step 1 found it. A failed step from 1 to 6, or a failed Git command or Git host call in it, gives the status `refused`
 and the one report line `refused at step <n>: <reason>`. A refusal does nothing after the failed step, so a refusal
 before step 5 leaves `main` untouched on both sides. When step 7 passes, the status is `landed` and the first line
 is `landed <subject of the head> <short>, CI passed on the branch and on main`. Otherwise the status is `landed-red`,
 the first line is `landed-red <subject of the head> <short>, CI passed on the branch; <reason>`, with the reason of
-the CI wait or `the CI of main is unknown: <error>` when `gh` fails, and `land` reverts nothing. A failed step 9 and each failed check of step 10 add a line
+the CI wait or `the CI of main is unknown: <error>` when the Git host call fails, and `land` reverts nothing. A failed step 9 and each failed check of step 10 add a line
 `check failed: <what>`, such as `check failed: sweep <branch>: <error>`, and do not change the status. `landed` exits 0; `landed-red` and `refused` exit 1.
 
 `land` never squashes, never merges through a pull request and never force-pushes: the commits of the branch reach
@@ -1217,8 +1218,10 @@ args, and saves the reply, so a resume returns it and does not send the request 
 
 #### Git host
 
-`src/githost.ts` asks a Git host about pull requests (on GitLab, merge requests) and issues, and the `gitHost` calls
-of a script use it. It runs `gh` for GitHub and `glab` for GitLab.
+`src/githost.ts` asks a Git host about pull requests (on GitLab, merge requests), CI runs and issues, and clones a
+GitHub repository. The `gitHost` calls of a script, `sweep` and the clone of `--repo` use it. It runs `gh` for GitHub
+and `glab` for GitLab, and it is the only code of the package that runs them: a test fails when another `.ts` or `.js`
+file of `src/`, `workflows/` or `pi/` names `gh` or `glab` as a string, or a command such as `gh pr` or `glab api`.
 
 - The Git host of a repository comes from the URL of its `origin`, `git@<host>:<path>` or
   `<scheme>://[<user>@]<host>[:<port>]/<path>`, with no `.git` at the end. `github.com` is GitHub and `gitlab.com` is
@@ -1230,8 +1233,12 @@ of a script use it. It runs `gh` for GitHub and `glab` for GitLab.
   `<tool> is not logged in to <host>, so workflows cannot reach <host>/<path>`. Each command of the tool fails after
   60 s with `<tool> <words> took more than 60 s for <host>/<path>`. A command that exits with another code than 0
   fails with `<tool> <first argument> failed: <output>`.
-- A pull request is `{ kind, number, url, check, changesRequested, state }`, with `mergeCommit` only when `state` is
-  `merged`. `kind` is `github` or `gitlab`, so that a reader can write `PR #6` or `MR !6`. `state` is `open`, `closed` or `merged`. `check` is `none`, `running`, `passed` or `failed`: on GitHub, a
+- A pull request is `{ kind, number, url, title, body, branch, base, head, fork, ref, check, changesRequested, state }`,
+  with `mergeCommit` only when `state` is `merged`. `branch` is its head branch, `base` the branch that it merges into,
+  `head` its head commit (on GitLab `sha`, null when GitLab no longer has it), `fork` is true for a pull request from
+  another repository (on GitLab, when the source project is not the target project), and `ref` is the ref of its head
+  on `origin`: `refs/pull/<n>/head` on GitHub, `refs/merge-requests/<n>/head` on GitLab. On GitLab, a merge request
+  with no description has the body `""`. `kind` is `github` or `gitlab`, so that a reader can write `PR #6` or `MR !6`. `state` is `open`, `closed` or `merged`. `check` is `none`, `running`, `passed` or `failed`: on GitHub, a
   failed check wins (a conclusion or a state of `FAILURE`, `ERROR`, `CANCELLED`, `TIMED_OUT`, `ACTION_REQUIRED` or
   `STARTUP_FAILURE`), then a check that is not `SUCCESS`, `NEUTRAL` or `SKIPPED` runs; on GitLab, the status of the
   head pipeline: `success` and `skipped` passed, `failed` and `canceled` failed, each other status runs, and no
@@ -1239,19 +1246,30 @@ of a script use it. It runs `gh` for GitHub and `glab` for GitLab.
   and on GitLab when `detailed_merge_status` is `requested_changes` or `discussions_not_resolved`; a comment is not a
   change request. `mergeCommit` is the merge commit that GitHub reports, and on GitLab `merge_commit_sha`, else
   `squash_commit_sha`, else `sha`.
+- A CI run is `{ name, url, state }`, with `state` `running`, `passed` or `failed`. On GitHub, `gh run list --repo
+  <host>/<path> --commit <commit> --branch <branch> --json workflowName,url,status,conclusion` gives the runs: a run
+  that is not `completed` runs, and a completed run passed when its conclusion is `success`, `skipped` or `neutral`.
+  On GitLab, `projects/<path>/pipelines?sha=<commit>&ref=<branch>` of the API gives the pipelines, named
+  `pipeline <id>`, with the states of the check of a merge request, where `none` cannot occur. The read repeats every
+  15 seconds until the list is not empty and no run runs, or until the wait ends, and gives the last list.
+- The clone of `--repo` runs `gh repo clone <repo> <dir>` with no time limit, and fails with
+  `gh repo clone <repo> failed: <output>`.
 
 | Script call | Meaning |
 |---|---|
 | `gitHost.create(branch, base, title, body)` | Creates the pull request of `branch` into `base`, and returns it |
-| `gitHost.state(change)` | The pull request with the number `change`, or the newest pull request of the branch `change`, also closed or merged, or `null` when the branch has none |
+| `gitHost.state(change, { settle })` | The pull request with the number `change`, or the newest pull request of the branch `change`, also closed or merged, or `null` when the branch has none. With `settle: true`, a failure returns `{ error }`, as `sh` does |
 | `gitHost.merge(number)` | Merges the pull request now, and returns `null`. GitHub uses the first allowed of rebase, merge commit and squash; GitLab uses the merge method of the project and does not wait for the pipeline. `state` gives the merge commit |
 | `gitHost.issue(number)` | Whether `#<number>` is an open issue of the repository: `false` for a closed issue and for an issue that the host does not have |
+| `gitHost.ci(dir, commit, branch, wait)` | The CI runs of `commit` on `branch`, on the Git host of the origin of the repository `dir` (relative to `cwd`), read until none runs or `wait` seconds have passed |
 
 Each verb is a call of the kind `gitHost`, with the args `{ action: "create", branch, base, title, body }`,
-`{ action: "state", number }`, `{ action: "state", branch }`, `{ action: "merge", number }` or
-`{ action: "issue", number }`. A resume returns the saved result. A number that is not an integer from 1, or a branch,
-a base or a title that is empty, fails with `gitHost got bad arguments: <path> <problem>`. A repository whose origin
-has no Git host fails the call with `the origin of <cwd> is on no Git host that gh or glab knows`.
+`{ action: "state", number, settle? }`, `{ action: "state", branch, settle? }`, `{ action: "merge", number }`,
+`{ action: "issue", number }` or `{ action: "ci", dir, commit, branch, wait }`. A resume returns the saved result. A
+number that is not an integer from 1, a branch, a base, a title, a directory or a commit that is empty, a `settle`
+that is not `true`, or a wait that is not a number from 0, fails with `gitHost got bad arguments: <path> <problem>`.
+A repository whose origin has no Git host fails the call with
+`the origin of <directory> is on no Git host that gh or glab knows`.
 
 The module also has three checks that use only Git, with no Git host tool. A branch has a conflict with its base when
 `git merge-tree --write-tree <base> <branch>` exits 1. A base already has a branch, also after a merge by squash or by
@@ -1302,8 +1320,7 @@ the run started with. A script's own declaration of the same name takes their pl
 | `await commitChange(item, start, findings)` | Asks a new `implementer` session for the commit message of the change from `start` to `HEAD`, with the `commit` prompt and the inputs `item`, `base`, `head` and `findings`, the lines of `findings` (default `[]`) joined with newlines, squashes the change into one commit with it, and returns `{ head, subject, warnings }`, `head` the short head, `subject` the commit subject, and `warnings` the lines that it logged for a script's report. When the turn fails or gives an empty subject, the message is the subject of `item`. The turn has `settle: true`: a failed turn logs `commit message failed on <subject of item>: <error>, so the message is the subject of the item`, and `warnings` is that line; else `warnings` is `[]` |
 | `await judgeCommit(item, start, committed)` | Runs the child run `judge` with `item` and `start`, and returns `head` and `subject` of `committed`, the result of `commitChange`, with the judge fields `status`, `score`, `answers`, `findings` and `divergence`. A failed judge fails the caller |
 | `await writePatch(path, from)` | Writes `git diff --binary` from `from` to `HEAD` to the file `path`, and returns `path` |
-| `await prOf(ref, fields, { settle })` | The pull request of `ref` with the JSON `fields`, from `gh pr view`. It fails when `gh` fails, or with `settle` returns `{ error }`, as `sh` does |
-| `prBranch(pr)` | The local branch of the pull request `pr`: `pr/<number>` when `isCrossRepository` is true, else `headRefName`. `thermoloop`, `judge` and `land` use this name |
+| `prBranch(pr)` | The local branch of the pull request `pr` of `gitHost.state`: `pr/<number>` when `fork` is true, else its head `branch`. `thermoloop`, `judge` and `land` use this name |
 | `await isBranch(name, dir)` | True when `name` is a local branch of the repository of `dir`, default the current directory |
 | `await checkoutChange()` | `{ repository, branch }` of the current checkout: the main checkout of its repository, the first entry of `git worktree list`, and its branch. Undefined on a detached HEAD |
 | `await changeOf(args, { wip })` | `{ start, intent, checkout, dirty }` of the change of a script's `args`. With `args.start`, it is `args.start` and `args.item`, not dirty, with no Git step. Else it is the change that `args.change` points at from `args.base`, with the rules of [Thermoloop](#thermoloop), and it calls `title` with the subject of the intent: `start` is the start commit, `intent` is `args.item` or the pull request or the commit messages, `checkout` is the branch of a change that ends on a branch other than the current one, and `dirty` says that the current checkout has changes that are not committed. With `wip`, a change in the current checkout commits them first as `wip`, and a change whose branch another worktree has with changes that are not committed fails |
@@ -1570,7 +1587,7 @@ exits 1. Examples are a failing Git hook, or a model error that remains after Pi
 failed. Resume runs the script again in a new task of the same run, with the same input and the agents tables of the
 resume: a failed Git step runs again, a failed turn is sent again in the same session, on the model of its role in the
 tables of the resume, saved calls return their results, and child runs continue. The error of a failed Git command of the engine, and of a
-failed `gh` call of `sweep` in its warning line, has the output of the command cut as the error of a failed `sh` call is, with no call in
+failed Git host command of `sweep` in its warning line, has the output of the command cut as the error of a failed `sh` call is, with no call in
 the note. A run whose task ended in another way, such as an aborted or orphaned task, or one that pi-durable faulted, resumes in the same way. An ask whose answer
 stopped for a reason other than its end, such as its length, fails its call, and a resume asks again. So does an ask
 whose answer did not call `respond`. A resumed ask never returns the answer of another ask in its session.
@@ -1790,31 +1807,36 @@ directory counts as unstarted; remove the run directories that you do not need f
 nothing and exits 1, also without `--yes`. With arguments, `sweep` needs no host store.
 
 Before the merge test, a branch whose commit, `git rev-parse refs/heads/<branch>`, is the saved `worktree.start` of
-every run of the branch has no commit of its runs: it is not merged and gets `dropped`, with no merge test and no `gh`
-call. Without arguments, `sweep` takes such a run too, as `dropped`, and `--yes` removes its worktree and branch. With
+every run of the branch has no commit of its runs: it is not merged and gets `dropped`, with no merge test and no Git
+host call. Without arguments, `sweep` takes such a run too, as `dropped`, and `--yes` removes its worktree and branch. With
 arguments, the rule applies to a given branch that has runs.
 
 For each candidate, `sweep` first runs `git merge-base --is-ancestor refs/heads/<branch> refs/heads/main` in the
-worktree, then `git merge-base --is-ancestor refs/heads/<branch> origin/main`. A branch is merged when one of them succeeds: the commit that the
-worktree is on is in the local `main` or in `origin/main`. Otherwise, when `git remote get-url origin` succeeds, `sweep` runs
-`gh pr list --head <branch> --state merged --json headRefOid` in the worktree, and a branch is merged when one pull
-request in the list has the commit that the worktree is on as its head. A repository with no `origin` gets no `gh`
-call, and its branch is not merged. A branch name that comes back in a later run, with a merged pull request of an
-earlier commit, is not merged. `sweep` runs every `gh` call before it removes anything. A failed `gh` call, a missing
-`gh`, or a `gh` output that is not a list, prints `workflows: cannot ask gh whether <branch> is merged, so it counts as
-not merged: <error>` on stderr, and the branch is not merged: a run of the host is left out, and a given branch
-gets `dropped`.
+worktree, then `git merge-base --is-ancestor refs/heads/<branch> refs/remotes/origin/main`. A branch is merged when
+one of them succeeds: the commit that the worktree is on is in the local `main` or in `origin/main`. Then, for
+`refs/heads/main` and then `refs/remotes/origin/main`, when the ref exists, a branch is merged when that base already
+has its changes, as after a merge by squash or rebase: the merge of the branch into the base with
+`git merge-tree --write-tree` has no conflict and gives the tree of the base (see [Git host](#git-host)). Otherwise
+`sweep` asks the [Git host](#git-host) of the origin of the worktree for the newest pull request of the branch, and a
+branch is merged when that pull request is merged and its head commit is the commit that the worktree is on. A
+repository whose origin is on no Git host, such as no `origin` or a local path, gets no Git host call, and its branch
+is not merged. A branch name that comes back in a later run, with a merged pull request of an earlier commit, is not
+merged. `sweep` makes every Git host call before it removes anything. The first failed Git host call of a `sweep`,
+such as a missing tool or a tool with no login, prints `workflows: cannot ask the Git host whether <branch> is merged,
+so it counts as not merged: <error>` on stderr, and the branch is not merged: a run of the host is left out, and a
+given branch gets `dropped`. After it, the `sweep` asks no Git host again, so each later branch that Git does not find
+merged is not merged, with no other line.
 
 With `--yes`, `sweep` removes each worktree in order, and prints its line after the removal. It runs
 `git worktree remove <worktree>` in the run's repository, without `--force`, and deletes the branch with
 `git branch -D <branch>` when the branch still exists. Before it removes anything of a run, `sweep` reads the root
 tasks of the run from the store again. When the last task has not ended now, such as a resume that started during a
-`gh` call, it prints `workflows: skips <run-id>: its run has a task that has not ended; sweep it after the run ends` on
+Git host call, it prints `workflows: skips <run-id>: its run has a task that has not ended; sweep it after the run ends` on
 stderr, removes nothing of the run, leaves it out of stdout and the JSON, and goes on with the next run; the exit code
 does not change. Then it writes the marker `runs/<run-id>/sweeping`, a JSON object
 `{ "branch", "repository", "path"?, "swept" }`, removes the worktree, removes the branch, writes the word to the file
 `runs/<run-id>/swept`, `landed` or `dropped` and a newline, and deletes the marker. An ended run with a marker is a
-candidate with the word of its marker, with no other check and no `gh` call, so a `sweep` that stopped after the
+candidate with the word of its marker, with no other check and no Git host call, so a `sweep` that stopped after the
 worktree removal is finished by the next one. A run with a marker whose last task has not ended is not a candidate,
 and each new task of a run deletes its marker before its worktree step. A removal that fails, such as of a worktree
 with changes, prints `workflows: cannot sweep <run-id>: <error>` on stderr, leaves the run out of stdout and the JSON,
@@ -1827,7 +1849,7 @@ stay, so `list` and `show` still show the run, and their JSON gives the word as 
 
 `sweep` also prints one line `<run-id> unstarted <run directory>` for each run directory of the host whose run has
 no task (the `unstarted` runs of `list`) and whose `project` file is more than 1 hour old, after the merged runs. With
-`--json`, each is an object `{ "runId", "directory" }` in the same array. With `--yes`, after every `gh` call, `sweep`
+`--json`, each is an object `{ "runId", "directory" }` in the same array. With `--yes`, after every Git host call, `sweep`
 removes these run directories. A run directory with `repository/` or `.worktrees/` is kept when the clone in
 `repository/` has a commit that no remote branch reaches: `git rev-list -n 1 --branches <worktree HEADs> --not
 --remotes`, with the HEADs from `git worktree list --porcelain`, prints a commit, or a Git call fails. `sweep` then
@@ -1922,7 +1944,7 @@ run <run-id> <workflow> <state> <title>
   run ID. For `input`, it is the question on one line, cut at 80 characters. For `pastRuns`, it is the workflow, or `any` for `null`. For `todo`, it is `add <text>`,
   `set <id> <state>` or `list`, on one line, cut at 80 characters. For `harness`, it is `tree`, `item read <id>`,
   `item set <id> <state>`, or `item link <from> <kind> <to>` on one line, cut at 80 characters. For `gitHost`, it is
-  `create <branch>`, `state <number or branch>`, `merge <number>` or `issue <number>`, on one line, cut at 80
+  `create <branch>`, `state <number or branch>`, `merge <number>`, `issue <number>` or `ci <branch>`, on one line, cut at 80
   characters. The phase lines and calls of the child run
   are indented by 2 more under the `run` line.
 - The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, also for a working session, it is

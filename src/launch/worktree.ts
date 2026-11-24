@@ -5,6 +5,7 @@
 import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { git, gitSucceeds, run } from "../git.ts";
+import { cloneRepository } from "../githost.ts";
 import { UsageError } from "../workflow/find.ts";
 
 /**
@@ -39,8 +40,9 @@ export type Repository = { readonly path: string; readonly start: string };
 
 /**
  * The repository a ship runs on and its base commit. Without `repo`, the repository containing `cwd`. With `repo`,
- * the local repository at that path, resolved from `cwd`; otherwise `gh repo clone <repo>` into `clone`, based on the
- * cloned `origin/<base>`. A local repository starts from the ref that `startRef` gives.
+ * the local repository at that path, resolved from `cwd`; otherwise the GitHub repository `repo`, cloned into `clone`
+ * by `cloneRepository`, based on the cloned `origin/<base>`. A local repository starts from the ref that `startRef`
+ * gives.
  */
 export async function selectRepository(
 	cwd: string,
@@ -61,9 +63,7 @@ export async function selectRepository(
 	const local = await repositoryAt(resolve(cwd, repo));
 
 	if (local !== undefined) return { path: local, start: await commitOf(local, await startRef(local, base, warn)) };
-	const cloned = await run("gh", ["repo", "clone", repo, clone], cwd);
-
-	if (cloned.code !== 0) throw new Error(`gh repo clone ${repo} failed: ${cloned.stdout}${cloned.stderr}`.trim());
+	await cloneRepository(repo, clone, cwd);
 
 	return { path: clone, start: await commitOf(clone, `refs/remotes/origin/${base}`) };
 }

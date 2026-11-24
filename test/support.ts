@@ -310,7 +310,9 @@ export async function hostAnswer(
  * A fresh environment: home, state, configuration, Pi agent and Git configuration under a temporary directory, a fake
  * `gh` and a fake `glab` that answer as `hostAnswer` says, and a fake `hc` that logs its arguments to `hc.log` and
  * lists no terminal. Without an answer, `gh repo clone` clones `<root>/github/<owner>/<repo>`, and each other command
- * of the fakes exits 1. harness's entries list the workflows checkout, so the test hosts load its entry.
+ * of the fakes exits 1. A fake `ssh` serves the Git URLs `git@github.com:<path>` from `<root>/github/<path>` and
+ * `git@gitlab.com:<path>` from `<root>/gitlab/<path>`, and fails for another host. harness's entries list the
+ * workflows checkout, so the test hosts load its entry.
  */
 export async function sandbox(): Promise<string> {
 	// macOS limits a Unix socket path to 104 bytes, and the host's socket is in the state directory.
@@ -332,6 +334,21 @@ exec git clone -q "${root}/github/$source" "$4"
 	await chmod(join(bin, "gh"), 0o755);
 	await writeFile(join(bin, "glab"), `${hostTool(root, "glab")}exit 1\n`);
 	await chmod(join(bin, "glab"), 0o755);
+	// Git runs `<ssh> [options] [user@]host <command>`: the host is the argument before the command.
+	await writeFile(
+		join(bin, "fake-ssh"),
+		`#!/bin/sh
+eval "command=\\\${$#}"
+eval "host=\\\${$(($# - 1))}"
+case "\${host#*@}" in
+github.com) cd "${root}/github" || exit 128 ;;
+gitlab.com) cd "${root}/gitlab" || exit 128 ;;
+*) echo "ssh: Could not resolve hostname \${host#*@}" >&2; exit 255 ;;
+esac
+exec sh -c "$command"
+`,
+	);
+	await chmod(join(bin, "fake-ssh"), 0o755);
 	await writeFile(
 		join(bin, "hc"),
 		`#!/bin/sh
@@ -358,6 +375,8 @@ exit 0
 		GIT_COMMITTER_NAME: "Test",
 		GIT_COMMITTER_EMAIL: "test@example.com",
 		PATH: `${bin}:${ENVIRONMENT.PATH}`,
+		GIT_SSH_COMMAND: join(bin, "fake-ssh"),
+		GIT_SSH_VARIANT: "ssh",
 	};
 
 	for (const name of [
@@ -449,6 +468,178 @@ switch (command) {
 		fail("No such command: " + command);
 }
 `;
+
+/** The kinds of Git host of the fakes, with the tool, the origin URL and the path on the host of a test repository. */
+export const HOSTS = {
+	github: { tool: "gh", url: "git@github.com:octo/demo.git", path: "octo/demo.git" },
+	gitlab: { tool: "glab", url: "git@gitlab.com:octo/demo.git", path: "octo/demo.git" },
+} as const;
+
+export type HostKind = keyof typeof HOSTS;
+
+/**
+ * Gives the repository `repo` of the sandbox `root` an `origin` on the Git host `kind`: a bare clone that the fake
+ * `ssh` serves, at the ssh URL of `HOSTS`, with a login of the tool, and fetches it. Returns the bare clone.
+ */
+export async function hostOrigin(root: string, repo: string, kind: HostKind): Promise<string> {
+	const { url, path } = HOSTS[kind];
+	const bare = join(root, kind, path);
+	await mkdir(dirname(bare), { recursive: true });
+	git(root, "clone", "-q", "--bare", repo, bare);
+	const remotes = git(repo, "remote");
+	git(repo, "remote", ...(remotes.split("\n").includes("origin") ? ["set-url"] : ["add"]), "origin", url);
+	git(repo, "fetch", "-q", "origin");
+	await hostLogin(root, kind);
+
+	return bare;
+}
+
+/** Makes the fake tool of the Git host `kind` logged in to it. */
+export function hostLogin(root: string, kind: HostKind): Promise<void> {
+	return kind === "github"
+		? hostAnswer(root, "gh", ["auth", "token", "--hostname", "github.com"], { stdout: "gho_token\n" })
+		: hostAnswer(root, "glab", ["config", "get", "token", "--host", "gitlab.com"], { stdout: "glpat-token\n" });
+}
+
+/** The fields of a pull request that `hostPull` writes; each one has a default. */
+export type PullFields = {
+	readonly state?: "open" | "closed" | "merged";
+	readonly title?: string;
+	readonly body?: string;
+	readonly branch?: string;
+	readonly base?: string;
+	readonly head?: string;
+	readonly fork?: boolean;
+	readonly mergeCommit?: string;
+};
+
+const GITHUB_PULL_FIELDS =
+	"number,url,state,mergeCommit,statusCheckRollup,latestReviews,title,body,headRefName,baseRefName,headRefOid,isCrossRepository";
+
+/** The arguments of the read of the pull request `number` of the test repository on the Git host `kind`. */
+export function pullArgs(kind: HostKind, number: number): string[] {
+	return kind === "github"
+		? ["pr", "view", String(number), "--repo", "github.com/octo/demo", "--json", GITHUB_PULL_FIELDS]
+		: gitlabApi(`merge_requests/${number}`);
+}
+
+/** The `glab api` arguments of `resource` of the test repository on GitLab. */
+export const gitlabApi = (resource: string) => ["api", "--hostname", "gitlab.com", `projects/octo%2Fdemo/${resource}`];
+
+/**
+ * The JSON of the tool of `kind` for the pull request `number` of the test repository, with `fields` over an open one
+ * of the branch `feature` into `main`, with no check and no review, and `extra` over the JSON of the tool.
+ */
+export function pullJson(
+	kind: HostKind,
+	number: number,
+	fields: PullFields = {},
+	extra: Readonly<Record<string, JsonValue>> = {},
+): Record<string, JsonValue> {
+	const {
+		state = "open",
+		title = "Title",
+		body = "",
+		branch = "feature",
+		base = "main",
+		head = "0".repeat(40),
+	} = fields;
+
+	const fork = fields.fork ?? false;
+	const merge = fields.mergeCommit ?? null;
+
+	return kind === "github"
+		? {
+				number,
+				url: `https://github.com/octo/demo/pull/${number}`,
+				state: state.toUpperCase(),
+				mergeCommit: merge === null ? null : { oid: merge },
+				statusCheckRollup: [],
+				latestReviews: [],
+				title,
+				body,
+				headRefName: branch,
+				baseRefName: base,
+				headRefOid: head,
+				isCrossRepository: fork,
+				...extra,
+			}
+		: {
+				iid: number,
+				web_url: `https://gitlab.com/octo/demo/-/merge_requests/${number}`,
+				state: state === "open" ? "opened" : state,
+				sha: head,
+				merge_commit_sha: merge,
+				squash_commit_sha: null,
+				detailed_merge_status: "mergeable",
+				head_pipeline: null,
+				title,
+				description: body,
+				source_branch: branch,
+				target_branch: base,
+				source_project_id: fork ? 2 : 1,
+				target_project_id: 1,
+				...extra,
+			};
+}
+
+/** Makes the fake tool of `kind` print the pull request `number` of the test repository, as `pullJson` gives it. */
+export function hostPull(
+	root: string,
+	kind: HostKind,
+	number: number,
+	fields: PullFields = {},
+	extra: Readonly<Record<string, JsonValue>> = {},
+): Promise<void> {
+	const pull = pullJson(kind, number, fields, extra);
+
+	return hostAnswer(root, HOSTS[kind].tool, pullArgs(kind, number), { stdout: JSON.stringify(pull) });
+}
+
+/** The arguments of the list of the newest pull request of `branch` of the test repository on the Git host `kind`. */
+export function branchArgs(kind: HostKind, branch: string): string[] {
+	return kind === "github"
+		? [
+				"pr",
+				"list",
+				"--repo",
+				"github.com/octo/demo",
+				"--head",
+				branch,
+				"--state",
+				"all",
+				"--limit",
+				"1",
+				"--json",
+				"number",
+			]
+		: gitlabApi(`merge_requests?source_branch=${encodeURIComponent(branch)}&order_by=created_at&sort=desc&per_page=1`);
+}
+
+/** Makes the fake tool of `kind` give `number` as the newest pull request of `branch`, or none for null. */
+export function hostBranch(root: string, kind: HostKind, branch: string, number: number | null): Promise<void> {
+	const list = number === null ? [] : [kind === "github" ? { number } : { iid: number }];
+
+	return hostAnswer(root, HOSTS[kind].tool, branchArgs(kind, branch), { stdout: JSON.stringify(list) });
+}
+
+/** The arguments of the list of the CI runs of `commit` on `branch` of the test repository on the Git host `kind`. */
+export function ciArgs(kind: HostKind, commit: string, branch: string): string[] {
+	return kind === "github"
+		? [
+				"run",
+				"list",
+				"--repo",
+				"github.com/octo/demo",
+				"--commit",
+				commit,
+				"--branch",
+				branch,
+				"--json",
+				"workflowName,url,status,conclusion",
+			]
+		: gitlabApi(`pipelines?sha=${commit}&ref=${encodeURIComponent(branch)}`);
+}
 
 /** A repository at `path` with one commit of README.md on main. */
 export async function repository(path: string, readme = "# Demo\n\nHello wrold\n"): Promise<string> {

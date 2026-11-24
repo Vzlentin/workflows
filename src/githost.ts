@@ -1,12 +1,17 @@
 /**
- * The Git host of a repository, from the URL of its `origin`: its pull requests (on GitLab, merge requests) and its
- * issues, through a GitHub back end (`gh`) and a GitLab back end (`glab`). The `gitHost` calls of a script use it.
- * Next to it, the checks that need only Git: a conflict of a branch with its base, a branch that its base already has,
- * and the push of a branch.
+ * The Git host of a repository, from the URL of its `origin`: its pull requests (on GitLab, merge requests), its CI
+ * runs and its issues, through a GitHub back end (`gh`) and a GitLab back end (`glab`), and the clone of a GitHub
+ * repository. It is the only module that runs `gh` or `glab`. The `gitHost` calls of a script and `sweep` use it. Next
+ * to it, the checks that need only Git: a conflict of a branch with its base, a branch that its base already has, and
+ * the push of a branch.
  */
+import { setTimeout as sleep } from "node:timers/promises";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import { failure, git, type Result, run } from "./git.ts";
+
+/** The time between two reads of the CI runs of a commit. */
+const CI_POLL_MS = 15_000;
 
 /** The most time that one command of the tool of a Git host takes before it fails. */
 const TIMEOUT_MS = 60_000;
@@ -26,13 +31,22 @@ export type GitHost = {
 export type Check = "none" | "running" | "passed" | "failed";
 
 /**
- * A pull request: the kind of its Git host, its number, its URL, its check, whether a review asks for changes, and its
- * state. Only a merged pull request has a merge commit: the commit that the Git host reports for the merge.
+ * A pull request: the kind of its Git host, its number, its URL, its title and body, its head branch, the base branch
+ * that it merges into, its head commit (null when the Git host no longer knows it), whether it comes from another
+ * repository, the ref of its head on `origin`, its check, whether a review asks for changes, and its state. Only a
+ * merged pull request has a merge commit: the commit that the Git host reports for the merge.
  */
 export type PullRequest = {
 	readonly kind: GitHostKind;
 	readonly number: number;
 	readonly url: string;
+	readonly title: string;
+	readonly body: string;
+	readonly branch: string;
+	readonly base: string;
+	readonly head: string | null;
+	readonly fork: boolean;
+	readonly ref: string;
 	readonly check: Check;
 	readonly changesRequested: boolean;
 } & ({ readonly state: "open" | "closed" } | { readonly state: "merged"; readonly mergeCommit: string });
@@ -45,6 +59,9 @@ export type NewPullRequest = {
 	readonly body: string;
 };
 
+/** A CI run of a commit: its name, its URL, and its state. */
+export type CiRun = { readonly name: string; readonly url: string; readonly state: Exclude<Check, "none"> };
+
 /** What a Git host does through its tool. Each function runs after the check of the login. */
 type Backend = {
 	/** The arguments that make the tool print its token for the host `name`. */
@@ -54,6 +71,7 @@ type Backend = {
 	readonly byBranch: (host: GitHost, branch: string, signal: AbortSignal | undefined) => Promise<PullRequest | null>;
 	readonly merge: (host: GitHost, number: number, signal: AbortSignal | undefined) => Promise<void>;
 	readonly issue: (host: GitHost, number: number, signal: AbortSignal | undefined) => Promise<boolean>;
+	readonly ci: (host: GitHost, commit: string, branch: string, signal: AbortSignal | undefined) => Promise<CiRun[]>;
 };
 
 const TOOL = { github: "gh", gitlab: "glab" } as const satisfies Record<GitHostKind, string>;
@@ -66,6 +84,7 @@ const GITHUB: Backend = {
 	merge: githubMerge,
 	issue: (host, number, signal) =>
 		openIssue(host, ["issue", "view", String(number), "--repo", repositoryOf(host), "--json", "state"], "OPEN", signal),
+	ci: githubCi,
 };
 
 const GITLAB: Backend = {
@@ -75,6 +94,7 @@ const GITLAB: Backend = {
 	byBranch: gitlabBranch,
 	merge: gitlabMerge,
 	issue: (host, number, signal) => openIssue(host, api(host, `issues/${number}`), "opened", signal),
+	ci: gitlabCi,
 };
 
 const BACKENDS: Readonly<Record<GitHostKind, Backend>> = { github: GITHUB, gitlab: GITLAB };
@@ -254,6 +274,41 @@ export async function isOpenIssue(host: GitHost, number: number, signal?: AbortS
 }
 
 /**
+ * The CI runs of `commit` on `branch` of `host`. It reads them every 15 s until the list is not empty and no run is
+ * running, or until `wait` seconds have passed, and returns the last list.
+ */
+export async function ciRuns(
+	host: GitHost,
+	commit: string,
+	branch: string,
+	wait: number,
+	signal?: AbortSignal,
+): Promise<CiRun[]> {
+	const backend = await backendOf(host, signal);
+	const end = Date.now() + wait * 1000;
+
+	for (;;) {
+		const runs = await backend.ci(host, commit, branch, signal);
+		const left = end - Date.now();
+
+		if ((runs.length > 0 && runs.every((run) => run.state !== "running")) || left <= 0) return runs;
+		await sleep(Math.min(left, CI_POLL_MS), undefined, { signal });
+	}
+}
+
+/**
+ * Clones the GitHub repository `repo` (`owner/name`, or a name of the user) into `dir`, from `cwd`, with `gh repo
+ * clone`. It has no time limit, as a clone of a big repository takes long. It throws with the output of the tool.
+ */
+export async function cloneRepository(repo: string, dir: string, cwd: string): Promise<void> {
+	const cloned = await run(TOOL.github, ["repo", "clone", repo, dir], cwd);
+
+	if (cloned.code !== 0) {
+		throw new Error(`${TOOL.github} repo clone ${repo} failed: ${cloned.stdout}${cloned.stderr}`.trim());
+	}
+}
+
+/**
  * Whether the issue that the tool of `host` prints for `args` has the state `open`. An issue that the host does not
  * have is not open.
  */
@@ -335,11 +390,30 @@ const GITHUB_PULL = Type.Object({
 	mergeCommit: Type.Union([Type.Object({ oid: Type.String() }), Type.Null()]),
 	statusCheckRollup: Type.Array(GITHUB_CHECK),
 	latestReviews: Type.Array(Type.Object({ state: Type.String() })),
+	title: Type.String(),
+	body: Type.String(),
+	headRefName: Type.String(),
+	baseRefName: Type.String(),
+	headRefOid: Type.String(),
+	isCrossRepository: Type.Boolean(),
 });
 
-const GITHUB_FIELDS = "number,url,state,mergeCommit,statusCheckRollup,latestReviews";
+const GITHUB_FIELDS =
+	"number,url,state,mergeCommit,statusCheckRollup,latestReviews,title,body,headRefName,baseRefName,headRefOid,isCrossRepository";
 
-/** The conclusions and states of a GitHub check that passed and that failed; any other is a check that runs. */
+const GITHUB_RUNS = Type.Array(
+	Type.Object({
+		workflowName: Type.String(),
+		url: Type.String(),
+		status: Type.String(),
+		conclusion: Type.String(),
+	}),
+);
+
+/**
+ * The conclusions and states of a GitHub check that passed and that failed; any other is a check that runs. A completed
+ * CI run passes when its conclusion, in upper case, is in the first set.
+ */
 const GITHUB_PASSED = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 const GITHUB_FAILED = new Set(["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
 
@@ -397,6 +471,13 @@ async function githubPullRequest(host: GitHost, number: number, signal: AbortSig
 		kind: "github" as const,
 		number: pull.number,
 		url: pull.url,
+		title: pull.title,
+		body: pull.body,
+		branch: pull.headRefName,
+		base: pull.baseRefName,
+		head: pull.headRefOid,
+		fork: pull.isCrossRepository,
+		ref: `refs/pull/${pull.number}/head`,
 		check: githubCheck(pull.statusCheckRollup),
 		changesRequested: pull.latestReviews.some((review) => review.state === "CHANGES_REQUESTED"),
 	};
@@ -406,6 +487,24 @@ async function githubPullRequest(host: GitHost, number: number, signal: AbortSig
 	if (pull.mergeCommit === null) throw new Error(`gh pr view printed no merge commit for the merged ${pull.url}`);
 
 	return { ...fields, state: "merged", mergeCommit: pull.mergeCommit.oid };
+}
+
+/** The GitHub CI runs of `commit` on `branch` of `host`. */
+async function githubCi(
+	host: GitHost,
+	commit: string,
+	branch: string,
+	signal: AbortSignal | undefined,
+): Promise<CiRun[]> {
+	const args = ["run", "list", "--repo", repositoryOf(host), "--commit", commit, "--branch", branch];
+	const runs = await json(host, [...args, "--json", "workflowName,url,status,conclusion"], GITHUB_RUNS, signal);
+
+	return runs.map((run) => ({
+		name: run.workflowName,
+		url: run.url,
+		state:
+			run.status !== "completed" ? "running" : GITHUB_PASSED.has(run.conclusion.toUpperCase()) ? "passed" : "failed",
+	}));
 }
 
 /** The check of the GitHub checks `checks`: a failed one wins, then one that runs. */
@@ -430,7 +529,15 @@ const GITLAB_MERGE_REQUEST = Type.Object({
 	squash_commit_sha: Type.Optional(Type.Union([Type.String(), Type.Null()])),
 	detailed_merge_status: Type.Optional(Type.String()),
 	head_pipeline: Type.Optional(Type.Union([Type.Object({ status: Type.String() }), Type.Null()])),
+	title: Type.String(),
+	description: Type.Union([Type.String(), Type.Null()]),
+	source_branch: Type.String(),
+	target_branch: Type.String(),
+	source_project_id: Type.Integer(),
+	target_project_id: Type.Integer(),
 });
+
+const GITLAB_PIPELINES = Type.Array(Type.Object({ id: Type.Integer(), status: Type.String(), web_url: Type.String() }));
 
 /** The `detailed_merge_status` values of a GitLab merge request that say that a review asks for changes. */
 const GITLAB_CHANGES = new Set(["requested_changes", "discussions_not_resolved"]);
@@ -485,6 +592,13 @@ async function gitlabPullRequest(host: GitHost, number: number, signal: AbortSig
 		kind: "gitlab" as const,
 		number: merge.iid,
 		url: merge.web_url,
+		title: merge.title,
+		body: merge.description ?? "",
+		branch: merge.source_branch,
+		base: merge.target_branch,
+		head: merge.sha,
+		fork: merge.source_project_id !== merge.target_project_id,
+		ref: `refs/merge-requests/${merge.iid}/head`,
 		check: gitlabCheck(merge.head_pipeline?.status),
 		changesRequested: GITLAB_CHANGES.has(merge.detailed_merge_status ?? ""),
 	};
@@ -495,6 +609,27 @@ async function gitlabPullRequest(host: GitHost, number: number, signal: AbortSig
 	if (commit === null) throw new Error(`glab api printed no merge commit for the merged ${merge.web_url}`);
 
 	return { ...fields, state: "merged", mergeCommit: commit };
+}
+
+/** The GitLab pipelines of `commit` on `branch` of `host`, as CI runs. */
+async function gitlabCi(
+	host: GitHost,
+	commit: string,
+	branch: string,
+	signal: AbortSignal | undefined,
+): Promise<CiRun[]> {
+	const query = `sha=${encodeURIComponent(commit)}&ref=${encodeURIComponent(branch)}`;
+	const pipelines = await json(host, api(host, `pipelines?${query}`), GITLAB_PIPELINES, signal);
+
+	return pipelines.map((pipeline) => {
+		const check = gitlabCheck(pipeline.status);
+
+		return {
+			name: `pipeline ${pipeline.id}`,
+			url: pipeline.web_url,
+			state: check === "passed" || check === "failed" ? check : "running",
+		};
+	});
 }
 
 /** The check of the GitLab pipeline status `status`; a status that is not final is a check that runs. */

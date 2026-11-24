@@ -100,10 +100,13 @@ const pastRuns = (workflow, options) => __pastRuns(workflow, options ?? {});
 const harness = (request) => __harness(request);
 const gitHost = Object.freeze({
 	create: (branch, base, title, body) => __gitHost({ action: "create", branch, base, title, body }),
-	state: (change) =>
-		__gitHost(typeof change === "string" ? { action: "state", branch: change } : { action: "state", number: change }),
+	state: (change, options) => {
+		const args = typeof change === "string" ? { action: "state", branch: change } : { action: "state", number: change };
+		return __gitHost(options?.settle ? { ...args, settle: true } : args);
+	},
 	merge: (number) => __gitHost({ action: "merge", number }),
 	issue: (number) => __gitHost({ action: "issue", number }),
+	ci: (dir, commit, branch, wait) => __gitHost({ action: "ci", dir, commit, branch, wait }),
 });
 const todo = Object.freeze({
 	add: (text) => __todoAdd(text),

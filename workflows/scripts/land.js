@@ -1,6 +1,6 @@
 // `workflows land <change>` lands a change on `main`, with no model call. The change is a PR number, a local branch of
 // the main checkout of the current directory, or the ID of a completed root run, whose `change` gives the repository
-// and the branch. 1. find the repository, the branch and the worktree that has it, through `gh pr view`, `pastRuns`
+// and the branch. 1. find the repository, the branch and the worktree that has it, through `gitHost.state`, `pastRuns`
 // and `git worktree list`; 2. switch the main checkout to `main` when it is on the branch, and check that it is clean
 // and on `main`, that `main` equals `origin/main` after a fetch, and that the branch is a fast-forward of `main`; 3.
 // push the branch; 4. wait for its CI; 5. push the head to `main` on `origin`, then fast-forward `main` in the main
@@ -9,7 +9,7 @@
 // the branch with `workflows sweep <branch> --yes` in the repository; 10. check the repository. A failed step from 1 to 6
 // refuses, with the step and the reason in one line, and changes nothing after it: a refusal before step 5 leaves
 // `main` untouched on both sides. A failed step 7 is a `check failed` line. A red `main` gives `landed-red`, and
-// nothing is reverted. Each CI wait is one shell command that reads `gh run list` every 15 s, bounded by `--wait`
+// nothing is reverted. Each CI wait is one `gitHost.ci` call that reads the CI runs every 15 s, bounded by `--wait`
 // seconds (default 1800). It never squashes, never merges through a pull request and never force-pushes. Every Git
 // step is safe to repeat: a resume runs a step again when its result was not saved, and finds it done.
 export const meta = {
@@ -23,9 +23,6 @@ export const meta = {
 
 const arg = String(args.change)
 const bound = Number(args.wait)
-
-// The conclusions of a CI run that pass.
-const PASSED = new Set(["success", "skipped", "neutral"])
 
 title(`land ${arg}`)
 
@@ -44,7 +41,7 @@ function begin(n, name) {
 async function changeOfArg() {
 	const repository = (await worktrees())[0].path
 
-	if (/^\d+$/.test(arg)) return { repository, branch: prBranch(await prOf(arg, "number,headRefName,isCrossRepository")) }
+	if (/^\d+$/.test(arg)) return { repository, branch: prBranch(await gitHost.state(Number(arg))) }
 
 	if (await isBranch(arg, repository)) return { repository, branch: arg }
 	let past
@@ -91,34 +88,14 @@ async function locate(target) {
 	return { ...target, main, head, short, subject }
 }
 
-// The CI runs of the commit `head` on `ref`, from `gh run list` in `checkout`: one blocking shell command that reads
-// them every 15 s until the list is not empty and every run is completed, or until `bound` seconds have passed. Returns
-// the reason that the CI is red, with the short head `short`, or undefined when it passed.
+// The CI runs of the commit `head` on `ref`, from `gitHost.ci` on the origin of `checkout`: it reads them every 15 s
+// until the list is not empty and no run is running, or until `bound` seconds have passed. Returns the reason that the
+// CI is red, with the short head `short`, or undefined when it passed.
 async function ciOf(checkout, ref, head, short) {
-	const output = await sh([
-		"sh",
-		"-c",
-		`cd "$1" || exit
-end=$(($(date +%s) + $4))
-while :; do
-	runs=$(gh run list --commit "$2" --branch "$3" --json databaseId,workflowName,status,conclusion,url) || exit
-	if printf '%s' "$runs" | grep -q '"status"' && ! printf '%s' "$runs" | grep -Eo '"status": *"[^"]*"' | grep -qv '"completed"'; then break; fi
-	left=$((end - $(date +%s)))
-	[ "$left" -gt 0 ] || break
-	sleep $((left < 15 ? left : 15))
-done
-printf '%s\\n' "$runs"`,
-		"ci",
-		checkout,
-		head,
-		ref,
-		String(bound),
-	])
-
-	const runs = JSON.parse(output)
-	const named = (list) => list.map((run) => `${run.workflowName} ${run.url}`).join(", ")
-	const unfinished = runs.filter((run) => run.status !== "completed")
-	const failed = runs.filter((run) => run.status === "completed" && !PASSED.has(run.conclusion))
+	const runs = await gitHost.ci(checkout, head, ref, bound)
+	const named = (list) => list.map((run) => `${run.name} ${run.url}`).join(", ")
+	const unfinished = runs.filter((run) => run.state === "running")
+	const failed = runs.filter((run) => run.state === "failed")
 
 	if (runs.length === 0) return `no CI run for ${short} on ${ref} after ${bound} s`
 

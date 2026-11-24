@@ -5,6 +5,9 @@ import {
 	fake,
 	FIX_COMMIT,
 	git,
+	hostBranch,
+	hostOrigin,
+	hostPull,
 	LESSON,
 	LESSON_LINE,
 	LESSONED,
@@ -368,14 +371,9 @@ describe("workflows thermoloop", () => {
 	});
 
 	it("takes the pull request of the branch as the intent, from an empty stdin", async () => {
-		await fake(
-			root,
-			"gh",
-			`echo "$@" >> "${root}/gh.log"
-[ "$*" = "pr view feature --json title,body" ] || exit 1
-echo '{"title":"Fix the typo of the README","body":"It says wrold."}'
-`,
-		);
+		await hostOrigin(root, repo, "github");
+		await hostBranch(root, "github", "feature", 5);
+		await hostPull(root, "github", 5, { title: "Fix the typo of the README", body: "It says wrold." });
 
 		const run = await workflows(["thermoloop"], { cwd: repo, stdin: "", script: { verdicts: ["SHIP"] } });
 
@@ -392,7 +390,8 @@ echo '{"title":"Fix the typo of the README","body":"It says wrold."}'
 		expect(shown.stdout[0]).toBe(`run ${run.id} thermoloop done, result approved exit 0 Fix the typo of the README`);
 	});
 
-	it("keeps the commit messages as the intent on resume when gh failed at the start", async () => {
+	it("keeps the commit messages as the intent on resume when the Git host failed at the start", async () => {
+		await hostOrigin(root, repo, "github");
 		await fake(
 			root,
 			"gh",
@@ -520,55 +519,45 @@ echo '{"title":"Fix the typo of the README","body":"It says wrold."}'
 		expect(report.join("\n")).not.toContain("worktree ");
 	});
 
-	it("fetches a pull request that is not here, and fixes it in a worktree of its own", async () => {
-		const origin = join(root, "origin.git");
-		git(root, "clone", "-q", "--bare", repo, origin);
-		git(repo, "remote", "add", "origin", origin);
-		git(repo, "push", "-q", "origin", "feature:refs/pull/74/head");
-		git(repo, "checkout", "-q", "main");
-		git(repo, "branch", "-q", "-D", "feature");
+	it.each([
+		["github", "refs/pull/74/head"],
+		["gitlab", "refs/merge-requests/74/head"],
+	] as const)(
+		"fetches a pull request of %s that is not here from %s, and fixes it in a worktree of its own",
+		async (kind, ref) => {
+			await hostOrigin(root, repo, kind);
+			git(repo, "push", "-q", "origin", `feature:${ref}`);
+			git(repo, "checkout", "-q", "main");
+			git(repo, "branch", "-q", "-D", "feature");
+			await hostPull(root, kind, 74, { title: ITEM, body: "It says wrold.", branch: "fix-readme" });
 
-		await fake(
-			root,
-			"gh",
-			`echo "$@" >> "${root}/gh.log"
-[ "$*" = "pr view 74 --json number,title,body,headRefName,baseRefName,isCrossRepository" ] || exit 1
-echo '{"number":74,"title":"Fix the README typo","body":"It says wrold.","headRefName":"fix-readme","baseRefName":"main","isCrossRepository":false}'
-`,
-		);
+			const run = await workflows(["thermoloop", "--json", "74"], {
+				cwd: repo,
+				script: { edits: [THANKED], verdicts: ["FIX", "SHIP"] },
+			});
 
-		const run = await workflows(["thermoloop", "--json", "74"], {
-			cwd: repo,
-			script: { edits: [THANKED], verdicts: ["FIX", "SHIP"] },
-		});
-
-		expect(run.code).toBe(0);
-		const { report } = JSON.parse(run.stdout[1] ?? "");
-		const path = String(report.at(-1)).slice("worktree ".length);
-		expect(report).toEqual([
-			`approved ${ITEM} in 2 rounds, ${git(repo, "rev-parse", "--short", "fix-readme")}`,
-			`worktree ${path}`,
-		]);
-		expect(run.model.find("review")?.prompt).toContain(`## item\n# ${ITEM}\n\nIt says wrold.\n\n`);
-		expect(git(path, "branch", "--show-current")).toBe("fix-readme");
-		expect(git(repo, "log", "--format=%s", `${start}..fix-readme`)).toBe(`${FIX_COMMIT.subject}\nfix the typo`);
-		expect([git(repo, "branch", "--show-current"), git(repo, "rev-parse", "HEAD")]).toEqual(["main", start]);
-		expect(git(repo, "status", "--porcelain")).toBe("");
-	});
+			expect(run.code).toBe(0);
+			const { report } = JSON.parse(run.stdout[1] ?? "");
+			const path = String(report.at(-1)).slice("worktree ".length);
+			expect(report).toEqual([
+				`approved ${ITEM} in 2 rounds, ${git(repo, "rev-parse", "--short", "fix-readme")}`,
+				`worktree ${path}`,
+			]);
+			expect(run.model.find("review")?.prompt).toContain(`## item\n# ${ITEM}\n\nIt says wrold.\n\n`);
+			expect(git(path, "branch", "--show-current")).toBe("fix-readme");
+			expect(git(repo, "log", "--format=%s", `${start}..fix-readme`)).toBe(`${FIX_COMMIT.subject}\nfix the typo`);
+			expect([git(repo, "branch", "--show-current"), git(repo, "rev-parse", "HEAD")]).toEqual(["main", start]);
+			expect(git(repo, "status", "--porcelain")).toBe("");
+		},
+	);
 
 	it("moves the branch of a pull request to its fetched head when it is behind, and fails when it diverged", async () => {
-		const origin = join(root, "origin.git");
-		git(root, "clone", "-q", "--bare", repo, origin);
-		git(repo, "remote", "add", "origin", origin);
+		await hostOrigin(root, repo, "github");
 		git(repo, "push", "-q", "origin", "feature:refs/pull/74/head");
 		const head = git(repo, "rev-parse", "feature");
 		git(repo, "checkout", "-q", "main");
 		git(repo, "branch", "-q", "-D", "feature");
-		await fake(
-			root,
-			"gh",
-			`echo '{"number":74,"title":"Fix the README typo","body":"It says wrold.","headRefName":"fix-readme","baseRefName":"main","isCrossRepository":false}'`,
-		);
+		await hostPull(root, "github", 74, { title: ITEM, body: "It says wrold.", branch: "fix-readme" });
 
 		// A branch with a commit that the pull request does not have has diverged from it.
 		git(repo, "checkout", "-qb", "fix-readme");

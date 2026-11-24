@@ -78,22 +78,12 @@ async function checkedOutAt(branch) {
 
 /** `# <title>` and the body of `pr`. */
 function prIntent(pr) {
-	return `# ${pr.title}\n\n${pr.body ?? ""}`.trim();
+	return `# ${pr.title}\n\n${pr.body}`.trim();
 }
 
-/**
- * The PR of `ref` with the JSON `fields`, from `gh pr view`. Throws when `gh` fails, or with `options.settle` returns
- * `{ error }`, as `sh` does.
- */
-async function prOf(ref, fields, options) {
-	const output = await sh(["gh", "pr", "view", ref, "--json", fields], options);
-
-	return output.error === undefined ? JSON.parse(output) : output;
-}
-
-/** The local branch of the PR `pr`: `pr/<number>` for a PR from another repository, else its head branch. */
+/** The local branch of the pull request `pr`: `pr/<number>` for one from another repository, else its head branch. */
 function prBranch(pr) {
-	return pr.isCrossRepository ? `pr/${pr.number}` : pr.headRefName;
+	return pr.fork ? `pr/${pr.number}` : pr.branch;
 }
 
 /** True when `name` is a local branch of the repository of `dir`, default the directory of `sh`. */
@@ -114,22 +104,23 @@ function isAncestor(a, b) {
 }
 
 /**
- * Fetches the head of the PR `number`, and puts the local branch `end` on it when the branch is missing or behind it. A
- * branch that is ahead of the head stays as it is. Throws when the branch has diverged from the head, and when it is
- * behind and a worktree has it checked out. Safe to repeat: `git branch -f` gives the same branch.
+ * Fetches the head of the pull request `pr` from its `ref` on `origin`, and puts the local branch `end` on it when the
+ * branch is missing or behind it. A branch that is ahead of the head stays as it is. Throws when the branch has
+ * diverged from the head, and when it is behind and a worktree has it checked out. Safe to repeat: `git branch -f`
+ * gives the same branch.
  */
-async function pullBranch(number, end) {
-	await sh(["git", "fetch", "origin", `pull/${number}/head`]);
+async function pullBranch(pr, end) {
+	await sh(["git", "fetch", "origin", pr.ref]);
 	const head = await sh(["git", "rev-parse", "FETCH_HEAD"]);
 
 	if (await isBranch(end)) {
 		if (await isAncestor(head, end)) return;
-		const pr = `PR #${number}`;
+		const name = `PR #${pr.number}`;
 
-		if (!(await isAncestor(end, head))) throw new Error(`${end} has diverged from ${pr}; rebase it or delete it`);
+		if (!(await isAncestor(end, head))) throw new Error(`${end} has diverged from ${name}; rebase it or delete it`);
 		const path = await checkedOutAt(end);
 
-		if (path !== undefined) throw new Error(`${end} is behind ${pr} and checked out at ${path}; update it there`);
+		if (path !== undefined) throw new Error(`${end} is behind ${name} and checked out at ${path}; update it there`);
 	}
 
 	await sh(["git", "branch", "-f", end, head]);
@@ -160,11 +151,11 @@ async function targetOf(target, base) {
 	}
 
 	if (/^\d+$/.test(target)) {
-		const pr = await prOf(target, "number,title,body,headRefName,baseRefName,isCrossRepository");
+		const pr = await gitHost.state(Number(target));
 		const end = prBranch(pr);
 
-		await pullBranch(pr.number, end);
-		const from = pr.baseRefName;
+		await pullBranch(pr, end);
+		const from = pr.base;
 		const start = await mergeBase((await isBranch(from)) ? from : `origin/${from}`, end);
 
 		return { from, end, start, intent: prIntent(pr) };
@@ -225,11 +216,11 @@ async function changeOf(args, { wip = false } = {}) {
 
 /** The intent of the PR of `branch`, else the commit messages of `range`. A detached `HEAD` (`branch` empty) has no PR. */
 async function intentOf(branch, range) {
-	// Without a PR, or without gh, the commit messages say what the change is for.
+	// Without a PR, or without a Git host, the commit messages say what the change is for.
 	if (branch !== "") {
-		const pr = await prOf(branch, "title,body", { settle: true });
+		const pr = await gitHost.state(branch, { settle: true });
 
-		if (pr.error === undefined) return prIntent(pr);
+		if (pr !== null && pr.error === undefined) return prIntent(pr);
 	}
 
 	return await sh(["git", "log", "--reverse", "--format=%B", range]);

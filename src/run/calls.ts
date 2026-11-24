@@ -4,6 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { once } from "node:events";
+import { resolve } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import {
@@ -21,6 +22,7 @@ import { type Static, type TLiteral, type TObject, type TProperties, type TUnion
 import { failure, type Result, run } from "../git.ts";
 import {
 	branchPullRequest,
+	ciRuns,
 	createPullRequest,
 	gitHostOf,
 	isOpenIssue,
@@ -123,7 +125,8 @@ const NUMBER = Type.Integer({ minimum: 1 });
 
 /**
  * The args of a `gitHost` call: its action, and the values of the action. `state` takes the number of a pull request
- * or the name of a branch.
+ * or the name of a branch, and `settle: true` when a failure is its result. `ci` takes the repository `dir` whose
+ * origin it reads, the commit, the branch and the seconds that it waits.
  */
 export const GIT_HOST_ARGS = Type.Union([
 	Type.Object(
@@ -136,13 +139,26 @@ export const GIT_HOST_ARGS = Type.Union([
 		},
 		{ additionalProperties: false },
 	),
-	Type.Object({ action: Type.Literal("state"), number: NUMBER }, { additionalProperties: false }),
 	Type.Object(
-		{ action: Type.Literal("state"), branch: Type.String({ minLength: 1 }) },
+		{ action: Type.Literal("state"), number: NUMBER, settle: Type.Optional(Type.Literal(true)) },
+		{ additionalProperties: false },
+	),
+	Type.Object(
+		{ action: Type.Literal("state"), branch: Type.String({ minLength: 1 }), settle: Type.Optional(Type.Literal(true)) },
 		{ additionalProperties: false },
 	),
 	Type.Object({ action: Type.Literal("merge"), number: NUMBER }, { additionalProperties: false }),
 	Type.Object({ action: Type.Literal("issue"), number: NUMBER }, { additionalProperties: false }),
+	Type.Object(
+		{
+			action: Type.Literal("ci"),
+			dir: Type.String({ minLength: 1 }),
+			commit: Type.String({ minLength: 1 }),
+			branch: Type.String({ minLength: 1 }),
+			wait: Type.Number({ minimum: 0 }),
+		},
+		{ additionalProperties: false },
+	),
 ]);
 
 /** The args of a `gitHost` call. */
@@ -747,15 +763,17 @@ export function harnessCall(calls: Calls, args: HarnessArgs): Promise<JsonValue>
 
 /**
  * The `gitHost` call with `args` on the Git host of the repository `cwd`: the pull request that `create` makes, the
- * pull request or null that `state` reads, null for `merge`, and whether the issue is open for `issue`. A resume
- * replays the saved result. A repository whose origin is on no Git host that the module knows fails the call.
+ * pull request or null that `state` reads, null for `merge`, whether the issue is open for `issue`, and the CI runs
+ * for `ci`, which reads the origin of `args.dir`, resolved from `cwd`. A resume replays the saved result. A repository
+ * whose origin is on no Git host that the module knows fails the call.
  */
 export function gitHostCall(calls: Calls, cwd: string, args: GitHostArgs): Promise<JsonValue> {
 	return memoized(calls, callKey(calls, "gitHost", args), { kind: "gitHost", args }, async () => {
 		const signal = calls.context.abortSignal;
-		const host = await gitHostOf(cwd, signal);
+		const dir = args.action === "ci" ? resolve(cwd, args.dir) : cwd;
+		const host = await gitHostOf(dir, signal);
 
-		if (host === null) throw new Error(`the origin of ${cwd} is on no Git host that gh or glab knows`);
+		if (host === null) throw new Error(`the origin of ${dir} is on no Git host that gh or glab knows`);
 
 		switch (args.action) {
 			case "create":
@@ -770,6 +788,8 @@ export function gitHostCall(calls: Calls, cwd: string, args: GitHostArgs): Promi
 				return null;
 			case "issue":
 				return isOpenIssue(host, args.number, signal);
+			case "ci":
+				return ciRuns(host, args.commit, args.branch, args.wait, signal);
 		}
 	});
 }

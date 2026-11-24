@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { Value } from "typebox/value";
@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { SHOWN } from "../src/cli/commands/show.ts";
 import {
 	branchPullRequest,
+	ciRuns,
 	createPullRequest,
 	type GitHost,
 	gitHostOf,
@@ -17,7 +18,19 @@ import {
 	pullRequestOf,
 	push,
 } from "../src/githost.ts";
-import { git, hostAnswer, repository, restoreEnvironment, sandbox, workflows } from "./support.ts";
+import {
+	branchArgs,
+	ciArgs,
+	git,
+	gitlabApi,
+	hostAnswer,
+	hostLogin,
+	hostPull,
+	repository,
+	restoreEnvironment,
+	sandbox,
+	workflows,
+} from "./support.ts";
 
 let root: string;
 let repo: string;
@@ -30,7 +43,6 @@ beforeEach(async () => {
 
 afterEach(() => rm(root, { recursive: true, force: true }));
 
-const GITHUB_FIELDS = "number,url,state,mergeCommit,statusCheckRollup,latestReviews";
 const GITHUB = ["--repo", "github.com/octo/demo"];
 
 /** Sets the URL of `origin` of the test repository, and returns its Git host. */
@@ -42,7 +54,7 @@ async function originAt(url: string): Promise<GitHost | null> {
 
 /** The Git host `github.com/octo/demo`, with a login of `gh`. */
 async function github(): Promise<GitHost> {
-	await hostAnswer(root, "gh", ["auth", "token", "--hostname", "github.com"], { stdout: "gho_token\n" });
+	await hostLogin(root, "github");
 	const host = await originAt("https://github.com/octo/demo.git");
 
 	if (host === null) throw new Error("no Git host");
@@ -50,10 +62,10 @@ async function github(): Promise<GitHost> {
 	return host;
 }
 
-/** The Git host `gitlab.com/group/demo`, with a login of `glab`. */
+/** The Git host `gitlab.com/octo/demo`, with a login of `glab`. */
 async function gitlab(): Promise<GitHost> {
-	await hostAnswer(root, "glab", ["config", "get", "token", "--host", "gitlab.com"], { stdout: "glpat-token\n" });
-	const host = await originAt("git@gitlab.com:group/demo.git");
+	await hostLogin(root, "gitlab");
+	const host = await originAt("git@gitlab.com:octo/demo.git");
 
 	if (host === null) throw new Error("no Git host");
 
@@ -61,54 +73,12 @@ async function gitlab(): Promise<GitHost> {
 }
 
 /** Makes `gh pr view <number>` print the pull request `fields` over an open one with no check and no review. */
-function githubPull(number: number, fields: Readonly<Record<string, JsonValue>> = {}): Promise<void> {
-	const pull = {
-		number,
-		url: `https://github.com/octo/demo/pull/${number}`,
-		state: "OPEN",
-		mergeCommit: null,
-		statusCheckRollup: [],
-		latestReviews: [],
-		...fields,
-	};
-
-	return hostAnswer(root, "gh", ["pr", "view", String(number), ...GITHUB, "--json", GITHUB_FIELDS], {
-		stdout: JSON.stringify(pull),
-	});
-}
+const githubPull = (number: number, fields: Readonly<Record<string, JsonValue>> = {}) =>
+	hostPull(root, "github", number, {}, fields);
 
 /** Makes the GitLab API print the merge request `fields` over an open one with no pipeline. */
-function gitlabMerge(iid: number, fields: Readonly<Record<string, JsonValue>> = {}): Promise<void> {
-	const merge = {
-		iid,
-		web_url: `https://gitlab.com/group/demo/-/merge_requests/${iid}`,
-		state: "opened",
-		sha: "head",
-		merge_commit_sha: null,
-		squash_commit_sha: null,
-		detailed_merge_status: "mergeable",
-		head_pipeline: null,
-		...fields,
-	};
-
-	return hostAnswer(root, "glab", gitlabApi(`merge_requests/${iid}`), { stdout: JSON.stringify(merge) });
-}
-
-const gitlabApi = (resource: string) => ["api", "--hostname", "gitlab.com", `projects/group%2Fdemo/${resource}`];
-
-const githubList = (branch: string) => [
-	"pr",
-	"list",
-	...GITHUB,
-	"--head",
-	branch,
-	"--state",
-	"all",
-	"--limit",
-	"1",
-	"--json",
-	"number",
-];
+const gitlabMerge = (iid: number, fields: Readonly<Record<string, JsonValue>> = {}) =>
+	hostPull(root, "gitlab", iid, {}, fields);
 
 const log = async (tool: string) => (await readFile(join(root, `${tool}.log`), "utf8")).trim().split("\n");
 
@@ -149,13 +119,13 @@ describe("the Git host of a repository", () => {
 		await mkdir(bin);
 		const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
 		await symlink(real, join(bin, "git"));
-		git(repo, "remote", "set-url", "origin", "https://gitlab.com/group/demo");
+		git(repo, "remote", "set-url", "origin", "https://gitlab.com/octo/demo");
 		process.env.PATH = bin;
 
 		try {
 			const gitlab = await gitHostOf(repo);
 			await expect(isOpenIssue(gitlab ?? fail(), 3)).rejects.toThrow(
-				/^glab is not installed, so workflows cannot reach gitlab\.com\/group\/demo$/,
+				/^glab is not installed, so workflows cannot reach gitlab\.com\/octo\/demo$/,
 			);
 		} finally {
 			restoreEnvironment();
@@ -166,22 +136,35 @@ describe("the Git host of a repository", () => {
 describe("a GitHub pull request", () => {
 	it("is null for a branch with none, and the newest one of a branch, with its check and its review", async () => {
 		const host = await github();
-		await hostAnswer(root, "gh", githubList("lonely"), { stdout: "[]" });
+		await hostAnswer(root, "gh", branchArgs("github", "lonely"), { stdout: "[]" });
 		expect(await branchPullRequest(host, "lonely")).toBeNull();
 
-		await hostAnswer(root, "gh", githubList("feature"), { stdout: '[{"number":7}]' });
-		await githubPull(7, {
-			statusCheckRollup: [
-				{ __typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS" },
-				{ __typename: "StatusContext", state: "PENDING" },
-			],
-			latestReviews: [{ state: "COMMENTED" }, { state: "CHANGES_REQUESTED" }],
-		});
+		await hostAnswer(root, "gh", branchArgs("github", "feature"), { stdout: '[{"number":7}]' });
+		await hostPull(
+			root,
+			"github",
+			7,
+			{ title: "Fix", body: "Body", branch: "feature", base: "dev", head: "abc123", fork: true },
+			{
+				statusCheckRollup: [
+					{ __typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS" },
+					{ __typename: "StatusContext", state: "PENDING" },
+				],
+				latestReviews: [{ state: "COMMENTED" }, { state: "CHANGES_REQUESTED" }],
+			},
+		);
 
 		expect(await branchPullRequest(host, "feature")).toEqual({
 			kind: "github",
 			number: 7,
 			url: "https://github.com/octo/demo/pull/7",
+			title: "Fix",
+			body: "Body",
+			branch: "feature",
+			base: "dev",
+			head: "abc123",
+			fork: true,
+			ref: "refs/pull/7/head",
 			check: "running",
 			changesRequested: true,
 			state: "open",
@@ -277,13 +260,26 @@ describe("a GitLab merge request", () => {
 		await hostAnswer(root, "glab", gitlabApi(`merge_requests?source_branch=feature&${query}`), {
 			stdout: '[{"iid":6}]',
 		});
-		await gitlabMerge(6, { head_pipeline: { status: "failed" }, detailed_merge_status: "requested_changes" });
+		await hostPull(
+			root,
+			"gitlab",
+			6,
+			{ title: "Fix", branch: "feature", base: "dev", head: "abc123" },
+			{ head_pipeline: { status: "failed" }, detailed_merge_status: "requested_changes", description: null },
+		);
 
 		expect(await branchPullRequest(host, "none")).toBeNull();
 		expect(await branchPullRequest(host, "feature")).toEqual({
 			kind: "gitlab",
 			number: 6,
-			url: "https://gitlab.com/group/demo/-/merge_requests/6",
+			url: "https://gitlab.com/octo/demo/-/merge_requests/6",
+			title: "Fix",
+			body: "",
+			branch: "feature",
+			base: "dev",
+			head: "abc123",
+			fork: false,
+			ref: "refs/merge-requests/6/head",
 			check: "failed",
 			changesRequested: true,
 			state: "open",
@@ -330,7 +326,7 @@ describe("a GitLab merge request", () => {
 
 		await hostAnswer(root, "glab", create, { stdout: '{"iid":6}' });
 		await gitlabMerge(6);
-		const merge = ["mr", "merge", "6", "--yes", "--auto-merge=false", "--repo", "https://gitlab.com/group/demo"];
+		const merge = ["mr", "merge", "6", "--yes", "--auto-merge=false", "--repo", "https://gitlab.com/octo/demo"];
 		await hostAnswer(root, "glab", merge, { stdout: "" });
 		await hostAnswer(root, "glab", gitlabApi("issues/1"), { stdout: '{"state":"opened"}' });
 		await hostAnswer(root, "glab", gitlabApi("issues/2"), { fail: "glab: 404 Not Found (HTTP 404)" });
@@ -344,10 +340,81 @@ describe("a GitLab merge request", () => {
 	});
 });
 
+describe("the CI runs of a commit", () => {
+	const RUNS = {
+		github: (status: string, conclusion: string) =>
+			JSON.stringify([{ workflowName: "CI", url: "https://ci/1", status, conclusion }]),
+		gitlab: (status: string) => JSON.stringify([{ id: 1, status, web_url: "https://ci/1" }]),
+	};
+
+	it("maps the GitHub runs and the GitLab pipelines to passed, failed and running", async () => {
+		const githubHost = await github();
+
+		const cases = [
+			["completed", "success", "passed"],
+			["completed", "skipped", "passed"],
+			["completed", "failure", "failed"],
+			["in_progress", "", "running"],
+		] as const;
+
+		for (const [index, [status, conclusion, state]] of cases.entries()) {
+			await hostAnswer(root, "gh", ciArgs("github", `c${index}`, "main"), { stdout: RUNS.github(status, conclusion) });
+			expect(await ciRuns(githubHost, `c${index}`, "main", 0)).toEqual([{ name: "CI", url: "https://ci/1", state }]);
+		}
+
+		git(repo, "remote", "remove", "origin");
+		const gitlabHost = await gitlab();
+
+		const pipelines = [
+			["success", "passed"],
+			["canceled", "failed"],
+			["pending", "running"],
+		] as const;
+
+		for (const [index, [status, state]] of pipelines.entries()) {
+			await hostAnswer(root, "glab", ciArgs("gitlab", `c${index}`, "feat/x"), { stdout: RUNS.gitlab(status) });
+			expect(await ciRuns(gitlabHost, `c${index}`, "feat/x", 0)).toEqual([
+				{ name: "pipeline 1", url: "https://ci/1", state },
+			]);
+		}
+	});
+
+	it("reads the runs again until none runs, and stops at the end of the wait", async () => {
+		const host = await github();
+		await hostAnswer(root, "gh", ciArgs("github", "c1", "main"), { stdout: RUNS.github("queued", "") });
+
+		expect(await ciRuns(host, "c1", "main", 1)).toEqual([{ name: "CI", url: "https://ci/1", state: "running" }]);
+		expect((await log("gh")).filter((line) => line.startsWith("run list"))).toHaveLength(2);
+	});
+});
+
+describe("the gh and glab commands", () => {
+	it("run only in src/githost.ts", async () => {
+		const top = join(import.meta.dirname, "..");
+
+		const listed = await Promise.all(
+			["src", "workflows", "pi"].map(async (dir) =>
+				(await readdir(join(top, dir), { recursive: true })).map((file) => join(dir, file)),
+			),
+		);
+
+		const files = listed.flat().filter((file) => /\.(ts|js)$/.test(file) && file !== join("src", "githost.ts"));
+
+		const pattern = /["'`](gh|glab)["'`]|\b(gh|glab) (pr|mr|run|repo|issue|api|auth|config|ci)\b/;
+		const found = [];
+
+		for (const file of files) {
+			if (pattern.test(await readFile(join(top, file), "utf8"))) found.push(file);
+		}
+
+		expect(found).toEqual([]);
+	});
+});
+
 describe("gitHost in a workflow script", () => {
 	it("reads the pull request of a branch as a call that a resume replays", async () => {
 		await github();
-		await hostAnswer(root, "gh", githubList("feature"), { stdout: '[{"number":7}]' });
+		await hostAnswer(root, "gh", branchArgs("github", "feature"), { stdout: '[{"number":7}]' });
 		await githubPull(7);
 		await writeFile(join(repo, "x.js"), 'phase("read")\nreturn await gitHost.state("feature")');
 
