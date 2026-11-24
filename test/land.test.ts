@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { request } from "@vzlentin/harness/client";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { reportedEvents } from "./labels-entry.ts";
 import {
@@ -14,6 +15,7 @@ import {
 	repository,
 	sandbox,
 	setEntries,
+	startHost,
 	workflows,
 	worktreeAt,
 } from "./support.ts";
@@ -444,7 +446,17 @@ describe("workflows land", () => {
 			[`landed ${SUBJECT} ${run.short}, CI passed on the branch and on main`],
 		]);
 		expectLanded(run);
-		expect(await reportedEvents()).toEqual([{ labels: ["item:1"], refs: [`commit:${run.head}`] }]);
+		// Step 7 reports the head, and the sweep of step 9 reports it again; the task keeps it once.
+		const event = { labels: ["item:1"], refs: [`commit:${run.head}`] };
+		expect(await reportedEvents()).toEqual([event, event]);
+		const host = await startHost();
+
+		try {
+			const task = await request({ type: "task", key: `wf:${run.id}#1` }, { start: false });
+			expect(task?.refs).toEqual([`commit:${run.head}`]);
+		} finally {
+			await host.close();
+		}
 	});
 
 	it("finishes on resume a landing that stopped after the push of main", async () => {

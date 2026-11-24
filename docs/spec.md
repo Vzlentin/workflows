@@ -755,7 +755,8 @@ matters. It runs these steps in order, with `git -C` in the repository of the ch
 8. Wait for the CI of `main` at the head.
 9. Run `workflows sweep <branch> --yes` of this package (`workflowsCommand`) in the repository (see
    [Sweep](#sweep)), unless the local branch is already gone. It removes the worktree that has the branch and the
-   local branch, and marks each run of the branch `landed`. Its stderr does not change the report.
+   local branch, and marks each run of the branch `landed`. Its sweep reports the head again for each root run of the
+   branch, and the host keeps the reference once. Its stderr does not change the report.
 10. Check the repository: `core.bare` is not true, `main` equals `main` on `origin`, and the branch is gone locally, as
    a remote-tracking branch and on `origin`.
 
@@ -1229,6 +1230,9 @@ fails with `harness got bad arguments: <path> <problem>`. An error of the host f
 host fails it with `no harness host runs for <host>`. The call is of the kind `harness`, with the request as its
 args, and saves the reply, so a resume returns it and does not send the request again.
 
+`sweep` and `list --json` send `report` requests of their own, with the same caller, for the runs that they sweep as
+`landed` (see [Sweep](#sweep)).
+
 #### Git host
 
 `src/githost.ts` asks a Git host about pull requests (on GitLab, merge requests), CI runs and issues, and clones a
@@ -1489,8 +1493,9 @@ Each `start` request of a root run, the first one, its second try, and each resu
 host checks them at the first start of a key, with the entry of each label kind, before it creates the task, and
 stores them for the task by its key. A kind that no loaded entry checks, or a label that its entry refuses, refuses
 the start: the command prints `workflows: <reason of the host>` and exits 1, and a new run has no run directory. So a
-resume after its entry refuses the label does not start. `land` of a run ID reports the commit that it lands for the first task of the
-run (see [Land](#land)), and the host acts on the labels of that task. `serves` is a reserved argument name.
+resume after its entry refuses the label does not start. `land` of a run ID reports the commit that it lands for the
+first task of the run (see [Land](#land)), and so do `sweep --yes` and `list --json` for each root run that they sweep
+as `landed` (see [Sweep](#sweep)). The host acts on the labels of that task. `serves` is a reserved argument name.
 
 ### Input
 
@@ -1829,7 +1834,19 @@ old one, or none. When only the write of the kept file fails, `list` prints the 
 `workflows: cannot keep the state of the changes of <repository>: <reason>`, gives the `change` that it read, and
 still reads the later repositories. The exit code does not change.
 
-`list` reads the host store file read-only and does not start the host, so no run continues. It takes no lock that
+The kept file also has, for each branch whose pull request is merged, its head and its merge commit. After the read,
+`list --json` sweeps each run whose `change` is `merged`, as `sweep <run-id> --yes` does (see [Sweep](#sweep)): it reads
+the store again and takes the run only when its last task has ended. A run with a marker is swept with the word of the
+marker. Else it sweeps the run as `landed` only when the head of the merged pull request is the tip of the local branch
+and the saved `worktree.start` of the run is not that tip: it first reports `commit:<merge commit>` for the first task
+of the run when it is a root run, then removes its worktree and branch and writes `landed` to its `swept` file. A
+branch with commits after the merged head, or with no commit of the run, is not swept, and `list` gives `dropped` only
+from a marker. The row of a swept run has `swept` and no `change`. The first failed report or removal prints one line
+`workflows: cannot sweep <run-id>: <error>` on stderr, and `list` sweeps no more runs in that call; the rows still
+print, and the exit code does not change. A failed report removes nothing, so a later `list` or `sweep` tries again.
+
+`list` reads the host store file read-only, so no run continues. Only the report of a sweep of `list --json` connects
+to the host, and starts it when none runs. It takes no lock that
 the host waits for, and runs no checkpoint of the file. A store whose schema pi-durable must update first cannot open
 read-only: `list`, `show` and `save` then fail with `<store> needs a schema update that only its harness host makes:
 start the host once, such as with harness --host <host> host, and run the command again`.
@@ -1849,7 +1866,7 @@ has a run directory with a `project` file, its last task has ended, a task of th
 saved it, its saved input has a worktree, the worktree exists, and the worktree is on a branch. For a run of an earlier
 version, `sweep` reads only the `worktree` of its saved input. A run of a later version, a run without a worktree, a
 run that has not ended, a detached worktree, and a worktree that is not a Git worktree of its own are never swept.
-`sweep` reads the host store file read-only, as `list` does, and never starts the host. When the host store
+`sweep` reads the host store file read-only, as `list` does. When the host store
 file does not exist, `sweep` prints `workflows: cannot sweep: the host store <store> does not exist, so no run
 directory counts as unstarted; remove the run directories that you do not need from <runs directory> by hand`, removes
 nothing and exits 1, also without `--yes`. With arguments, `sweep` needs no host store.
@@ -1859,21 +1876,21 @@ every run of the branch has no commit of its runs: it is not merged and gets `dr
 host call. Without arguments, `sweep` takes such a run too, as `dropped`, and `--yes` removes its worktree and branch. With
 arguments, the rule applies to a given branch that has runs.
 
-For each candidate, `sweep` first runs `git merge-base --is-ancestor refs/heads/<branch> refs/heads/main` in the
-worktree, then `git merge-base --is-ancestor refs/heads/<branch> refs/remotes/origin/main`. A branch is merged when
-one of them succeeds: the commit that the worktree is on is in the local `main` or in `origin/main`. Then, for
-`refs/heads/main` and then `refs/remotes/origin/main`, when the ref exists, a branch is merged when that base already
+For each candidate, `sweep` first asks the [Git host](#git-host) of the origin of the worktree for the newest pull
+request of the branch, and a branch is merged when that pull request is merged and its head commit is the commit that
+the worktree is on. A branch name that comes back in a later run, with a merged pull request of an earlier commit, is
+not merged by that pull request. A repository whose origin is on no Git host, such as no `origin` or a local path, gets
+no Git host call. Otherwise `sweep` runs `git merge-base --is-ancestor refs/heads/<branch> refs/remotes/origin/main` in
+the worktree, then `git merge-base --is-ancestor refs/heads/<branch> refs/heads/main`. A branch is merged when one of
+them succeeds: the commit that the worktree is on is in `origin/main` or in the local `main`. Then, for
+`refs/remotes/origin/main` and then `refs/heads/main`, when the ref exists, a branch is merged when that base already
 has its changes, as after a merge by squash or rebase: the merge of the branch into the base with
-`git merge-tree --write-tree` has no conflict and gives the tree of the base (see [Git host](#git-host)). Otherwise
-`sweep` asks the [Git host](#git-host) of the origin of the worktree for the newest pull request of the branch, and a
-branch is merged when that pull request is merged and its head commit is the commit that the worktree is on. A
-repository whose origin is on no Git host, such as no `origin` or a local path, gets no Git host call, and its branch
-is not merged. A branch name that comes back in a later run, with a merged pull request of an earlier commit, is not
-merged. `sweep` makes every Git host call before it removes anything. The first failed Git host call of a `sweep`,
-such as a missing tool or a tool with no login, prints `workflows: cannot ask the Git host whether <branch> is merged,
-so it counts as not merged: <error>` on stderr, and the branch is not merged: a run of the host is left out, and a
-given branch gets `dropped`. After it, the `sweep` asks no Git host again, so each later branch that Git does not find
-merged is not merged, with no other line.
+`git merge-tree --write-tree` has no conflict and gives the tree of the base (see [Git host](#git-host)). `sweep` makes
+every Git host call before it removes anything. The first failed Git host call of a `sweep`, such as a missing tool or a tool with no
+login, prints `workflows: cannot ask the Git host whether <branch> is merged, so only Git checks it: <error>` on stderr,
+and Git alone checks the branch: a branch that Git does not find merged is left out of a sweep of the host, and a given
+branch gets `dropped`. After it, the `sweep` asks no Git host again, so Git alone checks each later branch, with no
+other line.
 
 With `--yes`, `sweep` removes each worktree in order, and prints its line after the removal. It runs
 `git worktree remove <worktree>` in the run's repository, without `--force`, and deletes the branch with
@@ -1892,8 +1909,16 @@ and goes on with the next run; `sweep` then exits 1. A failed worktree removal d
 as the worktree can get more work; a failed branch removal keeps the marker. The run directory and the run's records
 stay, so `list` and `show` still show the run, and their JSON gives the word as `swept` (see [List](#list)).
 
-`sweep` sends no request to the host, and closes no item: a merged pull request does not close the item of its run.
-`land` reports the commit of a run that it lands (see [Land](#land)).
+With `--yes`, before it removes a `landed` branch, `sweep` reports the commit of its merge for each root run of the
+branch with the request `{ type: "report", key: "<key>", refs: ["commit:<commit>"], caller: "workflows:<run-id>" }`,
+where `<key>` is the start key of the first task of the run, as `land` does (see [Land](#land)). The commit is the first
+that the merge test finds: the merge commit of the merged pull request, else the tip of the branch when `origin/main`
+or `main` has it, else the commit of the first of these bases that already has its changes. A child run, a `dropped`
+branch, a given branch that is not merged, and a branch with a marker send no report. The first report connects to the
+host of the current directory, and starts it when none runs. A failed report, such as an entry that throws on the labels
+of the run, is a failed removal: `sweep` prints `workflows: cannot sweep <subject>: <error>`, removes nothing of the
+branch and exits 1, so a later sweep reports again. The host keeps each reference of a task once, and runs the handlers
+of its entries on each report.
 
 `sweep` also prints one line `<run-id> unstarted <run directory>` for each run directory of the host whose run has
 no task (the `unstarted` runs of `list`) and whose `project` file is more than 1 hour old, after the merged runs. With

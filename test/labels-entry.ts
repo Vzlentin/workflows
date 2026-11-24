@@ -1,6 +1,7 @@
 /**
  * An entry of the test hosts: it checks the label kind `item` and refuses `item:99`. It writes each report that it gets
  * as one JSON line `{ labels, refs }` to `reported.jsonl` next to harness's `entries.json`, and `reportedEvents` reads them.
+ * It fails each report of a worker with the label `item:98`, and writes no line for it.
  */
 import { appendFile, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -47,6 +48,7 @@ export default function labelsEntry() {
 			},
 		],
 		reported: async ({ labels, refs }: ReportedEvent) => {
+			if (labels.includes("item:98")) throw new Error("The fixture refuses the reports of item:98");
 			await appendFile(reportedPath(), `${JSON.stringify({ labels, refs })}\n`);
 		},
 		close: async () => {},

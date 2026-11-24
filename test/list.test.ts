@@ -1,10 +1,12 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { cp, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { LISTED } from "../src/cli/commands/list.ts";
+import { reportedEvents } from "./labels-entry.ts";
 import {
 	fake,
 	git,
@@ -15,9 +17,12 @@ import {
 	hostBranch,
 	hostOrigin,
 	hostPull,
+	LABELS_ENTRY,
 	repository,
 	sandbox,
+	setEntries,
 	workflows,
+	worktreeAt,
 } from "./support.ts";
 
 let root: string;
@@ -38,9 +43,12 @@ beforeEach(async () => {
 
 afterEach(() => rm(root, { recursive: true, force: true }));
 
-/** Runs `w` on the branch `branch` and gives its run ID. */
-async function endedRun(branch = "feat/x"): Promise<string> {
-	const run = await workflows(["w", "--branch", branch], { cwd: repo });
+/** Runs `w` on the branch `branch`, serving `serves` when given, and gives its run ID. */
+async function endedRun(branch = "feat/x", serves?: string): Promise<string> {
+	const run = await workflows(["w", "--branch", branch, ...(serves === undefined ? [] : ["--serves", serves])], {
+		cwd: repo,
+	});
+
 	expect(run.code).toBe(0);
 
 	return run.id ?? "";
@@ -244,5 +252,69 @@ describe("list --json and the change on the Git host", () => {
 		await rm(join(root, "gh.log"), { force: true });
 		const text = await workflows(["list"], { cwd: repo });
 		expect([text.code, text.stderr, await logOf("gh")]).toEqual([0, [], []]);
+	});
+});
+
+describe("list --json and the merged changes", () => {
+	beforeEach(() => setEntries({ labels: LABELS_ENTRY }));
+
+	/**
+	 * A run on feat/x that serves `serves`, whose branch origin's main merges by squash, and whose pull request 7 the Git
+	 * host gives as merged with that commit and the head `head`, or the tip of the branch: its ID, its worktree and
+	 * the squash commit.
+	 */
+	async function squashed(serves: string, head?: string) {
+		await hostOrigin(root, repo, "github");
+		const id = await endedRun("feat/x", serves);
+		const tip = git(repo, "rev-parse", "feat/x");
+		git(repo, "merge", "-q", "--squash", "feat/x");
+		git(repo, "commit", "-q", "-m", "work (#7)");
+		git(repo, "push", "-q", "origin", "main");
+		const commit = git(repo, "rev-parse", "main");
+		await hostBranch(root, "github", "feat/x", 7);
+		await hostPull(root, "github", 7, { state: "merged", branch: "feat/x", head: head ?? tip, mergeCommit: commit });
+
+		return { id, worktree: worktreeAt(repo, id), commit };
+	}
+
+	/** Whether the branch `branch` is in the repository. */
+	const hasBranch = (branch: string) => git(repo, "branch", "--list", branch) !== "";
+
+	it("sweeps a run whose pull request is merged by squash, and reports the merge commit", async () => {
+		const { id, worktree, commit } = await squashed("item:1");
+
+		const { code, rows, stderr } = await listed();
+		expect([code, stderr]).toEqual([0, []]);
+		const row = rows.find((found: { runId: string }) => found.runId === id);
+		expect([row.swept, row.change]).toEqual(["landed", undefined]);
+		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([false, false]);
+		expect(await reportedEvents()).toEqual([{ labels: ["item:1"], refs: [`commit:${commit}`] }]);
+	});
+
+	it("keeps a run whose branch has a commit after the merged head", async () => {
+		const { id, worktree } = await squashed("item:1");
+		await writeFile(join(worktree, "more.txt"), "more\n");
+		git(worktree, "add", "more.txt");
+		git(worktree, "commit", "-q", "-m", "more");
+
+		const { code, rows, stderr } = await listed();
+		expect([code, stderr]).toEqual([0, []]);
+		const row = rows.find((found: { runId: string }) => found.runId === id);
+		expect([row.swept, row.change?.state]).toEqual([undefined, "merged"]);
+		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([true, true]);
+		expect(await reportedEvents()).toEqual([]);
+	});
+
+	it("keeps a merged run with one warning when the host refuses the report", async () => {
+		const { id, worktree } = await squashed("item:98");
+
+		const { code, rows, stderr } = await listed();
+		expect([code, stderr]).toEqual([
+			0,
+			[expect.stringMatching(new RegExp(`^workflows: cannot sweep ${id}: .*item:98`))],
+		]);
+		const row = rows.find((found: { runId: string }) => found.runId === id);
+		expect([row.swept, row.change?.state]).toEqual([undefined, "merged"]);
+		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([true, true]);
 	});
 });
