@@ -270,9 +270,47 @@ export async function setEntries(entries: Readonly<Record<string, string>> = {})
 	await writeFile(entriesPath(), JSON.stringify({ workflows: ENTRY, ...entries }));
 }
 
+/** The file name of the answer of a fake Git host tool to `args`: the words joined by `_`, with `_` for each other character. */
+const answerKey = (args: readonly string[]) =>
+	args
+		.join(" ")
+		.replace(/[^A-Za-z0-9._-]/g, "_")
+		.slice(0, 200);
+
 /**
- * A fresh environment: home, state, configuration, Pi agent and Git configuration under a temporary directory, and a
- * fake `gh`, and a fake `hc` that logs its arguments to `hc.log` and lists no terminal. harness's entries list the workflows checkout, so the test hosts load its entry.
+ * The start of a fake Git host tool `tool` of the sandbox `root`: it logs its arguments to `<tool>.log`, and answers
+ * from `<root>/<tool>/<key>`, the stdout of an exit 0, or `<key>.fail`, the stderr of an exit 1. Keep the arguments
+ * ASCII, so the key of the shell is the key of `answerKey`.
+ */
+const hostTool = (root: string, tool: string) => `#!/bin/sh
+echo "$@" >> "${root}/${tool}.log"
+answer="${root}/${tool}/$(printf '%s' "$*" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_' | cut -c1-200)"
+[ -f "$answer" ] && { cat "$answer"; exit 0; }
+[ -f "$answer.fail" ] && { cat "$answer.fail" >&2; exit 1; }
+`;
+
+/**
+ * Makes the fake `tool` (`gh` or `glab`) of the sandbox `root` answer `args`: with `{ stdout }`, that stdout and exit 0,
+ * and with `{ fail }`, that stderr and exit 1.
+ */
+export async function hostAnswer(
+	root: string,
+	tool: "gh" | "glab",
+	args: readonly string[],
+	answer: { readonly stdout: string } | { readonly fail: string },
+): Promise<void> {
+	await mkdir(join(root, tool), { recursive: true });
+	const file = join(root, tool, answerKey(args));
+
+	if ("stdout" in answer) await writeFile(file, answer.stdout);
+	else await writeFile(`${file}.fail`, answer.fail);
+}
+
+/**
+ * A fresh environment: home, state, configuration, Pi agent and Git configuration under a temporary directory, a fake
+ * `gh` and a fake `glab` that answer as `hostAnswer` says, and a fake `hc` that logs its arguments to `hc.log` and
+ * lists no terminal. Without an answer, `gh repo clone` clones `<root>/github/<owner>/<repo>`, and each other command
+ * of the fakes exits 1. harness's entries list the workflows checkout, so the test hosts load its entry.
  */
 export async function sandbox(): Promise<string> {
 	// macOS limits a Unix socket path to 104 bytes, and the host's socket is in the state directory.
@@ -285,15 +323,15 @@ export async function sandbox(): Promise<string> {
 	await piSettings(root);
 	await writeFile(
 		join(bin, "gh"),
-		`#!/bin/sh
-echo "$@" >> "${root}/gh.log"
-[ "$1 $2" = "repo clone" ] || exit 1
+		`${hostTool(root, "gh")}[ "$1 $2" = "repo clone" ] || exit 1
 case "$3" in */*) source="$3" ;; *) source="octocat/$3" ;; esac
 [ -d "${root}/github/$source" ] || { echo "GraphQL: Could not resolve to a Repository" >&2; exit 1; }
 exec git clone -q "${root}/github/$source" "$4"
 `,
 	);
 	await chmod(join(bin, "gh"), 0o755);
+	await writeFile(join(bin, "glab"), `${hostTool(root, "glab")}exit 1\n`);
+	await chmod(join(bin, "glab"), 0o755);
 	await writeFile(
 		join(bin, "hc"),
 		`#!/bin/sh

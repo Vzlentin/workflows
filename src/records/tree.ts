@@ -222,6 +222,8 @@ function shownCall(node: CallNode, todos: ReadonlyMap<string, Todo[]>): Shown {
 			return { kind: record.kind, args: record.args, ...fields };
 		case "harness":
 			return { kind: record.kind, args: record.args, ...fields };
+		case "gitHost":
+			return { kind: record.kind, args: record.args, ...fields };
 		default:
 			return record satisfies never;
 	}
@@ -501,7 +503,8 @@ const ACTION = Type.Object({ action: Type.String() });
  * The label of each kind of call: the role name and conversation of a session, the role name of the session for an
  * ask, the command on one line for `sh` and `ok`, the workflow and child run ID for `run`, the question on one line
  * for `input`, the workflow for `pastRuns` (`any` for every workflow), the action with its text, or its ID and state,
- * on one line for `todo`, and the request type for `harness`, with its action when that is a string, on one line.
+ * on one line for `todo`, the request type for `harness`, with its action when that is a string, on one line, and
+ * the action with its branch or number for `gitHost`, on one line.
  * A kind without a label fails the type check.
  */
 export const LABELS: Labels = {
@@ -527,6 +530,7 @@ export const LABELS: Labels = {
 		return labelLine(args.action);
 	},
 	harness: ({ args }) => labelLine(Value.Check(ACTION, args) ? `${args.type} ${args.action}` : args.type),
+	gitHost: ({ args }) => labelLine(`${args.action} ${"branch" in args ? args.branch : args.number}`),
 };
 
 /** The label of the call of the kind `kind` with the record `record` among the records of its run, from `LABELS`. */

@@ -1165,6 +1165,7 @@ returns its session at once, and `phase`, `log` and `title` need no `await`.
 | `await run(name, args)` | Runs the script `name` of `scripts/` in the package or the project as a child run and returns its result. See [Child runs](#child-runs) |
 | `await pastRuns(workflow, { runs, limit })` | The completed root runs of `workflow`, or of every workflow for `null`, in the host store. See [Past runs](#past-runs) |
 | `await harness(request)` | Sends one request to the harness host of the run and returns its reply. See [Harness requests](#harness-requests) |
+| `await gitHost.create(branch, base, title, body)`, `gitHost.state(change)`, `gitHost.merge(number)`, `gitHost.issue(number)` | The pull requests and the issues of the Git host of the origin of `cwd`. See [Git host](#git-host) |
 | `await todo.add(text)` | Adds a todo with the state `open` and the next ID to the list of the run, and returns it, `{ id, text, state }`. See [Todos](#todos) |
 | `await todo.set(id, state, text)` | Sets the state of the todo `id` of the list of the run to `open`, `doing`, `done` or `dropped`, and its text when `text` is given, and returns the todo |
 | `await todo.list()` | The todos of the list of the run, in ID order |
@@ -1175,7 +1176,7 @@ returns its session at once, and `phase`, `log` and `title` need no `await`.
 
 A call with an argument of the wrong type, such as a prompt that is not a string, a `sh` command that is not a string
 or an array of strings, or a `prompts.<name>` input that is not a string, fails with
-`<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run`, `pastRuns`, `todo`, `harness`, `input` or `prompt`, and
+`<call> got bad arguments: <path> <problem>`, where `<call>` is `session`, `ask`, `sh`, `ok`, `run`, `pastRuns`, `todo`, `harness`, `gitHost`, `input` or `prompt`, and
 `<path>` points to the deepest wrong value in the arguments, such as `/0/1` for `sh(["git", 1])`.
 
 #### Past runs
@@ -1213,6 +1214,50 @@ The call adds `caller: workflows:<run-id>` to a request that has no `caller`. A 
 fails with `harness got bad arguments: <path> <problem>`. An error of the host fails the call with its message, and no
 host fails it with `no harness host runs for <host>`. The call is of the kind `harness`, with the request as its
 args, and saves the reply, so a resume returns it and does not send the request again.
+
+#### Git host
+
+`src/githost.ts` asks a Git host about pull requests (on GitLab, merge requests) and issues, and the `gitHost` calls
+of a script use it. It runs `gh` for GitHub and `glab` for GitLab.
+
+- The Git host of a repository comes from the URL of its `origin`, `git@<host>:<path>` or
+  `<scheme>://[<user>@]<host>[:<port>]/<path>`, with no `.git` at the end. `github.com` is GitHub and `gitlab.com` is
+  GitLab. Another host is GitHub when `gh auth token --hostname <host>` succeeds, else GitLab when
+  `glab config get token --host <host>` prints a token. A repository with no `origin`, with a local path or a
+  `file://` URL as its `origin`, or on another host has no Git host.
+- Each request checks the login of the tool once, with the same command, before its first command. A missing tool fails with
+  `<tool> is not installed, so workflows cannot reach <host>/<path>`, and a tool with no login fails with
+  `<tool> is not logged in to <host>, so workflows cannot reach <host>/<path>`. Each command of the tool fails after
+  60 s with `<tool> <words> took more than 60 s for <host>/<path>`. A command that exits with another code than 0
+  fails with `<tool> <first argument> failed: <output>`.
+- A pull request is `{ kind, number, url, check, changesRequested, state }`, with `mergeCommit` only when `state` is
+  `merged`. `kind` is `github` or `gitlab`, so that a reader can write `PR #6` or `MR !6`. `state` is `open`, `closed` or `merged`. `check` is `none`, `running`, `passed` or `failed`: on GitHub, a
+  failed check wins (a conclusion or a state of `FAILURE`, `ERROR`, `CANCELLED`, `TIMED_OUT`, `ACTION_REQUIRED` or
+  `STARTUP_FAILURE`), then a check that is not `SUCCESS`, `NEUTRAL` or `SKIPPED` runs; on GitLab, the status of the
+  head pipeline: `success` and `skipped` passed, `failed` and `canceled` failed, each other status runs, and no
+  pipeline is `none`. `changesRequested` is true on GitHub when a latest review of a reviewer is `CHANGES_REQUESTED`,
+  and on GitLab when `detailed_merge_status` is `requested_changes` or `discussions_not_resolved`; a comment is not a
+  change request. `mergeCommit` is the merge commit that GitHub reports, and on GitLab `merge_commit_sha`, else
+  `squash_commit_sha`, else `sha`.
+
+| Script call | Meaning |
+|---|---|
+| `gitHost.create(branch, base, title, body)` | Creates the pull request of `branch` into `base`, and returns it |
+| `gitHost.state(change)` | The pull request with the number `change`, or the newest pull request of the branch `change`, also closed or merged, or `null` when the branch has none |
+| `gitHost.merge(number)` | Merges the pull request now, and returns `null`. GitHub uses the first allowed of rebase, merge commit and squash; GitLab uses the merge method of the project and does not wait for the pipeline. `state` gives the merge commit |
+| `gitHost.issue(number)` | Whether `#<number>` is an open issue of the repository: `false` for a closed issue and for an issue that the host does not have |
+
+Each verb is a call of the kind `gitHost`, with the args `{ action: "create", branch, base, title, body }`,
+`{ action: "state", number }`, `{ action: "state", branch }`, `{ action: "merge", number }` or
+`{ action: "issue", number }`. A resume returns the saved result. A number that is not an integer from 1, or a branch,
+a base or a title that is empty, fails with `gitHost got bad arguments: <path> <problem>`. A repository whose origin
+has no Git host fails the call with `the origin of <cwd> is on no Git host that gh or glab knows`.
+
+The module also has three checks that use only Git, with no Git host tool. A branch has a conflict with its base when
+`git merge-tree --write-tree <base> <branch>` exits 1. A base already has a branch, also after a merge by squash or by
+rebase, when that command exits 0 and the tree that it prints is the tree of `<base>`. Another exit code, or an exit with no
+tree (a ref that Git cannot read), fails with `git merge-tree failed: <output>`. The push of a branch is
+`git push origin refs/heads/<branch>:refs/heads/<branch>`, and fails with `git push failed: <output>`.
 
 #### Todos
 
@@ -1374,8 +1419,9 @@ records its kind, the arguments of its kind, its phase and its start time when i
 call without `end` has not ended. The arguments of each kind are: `session` `{ "profile", "provider"?, "model"?,
 "thinking"?, "key"? }` (`key` is the first 16 hex characters of the sha256 of the key that the script gives, the prompt of an `agent` call), `ask` `{ "conversation", "prompt", "schema", "settle"? }` (`schema` is `null` without one), `sh`
 `{ "cmd", "check", "settle"? }`, `ok` `{ "cmd", "check" }`, `run` `{ "name", "args" }`, `input` `{ "question" }`, `pastRuns` `{ "workflow", "options" }`, and
-`todo` `{ "action": "add", "text" }`, `{ "action": "set", "id", "state", "text"? }` or `{ "action": "list" }`, and
-`harness` the request, as in [Harness requests](#harness-requests).
+`todo` `{ "action": "add", "text" }`, `{ "action": "set", "id", "state", "text"? }` or `{ "action": "list" }`,
+`harness` the request, as in [Harness requests](#harness-requests), and `gitHost` its action with its values, as in
+[Git host](#git-host).
 `CALL_RECORD` of `src/run/calls.ts` is the schema of a record, one member for each kind. It also records the task that
 started it, for a `session` call its conversation and the model of the session, `{ "provider", "model",
 "thinking"? }`, which a move of the session before a turn changes, for a `sh` call that failed with a nonzero exit code, with `settle` or not, `output`, `{ "code", "stdout", "stderr" }`, with the
@@ -1862,7 +1908,7 @@ run <run-id> <workflow> <state> <title>
 
 - The calls are in the order they started. Each call is under the phase line that was current when it started, and is
   indented by 2. A call before the first `phase` has no phase line above it. The kind is `session`, `ask`, `sh`, `ok`,
-  `run`, `input`, `pastRuns`, `todo` or `harness`. An `agent` call is a `session` call and an `ask` call.
+  `run`, `input`, `pastRuns`, `todo`, `harness` or `gitHost`. An `agent` call is a `session` call and an `ask` call.
 - Each call has a state. It is `done` or `failed` once it ended. A call that did not end is `cancelled` when the end of
   its script cancelled it, `waiting` when it is the open `input` call of a waiting run, `running` while the task that
   started it has not ended (it runs now, or the host stopped), and `cut` once that task ended. A call that an earlier
@@ -1875,7 +1921,9 @@ run <run-id> <workflow> <state> <title>
   `sh` and `ok`, it is the command on one line, cut at 80 characters. For `run`, it is the workflow name and the child
   run ID. For `input`, it is the question on one line, cut at 80 characters. For `pastRuns`, it is the workflow, or `any` for `null`. For `todo`, it is `add <text>`,
   `set <id> <state>` or `list`, on one line, cut at 80 characters. For `harness`, it is `tree`, `item read <id>`,
-  `item set <id> <state>`, or `item link <from> <kind> <to>` on one line, cut at 80 characters. The phase lines and calls of the child run
+  `item set <id> <state>`, or `item link <from> <kind> <to>` on one line, cut at 80 characters. For `gitHost`, it is
+  `create <branch>`, `state <number or branch>`, `merge <number>` or `issue <number>`, on one line, cut at 80
+  characters. The phase lines and calls of the child run
   are indented by 2 more under the `run` line.
 - The duration is the time of the call, such as `12s`, `3m05s` or `1h02m`. For `◉`, also for a working session, it is
   the time since the call started.

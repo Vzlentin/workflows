@@ -93,9 +93,9 @@ export default defineConfig({
 				["*", "!typebox", "!typebox/*", "!node:*", "!node:*/*"],
 				"tool.ts imports at runtime only typebox and node:* modules.",
 			),
-			// `git.ts` and `command.ts` are leaves that every group can import, so they import no group at runtime.
+			// `git.ts`, `githost.ts` and `command.ts` are leaves that every group can import, so they import no group at runtime.
 			banImports(
-				["src/git.ts", "src/command.ts"],
+				["src/git.ts", "src/githost.ts", "src/command.ts"],
 				CHAIN.map((name) => `**/${name}/**`),
 				"A top-level leaf imports no group of src/ at runtime.",
 			),

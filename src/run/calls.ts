@@ -19,6 +19,14 @@ import type { Ask } from "@vzlentin/harness/protocol";
 import { addTodo, readTodos, setTodo, type TodoOwner, TodoState } from "@vzlentin/harness/todo";
 import { type Static, type TLiteral, type TObject, type TProperties, type TUnion, Type } from "typebox";
 import { failure, type Result, run } from "../git.ts";
+import {
+	branchPullRequest,
+	createPullRequest,
+	gitHostOf,
+	isOpenIssue,
+	mergePullRequest,
+	pullRequestOf,
+} from "../githost.ts";
 import { readHost } from "../launch/input.ts";
 import { cutTail, JSON_VALUE, OUTPUT_BYTES } from "../tool.ts";
 import type { RunBundle } from "../workflow/bundle.ts";
@@ -110,6 +118,36 @@ export const PAST_RUNS_ARGS = Type.Object(
 	{ additionalProperties: false },
 );
 
+/** A positive integer: the number of a pull request or of an issue. */
+const NUMBER = Type.Integer({ minimum: 1 });
+
+/**
+ * The args of a `gitHost` call: its action, and the values of the action. `state` takes the number of a pull request
+ * or the name of a branch.
+ */
+export const GIT_HOST_ARGS = Type.Union([
+	Type.Object(
+		{
+			action: Type.Literal("create"),
+			branch: Type.String({ minLength: 1 }),
+			base: Type.String({ minLength: 1 }),
+			title: Type.String({ minLength: 1 }),
+			body: Type.String(),
+		},
+		{ additionalProperties: false },
+	),
+	Type.Object({ action: Type.Literal("state"), number: NUMBER }, { additionalProperties: false }),
+	Type.Object(
+		{ action: Type.Literal("state"), branch: Type.String({ minLength: 1 }) },
+		{ additionalProperties: false },
+	),
+	Type.Object({ action: Type.Literal("merge"), number: NUMBER }, { additionalProperties: false }),
+	Type.Object({ action: Type.Literal("issue"), number: NUMBER }, { additionalProperties: false }),
+]);
+
+/** The args of a `gitHost` call. */
+export type GitHostArgs = Readonly<Static<typeof GIT_HOST_ARGS>>;
+
 /** The args of a `todo` call: its action, and the values of the action. */
 export const TODO_ARGS = Type.Union([
 	Type.Object({ action: Type.Literal("add"), text: Type.String() }, { additionalProperties: false }),
@@ -169,6 +207,7 @@ const CALL_ARGS = {
 	pastRuns: PAST_RUNS_ARGS,
 	todo: TODO_ARGS,
 	harness: HARNESS_ARGS,
+	gitHost: GIT_HOST_ARGS,
 };
 
 /** The kinds of script calls. */
@@ -703,5 +742,34 @@ export function harnessCall(calls: Calls, args: HarnessArgs): Promise<JsonValue>
 		const host = await readHost(calls.script.runDir);
 
 		return runRequest(host, calls.script.runId, args, calls.context.abortSignal);
+	});
+}
+
+/**
+ * The `gitHost` call with `args` on the Git host of the repository `cwd`: the pull request that `create` makes, the
+ * pull request or null that `state` reads, null for `merge`, and whether the issue is open for `issue`. A resume
+ * replays the saved result. A repository whose origin is on no Git host that the module knows fails the call.
+ */
+export function gitHostCall(calls: Calls, cwd: string, args: GitHostArgs): Promise<JsonValue> {
+	return memoized(calls, callKey(calls, "gitHost", args), { kind: "gitHost", args }, async () => {
+		const signal = calls.context.abortSignal;
+		const host = await gitHostOf(cwd, signal);
+
+		if (host === null) throw new Error(`the origin of ${cwd} is on no Git host that gh or glab knows`);
+
+		switch (args.action) {
+			case "create":
+				return createPullRequest(host, args, signal);
+			case "state":
+				return "number" in args
+					? pullRequestOf(host, args.number, signal)
+					: branchPullRequest(host, args.branch, signal);
+			case "merge":
+				await mergePullRequest(host, args.number, signal);
+
+				return null;
+			case "issue":
+				return isOpenIssue(host, args.number, signal);
+		}
 	});
 }

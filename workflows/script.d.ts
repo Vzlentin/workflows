@@ -231,6 +231,35 @@ declare const todo: {
 declare function harness(request: { type: string; [k: string]: Json }): Promise<Json>;
 
 /**
+ * A pull request of the Git host (on GitLab, a merge request): the kind of the host, its number, its URL, its check,
+ * whether a review asks for changes, and its state. Only a merged pull request has `mergeCommit`, the commit that the
+ * Git host reports.
+ */
+type PullRequest = {
+	readonly kind: "github" | "gitlab";
+	readonly number: number;
+	readonly url: string;
+	readonly check: "none" | "running" | "passed" | "failed";
+	readonly changesRequested: boolean;
+} & ({ readonly state: "open" | "closed" } | { readonly state: "merged"; readonly mergeCommit: string });
+
+/**
+ * The Git host of the origin of `cwd`, through `gh` for GitHub and `glab` for GitLab. Each verb is a call that saves
+ * its result, so a resume does not do it again. A repository whose origin is on no known Git host, a missing tool and
+ * a tool that is not logged in throw.
+ */
+declare const gitHost: {
+	/** Creates the pull request of `branch` into `base`, and returns it. */
+	create(branch: string, base: string, title: string, body: string): Promise<PullRequest>;
+	/** The pull request with the number `change`, or the newest one of the branch `change`, or null when it has none. */
+	state(change: string | number): Promise<PullRequest | null>;
+	/** Merges the pull request `number` now, with the merge method of the repository. */
+	merge(number: number): Promise<null>;
+	/** Whether `#<number>` is an open issue of the repository. */
+	issue(number: number): Promise<boolean>;
+};
+
+/**
  * Runs the functions at once and returns their results. A resume can start their calls in another order: give each
  * `session` of a function a different `key`.
  */

@@ -21,6 +21,8 @@ import {
 	type Calls,
 	callKey,
 	digest,
+	GIT_HOST_ARGS,
+	gitHostCall,
 	harnessCall,
 	inputCall,
 	JSON_OBJECT,
@@ -96,6 +98,13 @@ const input = (question) => {
 };
 const pastRuns = (workflow, options) => __pastRuns(workflow, options ?? {});
 const harness = (request) => __harness(request);
+const gitHost = Object.freeze({
+	create: (branch, base, title, body) => __gitHost({ action: "create", branch, base, title, body }),
+	state: (change) =>
+		__gitHost(typeof change === "string" ? { action: "state", branch: change } : { action: "state", number: change }),
+	merge: (number) => __gitHost({ action: "merge", number }),
+	issue: (number) => __gitHost({ action: "issue", number }),
+});
 const todo = Object.freeze({
 	add: (text) => __todoAdd(text),
 	set: (id, state, text) => __todoSet(id, state, text ?? null),
@@ -255,6 +264,7 @@ export async function runScript(
 			),
 			global("__todoList", Type.Tuple([]), () => todoCall(calls, { action: "list" }), "todo"),
 			global("__harness", Type.Tuple([HARNESS_ARGS]), ([args]) => harnessCall(calls, args), "harness"),
+			global("__gitHost", Type.Tuple([GIT_HOST_ARGS]), ([args]) => gitHostCall(calls, cwd, args), "gitHost"),
 			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
 			global("log", LINE_ARGS, ([line]) => progress.lines.push({ kind: "log", text: String(line), at: Date.now() })),
 			global("title", LINE_ARGS, ([text]) => progress.lines.push({ kind: "title", text: String(text) })),
