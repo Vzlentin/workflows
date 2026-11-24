@@ -136,29 +136,15 @@ async function pullBranch(number, end) {
 }
 
 /**
- * The ref of the branch `base` that a change starts from: `refs/remotes/origin/<base>` when it is a commit, else
- * `base`. It does not fetch, so a stale `origin/<base>` stays as it is.
- */
-async function baseRef(base) {
-	const remote = `refs/remotes/origin/${base}`;
-
-	return (await ok(["git", "rev-parse", "--verify", "--quiet", `${remote}^{commit}`])) ? remote : base;
-}
-
-/**
  * Where `target` points, as `changeOf` reads it: `{ from, end, start, intent }`. `from` names the start in messages,
  * `end` is the ref that the change ends on, `start` the commit that it starts from, and `intent` the PR of a PR number.
  * Fetches the head of a PR, and moves its branch there with `pullBranch`. A plain value that is a local branch other
- * than `base` reads as that branch, wherever it is checked out: from its merge base with `base` to the branch. For no
- * value, a PR number and a local branch, the merge base is with `origin/<base>` when that ref exists, as `baseRef`
- * says; for a PR number, `<base>` is the base branch of the PR.
+ * than `base` reads as that branch, wherever it is checked out: from its merge base with `base` to the branch.
  */
 async function targetOf(target, base) {
 	const mergeBase = (a, b) => sh(["git", "merge-base", a, b]);
 
-	if (target === undefined || target === "") {
-		return { from: base, end: "HEAD", start: await mergeBase(await baseRef(base), "HEAD") };
-	}
+	if (target === undefined || target === "") return { from: base, end: "HEAD", start: await mergeBase(base, "HEAD") };
 
 	if (/^\d+$/.test(target)) {
 		const pr = await prOf(target, "number,title,body,headRefName,baseRefName,isCrossRepository");
@@ -166,14 +152,15 @@ async function targetOf(target, base) {
 
 		await pullBranch(pr.number, end);
 		const from = pr.baseRefName;
+		const start = await mergeBase((await isBranch(from)) ? from : `origin/${from}`, end);
 
-		return { from, end, start: await mergeBase(await baseRef(from), end), intent: prIntent(pr) };
+		return { from, end, start, intent: prIntent(pr) };
 	}
 
 	const range = /^(.*?)\.\.\.?(.*)$/.exec(target);
 
 	if (range === null && target !== base && (await isBranch(target)))
-		return { from: base, end: target, start: await mergeBase(await baseRef(base), target) };
+		return { from: base, end: target, start: await mergeBase(base, target) };
 	const from = range === null ? target : range[1] || "HEAD";
 	const end = range === null ? "HEAD" : range[2] || "HEAD";
 
@@ -186,8 +173,7 @@ async function targetOf(target, base) {
  * points at, from the current directory, and the run gets the subject of its intent as its title. `args.change` is
  * nothing (the current branch from its merge base with `args.base`, default `main`), a PR number, a range `A..B` or
  * `A...B` (from the merge base of `A` and `B` to `B`), a local branch other than `args.base` (from its merge base with
- * `args.base` to the branch), or a ref (from its merge base with `HEAD` to `HEAD`). For nothing and a local branch,
- * the merge base is with `origin/<args.base>` when that ref exists, with no fetch. The intent is `args.item`, else
+ * `args.base` to the branch), or a ref (from its merge base with `HEAD` to `HEAD`). The intent is `args.item`, else
  * the PR, else the commit messages of the change. A change on the current branch runs here. `checkout` is the branch
  * of a change that ends on a branch other than the current one, for a run in the worktree that has it, else in a
  * worktree of its own. `dirty` says that the current checkout has changes that are not committed; with `wip`, a change

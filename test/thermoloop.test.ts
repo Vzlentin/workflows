@@ -556,39 +556,6 @@ echo '{"number":74,"title":"Fix the README typo","body":"It says wrold.","headRe
 		expect(git(repo, "status", "--porcelain")).toBe("");
 	});
 
-	it("starts a pull request at its merge base with origin/<base>, also when the local base is behind", async () => {
-		const bare = join(root, "origin.git");
-		git(root, "clone", "-q", "--bare", repo, bare);
-		git(repo, "remote", "add", "origin", bare);
-		const other = join(root, "other");
-		git(root, "clone", "-q", bare, other);
-		git(other, "checkout", "-qB", "main", "origin/main");
-		await writeFile(join(other, "NEWS.md"), "news\n");
-		git(other, "add", "NEWS.md");
-		git(other, "commit", "-qm", "add the news");
-		git(other, "push", "-q", "origin", "main");
-		git(other, "checkout", "-qb", "fix-news");
-		await writeFile(join(other, "NEWS.md"), "more news\n");
-		git(other, "commit", "-qam", "fix the news");
-		git(other, "push", "-q", "origin", "fix-news:refs/pull/75/head");
-		git(repo, "checkout", "-q", "main");
-		git(repo, "fetch", "-q", "origin");
-		await fake(
-			root,
-			"gh",
-			`echo '{"number":75,"title":"Fix the README typo","body":"It says news.","headRefName":"fix-news","baseRefName":"main","isCrossRepository":false}'`,
-		);
-
-		const run = await workflows(["thermoloop", "--json", "75"], { cwd: repo, script: { verdicts: ["SHIP"] } });
-
-		expect(run.code).toBe(0);
-		// From the local main, the patch would add NEWS.md, a file of origin/main, in place of the change of its line.
-		const patch = /^## change\n(.+)$/m.exec(run.model.find("review")?.prompt ?? "")?.[1] ?? "";
-		const diff = await readFile(patch, "utf8");
-		expect(diff).toContain("-news\n+more news\n");
-		expect(diff).not.toContain("new file mode");
-	});
-
 	it("moves the branch of a pull request to its fetched head when it is behind, and fails when it diverged", async () => {
 		const origin = join(root, "origin.git");
 		git(root, "clone", "-q", "--bare", repo, origin);

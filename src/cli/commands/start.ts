@@ -39,10 +39,7 @@ export async function start(
 	let sent = false;
 
 	try {
-		const prepared = await prepare(parsed, { id, directory, cwd: terminal.cwd }, (line) =>
-			terminal.stderr(`workflows: ${line}`),
-		);
-
+		const prepared = await prepare(parsed, { id, directory, cwd: terminal.cwd });
 		// The `workflow` tool of a conversation of the host drives the run, so the run's sessions go under it.
 		// A run started in the background posts its outcome to its driver when it ends.
 		input = drivenInput(prepared, driver, background);

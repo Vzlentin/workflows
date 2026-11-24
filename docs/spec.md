@@ -72,16 +72,9 @@ edits from the saved runs instead. As a child run, it also takes `overlay`, and 
 
 Without `--repo`, the run uses the Git repository that contains the current directory. With `--repo`, the value is
 first a path, relative to the current directory. If that path is the top level of a local Git repository, the run
-uses it. Otherwise `gh repo clone <value>` clones the repository into the run directory, and the run starts from the
-cloned `origin/<base>`. A bare name such as `calibre` clones from the authenticated user, and `owner/calibre` names the
-owner.
-
-In the repository of the current directory or a local `--repo`, the run first runs `git fetch --quiet origin`, and
-starts from `origin/<base>`. It starts from the local `--base` commit when the repository has no `origin`, or when
-`origin` has no branch `<base>`, such as when `--base` is a commit. When the fetch fails, the run starts from the local
-`--base` commit and warns with one line: `cannot fetch origin, so workflows uses the local <base>: <first line of the
-Git error>`. A run started by the command prints it on stderr after `workflows: `, and a child run adds it to the
-progress of its caller as a log line.
+uses it and its local `--base` commit. Otherwise `gh repo clone <value>` clones the repository into the run
+directory, and the run starts from the cloned `origin/<base>`. A bare name such as `calibre` clones from the
+authenticated user, and `owner/calibre` names the owner.
 
 The command prints `run <run-id>`, then the progress steps of its child runs on stderr as each one starts: `research`,
 `plan` and `implement` of the [rpi](#rpi) child run, `round <n>/<rounds>: review` and `round <n>/<rounds>: implement`
@@ -299,9 +292,7 @@ workflows thermoloop --repo ../calibre --item item.md
 answers SHIP. It commits its fixes on the branch of the change and does not push. `--base` defaults to `main` and
 `--rounds` to 3. As a child run, it also takes `overlay`, and gives it to its child runs: see [Child runs](#child-runs). The one optional argument says what the change is:
 
-- Nothing: the current branch, from the merge base of `--base` and `HEAD` to `HEAD`. When the ref
-  `refs/remotes/origin/<base>` exists, the merge base is with it in place of the local `--base`. The run does not
-  fetch it, so a stale `origin/<base>` stays as it is.
+- Nothing: the current branch, from the merge base of `--base` and `HEAD` to `HEAD`.
 - A number: the pull request with that number. The run reads it with `gh pr view <n> --json
   number,title,body,headRefName,baseRefName,isCrossRepository`, and fails when `gh` fails. Its branch is
   `headRefName`, or `pr/<n>` for a pull request from a fork. The run always fetches the head of the pull request with `git fetch
@@ -309,13 +300,12 @@ answers SHIP. It commits its fixes on the branch of the change and does not push
   or behind the head, and uses a branch that is at the head or ahead of it as it is. It fails with `<branch> has
   diverged from PR #<n>; rebase it or delete it` when the branch and the head have diverged, and with `<branch> is behind
   PR #<n> and checked out at <path>; update it there` when a worktree has the branch that is behind. The change starts at
-  the merge base of the branch with `origin/<base branch>` when that ref exists, else with the local base branch, as
-  for no argument: the run does not fetch the base. `<base branch>` is the base branch of the pull request; `--base` is
-  not used.
+  the merge base of the branch with `baseRefName`, or with `origin/<baseRefName>` when there is no local branch of
+  that name; `--base` is not used.
 - A range `A..B` or `A...B`: from the merge base of `A` and `B` to `B`.
 - A local branch other than `--base`, such as `change.branch` of a result: from the merge base of `--base` and the
-  branch to the branch, with `origin/<base>` in place of `--base` as for no argument. It may be the current branch, a
-  branch that another worktree has checked out, or a branch that no worktree has.
+  branch to the branch. It may be the current branch, a branch that another worktree has checked out, or a branch that
+  no worktree has.
 - Any other value is a ref: from the merge base of the ref and `HEAD` to `HEAD`, such as `HEAD~1` for the last commit.
 
 The work item, which says what the change should do, is the option `--item`, as a `.md` file, inline text, or stdin
