@@ -40,6 +40,7 @@ import {
 	hostModel,
 	inputsOf,
 	overlayOf,
+	progressOf,
 	repository,
 	rootTasks,
 	runsOf,
@@ -2058,6 +2059,35 @@ return "done"`,
 		expect(await rootTasks(id)).toEqual([
 			{ status: "terminal", outcome: "failed" },
 			{ status: "terminal", outcome: "completed" },
+		]);
+	});
+
+	it("starts from the local base and warns once when the fetch of origin fails", async () => {
+		const repo = await worktreeScript('return "done"');
+		git(repo, "remote", "add", "origin", join(root, "missing.git"));
+
+		const run = await workflows(["w"], { cwd: repo });
+		expect(run.code).toBe(0);
+		expect(git(worktreeAt(repo, run.id), "rev-parse", "HEAD")).toBe(git(repo, "rev-parse", "main"));
+		const warnings = run.stderr.filter((line) => line.includes("cannot fetch origin"));
+		expect(warnings).toEqual([
+			expect.stringMatching(/^workflows: cannot fetch origin, so the run starts from the local main: \S/),
+		]);
+	});
+
+	it("logs the warning of a failed fetch of origin of a child run in the progress of its caller", async () => {
+		const repo = await worktreeScript('return "done"');
+		git(repo, "remote", "add", "origin", join(root, "missing.git"));
+		await writeFile(
+			join(repo, ".workflows", "scripts", "parent.js"),
+			`return await run("w", { repo: ${JSON.stringify(repo)} })`,
+		);
+
+		const run = await workflows(["parent", "--json"], { cwd: repo });
+		expect(run.code).toBe(0);
+		const warnings = progressOf(run.stderr).filter((line) => line.includes("cannot fetch origin"));
+		expect(warnings).toEqual([
+			expect.stringMatching(/^ *cannot fetch origin, so the run starts from the local main: \S/),
 		]);
 	});
 

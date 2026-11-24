@@ -10,6 +10,7 @@ import { childInput, newRunId, type ScriptInput, withDriver } from "../launch/in
 import { mergeRoles, type Roles } from "../workflow/roles.ts";
 import { CallDoc, type CallRecord, type Calls, callOfKind, type Child, type ScriptRun } from "./calls.ts";
 import { endedStatus, hasResult, runStatus, savedBundle, scanRuns } from "./past.ts";
+import { addProgress } from "./progress.ts";
 import { current, type Runtime, TASK } from "./version.ts";
 
 /** The record of a `run` call. */
@@ -57,7 +58,8 @@ async function bundleFrom(
  * whose calls run in `cwd`. The record of the call saves the child's run ID before its run directory exists, so a
  * rerun after a crash reuses the ID and its directory. The commit that creates the task also saves it in the record
  * of the call. With `from`, the child gets the prompts and agents table of that saved root run in place of the
- * caller's, with the caller's run layer above that table.
+ * caller's, with the caller's run layer above that table. The same commit adds a log line of the caller for each
+ * warning of the child's input, such as a fetch of `origin` that fails.
  */
 async function startChild(
 	runtime: Runtime,
@@ -78,8 +80,17 @@ async function startChild(
 	try {
 		const run = { id, directory, cwd, root: script.root };
 		const { agents, labels, overlay, driver, definition } = script;
-		const input = await childInput({ name, args, bundle, agents, labels, overlay, driver }, run);
+		const warnings: string[] = [];
+
+		const input = await childInput({ name, args, bundle, agents, labels, overlay, driver }, run, (line) =>
+			warnings.push(line),
+		);
+
 		await runtime.commit(async (tx) => {
+			const parent = script.parent;
+			const at = Date.now();
+			const events = warnings.map((text) => ({ kind: "log" as const, run: script.runId, parent, text, at }));
+			await addProgress(tx, script.root, events);
 			const task = await tx.createTask(definition, input, { ownership: { kind: "task", taskId: runtime.taskId } });
 			callOfKind(await tx.doc(CallDoc, key, null), "run", key).child = { task, runId: id };
 

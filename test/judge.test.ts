@@ -43,6 +43,32 @@ describe("workflows judge", () => {
 		);
 	});
 
+	it("judges the branch from its merge base with origin/main when the local main is behind", async () => {
+		git(repo, "checkout", "-q", "main");
+		git(repo, "branch", "-q", "-D", "feature");
+		const origin = join(root, "origin.git");
+		git(root, "clone", "-q", "--bare", repo, origin);
+		git(repo, "remote", "add", "origin", origin);
+		const other = join(root, "other");
+		git(root, "clone", "-q", origin, other);
+		await writeFile(join(other, "CHANGES.md"), "pushed\n");
+		git(other, "add", "CHANGES.md");
+		git(other, "commit", "-qm", "pushed");
+		git(other, "push", "-q", "origin", "main");
+		const pushed = git(other, "rev-parse", "HEAD");
+		git(repo, "fetch", "-q", "origin");
+		git(repo, "checkout", "-qb", "feature", "origin/main");
+		await writeFile(join(repo, "README.md"), "# Demo\n\nHello world\n");
+		git(repo, "commit", "-qam", "fix the typo");
+
+		const run = await workflows(["judge", "--json", "--item", ITEM], { cwd: repo, script: { judge: PASSING_JUDGE } });
+
+		expect(run.code).toBe(0);
+		expect(git(repo, "rev-parse", "main")).toBe(start);
+		const head = git(repo, "rev-parse", "HEAD");
+		expect(run.model.find("judge")?.prompt).toMatch(new RegExp(`## base\\n${pushed}\\n\\n## head\\n${head}$`));
+	});
+
 	it("says that it does not judge the changes that are not committed, and commits nothing", async () => {
 		await writeFile(join(repo, "README.md"), "local edit\n");
 		const head = git(repo, "rev-parse", "HEAD");

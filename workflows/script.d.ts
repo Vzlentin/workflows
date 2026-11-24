@@ -405,7 +405,8 @@ declare function checkoutChange(): Promise<Change | undefined>;
  * with `args.base`, default `main`), a PR number (from the merge base with its base branch, fetched as
  * `pull/<n>/head`, with its branch moved to that head when the branch is missing or behind), a range `A..B` or `A...B` (from the merge base of `A` and `B` to `B`),
  * a local branch other than `args.base`, checked out here, in another worktree or nowhere (from its merge base with
- * `args.base` to the branch), or a ref (from its merge base with `HEAD` to `HEAD`). `start` is a commit, and
+ * `args.base` to the branch), or a ref (from its merge base with `HEAD` to `HEAD`). For nothing and a local branch,
+ * the merge base is with `origin/<args.base>` when that ref exists, with no fetch. `start` is a commit, and
  * `intent` is `args.item`, else `# <title>` and the body of the PR, else the commit messages of the change. `checkout`
  * is the branch of a change that ends on a branch other than the current one. `dirty` says that the current checkout
  * has changes that are not committed; with `wip`, a change that ends here commits them first as `wip`. Throws

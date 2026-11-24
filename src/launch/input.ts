@@ -238,11 +238,13 @@ export async function parse([word = "", ...argv]: readonly string[], io: Io): Pr
 /**
  * The input saved before execution starts. With `meta.worktree`, it selects the repository of the new worktree. With
  * `meta.repo` and `repo`, the run's directory is the top level of the local repository `repo`, resolved from
- * `run.cwd`; any other `repo` throws `UsageError` with the usage of the script.
+ * `run.cwd`; any other `repo` throws `UsageError` with the usage of the script. `warn` gets the line of a fetch of
+ * `origin` that fails.
  */
 export async function prepare(
 	{ repo, base, branch, ...args }: Args,
 	run: Run & { readonly root?: string },
+	warn: (line: string) => void,
 ): Promise<ScriptInput> {
 	const own = { ...args, runId: run.id, root: run.root ?? run.id, runDir: run.directory, cwd: run.cwd };
 
@@ -265,7 +267,7 @@ export async function prepare(
 
 		case "worktree": {
 			const clone = join(run.directory, "repository");
-			const worktree = await prepareWorktree(args.name, { repo, base, branch }, run.id, run.cwd, clone);
+			const worktree = await prepareWorktree(args.name, { repo, base, branch }, run.id, run.cwd, clone, warn);
 
 			return { ...own, worktree };
 		}
@@ -281,7 +283,8 @@ export async function prepare(
  * directory, and then needs `start` as a string. `runArgs` checks the declared args against `meta` before any worktree
  * exists. With `meta.worktree`, `checkArgs` first checks `repo`, `base`, `branch` and `start` as optional strings, with
  * the same wording. `prompts` and `overlay` edit the bundle as `editBundle` says. The child keeps `agents`, the caller's
- * run layer, `labels`, the caller's labels, and `driver`, the driver of the caller's current task.
+ * run layer, `labels`, the caller's labels, and `driver`, the driver of the caller's current task. `warn` is as in
+ * `prepare`.
  */
 export async function childInput(
 	request: {
@@ -294,6 +297,7 @@ export async function childInput(
 		readonly driver: string | undefined;
 	},
 	run: Run & { readonly root: string },
+	warn: (line: string) => void,
 ): Promise<ScriptInput> {
 	const { name, bundle, agents, labels, driver } = request;
 	const source = Object.hasOwn(bundle.scripts, name) ? bundle.scripts[name] : undefined;
@@ -348,5 +352,5 @@ export async function childInput(
 
 	if (repo === undefined) return { ...input, ...here };
 
-	return prepare({ ...input, repo, base, branch }, run);
+	return prepare({ ...input, repo, base, branch }, run, warn);
 }

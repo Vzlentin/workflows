@@ -1,6 +1,6 @@
 /**
- * The repository and worktree of a run: repository selection, the run's worktree, the name of its branch, and the main
- * checkout of its repository.
+ * The repository and worktree of a run: repository selection with the fetch of its `origin`, the run's worktree, the
+ * name of its branch, and the main checkout of its repository.
  */
 import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -40,13 +40,14 @@ export type Repository = { readonly path: string; readonly start: string };
 /**
  * The repository a ship runs on and its base commit. Without `repo`, the repository containing `cwd`. With `repo`,
  * the local repository at that path, resolved from `cwd`; otherwise `gh repo clone <repo>` into `clone`, based on the
- * cloned `origin/<base>`.
+ * cloned `origin/<base>`. A local repository starts from the ref that `startRef` gives.
  */
 export async function selectRepository(
 	cwd: string,
 	repo: string | undefined,
 	base: string,
 	clone: string,
+	warn: (line: string) => void,
 ): Promise<Repository> {
 	if (repo === undefined) {
 		const top = await run("git", ["rev-parse", "--show-toplevel"], cwd);
@@ -54,12 +55,12 @@ export async function selectRepository(
 		if (top.code !== 0) throw new Error(`${cwd} is not in a Git repository`);
 		const path = top.stdout.trim();
 
-		return { path, start: await commitOf(path, base) };
+		return { path, start: await commitOf(path, await startRef(path, base, warn)) };
 	}
 
 	const local = await repositoryAt(resolve(cwd, repo));
 
-	if (local !== undefined) return { path: local, start: await commitOf(local, base) };
+	if (local !== undefined) return { path: local, start: await commitOf(local, await startRef(local, base, warn)) };
 	const cloned = await run("gh", ["repo", "clone", repo, clone], cwd);
 
 	if (cloned.code !== 0) throw new Error(`gh repo clone ${repo} failed: ${cloned.stdout}${cloned.stderr}`.trim());
@@ -77,9 +78,30 @@ async function commitOf(repository: string, ref: string): Promise<string> {
 }
 
 /**
+ * The ref that a run in the local `repository` starts from: after `git fetch origin`, `refs/remotes/origin/<base>`. It
+ * is the local `base` when the repository has no `origin`, when the fetch fails, which `warn` gets as one line, or when
+ * `origin` has no branch `base`, such as when `base` is a commit.
+ */
+async function startRef(repository: string, base: string, warn: (line: string) => void): Promise<string> {
+	if (!(await gitSucceeds(repository, "remote", "get-url", "origin"))) return base;
+	const fetched = await run("git", ["fetch", "--quiet", "origin"], repository);
+
+	if (fetched.code !== 0) {
+		const reason = `${fetched.stderr}${fetched.stdout}`.split("\n").find((line) => line.trim() !== "");
+		warn(`cannot fetch origin, so the run starts from the local ${base}: ${reason?.trim() ?? `exit ${fetched.code}`}`);
+
+		return base;
+	}
+
+	const remote = `refs/remotes/origin/${base}`;
+
+	return (await gitSucceeds(repository, "rev-parse", "--verify", "--quiet", `${remote}^{commit}`)) ? remote : base;
+}
+
+/**
  * The selected repository and its start commit, and the worktree path of the run `id` on the new branch `args.branch`,
  * or `<scriptName>/<id>`, the default branch, which the worktree `renames`. The worktree is
- * `.worktrees/<repository name>/<id>` next to the repository. `cwd` and `clone` are as in `selectRepository`.
+ * `.worktrees/<repository name>/<id>` next to the repository. `cwd`, `clone` and `warn` are as in `selectRepository`.
  */
 export async function prepareWorktree(
 	scriptName: string,
@@ -87,8 +109,9 @@ export async function prepareWorktree(
 	id: string,
 	cwd: string,
 	clone: string,
+	warn: (line: string) => void,
 ): Promise<Worktree> {
-	const repository = await selectRepository(cwd, args.repo, args.base, clone);
+	const repository = await selectRepository(cwd, args.repo, args.base, clone, warn);
 	const branch = args.branch ?? `${scriptName}/${id}`;
 
 	if (!(await gitSucceeds(repository.path, "check-ref-format", "--branch", branch))) {

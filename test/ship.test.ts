@@ -627,6 +627,30 @@ export default function ({ events }) {
 		expect(resumed.model.calls.map((call) => call.kind)).toEqual(["judge", "harvest"]);
 	});
 
+	it("fetches origin and starts from origin/main when the local main is behind", async () => {
+		const origin = join(root, "origin.git");
+		git(root, "clone", "-q", "--bare", repo, origin);
+		git(repo, "remote", "add", "origin", origin);
+		git(repo, "fetch", "-q", "origin");
+		const other = join(root, "other");
+		git(root, "clone", "-q", origin, other);
+		await writeFile(join(other, "CHANGES.md"), "pushed\n");
+		git(other, "add", "CHANGES.md");
+		git(other, "commit", "-qm", "pushed");
+		git(other, "push", "-q", "origin", "main");
+		const pushed = git(other, "rev-parse", "HEAD");
+
+		const run = await workflows(["ship", "Fix the README typo"], {
+			cwd: repo,
+			script: { edits: [FIXED], judge: PASSING_JUDGE },
+		});
+
+		expect(run.code).toBe(0);
+		expect(git(repo, "rev-parse", "main")).toBe(start);
+		expect(git(worktreeOf(run.id), "rev-parse", "HEAD^")).toBe(pushed);
+		expect(run.model.find("judge")?.prompt).toMatch(new RegExp(`## base\\n${pushed}\\n`));
+	});
+
 	it("clones a GitHub repository through gh", async () => {
 		const remote = join(root, "github", "octocat", "calibre");
 		await repository(remote);
