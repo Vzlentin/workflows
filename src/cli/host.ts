@@ -45,9 +45,17 @@ export async function connectTo(terminal: Terminal, host: string, start: boolean
 
 /** The folder of the run directories. */
 export function runsDirectory(): string {
-	const state = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+	return join(stateDirectory(), "runs");
+}
 
-	return join(state, "workflows", "runs");
+/** The folder of the kept state of the changes of each repository, which `list --json` reads. */
+export function changesDirectory(): string {
+	return join(stateDirectory(), "changes");
+}
+
+/** The state folder of workflows. */
+function stateDirectory(): string {
+	return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "workflows");
 }
 
 /** An error after which the host has no task of the request, or none that runs. */

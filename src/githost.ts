@@ -2,8 +2,8 @@
  * The Git host of a repository, from the URL of its `origin`: its pull requests (on GitLab, merge requests), its CI
  * runs, its issues and the references to them in a text, through a GitHub back end (`gh`) and a GitLab back end
  * (`glab`), and the clone of a GitHub repository. It is the only module that runs `gh` or `glab`. The `gitHost` calls
- * of a script, `sweep` and `pr` use it. Next to it, the checks that need only Git: a conflict of a branch with its
- * base, a branch that its base already has, and the push of a branch.
+ * of a script, `sweep`, `pr` and `list --json` use it. Next to it, the checks that need only Git: a conflict of a branch
+ * with its base, a branch that its base already has, and the push of a branch.
  */
 import { setTimeout as sleep } from "node:timers/promises";
 import { type Static, type TSchema, Type } from "typebox";

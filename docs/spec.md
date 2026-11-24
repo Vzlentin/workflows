@@ -1232,10 +1232,10 @@ args, and saves the reply, so a resume returns it and does not send the request 
 #### Git host
 
 `src/githost.ts` asks a Git host about pull requests (on GitLab, merge requests), CI runs and issues, and clones a
-GitHub repository. The `gitHost` calls of a script, `sweep`, `pr` and the clone of `--repo` use it. It runs `gh` for
-GitHub and `glab` for GitLab, and it is the only code of the package that runs them: a test fails when another `.ts` or
-`.js` file of `src/`, `workflows/` or `pi/` names `gh` or `glab` as a string, or a command such as `gh pr` or `glab
-api`.
+GitHub repository. The `gitHost` calls of a script, `sweep`, `pr`, `list --json` and the clone of `--repo` use it.
+It runs `gh` for GitHub and `glab` for GitLab, and it is the only code of the package that runs them: a test fails
+when another `.ts` or `.js` file of `src/`, `workflows/` or `pi/` names `gh` or `glab` as a string, or a command such
+as `gh pr` or `glab api`.
 
 - The Git host of a repository comes from the URL of its `origin`, `git@<host>:<path>` or
   `<scheme>://[<user>@]<host>[:<port>]/<path>`, with no `.git` at the end. `github.com` is GitHub and `gitlab.com` is
@@ -1748,6 +1748,9 @@ line of JSON in place of the report lines, for every outcome. Its `state` is the
 - `{ "runId", "state": "running", "follow": "host-stopped" }`: the host stopped while the command followed the run,
   which stays pending.
 
+`list --json` gives a run with the same run fields, and with the state of its change on the Git host: see
+[List](#list).
+
 `OUTCOME` in `src/tool.ts` is the schema of this line, and each of its objects has only these fields. The JSON line
 replaces the `failed`, `orphaned`, `continue with`, `detached`, `aborted` and `host stopped` lines on stderr, so each
 stderr line is a `{"progress":[...]}` line of the run, see [Progress](#progress), or a warning. The exit codes do not
@@ -1776,7 +1779,7 @@ For such a run, the command reads only its task record and reads its input only 
 its workflow is the `name` of its saved input, or `?`, its title is its workflow, and it has no `result`, `question`,
 `branch`, `labels` or `item`, no `repository` and no steps. With `--json`, the command prints one JSON array of
 `{ "runId", "workflow", "title", "state", "result"?, "question"?, "branch"?, "startedAt"?, "labels"?, "item"?,
-"swept"?, "repository", "steps" }`, with the schema `LISTED` of `src/cli/commands/list.ts`. The fields before `repository`
+"swept"?, "repository", "steps", "change"? }`, with the schema `LISTED` of `src/cli/commands/list.ts`. The fields before `repository`
 are the run fields, `RUN_FIELDS` of `src/records/run.ts`, which `show --json` and `show --agents --json` give too. `result` is
 `{ "status"?, "code", "score"? }` as in [JSON output](#json-output), for a run that is `done` or `waiting`. `question` is the question of a run that is `waiting`. `branch` is
 the `change.branch` of the value of the result, the branch that the change is on, else the branch of the run's worktree;
@@ -1796,6 +1799,35 @@ prepares the run, so a run directory of the host whose run has no task is listed
 with `--json` as `{ "runId", "state": "unstarted", "repository": null }`, with no other field: its run is about to
 start, or its command stopped before the host created the task. `LISTED` is the union of these two strict shapes,
 `ROW` of `src/cli/saved.ts` for a run with a task and the shape of an unstarted run. `list` takes no argument.
+
+`change` is the state of the change of the run on its Git host (see [Git host](#git-host)), as Git and the Git host
+say it now. Only `list --json` reads it, and only for a run that is `done`, `failed`, `aborted` or `orphaned`, with a
+`repository` and a `branch` and with no `swept`: a waiting run can still change its branch. It is one of:
+
+- `{ "state": "local", "conflict" }`: the branch has no pull request.
+- `{ "state": "open", "kind", "number", "url", "check", "changesRequested", "conflict" }`: the newest pull request of
+  the branch is open. `kind` is `github` or `gitlab`, so a reader can write `PR #6` or `MR !6`. `check` is `none`,
+  `running`, `passed` or `failed`, and `changesRequested` is `true` when a review asks for changes.
+- `{ "state": "closed" | "merged", "kind", "number", "url" }`: the newest pull request of the branch is closed or
+  merged. A closed or merged change has no check and no conflict.
+
+`conflict` is `true` when `git merge-tree --write-tree` of `refs/remotes/origin/<base>` and `refs/heads/<branch>` of
+the repository has a conflict, with `<base>` the base of the open pull request, else `main`. It is `null` when one of
+these two refs is missing. A repository with no `origin`, or with an `origin` on no Git host, gives no `change`.
+
+`list` keeps the state of each repository for 60 s in `$XDG_STATE_HOME/workflows/changes/<hash>.json`, with the
+repository, whether its origin is on a Git host, and the `change` of each branch of the last read. It writes the file
+through a temporary file and a rename, and a file that does not match its schema counts as missing. A file whose
+modification time is less than 60 s old and that has each branch of the call, or says that the origin is on no Git
+host, answers with no command. Else `list` reads the repository again: it finds its Git host, runs one
+`git fetch --quiet origin`, reads the newest pull request of each branch, and checks the conflicts. So the `list`
+calls within 60 s make one fetch and one set of Git host calls for each repository. All this work of one `list` call
+has a bound of 10 s. When a read fails, for a missing tool, no network, a missing login or the bound, `list` prints one
+line `workflows: cannot read the state of the changes of <repository>: <reason>` on stderr, asks no Git host again in
+that call, writes no file, and gives the rows of that repository and of the later ones the last kept `change`, also an
+old one, or none. When only the write of the kept file fails, `list` prints the line
+`workflows: cannot keep the state of the changes of <repository>: <reason>`, gives the `change` that it read, and
+still reads the later repositories. The exit code does not change.
 
 `list` reads the host store file read-only and does not start the host, so no run continues. It takes no lock that
 the host waits for, and runs no checkpoint of the file. A store whose schema pi-durable must update first cannot open
