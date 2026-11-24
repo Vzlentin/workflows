@@ -4,7 +4,6 @@
  */
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { resolve } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import {
@@ -20,23 +19,13 @@ import type { Ask } from "@vzlentin/harness/protocol";
 import { addTodo, readTodos, setTodo, type TodoOwner, TodoState } from "@vzlentin/harness/todo";
 import { type Static, type TLiteral, type TObject, type TProperties, type TUnion, Type } from "typebox";
 import { failure, type Result, run } from "../git.ts";
-import {
-	branchPullRequest,
-	ciRuns,
-	createPullRequest,
-	isOpenIssue,
-	mergePullRequest,
-	pullRequestOf,
-	requiredGitHost,
-} from "../githost.ts";
 import { readHost } from "../launch/input.ts";
 import { cutTail, JSON_VALUE, OUTPUT_BYTES } from "../tool.ts";
 import type { RunBundle } from "../workflow/bundle.ts";
 import type { Roles } from "../workflow/roles.ts";
 import { answerOf, asksOf, newAsk, openAsk, plainText, readAsk } from "./asks.ts";
-import { namedChange } from "./change.ts";
 import { keyIn } from "./keys.ts";
-import { firstTask, PAST_OPTIONS, type PastOptions, pastRuns, scanRuns, scanTasks, taskKey } from "./past.ts";
+import { firstTask, PAST_OPTIONS, type PastOptions, pastRuns, scanRuns, scanTasks } from "./past.ts";
 import { addProgress, checkpointWhen, type PhaseLines, takeLines } from "./progress.ts";
 import { HARNESS_ARGS, type HarnessArgs, runRequest } from "./requests.ts";
 import type { Host, Runtime, ScriptTask } from "./version.ts";
@@ -121,53 +110,6 @@ export const PAST_RUNS_ARGS = Type.Object(
 	{ additionalProperties: false },
 );
 
-/** The args of a `namedChange` call: the argument that names the change. */
-export const NAMED_CHANGE_ARGS = Type.Object({ arg: Type.String() }, { additionalProperties: false });
-
-/** A positive integer: the number of a pull request or of an issue. */
-const NUMBER = Type.Integer({ minimum: 1 });
-
-/**
- * The args of a `gitHost` call: its action, and the values of the action. `state` takes the number of a pull request
- * or the name of a branch, and `settle: true` when a failure is its result. `ci` takes the repository `dir` whose
- * origin it reads, the commit, the branch and the seconds that it waits.
- */
-export const GIT_HOST_ARGS = Type.Union([
-	Type.Object(
-		{
-			action: Type.Literal("create"),
-			branch: Type.String({ minLength: 1 }),
-			base: Type.String({ minLength: 1 }),
-			title: Type.String({ minLength: 1 }),
-			body: Type.String(),
-		},
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{ action: Type.Literal("state"), number: NUMBER, settle: Type.Optional(Type.Literal(true)) },
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{ action: Type.Literal("state"), branch: Type.String({ minLength: 1 }), settle: Type.Optional(Type.Literal(true)) },
-		{ additionalProperties: false },
-	),
-	Type.Object({ action: Type.Literal("merge"), number: NUMBER }, { additionalProperties: false }),
-	Type.Object({ action: Type.Literal("issue"), number: NUMBER }, { additionalProperties: false }),
-	Type.Object(
-		{
-			action: Type.Literal("ci"),
-			dir: Type.String({ minLength: 1 }),
-			commit: Type.String({ minLength: 1 }),
-			branch: Type.String({ minLength: 1 }),
-			wait: Type.Number({ minimum: 0 }),
-		},
-		{ additionalProperties: false },
-	),
-]);
-
-/** The args of a `gitHost` call. */
-export type GitHostArgs = Readonly<Static<typeof GIT_HOST_ARGS>>;
-
 /** The args of a `todo` call: its action, and the values of the action. */
 export const TODO_ARGS = Type.Union([
 	Type.Object({ action: Type.Literal("add"), text: Type.String() }, { additionalProperties: false }),
@@ -225,10 +167,8 @@ const CALL_ARGS = {
 	run: RUN_ARGS,
 	input: INPUT_ARGS,
 	pastRuns: PAST_RUNS_ARGS,
-	namedChange: NAMED_CHANGE_ARGS,
 	todo: TODO_ARGS,
 	harness: HARNESS_ARGS,
-	gitHost: GIT_HOST_ARGS,
 };
 
 /** The kinds of script calls. */
@@ -717,24 +657,6 @@ export function pastRunsCall(calls: Calls, workflow: string | null, options: Pas
 }
 
 /**
- * The `namedChange` call of `arg` from the script directory `cwd`: the repository and the branch of the change that
- * `namedChange` gives, with `key`, the `start` key of the first task of the run, for a change that a run gives, or
- * null. A resume replays the saved change.
- */
-export function namedChangeCall(calls: Calls, cwd: string, arg: string): Promise<JsonValue> {
-	const args = { arg };
-
-	return memoized(calls, callKey(calls, "namedChange", args), { kind: "namedChange", args }, async () => {
-		const change = await namedChange(cwd, arg, await scanRuns(calls.runtime, calls.context));
-
-		if (change === null) return null;
-		const { repository, branch, run } = change;
-
-		return run === null ? { repository, branch } : { repository, branch, key: taskKey(run.id, 1) };
-	});
-}
-
-/**
  * The list of todos of the run: the list of its first task, so every task of the run, and no other run, uses it. The
  * first `todo` call of the execution finds it, so the other calls do not read the tasks again.
  */
@@ -781,36 +703,5 @@ export function harnessCall(calls: Calls, args: HarnessArgs): Promise<JsonValue>
 		const host = await readHost(calls.script.runDir);
 
 		return runRequest(host, calls.script.runId, args, calls.context.abortSignal);
-	});
-}
-
-/**
- * The `gitHost` call with `args` on the Git host of the repository `cwd`: the pull request that `create` makes, the
- * pull request or null that `state` reads, null for `merge`, whether the issue is open for `issue`, and the CI runs
- * for `ci`, which reads the origin of `args.dir`, resolved from `cwd`. A resume replays the saved result. A repository
- * whose origin is on no Git host that the module knows fails the call.
- */
-export function gitHostCall(calls: Calls, cwd: string, args: GitHostArgs): Promise<JsonValue> {
-	return memoized(calls, callKey(calls, "gitHost", args), { kind: "gitHost", args }, async () => {
-		const signal = calls.context.abortSignal;
-		const dir = args.action === "ci" ? resolve(cwd, args.dir) : cwd;
-		const host = await requiredGitHost(dir, signal);
-
-		switch (args.action) {
-			case "create":
-				return createPullRequest(host, args, signal);
-			case "state":
-				return "number" in args
-					? pullRequestOf(host, args.number, signal)
-					: branchPullRequest(host, args.branch, signal);
-			case "merge":
-				await mergePullRequest(host, args.number, signal);
-
-				return null;
-			case "issue":
-				return isOpenIssue(host, args.number, signal);
-			case "ci":
-				return ciRuns(host, args.commit, args.branch, args.wait, signal);
-		}
 	});
 }

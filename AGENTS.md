@@ -12,7 +12,7 @@
 
 - Each file in `src/` starts with a `/**` header that says what the module owns: `rg -m1 '^/\*\*' src`. Keep the header true when you change what a module owns. `docs/spec.md` has the behaviour.
 - A group of `src/` imports at runtime only the groups before it in the chain `workflow ← launch ← run ← records ← cli`, with no module import cycle; a type-only import does not count.
-- `git.ts`, `githost.ts`, `tool.ts` and `command.ts` are top-level leaves that every group can import. `tool.ts` imports at runtime only `typebox` and `node:*`, because Pi loads `dist/tool.js` alone. Lint enforces these rules.
+- `git.ts`, `tool.ts` and `command.ts` are top-level leaves that every group can import. `tool.ts` imports at runtime only `typebox` and `node:*`, because Pi loads `dist/tool.js` alone. Lint enforces these rules.
 - The workflows are data: `workflows/` holds `scripts/*.js`, `lib/*.js`, `prompts/*.md` and `agents.json`. There is no workflow in TypeScript.
 - A workflow script declares `export const meta = { ... }`, a literal object at the top.
 - `workflows/script.d.ts` is the only source of the script types: declare each lib helper there. A lib file only declares and runs no code when it loads.

@@ -135,24 +135,11 @@ describe("the JSON of list and show", () => {
 		// @ts-expect-error A table of labels without a kind fails the type check.
 		const labels: Labels = others;
 		expect(todo).toBeTypeOf("function");
-		expect(Object.keys(labels).sort()).toEqual([
-			"ask",
-			"gitHost",
-			"harness",
-			"input",
-			"namedChange",
-			"ok",
-			"pastRuns",
-			"run",
-			"session",
-			"sh",
-		]);
+		expect(Object.keys(labels).sort()).toEqual(["ask", "harness", "input", "ok", "pastRuns", "run", "session", "sh"]);
 		expect(Object.keys(LABELS).sort()).toEqual([
 			"ask",
-			"gitHost",
 			"harness",
 			"input",
-			"namedChange",
 			"ok",
 			"pastRuns",
 			"run",

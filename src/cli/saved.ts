@@ -19,7 +19,6 @@ import type { ProgressEvent } from "../run/progress.ts";
 import { title as titleOf } from "../run/result.ts";
 import { current } from "../run/version.ts";
 import { UsageError } from "../workflow/find.ts";
-import { CHANGE } from "./changes.ts";
 import { runsDirectory, storeOf } from "./host.ts";
 
 /** The one run ID of `args`. Bad usage prints `usage`. */
@@ -55,16 +54,10 @@ export async function savedRun(id: string, usage: string): Promise<SavedRun> {
 
 /**
  * A run of the host store that has a task and a run directory: the run fields, the repository of its worktree, or
- * null for a run without a worktree, its step lines, as `show --json` gives them, and the state of its change on the
- * Git host, which only `list --json` reads.
+ * null for a run without a worktree, and its step lines, as `show --json` gives them.
  */
 export const ROW = Type.Object(
-	{
-		...RUN_FIELDS,
-		repository: Type.Union([Type.String(), Type.Null()]),
-		steps: Type.Array(Type.String()),
-		change: Type.Optional(CHANGE),
-	},
+	{ ...RUN_FIELDS, repository: Type.Union([Type.String(), Type.Null()]), steps: Type.Array(Type.String()) },
 	{ additionalProperties: false },
 );
 

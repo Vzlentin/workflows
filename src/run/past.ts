@@ -306,34 +306,6 @@ function savedRuns(roots: ReadonlyMap<string, readonly RunTask[]>): Map<string, 
 	return saved;
 }
 
-/** A completed root run: its saved input, its `item` arg when that is a string, else null, and its result. */
-export type CompletedRun = { readonly input: Saved; readonly item: string | null; readonly result: JsonValue };
-
-/**
- * The completed root runs of `workflow`, or of every workflow for null, in `roots` (the root tasks by run ID, as
- * `rootRuns` gives them): the runs whose last task ended with the status `done`.
- */
-function completedRuns(
-	roots: ReadonlyMap<string, readonly RunTask[]>,
-	workflow: string | null,
-): Map<string, CompletedRun> {
-	const completed = new Map<string, CompletedRun>();
-
-	for (const [id, { task, input }] of savedRuns(roots)) {
-		if ((workflow !== null && input.name !== workflow) || endedStatus(task) !== "done") continue;
-		const item = Value.Check(Type.String(), input.args.item) ? input.args.item : null;
-
-		completed.set(id, { input, item, result: taskOutcome(task)?.result ?? null });
-	}
-
-	return completed;
-}
-
-/** The completed root run `id` of `roots`, as `completedRuns` takes it, or undefined when it is not one. */
-export function completedRun(roots: ReadonlyMap<string, readonly RunTask[]>, id: string): CompletedRun | undefined {
-	return completedRuns(roots, null).get(id);
-}
-
 /**
  * The completed root runs of `workflow`, or of every workflow for null, in `roots` (the root tasks by run ID, as
  * `rootRuns` gives them), newest first: all of them, the first `limit`, or the runs `runs` in that order. Throws
@@ -346,12 +318,13 @@ export function pastRuns(
 ): JsonValue {
 	const completed = new Map<string, JsonValue>();
 
-	for (const [id, { input, item, result }] of completedRuns(roots, workflow)) {
-		const { cwd, worktree, bundle, labels } = input;
+	for (const [id, { task, input }] of savedRuns(roots)) {
+		if ((workflow !== null && input.name !== workflow) || endedStatus(task) !== "done") continue;
+		const { args, cwd, worktree, bundle, labels } = input;
 
 		completed.set(id, {
 			runId: id,
-			item,
+			item: Value.Check(Type.String(), args.item) ? args.item : null,
 			cwd,
 			repository: worktree?.repository ?? null,
 			start: worktree?.start ?? null,
@@ -359,7 +332,7 @@ export function pastRuns(
 			// A run of an older version has no labels.
 			labels: labels ?? [],
 			key: taskKey(id, 1),
-			result,
+			result: taskOutcome(task)?.result ?? null,
 		});
 	}
 

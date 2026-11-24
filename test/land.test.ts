@@ -1,72 +1,28 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { request } from "@vzlentin/harness/client";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { reportedEvents } from "./labels-entry.ts";
-import {
-	fake,
-	gateGit,
-	git,
-	HOSTS,
-	type HostKind,
-	hostOrigin,
-	LABELS_ENTRY,
-	repository,
-	sandbox,
-	setEntries,
-	startHost,
-	workflows,
-	worktreeAt,
-} from "./support.ts";
+import { fake, gateGit, git, LABELS_ENTRY, repository, sandbox, setEntries, workflows, worktreeAt } from "./support.ts";
 
 let root: string;
 let repo: string;
 let origin: string;
 
 const SUBJECT = "feat: add the feature";
+const GREEN = '[{"databaseId":1,"workflowName":"CI","status":"completed","conclusion":"success","url":"https://ci/1"}]';
+const RED = '[{"databaseId":2,"workflowName":"CI","status":"completed","conclusion":"failure","url":"https://ci/2"}]';
 
-/** The CI of a commit in the fakes: a passed run, a failed run, or no run. */
-type Ci = "green" | "red" | "none";
-
-/** The CI runs that the tool of `kind` prints for `ci`. */
-function ciJson(kind: HostKind, ci: Ci): string {
-	if (ci === "none") return "[]";
-	const passed = ci === "green";
-
-	return JSON.stringify(
-		kind === "github"
-			? [
-					{
-						workflowName: "CI",
-						status: "completed",
-						conclusion: passed ? "success" : "failure",
-						url: `https://ci/${passed ? 1 : 2}`,
-					},
-				]
-			: [{ id: passed ? 1 : 2, status: passed ? "success" : "failed", web_url: `https://ci/${passed ? 1 : 2}` }],
-	);
-}
-
-/** The name of the failed CI run of `kind`. */
-const RED_NAME = { github: "CI https://ci/2", gitlab: "pipeline 2 https://ci/2" } as const;
-
-/** Writes the CI runs that the fakes give for the branch and for `main`. */
-async function ci(branch: Ci, main: Ci): Promise<void> {
-	for (const kind of ["github", "gitlab"] as const) {
-		await writeFile(join(root, `ci-branch.${kind}.json`), ciJson(kind, branch));
-		await writeFile(join(root, `ci-main.${kind}.json`), ciJson(kind, main));
-	}
-}
-
-/** Puts `origin` of the main checkout on the Git host `kind`; both hosts serve the same bare repository. */
-function originOn(kind: HostKind): void {
-	git(repo, "remote", "set-url", "origin", HOSTS[kind].url);
+/** Writes the CI runs that the fake `gh` gives for the branch and for `main`. */
+async function ci(branch: string, main: string): Promise<void> {
+	await writeFile(join(root, "ci-branch.json"), branch);
+	await writeFile(join(root, "ci-main.json"), main);
 }
 
 beforeEach(async () => {
 	root = await sandbox();
 	repo = join(root, "repo");
+	origin = join(root, "origin.git");
 	await repository(repo);
 	const scripts = join(repo, ".workflows", "scripts");
 	await mkdir(scripts, { recursive: true });
@@ -84,68 +40,26 @@ return { status: "shipped", subject: "${SUBJECT}" }`,
 	);
 	git(repo, "add", ".workflows");
 	git(repo, "commit", "-q", "-m", "add the scripts");
-	origin = await hostOrigin(root, repo, "github");
-	await symlink(join(root, "github"), join(root, "gitlab"));
-	// The pull request 7 comes from the branch `feature`.
+	git(root, "clone", "-q", "--bare", repo, origin);
+	git(repo, "remote", "add", "origin", origin);
+	git(repo, "fetch", "-q", "origin");
 	await fake(
 		root,
 		"gh",
 		`echo "$@" >> "${root}/gh.log"
+if [ "$*" = "pr view 7 --json number,headRefName,isCrossRepository" ]; then
+	echo '{"number":7,"headRefName":"feature","isCrossRepository":false}'
+	exit
+fi
+[ "$1 $2" = "run list" ] || exit 1
 case "$*" in
-"auth token --hostname github.com") echo gho_token ;;
-"pr view 7 --repo github.com/octo/demo --json "*) echo '${pullJson("github")}' ;;
-"run list "*"--branch main "*) cat "${root}/ci-main.github.json" ;;
-"run list "*) cat "${root}/ci-branch.github.json" ;;
-*) exit 1 ;;
+*"--branch main "*) cat "${root}/ci-main.json" ;;
+*) cat "${root}/ci-branch.json" ;;
 esac
 `,
 	);
-	await fake(
-		root,
-		"glab",
-		`echo "$@" >> "${root}/glab.log"
-case "$*" in
-"config get token --host gitlab.com") echo glpat-token ;;
-"api --hostname gitlab.com projects/octo%2Fdemo/merge_requests/7") echo '${pullJson("gitlab")}' ;;
-*"/pipelines?"*"&ref=main") cat "${root}/ci-main.gitlab.json" ;;
-*"/pipelines?"*) cat "${root}/ci-branch.gitlab.json" ;;
-*) exit 1 ;;
-esac
-`,
-	);
-	await ci("green", "green");
+	await ci(GREEN, GREEN);
 });
-
-/** The JSON of the open pull request 7 of the branch `feature` that the tool of `kind` prints. */
-function pullJson(kind: HostKind): string {
-	return kind === "github"
-		? JSON.stringify({
-				number: 7,
-				url: "https://github.com/octo/demo/pull/7",
-				state: "OPEN",
-				mergeCommit: null,
-				statusCheckRollup: [],
-				latestReviews: [],
-				title: SUBJECT,
-				body: "",
-				headRefName: "feature",
-				baseRefName: "main",
-				headRefOid: "0".repeat(40),
-				isCrossRepository: false,
-			})
-		: JSON.stringify({
-				iid: 7,
-				web_url: "https://gitlab.com/octo/demo/-/merge_requests/7",
-				state: "opened",
-				sha: "0".repeat(40),
-				title: SUBJECT,
-				description: "",
-				source_branch: "feature",
-				target_branch: "main",
-				source_project_id: 1,
-				target_project_id: 1,
-			});
-}
 
 afterEach(() => rm(root, { recursive: true, force: true }));
 
@@ -192,7 +106,7 @@ async function land(change: string) {
 /** `main` in the main checkout and on `origin`. */
 const mains = () => [git(repo, "rev-parse", "main"), git(origin, "rev-parse", "main")];
 
-const ghLog = (tool = "gh") => readFile(join(root, `${tool}.log`), "utf8").catch(() => "");
+const ghLog = () => readFile(join(root, "gh.log"), "utf8").catch(() => "");
 
 /** Expects the end state of a landing of `run`: `main` at its head on both sides, and its branch and worktree gone. */
 function expectLanded(run: { id: string; branch: string; head: string }): void {
@@ -204,34 +118,27 @@ function expectLanded(run: { id: string; branch: string; head: string }): void {
 }
 
 describe("workflows land", () => {
-	it.each(["github", "gitlab"] as const)(
-		"lands a green branch on main, deletes the branch and sweeps the run on %s",
-		async (kind) => {
-			originOn(kind);
-			const run = await shipped();
+	it("lands a green branch on main, deletes the branch and sweeps the run", async () => {
+		const run = await shipped();
 
-			const landed = await land(run.id);
-			expect(landed).toEqual({
-				code: 0,
-				result: {
-					status: "landed",
-					head: run.short,
-					change: { repository: await realpath(repo), branch: run.branch },
-					report: [`landed ${SUBJECT} ${run.short}, CI passed on the branch and on main`],
-				},
-			});
-			expectLanded(run);
-			expect(git(repo, "rev-list", "--count", "main")).toBe("3");
-			const log = await ghLog(HOSTS[kind].tool);
-			const listed = kind === "github" ? "run list --repo github.com/octo/demo --commit " : "/pipelines?sha=";
-			const branch = kind === "github" ? ` --branch ${run.branch} ` : `&ref=${encodeURIComponent(run.branch)}`;
-			expect(log).toContain(`${listed}${run.head}${branch}`);
-			expect(log).toContain(`${listed}${run.head}${kind === "github" ? " --branch main " : "&ref=main\n"}`);
-			expect(await ghLog(kind === "github" ? "glab" : "gh")).toBe("");
-			const rows = JSON.parse((await workflows(["list", "--json"], { cwd: repo })).stdout[0] ?? "");
-			expect(rows.find((row: { runId: string }) => row.runId === run.id)?.swept).toBe("landed");
-		},
-	);
+		const landed = await land(run.id);
+		expect(landed).toEqual({
+			code: 0,
+			result: {
+				status: "landed",
+				head: run.short,
+				change: { repository: await realpath(repo), branch: run.branch },
+				report: [`landed ${SUBJECT} ${run.short}, CI passed on the branch and on main`],
+			},
+		});
+		expectLanded(run);
+		expect(git(repo, "rev-list", "--count", "main")).toBe("3");
+		const log = await ghLog();
+		expect(log).toContain(`run list --commit ${run.head} --branch ${run.branch} `);
+		expect(log).toContain(`run list --commit ${run.head} --branch main `);
+		const listed = JSON.parse((await workflows(["list", "--json"], { cwd: repo })).stdout[0] ?? "");
+		expect(listed.find((row: { runId: string }) => row.runId === run.id)?.swept).toBe("landed");
+	});
 
 	it("lands a branch made by hand in a linked worktree, and removes the worktree", async () => {
 		const path = join(root, "feature-tree");
@@ -259,8 +166,7 @@ describe("workflows land", () => {
 		expect(existsSync(path)).toBe(false);
 	});
 
-	it.each(["github", "gitlab"] as const)("lands the head branch of a PR number on %s", async (kind) => {
-		originOn(kind);
+	it("lands the head branch of a PR number", async () => {
 		git(repo, "branch", "feature");
 		git(repo, "checkout", "-q", "feature");
 		await writeFile(join(repo, "feature.txt"), "feature\n");
@@ -281,7 +187,7 @@ describe("workflows land", () => {
 	});
 
 	it("refuses a red branch, and leaves main untouched on both sides", async () => {
-		await ci("red", "green");
+		await ci(RED, GREEN);
 		const run = await shipped();
 		const before = mains();
 
@@ -297,7 +203,7 @@ describe("workflows land", () => {
 	});
 
 	it("refuses a branch with no CI run after the wait", async () => {
-		await ci("none", "green");
+		await ci("[]", GREEN);
 		const run = await shipped();
 		const before = mains();
 
@@ -417,24 +323,20 @@ describe("workflows land", () => {
 		expect(mains()).toEqual(before);
 	});
 
-	it.each(["github", "gitlab"] as const)(
-		"gives landed-red for a red main on %s, names the failed run and reverts nothing",
-		async (kind) => {
-			originOn(kind);
-			await ci("green", "red");
-			const run = await shipped();
+	it("gives landed-red for a red main, names the failed run and reverts nothing", async () => {
+		await ci(GREEN, RED);
+		const run = await shipped();
 
-			const red = await land(run.id);
-			expect([red.code, red.result.status, red.result.report]).toEqual([
-				1,
-				"landed-red",
-				[
-					`landed-red ${SUBJECT} ${run.short}, CI passed on the branch; CI failed on main at ${run.short}: ${RED_NAME[kind]}`,
-				],
-			]);
-			expectLanded(run);
-		},
-	);
+		const red = await land(run.id);
+		expect([red.code, red.result.status, red.result.report]).toEqual([
+			1,
+			"landed-red",
+			[
+				`landed-red ${SUBJECT} ${run.short}, CI passed on the branch; CI failed on main at ${run.short}: CI https://ci/2`,
+			],
+		]);
+		expectLanded(run);
+	});
 
 	it("reports the head for the run, with the labels of the run", async () => {
 		await setEntries({ labels: LABELS_ENTRY });
@@ -446,17 +348,7 @@ describe("workflows land", () => {
 			[`landed ${SUBJECT} ${run.short}, CI passed on the branch and on main`],
 		]);
 		expectLanded(run);
-		// Step 7 reports the head, and the sweep of step 9 reports it again; the task keeps it once.
-		const event = { labels: ["item:1"], refs: [`commit:${run.head}`] };
-		expect(await reportedEvents()).toEqual([event, event]);
-		const host = await startHost();
-
-		try {
-			const task = await request({ type: "task", key: `wf:${run.id}#1` }, { start: false });
-			expect(task?.refs).toEqual([`commit:${run.head}`]);
-		} finally {
-			await host.close();
-		}
+		expect(await reportedEvents()).toEqual([{ labels: ["item:1"], refs: [`commit:${run.head}`] }]);
 	});
 
 	it("finishes on resume a landing that stopped after the push of main", async () => {

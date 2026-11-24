@@ -15,10 +15,7 @@ import { TASK } from "../src/run/version.ts";
 import { reportedEvents } from "./labels-entry.ts";
 import {
 	git,
-	HOSTS,
-	type HostKind,
 	LABELS_ENTRY,
-	pullJson,
 	repository,
 	runsOf,
 	sandbox,
@@ -32,9 +29,6 @@ import {
 let root: string;
 let repo: string;
 
-/** The merge commit of each merged pull request of the fake Git host. */
-const MERGE_COMMIT = "b".repeat(40);
-
 /** Writes the executable `bin/<name>` of the sandbox. */
 async function fake(name: string, body: string): Promise<void> {
 	const file = join(root, "bin", name);
@@ -42,70 +36,35 @@ async function fake(name: string, body: string): Promise<void> {
 	await chmod(file, 0o755);
 }
 
-/**
- * Writes the fake tool of the Git host `kind`, which logs its arguments to `<tool>.log` and is logged in. The newest
- * pull request of the branches feat/x and feat/y is merged at the commit of the worktree where the tool runs, the one of
- * feat/old is merged at another commit, and the one of feat/open is open at that commit. Other branches have none.
- * `prefix` runs first.
- */
-async function hostFake(kind: HostKind, prefix = ""): Promise<void> {
-	const tool = HOSTS[kind].tool;
-
-	// The head `tip` stands for the commit of the worktree where the fake runs: the shell puts it in.
-	const tip = "@tip@";
-
-	const merged = (number: number, head: string, state: "open" | "merged" = "merged") =>
-		`'${JSON.stringify(pullJson(kind, number, { state, head, mergeCommit: MERGE_COMMIT }))}'`.replace(
-			tip,
-			`'"$(git rev-parse HEAD)"'`,
-		);
-
-	const list = (branch: string) =>
-		kind === "github"
-			? `"pr list "*"--head ${branch} "*`
-			: `*"merge_requests?source_branch=${encodeURIComponent(branch)}&"*`;
-
-	const view = (number: number) => (kind === "github" ? `"pr view ${number} "*` : `*"/merge_requests/${number}"`);
-	const found = (number: number) => (kind === "github" ? `[{\\"number\\":${number}}]` : `[{\\"iid\\":${number}}]`);
-
-	await fake(
-		tool,
-		`echo "$@" >> "${root}/${tool}.log"
-${prefix}
-case "$*" in
-"${kind === "github" ? "auth token --hostname github.com" : "config get token --host gitlab.com"}") echo token ;;
-${list("feat/x")} | ${list("feat/y")}) echo "${found(1)}" ;;
-${list("feat/old")}) echo "${found(2)}" ;;
-${list("feat/open")}) echo "${found(3)}" ;;
-${kind === "github" ? '"pr list "*' : '*"merge_requests?"*'}) echo '[]' ;;
-${view(1)}) echo ${merged(1, tip)} ;;
-${view(2)}) echo ${merged(2, "0".repeat(40))} ;;
-${view(3)}) echo ${merged(3, tip, "open")} ;;
-*) exit 1 ;;
-esac
-`,
-	);
-}
-
 beforeEach(async () => {
 	root = await sandbox();
 	repo = join(root, "repo");
 	await repository(repo);
-	// The Git host is asked only in a repository whose origin is on one. The fake ssh finds no repository there, so the
-	// start of a run does not fetch it.
-	git(repo, "remote", "add", "origin", HOSTS.github.url);
+	// gh is asked only in a repository with an origin.
+	git(repo, "remote", "add", "origin", join(root, "origin.git"));
 	const scripts = join(repo, ".workflows", "scripts");
 	await mkdir(scripts, { recursive: true });
-	// Each run commits a file of its own, so its HEAD is not in the local main and main does not have its changes.
+	// Each run commits, so its HEAD is not in the local main.
 	await writeFile(
 		join(scripts, "w.js"),
-		'export const meta = { worktree: true }\nawait sh("pwd > work.txt && git add work.txt && git commit -q -m work")\nreturn "done"',
+		'export const meta = { worktree: true }\nawait sh("git commit -q --allow-empty -m work")\nreturn "done"',
 	);
 	await writeFile(
 		join(scripts, "slow.js"),
 		'export const meta = { worktree: true }\nreturn await agent("Script: one")',
 	);
-	await hostFake("github");
+	// A merged pull request comes from the branches feat/x and feat/y at the commit of the worktree, and from feat/old at another
+	// commit.
+	await fake(
+		"gh",
+		`echo "$@" >> "${root}/gh.log"
+case "$*" in
+*"--head feat/x "* | *"--head feat/y "*) echo "[{\\"headRefOid\\":\\"$(git rev-parse HEAD)\\"}]" ;;
+*"--head feat/old "*) echo '[{"headRefOid":"0000000000000000000000000000000000000000"}]' ;;
+*) echo '[]' ;;
+esac
+`,
+	);
 });
 
 afterEach(() => rm(root, { recursive: true, force: true }));
@@ -287,45 +246,6 @@ describe("workflows sweep", () => {
 		expect(hasBranch("feat/x")).toBe(true);
 	});
 
-	it.each(["github", "gitlab"] as const)(
-		"lands on %s a branch whose newest pull request merged its tip, and only that one",
-		async (kind) => {
-			git(repo, "remote", "set-url", "origin", HOSTS[kind].url);
-			await hostFake(kind);
-			const { id, worktree } = await mergedRun();
-			const old = await mergedRun("feat/old");
-			const open = await mergedRun("feat/open");
-
-			const swept = await workflows(["sweep", "--yes"], { cwd: repo });
-			expect([swept.code, swept.stdout, swept.stderr]).toEqual([0, [`${id} landed feat/x ${worktree}`], []]);
-			expect([existsSync(worktree), existsSync(old.worktree), existsSync(open.worktree)]).toEqual([false, true, true]);
-			const tool = HOSTS[kind].tool;
-			const other = kind === "github" ? "glab" : "gh";
-			expect((await readFile(join(root, `${tool}.log`), "utf8")).trim().split("\n")).toHaveLength(9);
-			expect(existsSync(join(root, `${other}.log`))).toBe(false);
-		},
-	);
-
-	it("lands a branch that main has by a squash of several commits, when the Git host has no pull request", async () => {
-		const { id, worktree } = await mergedRun("feat/s");
-		await writeFile(join(worktree, "more.txt"), "more\n");
-		git(worktree, "add", "more.txt");
-		git(worktree, "commit", "-q", "-m", "more");
-		git(repo, "merge", "-q", "--squash", "feat/s");
-		git(repo, "commit", "-q", "-m", "squash");
-		await writeFile(join(repo, "later.txt"), "later\n");
-		git(repo, "add", "later.txt");
-		git(repo, "commit", "-q", "-m", "later");
-
-		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
-		expect([swept.code, swept.stdout, swept.stderr]).toEqual([0, [`${id} landed feat/s ${worktree}`], []]);
-		expect([existsSync(worktree), hasBranch("feat/s")]).toEqual([false, false]);
-		expect((await readFile(join(root, "gh.log"), "utf8")).trim().split("\n")).toEqual([
-			"auth token --hostname github.com",
-			`pr list --repo github.com/octo/demo --head feat/s --state all --limit 1 --json number`,
-		]);
-	});
-
 	it("keeps a run whose branch name had a pull request merged at another commit", async () => {
 		const run = await workflows(["w"], { cwd: repo });
 		expect(run.code).toBe(0);
@@ -368,7 +288,7 @@ describe("workflows sweep", () => {
 		]);
 	});
 
-	it("takes a run whose HEAD is in origin/main as merged, when the Git host has no pull request", async () => {
+	it("takes a run whose HEAD is in origin/main as merged, with no gh call", async () => {
 		const merged = await workflows(["w"], { cwd: repo });
 		const ahead = await workflows(["w"], { cwd: repo });
 		expect([merged.code, ahead.code]).toEqual([0, 0]);
@@ -382,12 +302,8 @@ describe("workflows sweep", () => {
 		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
 		expect([swept.code, swept.stdout]).toEqual([0, [`${merged.id} landed feat/z ${worktree}`]]);
 		expect([existsSync(worktree), existsSync(kept)]).toEqual([false, true]);
-		// Runs that start in the same second sort in any order, so the calls of the two branches can come in any order.
-		expect((await readFile(join(root, "gh.log"), "utf8")).trim().split("\n").toSorted()).toEqual([
-			"auth token --hostname github.com",
-			"auth token --hostname github.com",
-			`pr list --repo github.com/octo/demo --head feat/w --state all --limit 1 --json number`,
-			`pr list --repo github.com/octo/demo --head feat/z --state all --limit 1 --json number`,
+		expect((await readFile(join(root, "gh.log"), "utf8")).trim().split("\n")).toEqual([
+			"pr list --head feat/w --state merged --json headRefOid",
 		]);
 	});
 
@@ -410,18 +326,10 @@ describe("workflows sweep", () => {
 		expect(await sweptFields(id)).toEqual(["dropped", "dropped"]);
 		expect(await sweptFields(other.id)).toEqual(["landed", "landed"]);
 		expect(await sweptFields(kept.id)).toEqual([undefined, undefined]);
-
-		const list = (branch: string) =>
-			`pr list --repo github.com/octo/demo --head ${branch} --state all --limit 1 --json number`;
-
 		expect((await readFile(join(root, "gh.log"), "utf8")).trim().split("\n")).toEqual([
-			"auth token --hostname github.com",
-			list("feat/z"),
-			"auth token --hostname github.com",
-			list("feat/z"),
-			"auth token --hostname github.com",
-			list("feat/y"),
-			expect.stringMatching(/^pr view 1 --repo github\.com\/octo\/demo --json /),
+			"pr list --head feat/z --state merged --json headRefOid",
+			"pr list --head feat/z --state merged --json headRefOid",
+			"pr list --head feat/y --state merged --json headRefOid",
 		]);
 	});
 
@@ -527,9 +435,7 @@ describe("workflows sweep", () => {
 	it("sweeps a given branch that no run has, with or without a worktree", async () => {
 		const path = join(root, "hand");
 		git(repo, "worktree", "add", "-q", "-b", "feat/hand", path);
-		await writeFile(join(path, "hand.txt"), "hand\n");
-		git(path, "add", "hand.txt");
-		git(path, "commit", "-q", "-m", "hand");
+		git(path, "commit", "-q", "--allow-empty", "-m", "hand");
 		git(repo, "branch", "feat/bare");
 
 		const swept = await workflows(["sweep", "feat/hand", "feat/bare", "feat/hand", "--yes"], { cwd: repo });
@@ -592,13 +498,10 @@ describe("workflows sweep", () => {
 		const first = await workflows(["sweep", "--yes"], { cwd: repo });
 		expect([first.code, first.stdout]).toEqual([0, [`${old.id} landed feat/x ${old.worktree}`]]);
 
-		// The new branch has a commit of its own and no worktree, so the Git host, from the main checkout, finds it not
-		// merged.
+		// The new branch has a commit of its own and no worktree, so gh, in the main checkout, finds it not merged.
 		const path = join(root, "again");
 		git(repo, "worktree", "add", "-q", "-b", "feat/x", path);
-		await writeFile(join(path, "again.txt"), "again\n");
-		git(path, "add", "again.txt");
-		git(path, "commit", "-q", "-m", "again");
+		git(path, "commit", "-q", "--allow-empty", "-m", "again");
 		git(repo, "worktree", "remove", path);
 
 		const listed = await workflows(["sweep", "feat/x"], { cwd: repo });
@@ -636,7 +539,7 @@ describe("workflows sweep", () => {
 		expect(existsSync(worktree)).toBe(true);
 	});
 
-	it("finishes at the next sweep the removal that stopped after the worktree, with no Git host call", async () => {
+	it("finishes at the next sweep the removal that stopped after the worktree, with no gh call", async () => {
 		const { id, worktree } = await mergedRun();
 		const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
 		// The first `git branch -D` fails, as when sweep stops after it removed the worktree.
@@ -663,7 +566,7 @@ exec "${real}" "$@"
 		expect(await sweptFile(id)).toBe("landed\n");
 	});
 
-	it("takes the word of a marker, with no Git host call", async () => {
+	it("takes the word of a marker, with no gh call", async () => {
 		const { id, worktree } = await mergedRun();
 		git(worktree, "branch", "-m", "feat/z");
 		await writeMarker(id, worktree, "dropped");
@@ -695,23 +598,14 @@ exec "${real}" "$@"
 		expect([await sweptFile(dirty.id), await sweptFile(id)]).toEqual([undefined, "landed\n"]);
 	});
 
-	it("counts the branches as not merged, with one warning line, when the Git host fails", async () => {
-		const other = await mergedRun("feat/y");
+	it("counts a branch as not merged, with one warning line, when gh fails", async () => {
 		const { id, worktree } = await mergedRun();
-		await fake("gh", `echo "$@" >> "${root}/gh.log"\necho "gh: not logged in" >&2\nexit 1\n`);
+		await fake("gh", 'echo "gh: not logged in" >&2\nexit 1\n');
 
 		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
-		expect([swept.code, swept.stdout, swept.stderr]).toEqual([
-			0,
-			[],
-			[
-				expect.stringMatching(
-					/^workflows: cannot ask the Git host whether feat\/[xy] is merged, so only Git checks it: gh is not logged in to github\.com/,
-				),
-			],
-		]);
-		expect((await readFile(join(root, "gh.log"), "utf8")).trim().split("\n")).toHaveLength(1);
-		expect([existsSync(other.worktree), hasBranch("feat/y")]).toEqual([true, true]);
+		expect([swept.code, swept.stdout, swept.stderr.length]).toEqual([0, [], 1]);
+		expect(swept.stderr[0]).toContain("workflows: cannot ask gh whether feat/x is merged, so it counts as not merged");
+		expect(swept.stderr[0]).toContain("gh: not logged in");
 		expect([existsSync(worktree), hasBranch("feat/x"), await sweptFile(id)]).toEqual([true, true, undefined]);
 
 		const given = await workflows(["sweep", id, "--json"], { cwd: repo });
@@ -721,7 +615,7 @@ exec "${real}" "$@"
 		]);
 	});
 
-	it("takes a run whose HEAD is in the local main as landed, with no origin and no Git host call", async () => {
+	it("takes a run whose HEAD is in the local main as landed, with no origin and no gh call", async () => {
 		git(repo, "remote", "remove", "origin");
 		const { id, worktree } = await mergedRun();
 		const kept = await workflows(["w"], { cwd: repo });
@@ -800,14 +694,14 @@ exec "${real}" "$@"
 		const id = failed.id ?? "";
 		const worktree = worktreeAt(repo, id);
 		git(worktree, "branch", "-m", "feat/x");
-		await writeFile(join(worktree, "work.txt"), "work\n");
-		git(worktree, "add", "work.txt");
-		git(worktree, "commit", "-q", "-m", "work");
+		git(worktree, "commit", "-q", "--allow-empty", "-m", "work");
 		// gh waits at a gate, after the first read of the store and before any removal.
-		await hostFake(
-			"github",
+		await fake(
+			"gh",
 			`touch "${root}/reached"
-while [ ! -f "${root}/open" ]; do [ -d "${root}" ] || exit 1; sleep 0.02; done`,
+while [ ! -f "${root}/open" ]; do [ -d "${root}" ] || exit 1; sleep 0.02; done
+echo "[{\\"headRefOid\\":\\"$(git rev-parse HEAD)\\"}]"
+`,
 		);
 
 		const pending = workflows(["sweep", "--yes"], { cwd: repo });
@@ -866,7 +760,7 @@ while [ ! -f "${root}/open" ]; do [ -d "${root}" ] || exit 1; sleep 0.02; done`,
 describe("workflows sweep and the labels of a run", () => {
 	beforeEach(() => setEntries({ labels: LABELS_ENTRY }));
 
-	it("reports the merge commit of the pull request for a merged run", async () => {
+	it("reports nothing for a merged run", async () => {
 		const run = await workflows(["w", "--branch", "feat/x", "--serves", "item:1"], { cwd: repo });
 		expect(run.code).toBe(0);
 		const id = run.id ?? "";
@@ -875,57 +769,7 @@ describe("workflows sweep and the labels of a run", () => {
 		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
 		expect([swept.code, swept.stdout, swept.stderr]).toEqual([0, [`${id} landed feat/x ${worktree}`], []]);
 		expect([existsSync(worktree), hasBranch("feat/x")]).toEqual([false, false]);
-		expect(await reportedEvents()).toEqual([{ labels: ["item:1"], refs: [`commit:${MERGE_COMMIT}`] }]);
-	});
-
-	it("reports the merge commit of the pull request also when main has the tip of the branch", async () => {
-		const run = await workflows(["w", "--branch", "feat/x", "--serves", "item:1"], { cwd: repo });
-		expect(run.code).toBe(0);
-		const id = run.id ?? "";
-		git(repo, "merge", "-q", "--ff-only", "feat/x");
-
-		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
-		expect([swept.code, swept.stdout, swept.stderr]).toEqual([0, [`${id} landed feat/x ${worktreeAt(repo, id)}`], []]);
-		expect(await reportedEvents()).toEqual([{ labels: ["item:1"], refs: [`commit:${MERGE_COMMIT}`] }]);
-	});
-
-	it("reports the tip of a branch that main has", async () => {
-		const run = await workflows(["w", "--branch", "feat/m", "--serves", "item:1"], { cwd: repo });
-		expect(run.code).toBe(0);
-		const id = run.id ?? "";
-		const tip = git(repo, "rev-parse", "feat/m");
-		git(repo, "merge", "-q", "--ff-only", "feat/m");
-
-		const swept = await workflows(["sweep", id, "--yes"], { cwd: repo });
-		expect([swept.code, swept.stdout, swept.stderr]).toEqual([0, [`${id} landed feat/m ${worktreeAt(repo, id)}`], []]);
-		expect(await reportedEvents()).toEqual([{ labels: ["item:1"], refs: [`commit:${tip}`] }]);
-	});
-
-	it("reports the commit of origin/main when it has the changes of the branch by a squash", async () => {
-		git(repo, "remote", "remove", "origin");
-		const run = await workflows(["w", "--branch", "feat/s", "--serves", "item:1"], { cwd: repo });
-		expect(run.code).toBe(0);
-		const id = run.id ?? "";
-		// One commit on main with the tree of the branch: it has the changes, but the tip is not its ancestor.
-		const squash = git(repo, "commit-tree", git(repo, "rev-parse", "feat/s^{tree}"), "-p", "main", "-m", "squash");
-		git(repo, "update-ref", "refs/remotes/origin/main", squash);
-
-		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
-		expect([swept.code, swept.stdout, swept.stderr]).toEqual([0, [`${id} landed feat/s ${worktreeAt(repo, id)}`], []]);
-		expect(await reportedEvents()).toEqual([{ labels: ["item:1"], refs: [`commit:${squash}`] }]);
-		expect(existsSync(join(root, "gh.log"))).toBe(false);
-	});
-
-	it("keeps the branch of a merged run when the host refuses the report", async () => {
-		const run = await workflows(["w", "--branch", "feat/x", "--serves", "item:98"], { cwd: repo });
-		expect(run.code).toBe(0);
-		const id = run.id ?? "";
-		const worktree = worktreeAt(repo, id);
-
-		const swept = await workflows(["sweep", "--yes"], { cwd: repo });
-		expect(swept.code).toBe(1);
-		expect(swept.stderr).toEqual([expect.stringMatching(new RegExp(`^workflows: cannot sweep ${id}: `))]);
-		expect([existsSync(worktree), hasBranch("feat/x"), await sweptFile(id)]).toEqual([true, true, undefined]);
+		expect(await reportedEvents()).toEqual([]);
 	});
 
 	it("drops the branch of a failed run with no commit, and reports nothing", async () => {

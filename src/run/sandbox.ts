@@ -21,13 +21,10 @@ import {
 	type Calls,
 	callKey,
 	digest,
-	GIT_HOST_ARGS,
-	gitHostCall,
 	harnessCall,
 	inputCall,
 	JSON_OBJECT,
 	memoized,
-	namedChangeCall,
 	pastRunsCall,
 	type ScriptRun,
 	SESSION_ARGS,
@@ -98,18 +95,7 @@ const input = (question) => {
 	return answer;
 };
 const pastRuns = (workflow, options) => __pastRuns(workflow, options ?? {});
-const namedChange = (arg) => __namedChange(arg);
 const harness = (request) => __harness(request);
-const gitHost = Object.freeze({
-	create: (branch, base, title, body) => __gitHost({ action: "create", branch, base, title, body }),
-	state: (change, options) => {
-		const args = typeof change === "string" ? { action: "state", branch: change } : { action: "state", number: change };
-		return __gitHost(options?.settle ? { ...args, settle: true } : args);
-	},
-	merge: (number) => __gitHost({ action: "merge", number }),
-	issue: (number) => __gitHost({ action: "issue", number }),
-	ci: (dir, commit, branch, wait) => __gitHost({ action: "ci", dir, commit, branch, wait }),
-});
 const todo = Object.freeze({
 	add: (text) => __todoAdd(text),
 	set: (id, state, text) => __todoSet(id, state, text ?? null),
@@ -128,7 +114,6 @@ const SH_ARGS = Type.Tuple([SHELL_CMD, Type.Boolean()]);
 const OK_ARGS = Type.Tuple([SHELL_CMD]);
 const RUN_ARGS = Type.Tuple([Type.String(), JSON_OBJECT]);
 const INPUT_ARGS = Type.Tuple([Type.String()]);
-const NAMED_CHANGE_ARGS = Type.Tuple([Type.String()]);
 const PAST_ARGS = Type.Tuple([Type.Union([Type.String(), Type.Null()]), PAST_OPTIONS]);
 const TODO_ADD_ARGS = Type.Tuple([Type.String()]);
 const TODO_SET_ARGS = Type.Tuple([Type.Integer({ minimum: 1 }), TodoState, Type.Union([Type.String(), Type.Null()])]);
@@ -258,7 +243,6 @@ export async function runScript(
 				turnEnd = Promise.withResolvers<void>();
 			}),
 			global("__pastRuns", PAST_ARGS, ([workflow, options]) => pastRunsCall(calls, workflow, options)),
-			global("__namedChange", NAMED_CHANGE_ARGS, ([arg]) => namedChangeCall(calls, cwd, arg)),
 			// A text is any string, so an empty text fails with the error of harness.
 			global("__todoAdd", TODO_ADD_ARGS, ([text]) => todoCall(calls, { action: "add", text }), "todo"),
 			// The sandbox sends a missing text as null, and the args leave it out.
@@ -271,7 +255,6 @@ export async function runScript(
 			),
 			global("__todoList", Type.Tuple([]), () => todoCall(calls, { action: "list" }), "todo"),
 			global("__harness", Type.Tuple([HARNESS_ARGS]), ([args]) => harnessCall(calls, args), "harness"),
-			global("__gitHost", Type.Tuple([GIT_HOST_ARGS]), ([args]) => gitHostCall(calls, cwd, args), "gitHost"),
 			global("phase", LINE_ARGS, ([title]) => phaseLine(progress, String(title))),
 			global("log", LINE_ARGS, ([line]) => progress.lines.push({ kind: "log", text: String(line), at: Date.now() })),
 			global("title", LINE_ARGS, ([text]) => progress.lines.push({ kind: "title", text: String(text) })),

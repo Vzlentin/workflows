@@ -208,16 +208,6 @@ type PastRun = {
  */
 declare function pastRuns(workflow: string | null, options?: { runs?: readonly string[]; limit?: number }): Promise<PastRun[]>;
 
-/**
- * The change that `arg` names, from the main checkout of the current directory: a local branch gives itself in that
- * checkout, and the ID of a completed root run gives the `change` of its result, with `key`, the `start` key of the
- * first task of the run. Null when `arg` is neither. A completed run with no change throws. The call saves its result,
- * so a resume does not look again.
- */
-declare function namedChange(
-	arg: string,
-): Promise<{ repository: string; branch: string } | { repository: string; branch: string; key: string } | null>;
-
 /** A todo of the list of the run: a line of intent with a state. Its ID is its place in the list: 1, 2, 3 and so on. */
 type Todo = { readonly id: number; readonly text: string; readonly state: "open" | "doing" | "done" | "dropped" };
 
@@ -239,56 +229,6 @@ declare const todo: {
  * that has no `caller`. The call saves its reply, so a resume does not send it again. An error of the host throws.
  */
 declare function harness(request: { type: string; [k: string]: Json }): Promise<Json>;
-
-/**
- * A pull request of the Git host (on GitLab, a merge request): the kind of the host, its number, its URL, its title and
- * body, its head `branch`, the `base` branch that it merges into, its `head` commit (null when the host no longer knows
- * it), `fork` when it comes from another repository, the `ref` of its head on `origin` (`refs/pull/<n>/head` or
- * `refs/merge-requests/<n>/head`), its check, whether a review asks for changes, and its state. Only a merged pull
- * request has `mergeCommit`, the commit that the Git host reports.
- */
-type PullRequest = {
-	readonly kind: "github" | "gitlab";
-	readonly number: number;
-	readonly url: string;
-	readonly title: string;
-	readonly body: string;
-	readonly branch: string;
-	readonly base: string;
-	readonly head: string | null;
-	readonly fork: boolean;
-	readonly ref: string;
-	readonly check: "none" | "running" | "passed" | "failed";
-	readonly changesRequested: boolean;
-} & ({ readonly state: "open" | "closed" } | { readonly state: "merged"; readonly mergeCommit: string });
-
-/** A CI run of a commit on the Git host (on GitLab, a pipeline): its name, its URL and its state. */
-type CiRun = { readonly name: string; readonly url: string; readonly state: "running" | "passed" | "failed" };
-
-/**
- * The Git host of the origin of `cwd`, through the GitHub CLI for GitHub and the GitLab CLI for GitLab. Each verb is a
- * call that saves its result, so a resume does not do it again. A repository whose origin is on no known Git host, a
- * missing tool and a tool that is not logged in throw.
- */
-declare const gitHost: {
-	/** Creates the pull request of `branch` into `base`, and returns it. */
-	create(branch: string, base: string, title: string, body: string): Promise<PullRequest>;
-	/**
-	 * The pull request with the number `change`, or the newest one of the branch `change`, or null when it has none.
-	 * With `settle`, a failure returns `{ error }`, as `sh` does.
-	 */
-	state(change: string | number): Promise<PullRequest | null>;
-	state(change: string | number, options: { settle: true }): Promise<PullRequest | null | { error: string }>;
-	/** Merges the pull request `number` now, with the merge method of the repository. */
-	merge(number: number): Promise<null>;
-	/** Whether `#<number>` is an open issue of the repository. */
-	issue(number: number): Promise<boolean>;
-	/**
-	 * The CI runs of `commit` on `branch`, on the Git host of the origin of the repository `dir`. It reads them every
-	 * 15 s until the list is not empty and no run is running, or until `wait` seconds have passed.
-	 */
-	ci(dir: string, commit: string, branch: string, wait: number): Promise<CiRun[]>;
-};
 
 /**
  * Runs the functions at once and returns their results. A resume can start their calls in another order: give each
@@ -440,8 +380,14 @@ declare function writePatch(path: string, from: string): Promise<string>;
  */
 declare function worktrees(dir?: string): Promise<{ path: string; branch: string | undefined; bare: boolean; prunable: boolean }[]>;
 
-/** The local branch of the pull request `pr`: `pr/<number>` for one from another repository, else its head branch. */
-declare function prBranch(pr: PullRequest): string;
+/**
+ * The PR of `ref` with the JSON `fields`, from `gh pr view` in the directory of `sh`. Throws when `gh` fails, or with
+ * `options.settle` returns `{ error }`, as `sh` does.
+ */
+declare function prOf(ref: string, fields: string, options?: { settle?: boolean }): Promise<any>;
+
+/** The local branch of the PR `pr`: `pr/<number>` for a PR from another repository, else its head branch. */
+declare function prBranch(pr: { number: number; headRefName: string; isCrossRepository: boolean }): string;
 
 /** True when `name` is a local branch of the repository of `dir`, default the directory of `sh`. */
 declare function isBranch(name: string, dir?: string): Promise<boolean>;
@@ -456,9 +402,8 @@ declare function checkoutChange(): Promise<Change | undefined>;
  * The change of a script's `args`. With `args.start`, a caller gives the change: `start`, and `args.item` as the
  * intent, with no Git step. Else the change is the one that `args.change` points at, from the current directory, and
  * the run gets the subject of its intent as its title. `args.change` is nothing (the current branch from its merge base
- * with `args.base`, default `main`), a PR number (from the merge base with its base branch, with its head fetched
- * from the PR `ref`, `refs/pull/<n>/head` or `refs/merge-requests/<n>/head`, and its branch moved to that head when
- * the branch is missing or behind), a range `A..B` or `A...B` (from the merge base of `A` and `B` to `B`), a local
+ * with `args.base`, default `main`), a PR number (from the merge base with its base branch, fetched as
+ * `pull/<n>/head`, with its branch moved to that head when the branch is missing or behind), a range `A..B` or `A...B` (from the merge base of `A` and `B` to `B`), a local
  * branch other than `args.base`, checked out here, in another worktree or nowhere (from its merge base with
  * `args.base` to the branch), or a ref (from its merge base with `HEAD` to `HEAD`). For nothing and a local branch,
  * the merge base is with `origin/<args.base>` when that ref exists, and for a PR number with `origin/<base branch>`,

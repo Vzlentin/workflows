@@ -20,8 +20,8 @@ crash or a Ctrl+C, and `workflows resume` follows it again.
 ## Install
 
 You need Node.js 22.19 or later, Git, and a login for the `anthropic` provider in Pi's agent directory
-(`~/.pi/agent`): log in once with `/login` in `pi`, or set `ANTHROPIC_API_KEY`. For pull requests and CI runs, you also
-need an authenticated `gh` for GitHub, or `glab` for GitLab. A `--repo <owner/name>` clone needs `gh`.
+(`~/.pi/agent`): log in once with `/login` in `pi`, or set `ANTHROPIC_API_KEY`. For GitHub repositories, you also
+need an authenticated `gh`.
 
 With Pi:
 
@@ -77,7 +77,6 @@ workflows log <run-id> [<step> | <call>] [--follow] # its steps, the calls of on
 workflows attach <run-id>                           # open its working session in Pi
 workflows stop <run-id>
 workflows sweep --yes                               # remove the worktrees of merged runs
-workflows pr <run-id>                               # open the pull request of a branch or of a run
 workflows                                           # the workflows that you can run
 workflows ship --help
 workflows outline ship                     # the steps of ship, before a run
@@ -126,5 +125,5 @@ pi install ./pi
 Build again after each change in `src/`. The checkout's `pi/` does not bring pi-agents: for the `subagent` tool,
 install `pi/` of a harness checkout too, such as `pi install ~/Dev/stack/harness/pi` (see the README of harness).
 
-The tests use a fake model provider, a fake `gh` and `glab`, a fake `ssh` for the Git hosts, a fake `workflows` command
-for the Pi plugin, and temporary Git repositories. They do not call a real model or open Pi.
+The tests use a fake model provider, a fake `gh`, a fake `workflows` command for the Pi plugin, and temporary Git
+repositories. They do not call a real model or open Pi.
