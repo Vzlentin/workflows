@@ -2071,7 +2071,7 @@ return "done"`,
 		expect(git(worktreeAt(repo, run.id), "rev-parse", "HEAD")).toBe(git(repo, "rev-parse", "main"));
 		const warnings = run.stderr.filter((line) => line.includes("cannot fetch origin"));
 		expect(warnings).toEqual([
-			expect.stringMatching(/^workflows: cannot fetch origin, so the run starts from the local main: \S/),
+			expect.stringMatching(/^workflows: cannot fetch origin, so workflows uses the local main: \S/),
 		]);
 	});
 
@@ -2086,9 +2086,7 @@ return "done"`,
 		const run = await workflows(["parent", "--json"], { cwd: repo });
 		expect(run.code).toBe(0);
 		const warnings = progressOf(run.stderr).filter((line) => line.includes("cannot fetch origin"));
-		expect(warnings).toEqual([
-			expect.stringMatching(/^ *cannot fetch origin, so the run starts from the local main: \S/),
-		]);
+		expect(warnings).toEqual([expect.stringMatching(/^ *cannot fetch origin, so workflows uses the local main: \S/)]);
 	});
 
 	it("refuses a worktree folder that Git cannot read, and keeps the folder", async () => {

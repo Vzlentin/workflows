@@ -80,8 +80,8 @@ run directory, with no time limit, and the run starts from the cloned `origin/<b
 In the repository of the current directory or a local `--repo`, the run first runs `git fetch --quiet origin`, and
 starts from `origin/<base>`. It starts from the local `--base` commit when the repository has no `origin`, or when
 `origin` has no branch `<base>`, such as when `--base` is a commit. When the fetch fails, the run starts from the local
-`--base` commit and warns with one line: `cannot fetch origin, so the run starts from the local <base>: <first line of
-the Git error>`. A run started by the command prints it on stderr after `workflows: `, and a child run adds it to the
+`--base` commit and warns with one line: `cannot fetch origin, so workflows uses the local <base>: <first line of the
+Git error>`. A run started by the command prints it on stderr after `workflows: `, and a child run adds it to the
 progress of its caller as a log line.
 
 The command prints `run <run-id>`, then the progress steps of its child runs on stderr as each one starts: `research`,
@@ -310,8 +310,9 @@ answers SHIP. It commits its fixes on the branch of the change and does not push
   or behind the head, and uses a branch that is at the head or ahead of it as it is. It fails with `<branch> has
   diverged from PR #<n>; rebase it or delete it` when the branch and the head have diverged, and with `<branch> is behind
   PR #<n> and checked out at <path>; update it there` when a worktree has the branch that is behind. The change starts at
-  the merge base of the branch with the base branch of the pull request, or with `origin/<base branch>` when there is
-  no local branch of that name; `--base` is not used.
+  the merge base of the branch with `origin/<base branch>` when that ref exists, else with the local base branch, as
+  for no argument: the run does not fetch the base. `<base branch>` is the base branch of the pull request; `--base` is
+  not used.
 - A range `A..B` or `A...B`: from the merge base of `A` and `B` to `B`.
 - A local branch other than `--base`, such as `change.branch` of a result: from the merge base of `--base` and the
   branch to the branch, with `origin/<base>` in place of `--base` as for no argument. It may be the current branch, a
@@ -1997,7 +1998,8 @@ change:
 2. Find the Git host of the origin of the repository. A repository with none fails with `the origin of <repository> is
    on no Git host that gh or glab knows`.
 3. Find the base: after `git fetch origin`, `origin/main`, as a run starts (see [Ship](#ship)). A failed fetch prints
-   one line `workflows: cannot fetch origin, ...` on stderr and takes the local `main`.
+   one line `workflows: cannot fetch origin, so workflows uses the local main: <first line of the Git error>` on stderr
+   and takes the local `main`.
 4. Read the newest pull request of the branch. This request checks the login of the tool first, and nothing is
    pushed before it.
 5. When that pull request is open, push the branch to the branch of the same name on `origin`, print the URL of the

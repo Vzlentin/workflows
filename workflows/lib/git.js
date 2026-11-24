@@ -141,7 +141,8 @@ async function baseRef(base) {
  * `end` is the ref that the change ends on, `start` the commit that it starts from, and `intent` the PR of a PR number.
  * Fetches the head of a PR, and moves its branch there with `pullBranch`. A plain value that is a local branch other
  * than `base` reads as that branch, wherever it is checked out: from its merge base with `base` to the branch. For no
- * value and a local branch, `base` is `origin/<base>` when that ref exists, as `baseRef` says.
+ * value, a PR number and a local branch, the merge base is with `origin/<base>` when that ref exists, as `baseRef`
+ * says; for a PR number, `<base>` is the base branch of the PR.
  */
 async function targetOf(target, base) {
 	const mergeBase = (a, b) => sh(["git", "merge-base", a, b]);
@@ -156,9 +157,8 @@ async function targetOf(target, base) {
 
 		await pullBranch(pr, end);
 		const from = pr.base;
-		const start = await mergeBase((await isBranch(from)) ? from : `origin/${from}`, end);
 
-		return { from, end, start, intent: prIntent(pr) };
+		return { from, end, start: await mergeBase(await baseRef(from), end), intent: prIntent(pr) };
 	}
 
 	const range = /^(.*?)\.\.\.?(.*)$/.exec(target);

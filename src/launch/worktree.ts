@@ -88,7 +88,7 @@ export async function startRef(repository: string, base: string, warn: (line: st
 
 	if (fetched.code !== 0) {
 		const reason = `${fetched.stderr}${fetched.stdout}`.split("\n").find((line) => line.trim() !== "");
-		warn(`cannot fetch origin, so the run starts from the local ${base}: ${reason?.trim() ?? `exit ${fetched.code}`}`);
+		warn(`cannot fetch origin, so workflows uses the local ${base}: ${reason?.trim() ?? `exit ${fetched.code}`}`);
 
 		return base;
 	}
