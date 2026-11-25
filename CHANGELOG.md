@@ -1,5 +1,160 @@
 # Changelog
 
+## [0.7.0](https://github.com/Vzlentin/workflows/compare/v0.6.1...v0.7.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* workflows reads HARNESS_HOST, not HARNESS_PROJECT, to find the host and the driver of a run. It needs a harness with hosts, not projects.
+* --serves is a label, not an item ID or a parley slug, and workflows does not check it. `list --json` gives `labels` in place of `serves`. `sweep --json` has no `item`, and land does not close items. A run saved by TASK.version 31 does not resume.
+* a run session no longer gets the grep, find and ls tools. pi.tool is version 4 in 1.6: a store that 1.6 writes does not open in a 1.5 host.
+* let `workflows land` take a branch, a PR number or a run ID
+* give every workflow result a `change` with its repository and branch
+* make a run serve a work item in place of a project todo
+* print the short log of `workflows log` as flat lines with the path of each run
+* a run no longer ends `unjudged` and has no `judgeError` field. A judge that fails ends the run `failed`, and `workflows resume` judges again.
+* replace `parent` with `driver`, the conversation that started or resumed the current task
+* `runStatus` in src/run/past.ts now gives `earlier-version` or `later-version` for every task of another version, also when it ended. In the JSON of `list` and `show`, each old run moves from `done`, `waiting` or `failed` to `earlier-version`. Before, only a task that had not ended got that state. The `resumable` field of `list` and `show` is gone: it repeated the state, and `earlier-version` and `later-version` are the states that cannot resume.
+* `workflows prune` is removed: use `workflows sweep`. A post-merge hook that runs `workflows prune --yes` must run `workflows sweep --yes`. The text line and the JSON entry of a swept run add the word. A `pruning` marker of an interrupted prune is not read.
+* `list --pick` is removed: use `show --pick`. In an hc terminal, `attach` without `--side` runs Pi in this terminal, and does not open a herdr-app tab. `prune` does not remove hc terminals. A project script with the name of a command fails every command that loads the scripts.
+* tighten the script contract: reserve background, restrict meta.exit, check the result, and expose only declared lib helpers
+* an entry of workflows outline --json gives the outline in outline, not steps, and has the new fields.
+* give list and show JSON one schema each, with the model, question, branch, start time, serves and agent of a run
+* make the input of a run an ask of the host, and let only an open input() call make a run wait
+* the JSON of list, show, the command outcome, the catch-up hook and the workflow tool replaces `status` with `state` and `result`. A ship or a campaign whose last judge gives 0 or fails now exits 1.
+* `workflows show --calls` is removed. Use `workflows log <run-id>` to see the calls of a run.
+* the package `@vzlentin/workflows` no longer exports `./runs` and `./tool`. Its only export is `./package.json`.
+* `list --json` and `show --json` no longer give `caller`, and a run no longer starts the pick loop of `show --pick` and `attach --side` in herdr-app. A run saved by TASK.version 22 does not resume.
+* HERDR_ENV and HERDR_PANE_ID have no effect, and runs no longer open Herdr workspaces. Runs saved at TASK.version 21 do not resume.
+* requires @vzlentin/harness 0.7.0 and @earendil-works/* 1.5.0.
+* .workflows/agents/*.md is no longer read, and TASK.version is 20.
+* optimize ship from saved runs with overlays and a blind judge ([#83](https://github.com/Vzlentin/workflows/issues/83))
+
+### Features
+
+* `workflows log` shows the error of a failed run ([f96aca2](https://github.com/Vzlentin/workflows/commit/f96aca2237b3704feba799e885792c99f381b80f))
+* add --repo to judge and thermoloop, and show await on script globals ([febb5a5](https://github.com/Vzlentin/workflows/commit/febb5a5f87d7065d6d60a4fc4277c23cc8326741))
+* add `land`, a workflow that lands the branch of a run and refuses a red branch ([161f471](https://github.com/Vzlentin/workflows/commit/161f471fbc0d33985a13dc4732c785bcbf4eda33))
+* add `steps` to `workflows list --json` and `agents` to `workflows show <id> --json` ([a0d838f](https://github.com/Vzlentin/workflows/commit/a0d838f8c181bf4c4adb890890cf84830b9ba2eb))
+* add `workflows log <run-id>`, which reads a run from the project store ([8a4c1a1](https://github.com/Vzlentin/workflows/commit/8a4c1a1138b621b60218c615fca7dcaccfab7ca7))
+* add a Git host module with gh and glab back ends ([6c262f4](https://github.com/Vzlentin/workflows/commit/6c262f42bde4fbdd518edbc3c232228b972f8dec))
+* add the text of prompts/&lt;name&gt;.after.md at the end of the prompt of that name ([ff792b1](https://github.com/Vzlentin/workflows/commit/ff792b193ec4ce86a21072b55ca48405fa778476))
+* add the workflows pr command to open the pull request of a change ([1f4cc5b](https://github.com/Vzlentin/workflows/commit/1f4cc5bf9abe1a4a145f9032455ffea2ab64c475))
+* add workflows outline, which prints the outline of a script ([13315ff](https://github.com/Vzlentin/workflows/commit/13315ff07a9713c27bd5f519496704b66e680015))
+* add workflows web, a control center of the runs and their agents ([2be6f1d](https://github.com/Vzlentin/workflows/commit/2be6f1d91ef0b7060b51f14b1cee153129ab5fc2))
+* ask the judge for every finding of the change in one pass ([a2abfc2](https://github.com/Vzlentin/workflows/commit/a2abfc2da3e206c3aab3ed62d2977151070434be))
+* close the item of a merged run in `workflows sweep` ([69b3745](https://github.com/Vzlentin/workflows/commit/69b3745942fbd5cbb5d890daa3d247240c35d785))
+* count flaky tests as review findings, and skip commit messages ([f5b5022](https://github.com/Vzlentin/workflows/commit/f5b5022fa9be44c5c31a3b2ddbef8ca032a3777e))
+* export ./runs, show ended runs of earlier versions, and drop workflows web ([bed8d64](https://github.com/Vzlentin/workflows/commit/bed8d64d10a6299e6e25379fade670c9ca6a46a9))
+* fail the run when the judge fails, and remove the `unjudged` status ([8f62824](https://github.com/Vzlentin/workflows/commit/8f62824fcf1e9c1a2aecb9937cec195e9a186d5c))
+* fail with a clear error when the `[@earendil-works](https://github.com/earendil-works)` versions of harness and workflows differ ([bf11f12](https://github.com/Vzlentin/workflows/commit/bf11f126902bf1b0e6a80fa7663b3c0368b1949a))
+* give a rejected campaign a thermoloop and a second judge ([8879634](https://github.com/Vzlentin/workflows/commit/8879634e1473606e3af10ab67cd322f7e898a1d7))
+* give a run of another version its own state, and end `wait`, the watcher and `stop` on it once ([9c04a34](https://github.com/Vzlentin/workflows/commit/9c04a34934bbc72b790f01cd7d10bf982c5882cb))
+* give each run output a state and a result, and exit 1 when the last judge gives 0 or fails ([73f3c02](https://github.com/Vzlentin/workflows/commit/73f3c029a8e4c08190a24d79bed83ef724be912f))
+* give every workflow result a `change` with its repository and branch ([25635df](https://github.com/Vzlentin/workflows/commit/25635dfcd496d8490b84abcd51134af536fcc381))
+* give list and show JSON one schema each, with the model, question, branch, start time, serves and agent of a run ([827192b](https://github.com/Vzlentin/workflows/commit/827192b00baf503d4b56b2dd30221f7d9aaab8c2))
+* give the checked meta of every script in workflows outline --json, with an error entry for a bad meta ([5804cd2](https://github.com/Vzlentin/workflows/commit/5804cd23f02d5405f4928da41e3dc02bcb3ef661))
+* give the log step name of each step line in `show --json` ([fc834d9](https://github.com/Vzlentin/workflows/commit/fc834d9e6387acab8bbb2e5a77dc20f57fb46b64))
+* give the todos of a run and of each child run in show --json ([e91c452](https://github.com/Vzlentin/workflows/commit/e91c4527d8eec2a7215918bf18da33f6a3574155))
+* give the work item file of a run as `item` in `list --json` and `show --json` ([f3e6329](https://github.com/Vzlentin/workflows/commit/f3e6329dbbdcef1e0578ec918c58235c8dba85b6))
+* give workflow scripts the `workflows` command of this package ([33b11b8](https://github.com/Vzlentin/workflows/commit/33b11b89e91113797c50da00a1b1dff384602d53))
+* give workflow scripts the todo verbs on the list of their run ([56ca1ff](https://github.com/Vzlentin/workflows/commit/56ca1ffe5810bf2ddb3fabdddf247801a23cdf55))
+* judge the shipped commit, keep campaign items at 0, and make roles names ([#93](https://github.com/Vzlentin/workflows/issues/93)) ([fca7a14](https://github.com/Vzlentin/workflows/commit/fca7a14c6c29e13fdd06346d68ec013948361809))
+* keep a bounded tail of the output of a failed `sh` call in its record ([d932f83](https://github.com/Vzlentin/workflows/commit/d932f8324a95b3bc76f55e6309c7e1ff7035536c))
+* keep the items of a campaign as todos of its run ([a960156](https://github.com/Vzlentin/workflows/commit/a9601567ff709c43605659cd4c7ee2ae148a2832))
+* label run sessions and give a refused campaign item one fix round ([#85](https://github.com/Vzlentin/workflows/issues/85)) ([9fa3eb2](https://github.com/Vzlentin/workflows/commit/9fa3eb23306ae9f9ae03aa8c594336480388d4f7))
+* land an approved thermoloop run with `workflows land` ([f1c8fe5](https://github.com/Vzlentin/workflows/commit/f1c8fe599b41ae3814b2fe59fba1836f8405c9fb))
+* let `workflows land` take a branch, a PR number or a run ID ([3ddffa1](https://github.com/Vzlentin/workflows/commit/3ddffa1a0d920e27d71f02b6034d60383e751490))
+* let `workflows sweep` take a branch or any run ID ([1427e48](https://github.com/Vzlentin/workflows/commit/1427e48a22c8030c4f985b89227f77ec8f2b2460))
+* let a script declare its outline in meta.outline, and check it ([2560b91](https://github.com/Vzlentin/workflows/commit/2560b914a6cfc5fe2d98b75985a8f3f69f31db9e))
+* let the workflow tool start a run in another directory ([c410818](https://github.com/Vzlentin/workflows/commit/c410818a746dbc01fa819c4ed542e6db00867a02))
+* **list:** give the Git host state of each change in list --json ([2c53212](https://github.com/Vzlentin/workflows/commit/2c532122052001526d04cb1eae6125025c75fc43))
+* make a run a plain worker with labels instead of a served item ([8c01d6e](https://github.com/Vzlentin/workflows/commit/8c01d6eb8e2beb1fbe56ab9978fbe475177d49fa))
+* make a run serve a work item in place of a project todo ([b734b5e](https://github.com/Vzlentin/workflows/commit/b734b5ee08c0c9876f244e49e4165b330fabc947))
+* make the campaign split turn stated invariants into checks ([e38a560](https://github.com/Vzlentin/workflows/commit/e38a560cd0c9949e1b6a61f9572cac76a48cbc29))
+* make the input of a run an ask of the host, and let only an open input() call make a run wait ([d55c7f9](https://github.com/Vzlentin/workflows/commit/d55c7f9e1153cff46ef84a4956ada9fad8e60f40))
+* make the short log of `workflows log` show steps, and give the calls of one step on request ([e9dc2ce](https://github.com/Vzlentin/workflows/commit/e9dc2ce2e057a5f8677372942119935d2df2e68b))
+* move from the Herdr TUI to hc terminals, record the caller, and widen prune ([49e3b7e](https://github.com/Vzlentin/workflows/commit/49e3b7eccc372c079c50fb84d909fa834a477749))
+* move to [@earendil-works](https://github.com/earendil-works) 1.6 and the harness with pi-durable child tools ([238b34d](https://github.com/Vzlentin/workflows/commit/238b34df71f1401507f138b6dcfebaa523dbec05))
+* name the provider error of a cut turn in the run error ([52bc297](https://github.com/Vzlentin/workflows/commit/52bc297176ef386a0799a6e873006e62453421d3))
+* optimize ship from saved runs with overlays and a blind judge ([#83](https://github.com/Vzlentin/workflows/issues/83)) ([0a7b35b](https://github.com/Vzlentin/workflows/commit/0a7b35b9c285598f76adee3f053e793ed670897c))
+* **pi:** `/workflows` picks a run, then an agent, in two Pi selects ([b428987](https://github.com/Vzlentin/workflows/commit/b428987d9a6127eb43b4c798f500f19f42917c6a))
+* **pi:** show each workflows run on its own line in the widget ([feedf55](https://github.com/Vzlentin/workflows/commit/feedf555115db1901fdcc7da6b72c3d3c1a0d9ff))
+* **pi:** show the workflows widget below the editor, with a header ([e321afb](https://github.com/Vzlentin/workflows/commit/e321afb81f02741fc7843e4947133c88290a20aa))
+* point the workflow tool to script.d.ts in place of its script rules ([87ecb17](https://github.com/Vzlentin/workflows/commit/87ecb17724a5aa58e17887ab45b4ad889bb00dd7))
+* print the short log of `workflows log` as flat lines with the path of each run ([7614492](https://github.com/Vzlentin/workflows/commit/7614492ccd0d810fd5ab13e8feec9a248127de97))
+* read the agents tables again on resume, and move the sessions of the run to them ([7388829](https://github.com/Vzlentin/workflows/commit/73888298d6f8663dd89ae5111111d0fdfa0f1955))
+* refuse a script with a command name, keep one picker in show --pick, and let harness attach open the agent ([610e3be](https://github.com/Vzlentin/workflows/commit/610e3be4f783d579e5216e27005184c38579917e))
+* remove `show --calls`; `workflows log` is the view of the calls ([fe2484c](https://github.com/Vzlentin/workflows/commit/fe2484c0b0933da0ff4dc923d3e6a89c3a507872))
+* replace `parent` with `driver`, the conversation that started or resumed the current task ([a45161c](https://github.com/Vzlentin/workflows/commit/a45161ccd7e3f4b1a7430b77886337402040031b))
+* replace workflows prune with workflows sweep, which writes landed or dropped into each run that it sweeps ([5a43ad1](https://github.com/Vzlentin/workflows/commit/5a43ad1f9b5aec2f7c51ab03e8d48beae5571176))
+* report the false premises of the work item in research ([5b61710](https://github.com/Vzlentin/workflows/commit/5b617104f1ee141ec64161ec7a4bb2b0cac027fd))
+* run thermoloop and judge in the worktree that has the branch of the change ([f135b79](https://github.com/Vzlentin/workflows/commit/f135b79e2b8e3b81dc2295cce26426d7508729c1))
+* say in the workflow tool description when a run may start ([5de231e](https://github.com/Vzlentin/workflows/commit/5de231ed3a2fd146e2598f6ba3df8fe22da10733))
+* show the repository of each background run in the Pi widget ([1ee0831](https://github.com/Vzlentin/workflows/commit/1ee083190e0ee083e83012ab6e6068370f4d9dd6))
+* size the items of a campaign split with the batch-size trade-off ([182addc](https://github.com/Vzlentin/workflows/commit/182addc1a0bffea59a308710beda86a5d67719ab))
+* speak of the harness host, not the project ([8648040](https://github.com/Vzlentin/workflows/commit/864804032349b38f94c4c89a5e8b323ea2269b00))
+* start runs from origin/&lt;base&gt; and compare changes with it ([b14f036](https://github.com/Vzlentin/workflows/commit/b14f0366fee6903c5d3f91f64c70995d4d60c1a6))
+* **sweep:** report the merge commit of landed runs, and sweep merged changes in list ([4a773ea](https://github.com/Vzlentin/workflows/commit/4a773ea745691bc1e5b0ffd352375c89aa461a74))
+* tighten the script contract: reserve background, restrict meta.exit, check the result, and expose only declared lib helpers ([efe671c](https://github.com/Vzlentin/workflows/commit/efe671c417000224139125ec51c27ab98616ee87))
+
+
+### Bug Fixes
+
+* align the review and judge prompts on scope and 1,000-line splits ([bdacee3](https://github.com/Vzlentin/workflows/commit/bdacee38344df34522701b83383a529b59162a7e))
+* bound every outcome text that a run gives its caller with one function ([45466f8](https://github.com/Vzlentin/workflows/commit/45466f8560e0efefa5bc9535718ce22ea2976ab0))
+* bound the output in the error text of a failed command ([b7ed9c7](https://github.com/Vzlentin/workflows/commit/b7ed9c792ac139c5e2b9f4430ab62299db6072e0))
+* bound the result JSON in the text of a finished run ([819f7ad](https://github.com/Vzlentin/workflows/commit/819f7ad5c2b9ad6d5fb32191f93838e707d1e7ee))
+* clear a stale worktree registration when Git lists it at another path ([d4bd9ce](https://github.com/Vzlentin/workflows/commit/d4bd9ce163fec9f0636b2d16ca39cd36d733c987))
+* close the stdin of the commands of `sh`, `ok` and `git()` ([1183c71](https://github.com/Vzlentin/workflows/commit/1183c71e634a5d0c47b582ca201fcf07b2ecaeef))
+* follow a background run from its `run <id>` line, so a cut call keeps its result ([402dad8](https://github.com/Vzlentin/workflows/commit/402dad81952048a280c4fb93e4d9196a54951b61))
+* **git:** start a PR target at its merge base with origin/&lt;base&gt; ([c92fe1d](https://github.com/Vzlentin/workflows/commit/c92fe1d180699de5875b01f786f6db1fbf93ceb8))
+* give the change of its checkout to an rpi that runs in its caller's place ([522901a](https://github.com/Vzlentin/workflows/commit/522901a07d0cd14b6bd1029ecad23f0c4f1c4e96))
+* give the sessions of a run no harness store tools, on harness main 3e50ec4 ([412c2c0](https://github.com/Vzlentin/workflows/commit/412c2c0b1bdafa5052387c1d3a736531288e2724))
+* keep findings, divergence and waiting questions whole in the `workflow` tool text ([e5ed65e](https://github.com/Vzlentin/workflows/commit/e5ed65e3d6367f52f12b820dc4522e9a77883acc))
+* keep the worktree and the branch of a run safe at each task ([716dbc0](https://github.com/Vzlentin/workflows/commit/716dbc092d1bf4791c1c270ec24cd68f8763ca87))
+* key a memory note by its line, not by the order of the adds ([92311a9](https://github.com/Vzlentin/workflows/commit/92311a99ccd3077097592a86ff9acb67ea3070cb))
+* key the session of `agent` by its prompt, and let `session` take a `key` ([77a0f40](https://github.com/Vzlentin/workflows/commit/77a0f40049dd53dfbb97385412b5bc9752a1a1ed))
+* let the sessions install the dependencies of a fresh worktree ([#88](https://github.com/Vzlentin/workflows/issues/88)) ([7100727](https://github.com/Vzlentin/workflows/commit/710072756b3560dff55bea1371fe6cb68af6641f))
+* lock down `Date` and `Math.random` also through `globalThis` ([4d7ed01](https://github.com/Vzlentin/workflows/commit/4d7ed016166d51e1ae3de3a76dbe89b47af66dcd))
+* make commitAll, the optimize cleanup and the OptMem note safe to run again ([64f3440](https://github.com/Vzlentin/workflows/commit/64f34407942e3e9ab6ce055484557102c877e25c))
+* make the state machines of the workflows engine explicit ([#91](https://github.com/Vzlentin/workflows/issues/91)) ([073308a](https://github.com/Vzlentin/workflows/commit/073308ad51c363c928bd9e07cfdc9f7438786446))
+* name the rule when a run() overlay key is a prompts/&lt;name&gt;.after.md text ([fb87b8e](https://github.com/Vzlentin/workflows/commit/fb87b8ea007d039c492d659d7440e9d0564126b5))
+* one live task for each run when two resumes race ([850efd8](https://github.com/Vzlentin/workflows/commit/850efd8d7c935691cb2442dc019439db58be4bdf))
+* post the outcome of a background run in the commit that ends its task ([3d1285a](https://github.com/Vzlentin/workflows/commit/3d1285a9c25963c90584a00b8558207e6ec56a65))
+* prune removes only what is safe to remove ([da55a96](https://github.com/Vzlentin/workflows/commit/da55a967eb851b9ba944bb2b344245446e6b34df))
+* read a bare local branch as that branch wherever it is checked out ([5c525c4](https://github.com/Vzlentin/workflows/commit/5c525c4f6630d7e733ffa5bfd77385af7e1a503b))
+* read a goal argument as a file only when it has no whitespace ([a601a8b](https://github.com/Vzlentin/workflows/commit/a601a8bb153f7cf9a977abb49abe678af304aa56))
+* read a memo request only from the end of its output ([c7c093e](https://github.com/Vzlentin/workflows/commit/c7c093e8f7fda8fa8e23dd4c46aefa25224fe01a))
+* read meta without a deadline, and make the tests pass on Node 26, Git 2.39 and under load ([bcefbad](https://github.com/Vzlentin/workflows/commit/bcefbad1149eb1ec5ec5edd19744da4005e70466))
+* remove the memory sentence from the instructions of a run session ([bccdb86](https://github.com/Vzlentin/workflows/commit/bccdb861f1a6c52f46f565fbfc03d2e917649ce1))
+* save a caught failure of `ask` or `sh` with `settle`, and report the commit message fallback ([1263de4](https://github.com/Vzlentin/workflows/commit/1263de40a61435a14881b66bbd2cf2e309a5598c))
+* state no time in the campaign split prompt ([795f369](https://github.com/Vzlentin/workflows/commit/795f369164f8fec8b4d78f9b567bc799e5502b6d))
+* stop the Git command of a script step when the run stops ([c229525](https://github.com/Vzlentin/workflows/commit/c229525abf91e0bbdff7680ba25e49ad15e903c9))
+* sweep a run that is on the local main without asking gh ([a5126b3](https://github.com/Vzlentin/workflows/commit/a5126b34f6b4ed97004affbcdc2d794effb49d60))
+* **sweep:** sweep a run ID in the repository that the run recorded ([aae89d7](https://github.com/Vzlentin/workflows/commit/aae89d743cce8022904e819429f0fb6c2c8871e1))
+* the engine starts no pick loop, and a run saves no `caller` ([9c9eb5b](https://github.com/Vzlentin/workflows/commit/9c9eb5b65e9865e94bee0d11a18104b9b1afef8a))
+* **thermoloop:** give each fix commit a Conventional Commit subject ([8357157](https://github.com/Vzlentin/workflows/commit/8357157569ee7b8acc3cf74e7a5aa0dcc387a9ac))
+
+
+### Performance Improvements
+
+* import `@earendil-works/pi-coding-agent` only in `workflows check` ([9fac9b8](https://github.com/Vzlentin/workflows/commit/9fac9b8db1af82bd3db3aeed55066b8e93971bfb))
+* read only the call records of a run and its child runs by key prefix ([777ebe1](https://github.com/Vzlentin/workflows/commit/777ebe151146fbc171e1c82dc5686bda0d866477))
+* read root run tasks through `startedTasks` and live tasks by status ([624930b](https://github.com/Vzlentin/workflows/commit/624930b46f9131b46c45f6fd9f429e61650b3939))
+
+
+### Reverts
+
+* start runs from the local base again ([4d0bd41](https://github.com/Vzlentin/workflows/commit/4d0bd41f80eadb65fa0435a01756e082d9419265))
+* take the Git host module, the pr command and the change state of list off main ([89fadf2](https://github.com/Vzlentin/workflows/commit/89fadf289cd949ab6eb8a2a1f59dcafa993a049f))
+
+
+### Code Refactoring
+
+* move workflows onto the new harness and Pi 1.5.0 ([#92](https://github.com/Vzlentin/workflows/issues/92)) ([8d0e15c](https://github.com/Vzlentin/workflows/commit/8d0e15c8aeaf5b4b7c637e92aed6ef79dd621639))
+* the package exports only `./package.json` ([8779180](https://github.com/Vzlentin/workflows/commit/87791807b74c64e03b7152f015b7af2727e99fdb))
+
 ## [0.6.1](https://github.com/Vzlentin/workflows/compare/v0.6.0...v0.6.1) (2026-10-31)
 
 
