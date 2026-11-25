@@ -1123,7 +1123,9 @@ its end ends them as the end of a run does: see [Runs in the harness host](#runs
 - `args.overlay` maps paths to texts or `null`. A value of another shape fails the call with
   `run <name>: overlay is not an object of path to text or null`. `overlay` is a reserved argument name.
   - A key `prompts/<prompt>.md` replaces that prompt, as `args.prompts` does, or removes it with `null`. A key for a
-    prompt that the caller's bundle does not have fails the call with `run <name>: no prompt <prompt>`. A call of a
+    prompt that the caller's bundle does not have fails the call with `run <name>: no prompt <prompt>`. A key
+    `prompts/<prompt>.after.md` fails the call with `run <name>: <key>: an overlay cannot replace a .after text`, and the
+    project's `.after` text still ends the prompt. A call of a
     removed prompt fails as a call of an unknown name does. When `args.prompts` and `args.overlay` replace the same prompt, the text of `overlay` wins.
   - Every other key is a file that the sessions of the child run see in place of the disk: the run opens each session
     with these files as `overlay` in its spec of the children library, so the subagents of the session see them too.

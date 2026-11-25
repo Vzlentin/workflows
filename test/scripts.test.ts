@@ -2348,6 +2348,8 @@ return { runId, runDir, cwd, branch, start: args.start, plan: await prompts.plan
 		expect(await failure('{ "NOTES.md": 1 }')).toEqual([1, bad]);
 		expect(await failure('["NOTES.md"]')).toEqual([1, bad]);
 		expect(await failure('{ "prompts/none.md": "x" }')).toEqual([1, "failed parent: run child: no prompt none"]);
+		const after = "failed parent: run child: prompts/plan.after.md: an overlay cannot replace a .after text";
+		expect(await failure('{ "prompts/plan.after.md": "x" }')).toEqual([1, after]);
 		await writeFile(join(scripts, "parent.js"), 'return await run("child", { prompts: { "a/b": "x" } })');
 		const nested = await workflows(["parent"], { cwd: repo });
 		expect([nested.code, nested.stderr[0]]).toEqual([1, "failed parent: run child: no prompt a/b"]);

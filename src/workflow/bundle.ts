@@ -253,8 +253,8 @@ export type BundleEdits = {
 /**
  * The prompts and overlay files of the `run()` call of the script `name` with `bundle`. `prompts` replaces the texts
  * of prompts by name. `overlay` replaces or removes templates (`prompts/<name>.md`), and wins over `prompts` for the
- * same template; its other keys are files merged over `base`. The edits do not change `bundle.after`, so `promptText`
- * adds the text of `<name>.after.md` to a replaced prompt too.
+ * same template; its other keys are files merged over `base`. An overlay key `prompts/<name>.after.md` fails, because
+ * the edits do not change `bundle.after`: `promptText` adds the text of `<name>.after.md` to a replaced prompt too.
  */
 export function editBundle(
 	name: string,
@@ -272,6 +272,7 @@ export function editBundle(
 		const item = PROMPT_KEY.exec(key)?.[1];
 
 		if (item === undefined) files[key] = value;
+		else if (item.endsWith(AFTER)) throw new Error(`run ${name}: ${key}: an overlay cannot replace a .after text`);
 		else edits.push([item, value]);
 	}
 
